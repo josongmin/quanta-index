@@ -1,0 +1,43 @@
+# quanta-index clippy policy
+#
+# Goals:
+# - deterministic hashing
+# - fail-closed unsafe posture
+# - moderate complexity caps
+
+allow-unwrap-in-tests = false
+allow-expect-in-tests = false
+allow-panic-in-tests = false
+allow-dbg-in-tests = false
+allow-print-in-tests = false
+
+allow-unwrap-in-consts = false
+allow-expect-in-consts = false
+
+check-private-items = true
+avoid-breaking-exported-api = false
+
+disallowed-types = [
+    { path = "std::collections::hash_map::DefaultHasher", reason = "Use stable hashing for persisted or cross-process digests." },
+    { path = "std::hash::DefaultHasher", reason = "Use stable hashing for persisted or cross-process digests." },
+    { path = "std::collections::HashMap", reason = "Prefer BTreeMap on contract, catalog, and persisted ordering surfaces. Add a local allow only for internal computation." },
+    { path = "std::collections::HashSet", reason = "Prefer BTreeSet on contract, catalog, and persisted ordering surfaces. Add a local allow only for internal computation." },
+]
+
+disallowed-methods = [
+    { path = "futures::executor::block_on", reason = "Do not hide sync-over-async at application boundaries." },
+    { path = "tokio::runtime::Runtime::block_on", reason = "Do not hide sync-over-async at application boundaries." },
+    { path = "tokio::runtime::Handle::block_on", reason = "Do not hide sync-over-async at application boundaries." },
+    { path = "core::result::Result::ok", reason = "Do not discard error context." },
+    { path = "core::result::Result::unwrap_or", reason = "Do not replace failures with silent defaults." },
+    { path = "core::result::Result::unwrap_or_else", reason = "Do not replace failures with fallback closures." },
+    { path = "core::result::Result::unwrap_or_default", reason = "Do not replace failures with default values." },
+    { path = "core::option::Option::unwrap_unchecked", reason = "Avoid UB on None." },
+    { path = "core::result::Result::unwrap_unchecked", reason = "Avoid UB on Err." },
+    { path = "std::hint::unreachable_unchecked", reason = "Avoid UB on invalid invariants." },
+]
+
+msrv = "1.92.0"
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shellcheck disable is local and intentional: the env script exports cache paths
+# that should affect this process before we exec cargo.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/quanta-index-env.sh"
+
+exec cargo "$@"

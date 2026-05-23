@@ -1,0 +1,98 @@
+rules:
+  - id: rust-no-unwrap
+    message: Avoid unwrap/expect in Rust code. Propagate or assert through Result-returning tests instead.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $EXPR.unwrap()
+          - pattern: $EXPR.unwrap_err()
+          - pattern: $EXPR.expect($MSG)
+          - pattern: $EXPR.expect_err($MSG)
+
+  - id: rust-no-result-ok
+    message: Do not discard Rust Result errors with ok(). Propagate or map the failure explicitly.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern: $EXPR.ok()
+
+  - id: rust-no-todo
+    message: Do not leave todo!/unimplemented! in Rust code.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: todo!()
+          - pattern: todo!($MSG)
+          - pattern: unimplemented!()
+          - pattern: unimplemented!($MSG)
+
+  - id: rust-no-panic
+    message: Do not use panic! in Rust code. Return an error or assert through Result-returning tests instead.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: panic!()
+          - pattern: panic!($MSG)
+          - pattern: panic!($FMT, ...)
+
+  - id: rust-no-dbg
+    message: Do not leave dbg! in Rust code.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern: dbg!(...)
+
+  - id: rust-no-allow-attributes
+    message: Do not use #[allow] in Rust code. Use #[expect(..., reason = ...)] only when a bounded exception is approved.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-regex: '#!?\\[allow\\('
+
+  - id: python-no-except-pass
+    message: Do not swallow Python exceptions with pass.
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                ...
+              except Exception:
+                pass
+          - pattern: |
+              try:
+                ...
+              except:
+                pass
+
+  - id: bash-no-ignore-failure
+    message: Do not suppress shell failures with set +e or || true.
+    languages: [bash]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: set +e
+          - pattern: $CMD || true
+
+  - id: workflow-use-cargow
+    message: CI should route Cargo through ./scripts/cargow so build artifacts stay outside the repo.
+    languages: [yaml]
+    severity: ERROR
+    paths:
+      include:
+        - "/.github/workflows/*.yml"
+    patterns:
+      - pattern-regex: '(?m)run:\\s+.*\\bcargo\\b'
+
+  - id: workflow-no-continue-on-error
+    message: CI must fail closed. Do not mark workflow steps as continue-on-error.
+    languages: [yaml]
+    severity: ERROR
+    paths:
+      include:
+        - "/.github/workflows/*.yml"
+    pattern-regex: '(?m)^\\s*continue-on-error:\\s*true\\s*$'

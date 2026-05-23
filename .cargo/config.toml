@@ -1,0 +1,12 @@
+# Build artifacts live outside the repo under the shared cache root.
+#
+# Preferred entrypoints:
+# - `./scripts/cargow ...`
+# - `just <recipe>`
+#
+# Both source `scripts/quanta-index-env.sh`, which exports:
+#   CARGO_TARGET_DIR=$QUANTA_INDEX_CACHE_ROOT/target
+#
+# Default cache roots:
+#   macOS: ~/Library/Caches/quanta-index
+#   Linux: ${XDG_CACHE_HOME:-~/.cache}/quanta-index

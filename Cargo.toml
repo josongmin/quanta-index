@@ -1,0 +1,87 @@
+[workspace]
+members = [
+    "crates/quanta-index-contract",
+    "crates/quanta-index-core",
+    "crates/quanta-index-control-sqlite",
+    "crates/quanta-index-searchd",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+version = "0.1.0"
+
+[workspace.lints.rust]
+warnings = { level = "deny", priority = -3 }
+future_incompatible = { level = "deny", priority = -2 }
+nonstandard_style = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "deny", priority = -2 }
+unsafe_code = "forbid"
+unreachable_pub = "deny"
+unused_results = "deny"
+unused_must_use = "deny"
+let_underscore_drop = "deny"
+let_underscore_lock = "deny"
+
+# Intentionally not enabled yet:
+# missing_docs = "deny"
+# Current public surface is still largely undocumented, so turning this on now
+# would create large mechanical churn instead of a focused safety gate.
+
+[workspace.lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -3 }
+cargo = { level = "deny", priority = -2 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -2 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+assertions_on_constants = "allow"
+dbg_macro = "deny"
+derive_partial_eq_without_eq = "allow"
+expect_used = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+integer_division = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+lossy_float_literal = "deny"
+map_err_ignore = "deny"
+match_wild_err_arm = "deny"
+missing_const_for_fn = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+panic = "deny"
+panic_in_result_fn = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+string_slice = "deny"
+todo = "deny"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+unimplemented = "deny"
+unreachable = "deny"
+unused_self = "allow"
+unwrap_used = "deny"
+use_self = "allow"
+wildcard_enum_match_arm = "deny"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+tempfile = "3.16.0"
+thiserror = "1.0.69"
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

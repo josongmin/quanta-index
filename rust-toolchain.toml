@@ -1,0 +1,11 @@
+# Pinned toolchain for sccache optimization
+# - Ensures team/CI use same rustc version
+# - Different rustc = different cache keys = cache miss
+# - Expected hit rate improvement: +3-7%
+#
+# Reference: relocated (P0-1)
+
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

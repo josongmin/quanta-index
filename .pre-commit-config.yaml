@@ -1,0 +1,164 @@
+default_install_hook_types: [pre-commit, pre-push]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.9
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        files: ^(scripts/.*\.sh|tools/ci/lint/.*\.sh)$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: debug-statements
+
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: bash -lc 'source scripts/quanta-index-env.sh && ruff check --fix --exit-non-zero-on-fix'
+        language: system
+        files: ^tools/(prompt-manager|ci)/.*\.py$
+      - id: ruff-format
+        name: ruff format
+        entry: bash -lc 'source scripts/quanta-index-env.sh && ruff format --check'
+        language: system
+        files: ^tools/(prompt-manager|ci)/.*\.py$
+
+      - id: root-hygiene
+        name: root hygiene
+        entry: bash tools/ci/lint/lint-root-hygiene.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+
+      - id: lock-freshness
+        name: lock freshness
+        entry: bash scripts/check-lock-freshness.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|crates/.*/Cargo\.toml)$
+        stages: [pre-commit]
+
+      - id: doc-paths
+        name: doc path lint
+        entry: python3 tools/ci/lint/lint-doc-paths.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(README\.md|AGENTS\.md|AGENT_.*\.md|CLAUDE\.md|\.codex/.*\.md|\.cursor/rules/.*\.md|tools/prompt-manager/sources/.*\.md)$
+        stages: [pre-commit]
+
+      - id: prompt-manager-lint
+        name: prompt-manager lint
+        entry: python3 tools/prompt-manager/pm.py lint
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: cargo-fmt-check
+        name: cargo fmt check
+        entry: ./scripts/cargow fmt --all -- --check
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        stages: [pre-commit]
+
+      - id: cargo-check
+        name: cargo check locked
+        entry: ./scripts/cargow check --workspace --all-targets --all-features --locked
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        stages: [pre-commit]
+
+      - id: cargo-clippy-strict
+        name: cargo clippy strict
+        entry: ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|clippy\.toml|crates/.*/.*\.rs)$
+        stages: [pre-push]
+
+      - id: cargo-test
+        name: cargo test
+        entry: ./scripts/cargow test --workspace --all-features --locked
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        stages: [pre-push]
+
+      - id: cargo-doc
+        name: cargo doc warnings
+        entry: bash -lc 'RUSTDOCFLAGS="-D warnings" ./scripts/cargow doc --workspace --all-features --no-deps --locked'
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        stages: [pre-push]
+
+      - id: workspace-lints
+        name: workspace lints inheritance
+        entry: python3 scripts/check_workspace_lints.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|crates/.*/Cargo\.toml)$
+        stages: [pre-push]
+
+      - id: rust-no-allow
+        name: rust no allow attributes
+        entry: bash scripts/check-rust-allow-attributes.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^crates/.*/.*\.rs$
+        stages: [pre-push]
+
+      - id: cargo-deny
+        name: cargo deny
+        entry: bash scripts/run-cargo-deny.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|deny\.toml|crates/.*/Cargo\.toml)$
+        stages: [pre-push]
+
+      - id: prompt-manager-tests
+        name: tooling tests
+        entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools -q -o cache_dir="$PYTEST_CACHE_DIR"'
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(pyproject\.toml|tools/.*|scripts/check_workspace_lints\.py)$
+        stages: [pre-push]
+
+      - id: semgrep
+        name: semgrep policy
+        entry: bash scripts/run-semgrep.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(crates/.*|scripts/.*|tools/.*|\.github/workflows/.*|pyproject\.toml|\.pre-commit-config\.yaml)$
+        stages: [pre-push]

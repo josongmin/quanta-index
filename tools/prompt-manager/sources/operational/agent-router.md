@@ -1,0 +1,20 @@
+# AGENTS.md
+
+quanta-index 공용 AI 에이전트 진입 문서.
+
+Read order:
+1. Always follow [AGENT_CORE.md](AGENT_CORE.md).
+2. For command selection and verification flow, use [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md).
+3. For reference pointers, use [AGENT_REFERENCE.md](AGENT_REFERENCE.md).
+4. For full rule IDs and CI mapping, use [AGENT_RULE_CATALOG.md](AGENT_RULE_CATALOG.md).
+
+Canonical tooling:
+- Rust build/verification: raw `cargo` and `Justfile`
+- Prompt/doc control plane: `tools/prompt-manager/pm.py`
+
+Conflict rule:
+`AGENT_CORE.md` > `AGENT_PLAYBOOK.md` > `AGENT_RULE_CATALOG.md` > `AGENT_REFERENCE.md` > chat memory.
+
+Language:
+- 응답은 한국어
+- 코드/주석/커밋 메시지 본문은 영어 우선

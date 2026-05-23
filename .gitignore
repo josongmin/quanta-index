@@ -1,0 +1,41 @@
+# =============================================================================
+# quanta-index — repository .gitignore
+# =============================================================================
+
+# Rust / Cargo
+/target
+target/
+**/target/
+*.rlib
+
+# Local state / runtime artifacts
+/state/
+*.sqlite3
+*.db
+*.db-*
+*.sock
+
+# Python / prompt-manager
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Agent / IDE / local tools
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+.claude/
+.serena/
+.cache/
+.local/
+
+# Generated local junk
+*.log
+*.tmp
+*.swp

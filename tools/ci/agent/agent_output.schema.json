@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quanta-index.local/tools/ci/agent/agent_output.schema.json",
+  "title": "Agent Output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "required_inputs_missing",
+    "assumptions",
+    "checks",
+    "errors",
+    "artifacts"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "blocked", "error"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_inputs_missing": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "risk", "can_affect_correctness"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "risk": { "type": "string", "enum": ["low", "medium", "high"] },
+          "can_affect_correctness": { "type": "boolean" }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "passed", "evidence"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "passed": { "type": "boolean" },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "message", "propagated"],
+        "properties": {
+          "step": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 },
+          "propagated": { "type": "boolean" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": ["rust_source", "manifest", "report", "other"]
+          },
+          "deployable": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

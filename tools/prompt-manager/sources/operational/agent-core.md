@@ -1,0 +1,42 @@
+# Agent Core Protocol
+
+항상 이 문서를 먼저 따른다.
+
+핵심 강제:
+- 규칙과 실제 소스가 충돌하면 규칙이 아니라 소스를 다시 확인한다
+- build/test claim은 실행 결과 없이 하지 않는다
+- Rust verification은 raw `cargo` 또는 `Justfile`만 쓴다
+- generated agent docs는 직접 수정하지 않고 `tools/prompt-manager/sources/`를 수정한다
+- breaking-first 기본; open-ended compat shim 금지
+- heuristic authority, naive fallback, silent downgrade 금지
+- 에러를 삼키거나 default로 대체해서 진행하는 코드 변경 금지
+- 구현이 비어 있으면 explicit failure 또는 `NotImplemented`로 두고 성공처럼 꾸미지 않는다
+- required input이 빠지면 추정으로 메우지 않고 `blocked`로 처리한다
+- tool step이 실패하면 `error`로 승격하고 실패 step을 숨기지 않는다
+- structured output이 요구되면 `tools/ci/agent/agent_output.schema.json`을 만족하는 JSON만 낸다
+- `ok` 상태는 missing input, correctness-affecting assumption, failed check, error entry가 하나도 없을 때만 허용한다
+- `blocked` 또는 `error` 상태에서는 deployable artifact를 내지 않는다
+
+운영 자세:
+- source-first
+- probe-first
+- test-last
+- fail-closed
+
+## 0. Golden Rule
+
+Never guess build state. Run the exact command and report the result.
+Never claim success on a best-effort path that dropped a real failure.
+
+## 1. Tooling Authority
+
+- build/check/test front door: `cargo`, `just`
+- prompt/doc front door: `python3 tools/prompt-manager/pm.py`
+- generated docs drift gate: `python3 tools/prompt-manager/pm.py lint`
+
+## 2. Required Closeout
+
+Every verification closeout must report:
+- command used
+- final status
+- failure class if failed
