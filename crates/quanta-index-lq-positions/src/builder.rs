@@ -10,9 +10,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::errors::PositionsError;
+use crate::errors::{LimitDimension, PositionsError, PositionsErrorCode};
 use crate::index::PositionsIndex;
-use crate::types::{DocId, NormalizerVersion, Position};
+use crate::types::{DocId, MAX_DOCS_PER_TERM, MAX_POSITIONS_PER_CELL, NormalizerVersion, Position};
 use crate::varint::encode_u32;
 
 /// Mutable, in-memory accumulator for a per-generation position index.
@@ -48,11 +48,41 @@ impl PositionsBuilder {
     /// Caller owns idempotency: emitting the same `(doc_id, term, pos)`
     /// twice yields a duplicate position. The builder does not dedupe —
     /// duplicate positions on the on-disk posting list signal a caller bug.
-    pub fn add_token(&mut self, doc_id: DocId, term: &str, pos: Position) {
+    ///
+    /// Cap (LEX-03 §4.2): a single `(term, doc)` cell is bounded by
+    /// [`MAX_POSITIONS_PER_CELL`]. The (cap + 1)-th `add_token` for that
+    /// cell fails closed with [`PositionsErrorCode::PlanLimitExceeded`] and
+    /// [`LimitDimension::PositionsPerCell`]; the offending position is
+    /// **not** appended — the builder rejects rather than truncates.
+    ///
+    /// Breaking-change note: prior to LEX-03 §4.2 this method returned `()`.
+    /// Per CLAUDE.md "breaking-first" posture there is no compat shim.
+    pub fn add_token(
+        &mut self,
+        doc_id: DocId,
+        term: &str,
+        pos: Position,
+    ) -> Result<(), PositionsError> {
         let key: Box<str> = Box::from(term);
         let entry = self.by_term.entry(key).or_default();
         let positions = entry.entry(doc_id).or_default();
+        // `positions.len()` is `usize`; convert via `u32::try_from` so the
+        // cap check is exact regardless of platform width. The cap is
+        // `4_096`, so `len < cap` is well below `u32::MAX`.
+        let cur_len = u32::try_from(positions.len()).map_err(|_err| {
+            PositionsError::new(
+                PositionsErrorCode::IndexCorrupted,
+                "positions.len() exceeds u32",
+            )
+        })?;
+        if cur_len >= MAX_POSITIONS_PER_CELL {
+            return Err(PositionsError::plan_limit_exceeded(
+                LimitDimension::PositionsPerCell,
+                format!("positions in (term, doc) cell would exceed cap={MAX_POSITIONS_PER_CELL}"),
+            ));
+        }
         positions.push(pos);
+        Ok(())
     }
 
     /// Finalise into an immutable [`PositionsIndex`].
@@ -71,6 +101,15 @@ impl PositionsBuilder {
                     "doc_count exceeds u32",
                 )
             })?;
+            // LEX-03 §4.2 per-term cap: reject before emitting any bytes
+            // for this term so the encoder never half-commits a posting
+            // list. Fail-closed; no truncation.
+            if doc_count > MAX_DOCS_PER_TERM {
+                return Err(PositionsError::plan_limit_exceeded(
+                    LimitDimension::DocsPerTerm,
+                    format!("term '{term}' has {doc_count} docs, exceeds cap={MAX_DOCS_PER_TERM}"),
+                ));
+            }
             encode_u32(doc_count, &mut buf);
             let mut prev_doc: u64 = 0;
             let mut first_doc = true;
@@ -140,7 +179,8 @@ impl PositionsBuilder {
 #[cfg(test)]
 mod tests {
     use super::PositionsBuilder;
-    use crate::types::{DocId, NormalizerVersion, Position};
+    use crate::errors::{LimitDimension, PositionsErrorCode};
+    use crate::types::{DocId, MAX_POSITIONS_PER_CELL, NormalizerVersion, Position};
 
     #[test]
     fn builder_finishes_empty() {
@@ -155,7 +195,13 @@ mod tests {
     fn builder_preserves_generation_and_normalizer() {
         let nv = NormalizerVersion::new(2, 5);
         let mut b = PositionsBuilder::new(99, nv);
-        b.add_token(DocId(0), "x", Position(0));
+        match b.add_token(DocId(0), "x", Position(0)) {
+            Ok(()) => {}
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
         match b.finish() {
             Ok(idx) => {
                 assert_eq!(idx.generation(), 99);
@@ -170,13 +216,19 @@ mod tests {
         // Insert out-of-order positions; expect identical encoding to sorted
         // insertion via the deterministic `finish` step.
         let mut a = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
-        a.add_token(DocId(0), "t", Position(5));
-        a.add_token(DocId(0), "t", Position(1));
-        a.add_token(DocId(0), "t", Position(3));
+        for p in [5u32, 1, 3] {
+            if let Err(e) = a.add_token(DocId(0), "t", Position(p)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
         let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
-        b.add_token(DocId(0), "t", Position(1));
-        b.add_token(DocId(0), "t", Position(3));
-        b.add_token(DocId(0), "t", Position(5));
+        for p in [1u32, 3, 5] {
+            if let Err(e) = b.add_token(DocId(0), "t", Position(p)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
         let ia = match a.finish() {
             Ok(v) => v,
             Err(e) => {
@@ -200,5 +252,109 @@ mod tests {
             assert!(false, "{e}");
         }
         assert_eq!(ba, bb, "insertion order must not affect encoding");
+    }
+
+    #[test]
+    fn add_token_accepts_exactly_cap_positions_for_cell() {
+        // Inserting MAX_POSITIONS_PER_CELL distinct positions must all
+        // succeed; the (cap+1)-th must fail closed.
+        let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
+        for i in 0..MAX_POSITIONS_PER_CELL {
+            match b.add_token(DocId(0), "t", Position(i)) {
+                Ok(()) => {}
+                Err(e) => {
+                    assert!(false, "unexpected failure at i={i}: {e}");
+                    return;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn add_token_rejects_beyond_cell_cap_with_plan_limit_exceeded() {
+        let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
+        for i in 0..MAX_POSITIONS_PER_CELL {
+            if let Err(e) = b.add_token(DocId(0), "t", Position(i)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        // The (cap+1)-th insertion must be rejected.
+        match b.add_token(DocId(0), "t", Position(MAX_POSITIONS_PER_CELL)) {
+            Ok(()) => assert!(false, "expected PlanLimitExceeded"),
+            Err(e) => {
+                assert_eq!(e.code, PositionsErrorCode::PlanLimitExceeded);
+                assert_eq!(e.dimension, Some(LimitDimension::PositionsPerCell));
+            }
+        }
+    }
+
+    #[test]
+    fn add_token_cell_cap_does_not_truncate_existing_positions() {
+        // After the cap is hit, the rejected position is NOT appended.
+        // The builder must contain exactly MAX_POSITIONS_PER_CELL entries
+        // for that (term, doc) cell — fail-closed, not fail-truncate.
+        let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
+        for i in 0..MAX_POSITIONS_PER_CELL {
+            if let Err(e) = b.add_token(DocId(0), "t", Position(i)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        // Intentionally drop the rejection — the assertion below verifies
+        // the rejected position was not appended.
+        drop(b.add_token(DocId(0), "t", Position(99_999)));
+        // Finish must still succeed with exactly cap positions for the cell.
+        let idx = match b.finish() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        let mut count: u32 = 0;
+        let Some(iter) = idx.term_postings("t") else {
+            assert!(false, "term 't' missing");
+            return;
+        };
+        for r in iter {
+            let entry = match r {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{e}");
+                    return;
+                }
+            };
+            let Ok(len) = u32::try_from(entry.positions.len()) else {
+                assert!(false, "positions length overflow");
+                return;
+            };
+            count = count.saturating_add(len);
+        }
+        assert_eq!(count, MAX_POSITIONS_PER_CELL);
+    }
+
+    #[test]
+    fn add_token_cell_cap_is_per_cell_not_global() {
+        // The cap is per `(term, doc)` cell — different (term, doc) pairs
+        // each get a fresh budget.
+        let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
+        // Fill cell (term="a", doc=0) to the cap.
+        for i in 0..MAX_POSITIONS_PER_CELL {
+            if let Err(e) = b.add_token(DocId(0), "a", Position(i)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        // A different term in the same doc must still accept new positions.
+        match b.add_token(DocId(0), "b", Position(0)) {
+            Ok(()) => {}
+            Err(e) => assert!(false, "different term must not share cap: {e}"),
+        }
+        // A different doc for the same term must still accept new positions.
+        match b.add_token(DocId(1), "a", Position(0)) {
+            Ok(()) => {}
+            Err(e) => assert!(false, "different doc must not share cap: {e}"),
+        }
     }
 }

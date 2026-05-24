@@ -34,12 +34,14 @@
 //!   `panic!`/`unwrap`/`expect`/`todo!`.
 
 pub mod dialect;
+pub mod dialect_ast_walk;
 pub mod errors;
 pub mod estimator;
 pub mod executor;
 pub mod literal_extract;
 
 pub use dialect::dialect_filter;
+pub use dialect_ast_walk::ast_walk_filter;
 pub use errors::{ForbiddenKind, LimitDimension, RegexError, RegexErrorCode};
 pub use estimator::{MAX_NFA_STATES, estimate_nfa_states};
 pub use executor::RegexExecutor;

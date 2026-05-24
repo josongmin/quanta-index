@@ -8,6 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "conformance"
+path = "src/bin/conformance.rs"
+
 [dependencies]
 toml = { workspace = true }
 

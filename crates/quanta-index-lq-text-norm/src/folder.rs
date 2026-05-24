@@ -7,15 +7,17 @@
 
 use core::fmt;
 
+use unicode_normalization::UnicodeNormalization as _;
+
 use crate::tokenizer::Token;
 
 /// Case-fold mode for the writer/reader pair.
 ///
 /// `Off` leaves `lowered` exactly as the tokenizer produced it (which is
 /// already ASCII-lowered today). `Lower` re-applies ASCII lowercase as a
-/// belt-and-braces idempotent step. `NfkcLower` is reserved for the
-/// follow-up that pulls in `unicode-normalization`; v1 treats it as
-/// `Lower` so the wire shape remains stable.
+/// belt-and-braces idempotent step. `NfkcLower` applies Unicode NFKC
+/// (compatibility composition) and then lowercases — so the ligature
+/// `ﬁ` (U+FB01) folds to `fi` and `Ⅻ` (U+216B) folds to `xii`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CaseFold {
     Off,
@@ -81,11 +83,20 @@ impl<'de> serde::Deserialize<'de> for CaseFold {
 
 /// Apply `mode` to `token`, returning a new token whose `lowered` field
 /// reflects the fold. `surface`, `kind`, and byte offsets are preserved.
+///
+/// `NfkcLower` applies NFKC compatibility composition first, then
+/// lowercases the result. Idempotent because NFKC and lowercase are
+/// each idempotent and NFKC stabilizes the codepoint set before the
+/// case fold runs.
 #[must_use]
 pub fn fold_case(token: &Token, mode: CaseFold) -> Token {
     let new_lowered: Box<str> = match mode {
         CaseFold::Off => token.lowered.clone(),
-        CaseFold::Lower | CaseFold::NfkcLower => token.lowered.to_lowercase().into_boxed_str(),
+        CaseFold::Lower => token.lowered.to_lowercase().into_boxed_str(),
+        CaseFold::NfkcLower => {
+            let nfkc: String = token.lowered.nfkc().collect();
+            nfkc.to_lowercase().into_boxed_str()
+        }
     };
     Token {
         surface: token.surface.clone(),
@@ -142,10 +153,34 @@ mod tests {
     }
 
     #[test]
-    fn fold_nfkc_lower_lowercases_ascii_today() {
+    fn fold_nfkc_lower_lowercases_ascii() {
         let tok = t("FOO", "FOO");
         let out = fold_case(&tok, CaseFold::NfkcLower);
         assert_eq!(&*out.lowered, "foo");
+    }
+
+    #[test]
+    fn fold_nfkc_lower_decomposes_ligature_fi() {
+        // U+FB01 (LATIN SMALL LIGATURE FI) -> "fi" under NFKC.
+        let tok = t("\u{FB01}", "\u{FB01}");
+        let out = fold_case(&tok, CaseFold::NfkcLower);
+        assert_eq!(&*out.lowered, "fi");
+    }
+
+    #[test]
+    fn fold_nfkc_lower_roman_numeral_twelve() {
+        // U+216B (ROMAN NUMERAL TWELVE) -> "XII" under NFKC, then "xii".
+        let tok = t("\u{216B}", "\u{216B}");
+        let out = fold_case(&tok, CaseFold::NfkcLower);
+        assert_eq!(&*out.lowered, "xii");
+    }
+
+    #[test]
+    fn fold_nfkc_lower_is_idempotent_on_ligature() {
+        let tok = t("\u{FB01}", "\u{FB01}");
+        let a = fold_case(&tok, CaseFold::NfkcLower);
+        let b = fold_case(&a, CaseFold::NfkcLower);
+        assert_eq!(a, b);
     }
 
     #[test]

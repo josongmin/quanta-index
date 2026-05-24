@@ -39,6 +39,18 @@ pub enum LqTokenKind {
     StructuralBlock(String),
     /// Filter value text following a `:` separator.
     ColonValue(String),
+    /// Predicate value following a `:` separator. `dotted` is the dotted
+    /// suffix (e.g. `has.file` for `repo:has.file(...)`); `args_raw` is
+    /// the parenthesised argument list with surrounding `(` / `)` removed
+    /// and trailing/leading whitespace preserved verbatim. The parser
+    /// joins `dotted` with the preceding filter-name token to construct
+    /// the canonical predicate name.
+    Predicate {
+        /// Dotted predicate suffix after `:`.
+        dotted: String,
+        /// Raw argument body verbatim (no outer parens).
+        args_raw: String,
+    },
     /// `:` separator.
     Colon,
     /// Boolean `AND` keyword.
@@ -125,8 +137,13 @@ pub fn tokenize(input: &str) -> Result<Vec<LqToken>, LqParseError> {
             _ => {
                 let after_colon = matches!(out.last().map(|t| &t.kind), Some(LqTokenKind::Colon));
                 if after_colon {
-                    let tok = lex.read_filter_value(start)?;
-                    out.push(tok);
+                    if lex.lookahead_is_predicate() {
+                        let tok = lex.read_predicate(start)?;
+                        out.push(tok);
+                    } else {
+                        let tok = lex.read_filter_value(start)?;
+                        out.push(tok);
+                    }
                 } else if lex.starts_with(b"match") && lex.lookahead_after_match_is_brace() {
                     let tok = lex.read_structural_block(start)?;
                     out.push(tok);
@@ -225,6 +242,213 @@ impl<'a> Lexer<'a> {
             return false;
         }
         self.src.get(self.pos..end) == Some(needle)
+    }
+
+    /// Returns true if the cursor position starts a dotted predicate of the
+    /// shape `<ident>(.<ident>)+(`. The `.<ident>` makes a predicate
+    /// distinguishable from a function call on a plain identifier (which
+    /// PRE-NORM does not accept in v1 — those are still lexed as
+    /// `Ident + LParen`).
+    fn lookahead_is_predicate(&self) -> bool {
+        let mut p = self.pos;
+        // First ident segment.
+        let after_first = match self.scan_ident(p) {
+            Some(end) if end > p => end,
+            _ => return false,
+        };
+        p = after_first;
+        // Must have at least one `.<ident>` follow.
+        let Some(&first_sep) = self.src.get(p) else {
+            return false;
+        };
+        if first_sep != b'.' {
+            return false;
+        }
+        let mut saw_dot_ident = false;
+        while let Some(&b) = self.src.get(p) {
+            if b != b'.' {
+                break;
+            }
+            let Some(dot_pos) = p.checked_add(1) else {
+                return false;
+            };
+            let after_seg = match self.scan_ident(dot_pos) {
+                Some(end) if end > dot_pos => end,
+                _ => return false,
+            };
+            saw_dot_ident = true;
+            p = after_seg;
+        }
+        if !saw_dot_ident {
+            return false;
+        }
+        self.src.get(p) == Some(&b'(')
+    }
+
+    /// Scan an ASCII identifier `[A-Za-z_][A-Za-z0-9_-]*` starting at `from`.
+    /// Returns the byte offset after the identifier, or `None` if the first
+    /// byte isn't an identifier head.
+    fn scan_ident(&self, from: usize) -> Option<usize> {
+        let mut p = from;
+        let &head = self.src.get(p)?;
+        if !(head.is_ascii_alphabetic() || head == b'_') {
+            return None;
+        }
+        p = p.checked_add(1)?;
+        while let Some(&b) = self.src.get(p) {
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+                let next = p.checked_add(1)?;
+                p = next;
+            } else {
+                break;
+            }
+        }
+        Some(p)
+    }
+
+    /// Read a predicate token of the shape `<ident>(.<ident>)+(args)`.
+    /// Caller must have verified [`lookahead_is_predicate`] is true.
+    fn read_predicate(&mut self, start: usize) -> Result<LqToken, LqParseError> {
+        // Capture the dotted name byte range, then the args body.
+        let dotted_start = self.pos;
+        // We know the shape is valid; scan the dotted name.
+        let mut last_seg_end = match self.scan_ident(self.pos) {
+            Some(end) if end > self.pos => end,
+            _ => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span_from(start, self.pos)?,
+                    "internal: predicate head missing",
+                ));
+            }
+        };
+        self.pos = last_seg_end;
+        while let Some(&b) = self.src.get(self.pos) {
+            if b != b'.' {
+                break;
+            }
+            let dot_pos = self.pos.checked_add(1).ok_or_else(|| {
+                LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    LqSpan::new(0, 0),
+                    "internal: predicate offset overflow",
+                )
+            })?;
+            last_seg_end = match self.scan_ident(dot_pos) {
+                Some(end) if end > dot_pos => end,
+                _ => {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        span_from(start, self.pos)?,
+                        "predicate dotted segment missing identifier",
+                    ));
+                }
+            };
+            self.pos = last_seg_end;
+        }
+        let dotted_end = last_seg_end;
+        let Some(dotted_bytes) = self.src.get(dotted_start..dotted_end) else {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                span_from(start, self.pos)?,
+                "internal: predicate dotted slice invalid",
+            ));
+        };
+        let dotted = match core::str::from_utf8(dotted_bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_e) => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    span_from(start, self.pos)?,
+                    "invalid UTF-8 in predicate name",
+                ));
+            }
+        };
+        // Now consume `(`, body, `)`.
+        if self.src.get(self.pos) != Some(&b'(') {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                span_from(start, self.pos)?,
+                "predicate missing '('",
+            ));
+        }
+        self.advance_one();
+        let args_start = self.pos;
+        let mut depth: u32 = 1;
+        loop {
+            let Some(&b) = self.src.get(self.pos) else {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span_from(start, self.pos)?,
+                    "predicate missing ')'",
+                ));
+            };
+            match b {
+                b'(' => {
+                    depth = depth.saturating_add(1);
+                    self.advance_one();
+                }
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let args_end = self.pos;
+                        self.advance_one();
+                        let Some(args_bytes) = self.src.get(args_start..args_end) else {
+                            return Err(LqParseError::new(
+                                LqParseErrorCode::SyntaxError,
+                                span_from(start, self.pos)?,
+                                "internal: predicate args slice invalid",
+                            ));
+                        };
+                        let args_raw = match core::str::from_utf8(args_bytes) {
+                            Ok(s) => s.to_owned(),
+                            Err(_e) => {
+                                return Err(LqParseError::new(
+                                    LqParseErrorCode::TokenInvalid,
+                                    span_from(start, self.pos)?,
+                                    "invalid UTF-8 in predicate args",
+                                ));
+                            }
+                        };
+                        return Ok(LqToken {
+                            kind: LqTokenKind::Predicate { dotted, args_raw },
+                            span: span_from(start, self.pos)?,
+                        });
+                    }
+                    self.advance_one();
+                }
+                b'"' => {
+                    // Skip quoted phrase inside args; balance check stays
+                    // intact regardless of `(`/`)` inside the phrase body.
+                    self.advance_one();
+                    while let Some(&inner) = self.src.get(self.pos) {
+                        if inner == b'\\' {
+                            self.advance_one();
+                            self.advance_one();
+                            continue;
+                        }
+                        if inner == b'"' {
+                            self.advance_one();
+                            break;
+                        }
+                        self.advance_one();
+                    }
+                }
+                b'\'' => {
+                    self.advance_one();
+                    while let Some(&inner) = self.src.get(self.pos) {
+                        if inner == b'\'' {
+                            self.advance_one();
+                            break;
+                        }
+                        self.advance_one();
+                    }
+                }
+                _ => {
+                    self.advance_one();
+                }
+            }
+        }
     }
 
     fn lookahead_after_match_is_brace(&self) -> bool {

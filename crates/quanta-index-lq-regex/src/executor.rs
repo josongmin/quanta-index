@@ -3,14 +3,20 @@
 //!
 //! Compile path:
 //!
-//! 1. parse with `regex_syntax::parse`;
-//! 2. on AST-stage rejection, classify the construct via
+//! 1. run [`crate::dialect_ast_walk::ast_walk_filter`] FIRST — this fires
+//!    typed [`crate::errors::ForbiddenKind::Possessive`],
+//!    [`crate::errors::ForbiddenKind::NamedCaptureRef`], and
+//!    [`crate::errors::ForbiddenKind::InlineFlagMidPattern`] before the
+//!    HIR parse can either accept them (mid-pattern `(?i)`) or surface
+//!    them with a generic untyped error (possessive / named-capture-ref);
+//! 2. parse with `regex_syntax::parse`;
+//! 3. on AST-stage rejection, classify the construct via
 //!    [`crate::dialect::classify_ast_error`] and surface
 //!    [`RegexErrorCode::ForbiddenSyntax`] when applicable; otherwise
 //!    [`RegexErrorCode::ParseFail`];
-//! 3. run [`crate::dialect::dialect_filter`] over the HIR;
-//! 4. estimate NFA states via [`crate::estimate_nfa_states`];
-//! 5. compile with `regex::bytes::Regex::new`, wrapping `regex::Error`
+//! 4. run [`crate::dialect::dialect_filter`] over the HIR;
+//! 5. estimate NFA states via [`crate::estimate_nfa_states`];
+//! 6. compile with `regex::bytes::Regex::new`, wrapping `regex::Error`
 //!    into [`RegexErrorCode::ExecutionInternal`].
 //!
 //! Verify path: [`RegexExecutor::verify`] calls
@@ -27,6 +33,7 @@ use quanta_index_lq_trigram::{DocId, DocResolver};
 use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
+use crate::dialect_ast_walk::ast_walk_filter;
 use crate::errors::{RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
 use crate::literal_extract::extract_required_literals;
@@ -52,6 +59,13 @@ impl RegexExecutor {
     /// - [`RegexErrorCode::ExecutionInternal`] — `regex::Regex::new`
     ///   internal-budget overshoot despite the planner-time estimator.
     pub fn compile(pattern: &str) -> Result<Self, RegexError> {
+        // Precise AST-level rejection of `(?>...)`, `\k<name>`, and
+        // mid-pattern `(?i)` MUST run before `parse_hir`: the first two
+        // surface as generic `FlagUnrecognized` / `EscapeUnrecognized`
+        // parse errors (losing typed classification), and the third is
+        // accepted unconditionally by `regex_syntax` so the HIR walk
+        // cannot see it.
+        ast_walk_filter(pattern)?;
         let hir = parse_hir(pattern)?;
         dialect_filter(&hir)?;
         let _estimated: u64 = estimate_nfa_states(&hir)?;
@@ -300,6 +314,61 @@ mod tests {
         match RegexExecutor::compile("foo(") {
             Ok(_) => assert!(false, "expected PARSE_FAIL"),
             Err(e) => assert_eq!(e.code, RegexErrorCode::ParseFail),
+        }
+    }
+
+    #[test]
+    fn compile_rejects_possessive_group_precisely() {
+        match RegexExecutor::compile("(?>abc)") {
+            Ok(_) => assert!(false, "expected FORBIDDEN_SYNTAX(possessive)"),
+            Err(e) => {
+                assert_eq!(e.code, RegexErrorCode::ForbiddenSyntax);
+                assert_eq!(e.forbidden, Some(ForbiddenKind::Possessive));
+            }
+        }
+    }
+
+    #[test]
+    fn compile_rejects_named_capture_ref_precisely() {
+        match RegexExecutor::compile(r"\b\k<x>\b") {
+            Ok(_) => assert!(false, "expected FORBIDDEN_SYNTAX(named-capture-ref)"),
+            Err(e) => {
+                assert_eq!(e.code, RegexErrorCode::ForbiddenSyntax);
+                assert_eq!(e.forbidden, Some(ForbiddenKind::NamedCaptureRef));
+            }
+        }
+    }
+
+    #[test]
+    fn compile_rejects_mid_pattern_inline_flag() {
+        match RegexExecutor::compile("foo(?i)bar") {
+            Ok(_) => assert!(false, "expected FORBIDDEN_SYNTAX(inline-flag-midpattern)"),
+            Err(e) => {
+                assert_eq!(e.code, RegexErrorCode::ForbiddenSyntax);
+                assert_eq!(e.forbidden, Some(ForbiddenKind::InlineFlagMidPattern));
+            }
+        }
+    }
+
+    #[test]
+    fn compile_accepts_leading_inline_flag() {
+        // Leading `(?i)` is canonicalization-friendly per LEX-04 spec
+        // §3.4 — PRE-NORM strips it before tokenizer handoff. The
+        // executor must accept it so that the canonicalization round-
+        // trip is invisible to callers.
+        match RegexExecutor::compile("(?i)foo") {
+            Ok(_) => {}
+            Err(e) => assert!(false, "expected leading `(?i)` to be accepted, got {e}"),
+        }
+    }
+
+    #[test]
+    fn compile_accepts_scoped_inline_flag_group() {
+        // `(?i:foo)` is a scoped non-capturing group; this is a
+        // different AST shape from a set-flag and remains allowed.
+        match RegexExecutor::compile("(?i:foo)") {
+            Ok(_) => {}
+            Err(e) => assert!(false, "expected `(?i:foo)` to be accepted, got {e}"),
         }
     }
 

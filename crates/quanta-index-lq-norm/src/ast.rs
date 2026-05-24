@@ -123,6 +123,73 @@ impl LqType {
     }
 }
 
+/// Metavariable name inside a structural pattern (`$X` / `:[X]`).
+///
+/// Wrapper type kept distinct from `String` so the canonical hash treats it
+/// as a tagged leaf rather than free text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LqMetaVar(String);
+
+impl LqMetaVar {
+    /// Construct a metavariable wrapper.
+    #[must_use]
+    pub const fn new(name: String) -> Self {
+        Self(name)
+    }
+
+    /// Borrow the underlying name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+/// One node inside a `match { ... }` block per dsl.md §8.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LqStructuralNode {
+    /// Verbatim text segment between metavars / groups.
+    Literal(Box<str>),
+    /// `$name` / `:[name]` metavariable capture.
+    MetaVar(LqMetaVar),
+    /// Brace-delimited nested group; sequence of child nodes in order.
+    Group(Vec<LqStructuralNode>),
+}
+
+/// Typed structural block: optional language tag plus a node-tree body.
+///
+/// Mirrors the shape of `quanta-index-lq-structural::pattern::PatternNode`
+/// but is duplicated here on purpose — the contract-layer integration
+/// ticket aligns the two types. Importing it directly would couple
+/// PRE-NORM to the structural plane.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LqStructuralBlock {
+    /// Optional `lang:<id>` tag captured from the `match` header (deferred —
+    /// PRE-NORM parses the body only and always emits `None` here for now;
+    /// the field exists so the integration ticket can wire the lang prefix
+    /// without re-shaping the AST).
+    pub lang: Option<String>,
+    /// Ordered list of structural nodes parsed from the block body.
+    pub nodes: Vec<LqStructuralNode>,
+}
+
+/// One argument to a `<scope>:<head>.<tail>(...)` predicate.
+///
+/// `Filter` carries the nested filter exactly as parsed (no further
+/// validation here; predicate semantics are a planner concern).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LqPredicateArg {
+    /// Bare keyword / identifier token argument.
+    Keyword(String),
+    /// `"..."` quoted phrase argument.
+    Phrase(String),
+    /// `'...'` raw-string argument.
+    RawString(String),
+    /// Integer numeric literal argument.
+    Number(i64),
+    /// Nested `name:value` filter shape (e.g. `path:src`).
+    Filter { name: String, value: String },
+}
+
 /// Pattern leaf shape per dsl.md §3 / §1.5.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LqLeaf {
@@ -134,11 +201,20 @@ pub enum LqLeaf {
     RawString(String),
     /// `/.../` regex source (post-`(?i)`-stripping if any).
     Regex(String),
-    /// `match { ... }` body raw text — full structural sub-grammar
-    /// (dsl.md §8) is deferred; PRE-NORM ships the leaf carrier with the
-    /// raw body and node-count guard. Body text excludes the surrounding
-    /// `match {` / `}`.
-    StructuralBlock(String),
+    /// `match { ... }` body parsed into a typed structural node tree per
+    /// dsl.md §8. Body text excludes the surrounding `match {` / `}`.
+    StructuralBlock(LqStructuralBlock),
+    /// `<scope>:<head>.<tail>(arg_list)` predicate per dsl.md §3.
+    ///
+    /// `name` is the canonical dot-joined form (e.g. `repo.has.file`).
+    /// Unknown predicate names parse cleanly; semantic rejection is the
+    /// planner's job.
+    Predicate {
+        /// Dot-joined canonical predicate name.
+        name: String,
+        /// Ordered argument list.
+        args: Vec<LqPredicateArg>,
+    },
 }
 
 /// Filter node per dsl.md §6.
@@ -587,6 +663,396 @@ impl<'de> serde::Deserialize<'de> for LqVisibility {
     }
 }
 
+impl serde::Serialize for LqMetaVar {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ser.serialize_str(self.0.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqMetaVar {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = LqMetaVar;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqMetaVar string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LqMetaVar, E> {
+                Ok(LqMetaVar(v.to_owned()))
+            }
+        }
+        de.deserialize_str(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralNode {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        match self {
+            Self::Literal(s) => {
+                m.serialize_entry("tag", "literal")?;
+                m.serialize_entry("v", s.as_ref())?;
+            }
+            Self::MetaVar(mv) => {
+                m.serialize_entry("tag", "metavar")?;
+                m.serialize_entry("v", mv)?;
+            }
+            Self::Group(children) => {
+                m.serialize_entry("tag", "group")?;
+                m.serialize_entry("v", children)?;
+            }
+        }
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralNode {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralNode;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralNode map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralNode, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let mut tag: Option<String> = None;
+                let mut buffered: Option<ciborium::value::Value> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "tag" => tag = Some(map.next_value()?),
+                        "v" => buffered = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
+                let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
+                match tag.as_str() {
+                    "literal" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("literal payload: {e}")))?;
+                        Ok(LqStructuralNode::Literal(s.into_boxed_str()))
+                    }
+                    "metavar" => {
+                        let mv: LqMetaVar = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("metavar payload: {e}")))?;
+                        Ok(LqStructuralNode::MetaVar(mv))
+                    }
+                    "group" => {
+                        let kids: Vec<LqStructuralNode> = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("group payload: {e}")))?;
+                        Ok(LqStructuralNode::Group(kids))
+                    }
+                    other => Err(A::Error::unknown_variant(
+                        other,
+                        &["literal", "metavar", "group"],
+                    )),
+                }
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralBlock {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        match &self.lang {
+            Some(l) => m.serialize_entry("lang", l)?,
+            None => m.serialize_entry::<_, Option<String>>("lang", &None)?,
+        }
+        m.serialize_entry("nodes", &self.nodes)?;
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralBlock {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralBlock;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralBlock map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralBlock, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut lang: Option<String> = None;
+                let mut nodes: Option<Vec<LqStructuralNode>> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "lang" => lang = map.next_value()?,
+                        "nodes" => nodes = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(LqStructuralBlock {
+                    lang,
+                    nodes: nodes.ok_or_else(|| serde::de::Error::missing_field("nodes"))?,
+                })
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqPredicateArg {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        match self {
+            Self::Keyword(s) => {
+                m.serialize_entry("tag", "keyword")?;
+                m.serialize_entry("v", s)?;
+            }
+            Self::Phrase(s) => {
+                m.serialize_entry("tag", "phrase")?;
+                m.serialize_entry("v", s)?;
+            }
+            Self::RawString(s) => {
+                m.serialize_entry("tag", "raw_string")?;
+                m.serialize_entry("v", s)?;
+            }
+            Self::Number(n) => {
+                m.serialize_entry("tag", "number")?;
+                m.serialize_entry("v", n)?;
+            }
+            Self::Filter { name, value } => {
+                m.serialize_entry("tag", "filter")?;
+                let payload = PredicateFilterPayload { name, value };
+                m.serialize_entry("v", &payload)?;
+            }
+        }
+        m.end()
+    }
+}
+
+struct PredicateFilterPayload<'a> {
+    name: &'a String,
+    value: &'a String,
+}
+
+impl serde::Serialize for PredicateFilterPayload<'_> {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        m.serialize_entry("name", self.name)?;
+        m.serialize_entry("value", self.value)?;
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqPredicateArg {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqPredicateArg;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqPredicateArg map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqPredicateArg, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let mut tag: Option<String> = None;
+                let mut buffered: Option<ciborium::value::Value> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "tag" => tag = Some(map.next_value()?),
+                        "v" => buffered = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
+                let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
+                match tag.as_str() {
+                    "keyword" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("keyword payload: {e}")))?;
+                        Ok(LqPredicateArg::Keyword(s))
+                    }
+                    "phrase" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("phrase payload: {e}")))?;
+                        Ok(LqPredicateArg::Phrase(s))
+                    }
+                    "raw_string" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("raw_string payload: {e}")))?;
+                        Ok(LqPredicateArg::RawString(s))
+                    }
+                    "number" => {
+                        let n: i64 = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("number payload: {e}")))?;
+                        Ok(LqPredicateArg::Number(n))
+                    }
+                    "filter" => {
+                        let p: PredicateFilterOwned = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("filter payload: {e}")))?;
+                        Ok(LqPredicateArg::Filter {
+                            name: p.name,
+                            value: p.value,
+                        })
+                    }
+                    other => Err(A::Error::unknown_variant(
+                        other,
+                        &["keyword", "phrase", "raw_string", "number", "filter"],
+                    )),
+                }
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+struct PredicateFilterOwned {
+    name: String,
+    value: String,
+}
+
+impl<'de> serde::Deserialize<'de> for PredicateFilterOwned {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PredicateFilterOwned;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("predicate filter payload")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<PredicateFilterOwned, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut name: Option<String> = None;
+                let mut value: Option<String> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "name" => name = Some(map.next_value()?),
+                        "value" => value = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(PredicateFilterOwned {
+                    name: name.ok_or_else(|| serde::de::Error::missing_field("name"))?,
+                    value: value.ok_or_else(|| serde::de::Error::missing_field("value"))?,
+                })
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+struct PredicatePayload<'a> {
+    name: &'a String,
+    args: &'a Vec<LqPredicateArg>,
+}
+
+impl serde::Serialize for PredicatePayload<'_> {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        m.serialize_entry("name", self.name)?;
+        m.serialize_entry("args", self.args)?;
+        m.end()
+    }
+}
+
+struct PredicateOwned {
+    name: String,
+    args: Vec<LqPredicateArg>,
+}
+
+impl<'de> serde::Deserialize<'de> for PredicateOwned {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PredicateOwned;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("predicate payload")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<PredicateOwned, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut name: Option<String> = None;
+                let mut args: Option<Vec<LqPredicateArg>> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "name" => name = Some(map.next_value()?),
+                        "args" => args = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(PredicateOwned {
+                    name: name.ok_or_else(|| serde::de::Error::missing_field("name"))?,
+                    args: args.ok_or_else(|| serde::de::Error::missing_field("args"))?,
+                })
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
 impl serde::Serialize for LqLeaf {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
@@ -611,9 +1077,14 @@ impl serde::Serialize for LqLeaf {
                 m.serialize_entry("tag", "regex")?;
                 m.serialize_entry("v", s)?;
             }
-            Self::StructuralBlock(s) => {
+            Self::StructuralBlock(block) => {
                 m.serialize_entry("tag", "structural_block")?;
-                m.serialize_entry("v", s)?;
+                m.serialize_entry("v", block)?;
+            }
+            Self::Predicate { name, args } => {
+                m.serialize_entry("tag", "predicate")?;
+                let payload = PredicatePayload { name, args };
+                m.serialize_entry("v", &payload)?;
             }
         }
         m.end()
@@ -635,26 +1106,61 @@ impl<'de> serde::Deserialize<'de> for LqLeaf {
             where
                 A: serde::de::MapAccess<'de>,
             {
+                use serde::de::Error as _;
                 let mut tag: Option<String> = None;
-                let mut v: Option<String> = None;
+                let mut buffered: Option<ciborium::value::Value> = None;
                 while let Some(k) = map.next_key::<String>()? {
                     match k.as_str() {
                         "tag" => tag = Some(map.next_value()?),
-                        "v" => v = Some(map.next_value()?),
+                        "v" => buffered = Some(map.next_value()?),
                         _ => {
                             let _ignored: serde::de::IgnoredAny = map.next_value()?;
                         }
                     }
                 }
-                let tag = tag.ok_or_else(|| serde::de::Error::missing_field("tag"))?;
-                let v = v.ok_or_else(|| serde::de::Error::missing_field("v"))?;
+                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
+                let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
                 match tag.as_str() {
-                    "keyword" => Ok(LqLeaf::Keyword(v)),
-                    "phrase" => Ok(LqLeaf::Phrase(v)),
-                    "raw_string" => Ok(LqLeaf::RawString(v)),
-                    "regex" => Ok(LqLeaf::Regex(v)),
-                    "structural_block" => Ok(LqLeaf::StructuralBlock(v)),
-                    other => Err(serde::de::Error::unknown_variant(
+                    "keyword" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("keyword payload: {e}")))?;
+                        Ok(LqLeaf::Keyword(s))
+                    }
+                    "phrase" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("phrase payload: {e}")))?;
+                        Ok(LqLeaf::Phrase(s))
+                    }
+                    "raw_string" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("raw_string payload: {e}")))?;
+                        Ok(LqLeaf::RawString(s))
+                    }
+                    "regex" => {
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("regex payload: {e}")))?;
+                        Ok(LqLeaf::Regex(s))
+                    }
+                    "structural_block" => {
+                        let block: LqStructuralBlock = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("structural payload: {e}")))?;
+                        Ok(LqLeaf::StructuralBlock(block))
+                    }
+                    "predicate" => {
+                        let p: PredicateOwned = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("predicate payload: {e}")))?;
+                        Ok(LqLeaf::Predicate {
+                            name: p.name,
+                            args: p.args,
+                        })
+                    }
+                    other => Err(A::Error::unknown_variant(
                         other,
                         &[
                             "keyword",
@@ -662,6 +1168,7 @@ impl<'de> serde::Deserialize<'de> for LqLeaf {
                             "raw_string",
                             "regex",
                             "structural_block",
+                            "predicate",
                         ],
                     )),
                 }

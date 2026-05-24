@@ -69,9 +69,9 @@ State of the world today, ticket-by-ticket. **implemented** = code merged + test
 
 **Net contract status**: shape exists; ≈30% of LQ-required surface is missing. Every LQ-family ticket has a `Touches contract?` value of `yes` until PRE-CONTRACT-EXT lands.
 
-### 2.2 Core port traits — `quanta-index-core::domains::*` (historical; see §2.3a)
+### 2.2 Core port traits — `quanta-index-core::domains::*`
 
-Same working-tree divergence as §2.3a applies: at most-recent commit `736ddea` the `domains/{bundle_ingest, generation, materialization, query}/` modules were green; the working tree shows them deleted alongside the `quanta-index-control` crate. Likely target: `crates/quanta-index-channel/` (untracked in working tree). Citations below name the historical surface; physical path resolution is gated on **G-CONTROL-LOC** (§11).
+Per [channel-architecture.md §5.1](../../ssot/channel-architecture.md), `quanta-index-core::domains/` is restructured around `channel/`, `lexical/`, `semantic/`, `hybrid/` (replacing the historical `bundle_ingest/`, `generation/`, `materialization/`, `query/` layout under `736ddea`). The port surface below is rephrased against the new layout; the SQLite-era port names that survived the refactor are noted inline.
 
 | Port | State | Historical home | Gap |
 |---|---|---|---|
@@ -87,28 +87,33 @@ Same working-tree divergence as §2.3a applies: at most-recent commit `736ddea` 
 | `SearchPlaneBridgePort` | absent | n/a | Wave-6 BRIDGE-01 |
 | Planner (parser + canonicalizer) | absent | n/a | Wave-1 LEX-01 + PRE-NORM |
 
-### 2.3 Control plane — `quanta-index-control` (historical; see §2.3a)
+### 2.3 Generation state authority — in-memory ledgers (replaces SQLite control plane)
+
+Per [channel-architecture.md §5.2](../../ssot/channel-architecture.md): no SQLite, no `quanta-index-control` crate. Generation state is reconstructed from the channel on startup and lives in-memory in per-track ledgers. The surface below tracks what the LQ kernel needs.
 
 | Surface | State | Notes |
 |---|---|---|
-| `bundle_delta_applied` table + `BundlePolicy::validate_delta` (T1.1) | implemented (per predecessor history) | delta-apply governance per predecessor D22 |
-| `generation_manifest` table + `validate_artifact_ref` (T1.2) | implemented (per predecessor history) | catalog upsert; idempotent |
-| `mark_active_generation` + stale-activation guard (T1.3) | implemented (per predecessor history) | per predecessor D23 |
-| `inspect_bundle` real-data (T1.4) | implemented (per predecessor history) | placeholder removed |
-| `BoundGenerationPin` factory (T4.2) | implemented (per predecessor history) | per-query pin |
-| Writer coordinator / advisory lock (RFC § Failure and Recovery Model § Dual-write split-brain) | absent | needed Wave-3 LEX-04 |
-| Manifest-first atomicity contract (RFC § Atomicity contract) | partial | `MARKER_OK` exists per generation; storage-layer linearization-point assertion is unwritten |
-| Write-packet trace (RFC § Forbidden steady-state operations § Detection) | absent | needed Wave-3 LEX-04 |
-| `state='failed'` transition | absent | per predecessor D20: deferred to Phase 3.5; matches Wave-1 LEX-00 work |
+| `LexicalGenerationLedger` (sealed / materialized per track) | scaffolded via [channel-architecture.md §5.2](../../ssot/channel-architecture.md) — confirm at Wave-0 entry | Seal op observation flips ledger; rebuilt from channel on restart |
+| `SemanticGenerationLedger` | as above | symmetric |
+| Hybrid active-generation join (`max N where both tracks materialized=N`) | absent | needed Wave-6 hybrid query path |
+| Per-query generation pin | retained | per-request in-memory pin, unchanged surface |
+| Writer coordination | **N/A** | producer is sole publisher per track (`publisher.lock` per [channel-architecture.md §4.1](../../ssot/channel-architecture.md)); no search-side writer-coordinator crate is needed |
+| Manifest-first atomicity | retained | `Seal` op is the linearization point; ledger flips only on Seal AND successful build |
+| Write-packet trace (RFC § Detection) | absent | needed Wave-3 (rephrased: dispatcher-loop apply trace per `(repo, rev, gen, chunk)`) |
+| `state='failed'` transition | absent | per predecessor D20; matches Wave-1 LEX-00 work |
 
-#### 2.3a Working-tree divergence (HONEST GAP CALL)
+#### 2.3a Working-tree divergence — G-CONTROL-LOC RESOLVED
 
-`git status` at plan-authoring time shows the `crates/quanta-index-control/` crate is **deleted in the working tree** alongside the contract `bundle/` and `control/` submodules. The predecessor [search-plane-implementation-tickets.md](../search-plane-implementation-tickets.md) — and CLAUDE.md's Operational Reference section — still names this crate as the SQLite control-plane home (predecessor D7 Option A). Net effect for this plan:
+**Status: RESOLVED** via [`docs/ssot/channel-architecture.md`](../../ssot/channel-architecture.md) §5.2 (in-memory ledger pattern). The working-tree deletion of `crates/quanta-index-control/` was an intentional refactor, not a rollback.
 
-- the predecessor T1.*–T5.2 implementations cited above were green in the most recent committed snapshot (`main` HEAD `736ddea`);
-- the working-tree deletion is unexplained by the current scaffold commit; either an in-flight refactor relocating control-plane state into another crate (likely `quanta-index-channel`, untracked) or a true rollback;
-- this plan **does not commit** to which crate owns control-plane state going forward — that is RFC-gap **G-CONTROL-LOC** (§ end of doc) and must be resolved before Wave-0 entry;
-- subsequent §s in this plan continue to reference "control-plane state" abstractly. Where a specific path was previously cited (T1.*), the reference is textual, not link-checked, until G-CONTROL-LOC resolves.
+Canonical resolution:
+
+- there is no SQLite control-plane crate. Per [channel-architecture.md §5.2](../../ssot/channel-architecture.md), generation state is reconstructed from channel events on startup and held in-memory in per-track ledgers (`LexicalGenerationLedger` / `SemanticGenerationLedger`) under `quanta-index-core::domains::{lexical,semantic}`;
+- every "control-plane crate" reference elsewhere in this plan maps to the in-memory ledger pattern. Writer coordination, generation activation, and readiness gating are properties of the dispatcher loop ([channel-architecture.md §5.3](../../ssot/channel-architecture.md)), not a separate persisted store;
+- the `quanta-index-channel` crate (present at HEAD) owns transport (`BundleChannelPublisher` / `BundleChannelSubscriber`) — it is not a control plane;
+- the predecessor `T1.*` "control-plane SQLite" surface is superseded for LQ-family work; its semantic functions (sealed/materialized/active state) are now ledger callbacks.
+
+Cross-link: [tickets/INDEX.md §3.5](tickets/INDEX.md) records this resolution alongside the spec-sheet decomposition.
 
 ### 2.4 Lexical adapter — [crates/quanta-index-lexical/src/](../../../crates/quanta-index-lexical/src/)
 
@@ -121,7 +126,7 @@ Today = Tantivy 0.22 chunk index, schema in [schema.rs](../../../crates/quanta-i
 | LEX-02 trigram (for raw-string `'…'` substring search) | absent — [dsl.md §3.3](dsl.md) marks RawString conditional Phase-1 |
 | LEX-03 phrase positions | partial — Tantivy default schema records positions for `text`; not exposed through port |
 | LEX-04 regex over a regex shard | partial — Tantivy `RegexQuery` works on `text`/`path` but no NFA-state pre-check |
-| LEX-05 symbol shard | partial — symbol field exists but no dedicated symbol planner |
+| LEX-05 symbol shard | **wiring-only** — [`crates/quanta-index-lq-symbol/`](../../../crates/quanta-index-lq-symbol/src/) ships `SymbolRecordDecoder` + `SymbolIndex`; the producer authors `SymbolRecord` per [producer-handoff.md §3.4](../../ssot/producer-handoff.md) and emits via `UpsertSymbol`; LEX-05 wires a channel-subscriber callback that decodes `UpsertSymbol.payload` and routes to `SymbolIndex`. No tree-sitter dep on the search side ([producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md)) |
 | LEX-06 ranker / explain | placeholder — string summary only |
 | LEX-07 generations governance + concurrent generation activation | partial — per-generation dir + activate exists; no manifest-first storage-level assertion |
 
@@ -373,7 +378,7 @@ graph LR
 
 **Tickets.**
 
-- LEX-04 — incremental lexical indexing kernel: writer-coordinator + manifest-first atomicity contract (RFC § Atomicity contract); advisory lock on `(repo, rev)` writes via control plane writer-registry; write-packet trace recorded per [rfc.md § Detection](rfc.md); fail-closed on sibling `MARKER_OK` absence per storage-level assertion (RFC § Storage-layer enforcement).
+- LEX-04 — incremental lexical indexing kernel: per-record apply via channel-subscriber callbacks (`UpsertChunk` / `DeleteChunk`); apply-trace observability per [channel-architecture.md §5.3](../../ssot/channel-architecture.md); fail-closed on sibling readiness gaps via in-memory ledger ([channel-architecture.md §5.2](../../ssot/channel-architecture.md)). Producer is sole publisher per `publisher.lock` ([channel-architecture.md §4.1](../../ssot/channel-architecture.md)) — no search-side writer-coordinator.
 - LEX-05 — parallel executor + deterministic merge: repo + shard fanout; bounded concurrency per tenant; cancellation cooperative-checkpoint per N candidates (RFC § 6.5 § cancellation); merge tuple `(score DESC, repo_id ASC, manifest_generation ASC, candidate_id ASC)` enforced; metrics per RFC § Execution Model § metric schema.
 
 **Anti-scope.** No ranking quality (LEX-06). No history (LEX-07). No symbol semantics (LEX-03 owns).
@@ -381,8 +386,8 @@ graph LR
 **Entry gate.**
 
 - Wave-2 exit gate green;
-- writer-registry table scaffolded in control plane (LEX-04 internal prerequisite);
-- two-instance test fixture (Docker-compose or equivalent) wired in CI.
+- channel dispatcher scaffolded with `UpsertChunk`/`DeleteChunk` callbacks routable to lexical sibling shards;
+- two-instance test fixture (single-binary two-process) wired in CI.
 
 **Exit gate.**
 
@@ -394,26 +399,26 @@ graph LR
 - UC-EDGE-06 (timeout exceeded) green;
 - RFC § Claim-Discipline §2 + §8 provable.
 
-**Sizing.** XL (LEX-04 L, LEX-05 L; combined complexity from cross-cutting writer-coordinator + merge formalization). Calendar 3–4 weeks.
+**Sizing.** L+L (LEX-04 M, LEX-05 L; LEX-04 downgraded — no writer-coordinator crate). Calendar 2–3 weeks.
 
 **Risks.**
 
-- Writer-coordinator dual-write split-brain (RFC § Dual-write split-brain). Mitigation: advisory lock entry includes writer identity + lease expiry; loom test for lock-acquisition race.
+- Channel seq ordering violation (producer bug). Mitigation: dispatcher rejects non-monotonic seq with `ChannelError::Corrupted` per [channel-architecture.md §4.6](../../ssot/channel-architecture.md); track marked degraded; no silent skip.
 - Cancellation checkpoint cadence too coarse → cancellation-latency SLO miss. Mitigation: per-`(engine, ticket_id)` checkpoint bench.
 - Cross-instance reproducibility test infrastructure cost. Mitigation: single-binary two-process test in CI (no Docker) using `--state-root=/tmp/A` vs `/tmp/B`.
 
-**Cutover / rollback.** Writer-coordinator is breaking for any producer holding a long-lived writer lock. Coordinated release.
+**Cutover / rollback.** No writer-coordinator surface; cutover is the channel-dispatcher wiring inside `searchd`. Rollback per CI rail.
 
 ---
 
 ### 4.5 Wave 4 — `LEX-06`, `LEX-07`
 
-**Wave goal.** Ship deterministic explainable ranking (LEX-06) and the history / diff engine (LEX-07). At wave end, ranked results pass a golden NDCG/MAP gate and `type:commit` / `type:diff` queries are answered from indexed history (never request-time `git log`).
+**Wave goal.** Ship deterministic explainable ranking (LEX-06) and the history / diff engine (LEX-07). At wave end, ranked results pass a golden NDCG/MAP gate and `type:commit` / `type:diff` queries are answered from history sibling shards populated by producer-authored channel ops (search plane never spawns `git`).
 
 **Tickets.**
 
 - LEX-06 — ranking + explain + lexical semantics: BM25 + adjacency-link proximity boost ([dsl.md §5.3](dsl.md)); rerank is deterministic and explainable; explain payload schema v2 per **GAP-05** resolution (planner trace + engines touched + early-stop reason); precision@10, MAP, NDCG measured against a golden IR-evaluation set per RFC § Claim Discipline §10.
-- LEX-07 — history + diff engine: commit metadata index + diff hunk content index; planner routes `type:commit` / `type:diff`; time-range and author/committer/message fields; predicate `repo:has.commit.after(...)` eval lands; **GAP-02 resolution** ships typed `CommitCandidate` + `DiffCandidate`.
+- LEX-07 — history + diff engine: commit metadata index + diff hunk content index, populated by channel-subscriber callbacks consuming `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, and `UpsertDiffHunk` (Option Y, recommended) per [producer-handoff.md §3.1](../../ssot/producer-handoff.md); planner routes `type:commit` / `type:diff`; time-range and author/committer/message fields; predicate `repo:has.commit.after(...)` eval reads `CommitGraph` (no git spawn); **GAP-02 resolution** ships typed `CommitCandidate` + `DiffCandidate`.
 
 **Anti-scope.** No structural (STR-01). No runtime metadata (RT-01). No bridge (BRIDGE-01).
 
@@ -421,7 +426,7 @@ graph LR
 
 - Wave-3 exit gate green;
 - IR-evaluation golden set landed (10 sample queries × ~50 labeled docs each — owned by LEX-06 author, reviewed by feature-scope owner);
-- producer publishes commit metadata + diff hunk artifacts in manifest (cross-team handoff).
+- producer-handoff sign-off per [producer-handoff.md §8](../../ssot/producer-handoff.md) for `UpsertCommit`/`UpsertRef`/`UpsertTag`/`UpsertDiffHunk` ops complete; producer fixture WAL available.
 
 **Exit gate.**
 
@@ -450,32 +455,32 @@ graph LR
 
 **Tickets.**
 
-- STR-01 — structural pattern engine: tree-sitter-backed AST cache per [rfc.md § Structural engine](rfc.md); pattern IR with metavariable / variadic / typed-hole / `inside` / `outside` / `where`; **GAP-03 resolution** ships `StructuralCandidate { bindings: Map<MetaVar, Span> }`; supports Rust + Python + TypeScript + JavaScript + Go (per [feature-scope.md §1.3.4](feature-scope.md)).
-- RT-01 — runtime-aware metadata filters: snapshot catalog + invalidation catalog + ownership registry; planner pushdown for `changed:`, `stale:`, `snapshot:`, `meta.owner|service|layer|surface:`; `affected:` / `invalidated_by:` evaluation gated on Wave-7 SEM-02 (delivers as typed `NotImplemented` for now per [feature-scope.md §1.4.1 Q5](feature-scope.md)).
+- STR-01 — structural pattern engine: matcher over producer-supplied `ParseTreeRecord` via `UpsertParseTree` channel op per [producer-handoff.md §3.3](../../ssot/producer-handoff.md); pattern IR with metavariable / variadic / typed-hole / `inside` / `outside` / `where`; **GAP-03 resolution** ships `StructuralCandidate { bindings: Map<MetaVar, Span> }`; covers Rust + Python + TypeScript + JavaScript + Go via `LangId` v1 set ([producer-handoff.md §4.1](../../ssot/producer-handoff.md)). Search plane never invokes tree-sitter.
+- RT-01 — runtime-aware metadata filters: snapshot catalog + invalidation catalog + ownership registry; `DirtyBuffer` driven by `UpsertDirty`/`EvictDirty` channel ops per [producer-handoff.md §3.2](../../ssot/producer-handoff.md); planner pushdown for `changed:`, `stale:`, `snapshot:`, `dirty:`, `meta.owner|service|layer|surface:`; `affected:` / `invalidated_by:` evaluation gated on Wave-7 SEM-02 (delivers as typed `NotImplemented` for now). No separate `apply_changes` IPC.
 
-**Anti-scope.** No bridge (BRIDGE-01). No semantic filter pushdown (SEM-01). No `dirty:` evaluation (Q5 — producer-source dependency).
+**Anti-scope.** No bridge (BRIDGE-01). No semantic filter pushdown (SEM-01).
 
 **Entry gate.**
 
 - Wave-4 exit gate green;
-- ADR-003 (structural engine: tree-sitter per-grammar vs unified IR) resolved (§10);
-- ADR-002 (symbol shard storage layout) resolved.
+- AMB-PROD-11 (Option A vs B for STR-01) decided by integrator (see ADR-024);
+- producer-handoff sign-off per [producer-handoff.md §8](../../ssot/producer-handoff.md) for `UpsertParseTree`, `UpsertDirty`, `EvictDirty` ops complete.
 
 **Exit gate.**
 
-- UC-STR-01..07 green (with `:[hole.type1]` typed-hole deferred per feature-scope.md §1.3.3);
-- UC-RT-01..07 green (UC-RT-08 `dirty:` stays `blocked` per Q5);
+- UC-STR-01..07 green driven by producer fixture stream of `UpsertParseTree` ops (Option A) OR `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` surfaces (Option B);
+- UC-RT-01..08 green (UC-RT-08 `dirty:` now `ok` via `UpsertDirty` ops);
 - AC-07 (unbounded structural recursion) returns `PLAN_LIMIT_EXCEEDED` per [dsl.md §13](dsl.md);
-- tree-sitter parse cost p99 < 50ms per file (criterion `str_01_parse_bench`);
+- structural match-only p99 < 50 ms (criterion `str_01_match_bench` — no parse step on search side);
 - RFC § Claim-Discipline §4 + §5 provable.
 
-**Sizing.** XL (STR-01 XL — tree-sitter integration + matcher + per-grammar adapters; RT-01 L). Calendar 4–5 weeks.
+**Sizing.** L+L. Calendar 3–4 weeks (downgraded — no tree-sitter integration on search side).
 
 **Risks.**
 
-- Tree-sitter grammar version pinning drift. Mitigation: cargo workspace pin per grammar; ADR-005 (grammar update cadence).
-- Structural NFA / pattern explosion on adversarial input. Mitigation: 256-node cap per [rfc.md § Non-Negotiable Invariants §10](rfc.md) + 16-depth cap per [feature-scope.md §7](feature-scope.md); fuzz harness.
-- `dirty:` filter Q5 is unresolved — if we ship as `NotImplemented`, integration tests treat the row as `blocked`. Acceptable.
+- Producer `UpsertParseTree` shape drift mid-wave. Mitigation: `wire_version` pin per [producer-handoff.md §5](../../ssot/producer-handoff.md); search side rejects out-of-range with typed code.
+- Pattern explosion on adversarial input. Mitigation: 256-node + 16-depth pattern caps per [rfc.md § Non-Negotiable Invariants §10](rfc.md); fuzz harness on `match_pattern(pattern, parsed_tree)`.
+- Producer agreement for `UpsertParseTree` slips beyond wave-5 entry. Mitigation: Option B fallback — `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer ships.
 
 ---
 
@@ -709,43 +714,43 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 
 ### 5.7 LEX-03 — lexical authority unification
 
-- **Title**: One catalog → content + path + symbol siblings.
-- **Owner crate(s)**: `quanta-index-lexical`, `quanta-index-control`, `quanta-index-core`.
-- **Touches contract?**: no (sibling shards are internal).
-- **New port traits or methods**: `SearchPlaneLexicalIndexBuildPort::build_content_path_symbol(...)`; per-sibling `open_*_store` methods.
-- **New error codes**: `STATE_NOT_READY: STALE_SIBLING` enforced per RFC § Atomicity contract.
-- **New invariants**: storage-layer linearization-point assertion lands.
-- **Test rails**: unit (per-sibling open + reader cache), integration (multi-sibling build + read), property (sibling readiness monotonicity).
+- **Title**: One catalog → content + path + symbol siblings, populated by channel-subscriber callbacks.
+- **Owner crate(s)**: `quanta-index-lexical`, [`quanta-index-lq-symbol`](../../../crates/quanta-index-lq-symbol/) (already shipped — provides `SymbolRecordDecoder` + `SymbolIndex`), `quanta-index-core` (channel dispatcher).
+- **Touches contract?**: no (sibling shards are internal; channel ops `UpsertChunk` / `UpsertSymbol` already shipped per [channel-architecture.md §3.1](../../ssot/channel-architecture.md)).
+- **New port traits or methods**: `LexicalChannelSink::on_upsert_chunk/on_delete_chunk/on_upsert_symbol/on_delete_symbol` — channel-subscriber callbacks driving the three sibling shards. Per-sibling `open_*_store` readers (unchanged read-side surface).
+- **New error codes**: `STATE_NOT_READY: STALE_SIBLING` enforced at query time; `SYMBOL_PAYLOAD_DECODE_FAIL`, `SYMBOL_RECORD_INVALID` at apply per [producer-handoff.md §6.1](../../ssot/producer-handoff.md).
+- **New invariants**: ledger `materialized=true` for a generation flips only when `Seal` op is observed AND all three sibling shards have committed their writes. No search-side parsing — `SymbolRecord` decoded from `UpsertSymbol.payload` per [producer-handoff.md §3.4](../../ssot/producer-handoff.md).
+- **Test rails**: unit (per-sibling apply callback + decoder), integration (producer fixture stream → 3-sibling build + read), property (sibling readiness monotonicity via channel seq).
 - **Conformance rows**: UC-LEX-10, UC-LEX-11, UC-SYM-01..06, UC-PRED-01, UC-PRED-03.
 - **DoD checklist**:
-  1. one manifest = three sibling indexes;
-  2. per-sibling `MARKER_OK`;
-  3. storage-level assertion: no read observes a manifest whose sibling `MARKER_OK` is absent ([rfc.md § Storage-layer enforcement](rfc.md));
-  4. per-generation reader cache extended for path + symbol (predecessor T3.1 cache pattern);
-  5. UC-PRED-01, UC-PRED-03 eval-time pushdown green.
+  1. one Seal op = three sibling indexes ready;
+  2. per-sibling write-completion gate before ledger flip;
+  3. ledger assertion: no read observes a generation whose sibling apply is incomplete;
+  4. per-generation reader cache extended for path + symbol;
+  5. `SymbolRecordDecoder` wired against [producer-handoff.md §3.4 wire shape](../../ssot/producer-handoff.md);
+  6. UC-PRED-01, UC-PRED-03 eval-time pushdown green.
 - **Size**: L.
-- **Open questions**: ADR-002 (symbol shard layout).
+- **Open questions**: AMB-PROD-5 (`SymbolRecord` wire-shape ownership — see ADR-022).
 
 ### 5.8 LEX-04 — incremental lexical indexing kernel
 
-- **Title**: Writer-coordinator + manifest-first atomicity + write-packet trace.
-- **Owner crate(s)**: `quanta-index-control`, `quanta-index-lexical`, `quanta-index-searchd`.
+- **Title**: Per-record incremental apply via channel-subscriber callbacks + dispatcher-loop apply trace.
+- **Owner crate(s)**: `quanta-index-lexical`, `quanta-index-core` (channel dispatcher), `quanta-index-searchd`.
 - **Touches contract?**: no.
-- **New port traits or methods**: `WriterCoordinator::acquire_lock(repo, rev) -> Result<WriterLease, CoreError>`; `WritePacketTrace::record(packet: &WritePacket) -> Result<(), CoreError>`.
-- **New error codes**: `STATE_GENERATION_REGRESSION`; writer-coordinator surfaces `EXEC_SHARD_UNAVAILABLE` on lock-acquisition failure.
-- **New invariants**: monotonicity rules per [rfc.md § Monotonicity rules](rfc.md) enforced at writer boundary.
-- **Test rails**: unit (lock acquire/release), loom (writer-coordinator race), integration (1-file delta → write-packet trace size = `O(changed-chunks)`), criterion (`lex_04_delta_bench`).
-- **Conformance rows**: indirect (no UC-* row asserts incremental write directly; RFC Claim Discipline §2 is provable here).
+- **New port traits or methods**: `LexicalChannelSink::on_upsert_chunk/on_delete_chunk` (incremental apply hooks); `ApplyTrace::record(op_seq, op_kind, target)` — observability rail recording the (seq, op, `(repo, rev, gen, target)`) tuple per dispatched op.
+- **New error codes**: `STATE_GENERATION_REGRESSION` (raised when op gen < ledger active gen).
+- **New invariants**: producer is the sole publisher per track (`publisher.lock` per [channel-architecture.md §4.1](../../ssot/channel-architecture.md)); no search-side writer-coordinator is needed because there is no second writer to race against. Monotonicity rules per [rfc.md § Monotonicity rules](rfc.md) enforced via channel seq monotonicity ([channel-architecture.md §4.2](../../ssot/channel-architecture.md)).
+- **Test rails**: unit (per-op apply), integration (1-record-delta fixture → apply-trace size = 1), property (10k random gen-sequence → ledger monotonicity), criterion (`lex_04_apply_bench`).
+- **Conformance rows**: indirect (no UC-* row asserts incremental write directly; RFC Claim Discipline §2 provable via apply-trace).
 - **DoD checklist**:
-  1. writer-registry table in control plane;
-  2. advisory lock entry has identity + lease expiry;
-  3. dual-write split-brain test (two writers, same `(repo, rev)`) → second writer fails closed;
-  4. write-packet trace records `(repo, rev, file, chunk)` set per `MaterializeUseCase` invocation;
-  5. CI fixture asserts trace size < `O(corpus)` outside bootstrap;
-  6. monotonicity property test (10k random gen-sequence) green;
-  7. RFC § Claim-Discipline §2 provable.
-- **Size**: L.
-- **Open questions**: ADR-001 sub-question — writer-coordinator inside control crate vs dedicated crate.
+  1. dispatcher loop applies `UpsertChunk` / `DeleteChunk` per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. apply trace records `(seq, op_kind, repo, rev, gen, target)` per op;
+  3. CI fixture asserts: per-record op → 1 apply trace entry (no per-query rebuild, no full-corpus rebuild);
+  4. dual-publisher attempt → `publisher.lock` rejects per [channel-architecture.md §4.1](../../ssot/channel-architecture.md) (no advisory lock crate needed);
+  5. monotonicity property test (10k random gen-sequence) green;
+  6. RFC § Claim-Discipline §2 provable via apply-trace evidence.
+- **Size**: M (downgraded from L — no writer-coordinator crate to author).
+- **Open questions**: none — writer-coordinator question dissolved by producer-handoff.
 
 ### 5.9 LEX-05 — parallel executor + deterministic merge
 
@@ -786,60 +791,70 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 
 ### 5.11 LEX-07 — history + diff engine
 
-- **Title**: Commit metadata + diff hunk indexes; planner routing for `type:commit` / `type:diff`.
-- **Owner crate(s)**: new `quanta-index-history` (recommended; ADR-011) OR extend `quanta-index-lexical`; `quanta-index-core`, `quanta-index-contract` (`CommitCandidate` + `DiffCandidate` ship via PRE-CONTRACT-EXT GAP-02).
-- **Touches contract?**: yes (GAP-02 resolution).
-- **New port traits or methods**: `SearchPlaneHistoryIndexPort::query_commits/diffs`; `SearchPlaneHistoryIndexBuildPort::build_commit_metadata/diff_hunks`.
-- **New error codes**: `STATE_NOT_READY: HISTORY_UNINDEXED`.
-- **New invariants**: no request-time `git log` (RFC § Canonical Incremental Write Pipeline § forbidden); detection asserts ZERO process-spawn of `git` during query path.
-- **Test rails**: unit (per UC-HIST-* row), integration (multi-repo history fanout), criterion (`lex_07_history_bench`).
-- **Conformance rows**: UC-HIST-01..08, UC-PRED-02.
+- **Title**: Commit metadata + diff hunk indexes; planner routing for `type:commit` / `type:diff`; channel-subscriber callbacks consuming producer-authored history ops.
+- **Owner crate(s)**: [`quanta-index-lq-history`](../../../crates/quanta-index-lq-history/) (shipped on disk; `CommitGraph.add_commit/ref/tag` already scaffolded); `quanta-index-core` (channel dispatcher wiring), `quanta-index-contract` (`CommitCandidate` + `DiffCandidate` via PRE-CONTRACT-EXT GAP-02; new history ops land in `channel/ops.rs`).
+- **Touches contract?**: yes (GAP-02 resolution + new channel op variants per [producer-handoff.md §3.1](../../ssot/producer-handoff.md): `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, and Option-Y `UpsertDiffHunk`).
+- **New port traits or methods**: `LexicalChannelSink::on_upsert_commit/on_upsert_ref/on_upsert_tag/on_delete_ref/on_delete_tag/on_upsert_diff_hunk` — channel-subscriber callbacks. `HistoryQueryPort::query_commits/diffs` (read side).
+- **New error codes**: `HISTORY_COMMIT_DECODE_FAIL`, `HISTORY_COMMIT_PARENT_UNKNOWN`, `HISTORY_REF_DECODE_FAIL`, `HISTORY_REF_NOT_FOUND`, `STATE_NOT_READY: HISTORY_UNINDEXED` per [producer-handoff.md §6.2](../../ssot/producer-handoff.md).
+- **New invariants**: search plane never spawns `git`, never reads `*.git/`, never parses commit objects — producer is sole authority per [producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md). `CommitRecord.parents` topological ordering enforced at apply time per [producer-handoff.md §3.1.2](../../ssot/producer-handoff.md). Force-push handling: fresh generation only, no `DeleteCommit` op ([producer-handoff.md §3.1.3](../../ssot/producer-handoff.md)).
+- **Test rails**: unit (per channel op decode + apply), integration (fixture WAL stream → history index round-trip per [producer-handoff.md §8](../../ssot/producer-handoff.md)), criterion (`lex_07_history_bench`).
+- **Conformance rows**: UC-HIST-01..08, UC-PRED-02 — driven by producer fixture WAL, not git access.
 - **DoD checklist**:
-  1. commit metadata index + diff hunk index ship as siblings under one manifest;
-  2. `CommitCandidate` + `DiffCandidate` round-trip the wire;
-  3. predicate `repo:has.commit.after` eval lands;
-  4. UC-HIST-* all green;
-  5. RFC § Claim-Discipline §3 provable.
+  1. channel-subscriber callbacks for `UpsertCommit`/`UpsertRef`/`UpsertTag`/`DeleteRef`/`DeleteTag` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. `CommitRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md) wire shape;
+  3. `UpsertDiffHunk` channel op + `DiffHunkRecord` decoder land (Option Y per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md));
+  4. `CommitCandidate` + `DiffCandidate` round-trip the wire;
+  5. predicate `repo:has.commit.after` eval reads from `CommitGraph` (no git spawn);
+  6. UC-HIST-* all green driven by producer fixture stream (no live git repo in test);
+  7. RFC § Claim-Discipline §3 provable.
 - **Size**: XL.
-- **Open questions**: ADR-011 (new crate vs extend lexical), feature-scope.md Q2 (`since:` disambiguation), feature-scope.md §4.7 gap (`parent:` / `merge:` / `tag:` / `revisions:`).
+- **Open questions**: AMB-PROD-4 (Option Y vs X for diff hunks — recommendation: Option Y, see ADR-025); `since:` disambiguation; `parent:` / `merge:` / `tag:` / `revisions:` scope.
 
 ### 5.12 STR-01 — structural pattern engine
 
-- **Title**: Tree-sitter-backed structural matcher.
-- **Owner crate(s)**: new `quanta-index-structural` (ADR-012); `quanta-index-core`, `quanta-index-contract` (`StructuralCandidate` ships via PRE-CONTRACT-EXT GAP-03).
-- **Touches contract?**: yes (GAP-03 resolution).
-- **New port traits or methods**: `SearchPlaneStructuralIndexPort::query_structural`; `SearchPlaneStructuralIndexBuildPort::build_syntax_cache`.
-- **New error codes**: `STATE_NOT_READY: SYNTAX_CACHE_UNBUILT`, `PARSE_INVALID_FILTER_VALUE{filter=hole.type}`.
-- **New invariants**: structural matcher never guesses language ([dsl.md §8.5](dsl.md)); 256-node cap honored.
-- **Test rails**: unit (per language × per UC-STR-* row), integration (multi-language corpus), property (random metavariable binding round-trip), criterion (`str_01_parse_bench`, `str_01_match_bench`).
-- **Conformance rows**: UC-STR-01..07, AC-07.
+- **Title**: Structural matcher over producer-supplied parse trees; no source parsing on the search side.
+- **Owner crate(s)**: [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) (shipped on disk); `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`StructuralCandidate` via PRE-CONTRACT-EXT GAP-03; `UpsertParseTree` / `DeleteParseTree` channel ops under Option A).
+- **Touches contract?**: yes (GAP-03 resolution + Option-A channel op variants per [producer-handoff.md §3.3](../../ssot/producer-handoff.md)).
+- **New port traits or methods**: `LexicalChannelSink::on_upsert_parse_tree/on_delete_parse_tree` (Option A); `StructuralMatcher::match_pattern(pattern, parsed_tree)` — input is decoded `ParsedTree`, never source bytes. `StructuralQueryPort::query_structural` (read side).
+- **New error codes**: `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`, `PARSE_INVALID_FILTER_VALUE{filter=hole.type}` per [producer-handoff.md §6.3](../../ssot/producer-handoff.md).
+- **New invariants**: search plane never invokes tree-sitter, never reads source bytes ([producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md)); `ParseTreeRecord` is producer-authored; `source_hash` integrity check on apply ([producer-handoff.md §3.3.1](../../ssot/producer-handoff.md)); 256-node + 16-depth pattern caps honored.
+- **Test rails**: unit (per UC-STR-* row), integration (producer fixture stream → structural index round-trip), property (random metavariable binding round-trip on synthetic `ParseTreeRecord` inputs), criterion (`str_01_match_bench` — match-only; no parse step on search side).
+- **Conformance rows**: UC-STR-01..07, AC-07 — driven by producer-emitted `UpsertParseTree` fixtures under Option A.
 - **DoD checklist**:
-  1. Rust + Python + TypeScript + JavaScript + Go grammars pinned and integrated;
-  2. metavariable / variadic / `inside` / `outside` / `where` all functional;
-  3. `:[X]` → `$X` normalization done at lexer stage;
-  4. `:[hole.type1]` returns typed `NotImplemented` per [feature-scope.md §1.3.3](feature-scope.md);
-  5. RFC § Claim-Discipline §4 provable.
-- **Size**: XL.
-- **Open questions**: ADR-003 (per-grammar IR vs unified IR — feature-scope.md Q4), ADR-005 (grammar update cadence).
+  1. channel-subscriber callbacks for `UpsertParseTree` / `DeleteParseTree` wired (Option A) per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. `ParseTreeRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.3.1](../../ssot/producer-handoff.md) wire shape;
+  3. Rust + Python + TypeScript + JavaScript + Go covered via `LangId` v1 set per [producer-handoff.md §4.1](../../ssot/producer-handoff.md);
+  4. metavariable / variadic / `inside` / `outside` / `where` all functional against decoded `ParsedTree`;
+  5. `:[X]` → `$X` normalization done at lexer stage;
+  6. `:[hole.type1]` returns typed `NotImplemented` per [feature-scope.md §1.3.3](feature-scope.md);
+  7. under Option B (deferral): `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md);
+  8. RFC § Claim-Discipline §4 provable.
+- **Size**: L (downgraded from XL — no tree-sitter integration burden).
+- **Open questions**: AMB-PROD-11 (Option A vs Option B — integrator decision at wave-5 entry, see ADR-024).
 
 ### 5.13 RT-01 — runtime-aware metadata filters
 
-- **Title**: Snapshot catalog + invalidation catalog + ownership registry; planner pushdown.
-- **Owner crate(s)**: `quanta-index-control` (extend per predecessor D7 Option A), `quanta-index-core`.
-- **Touches contract?**: no.
-- **New port traits or methods**: `SearchPlaneRuntimeMetadataPort::resolve_changed/stale/snapshot/meta`.
-- **New error codes**: `STATE_NOT_READY: METADATA_MISSING`.
-- **New invariants**: `changed:` derives only from indexed apply-changes catalog (predecessor T1.1); no request-time producer query.
-- **Test rails**: unit (per UC-RT-* row), integration (multi-snapshot query), property (snapshot catalog state machine).
-- **Conformance rows**: UC-RT-01..07; UC-RT-08 stays `blocked` per feature-scope.md Q5.
+- **Title**: Snapshot catalog + invalidation catalog + ownership registry + `DirtyBuffer` driven by `UpsertDirty`/`EvictDirty` channel ops; planner pushdown. No separate `apply_changes` IPC.
+- **Owner crate(s)**: [`quanta-index-lq-runtime`](../../../crates/quanta-index-lq-runtime/) (shipped on disk; `DirtyBuffer::apply/evict` reinterpreted as channel callbacks), `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`UpsertDirty`, `EvictDirty` channel op variants per [producer-handoff.md §3.2](../../ssot/producer-handoff.md)).
+- **Touches contract?**: yes (new channel op variants; no separate IPC envelope).
+- **New port traits or methods**: `LexicalChannelSink::on_upsert_dirty/on_evict_dirty` — channel-subscriber callbacks. `RuntimeMetadataQueryPort::resolve_changed/stale/snapshot/meta` (read side).
+- **New error codes**: `DIRTY_PAYLOAD_DECODE_FAIL`, `DIRTY_STALE_GEN`, `DIRTY_BUFFER_FULL`, `DIRTY_BAD_IDENTITY`, `DIRTY_TTL_EXPIRED` per [producer-handoff.md §6.4](../../ssot/producer-handoff.md); `STATE_NOT_READY: METADATA_MISSING`.
+- **New invariants**: `BundleChannelPublisher::publish` is the only producer→search ingress per [channel-architecture.md §11 rule 6](../../ssot/channel-architecture.md) — no second IPC for dirty state. `EvictDirty`/`UpsertDirty` ordering at same `doc_id` derives from channel monotonic seq, not from a search-side advisory lock ([producer-handoff.md §3.2.3](../../ssot/producer-handoff.md)). `DIRTY_BAD_IDENTITY` validated synchronously at apply time, not eventually-consistent ([producer-handoff.md §3.2.6](../../ssot/producer-handoff.md)).
+- **Test rails**: unit (per UC-RT-* row + per error code), integration (producer fixture stream of `UpsertDirty`/`EvictDirty`/`Seal` → buffer end-state), property (channel seq ordering preserves buffer convergence).
+- **Conformance rows**: UC-RT-01..07; UC-RT-08 (`dirty:`) now `ok` driven by `UpsertDirty` ops per [tickets/INDEX.md §3.3](tickets/INDEX.md).
 - **DoD checklist**:
-  1. snapshot catalog state machine ratified;
-  2. ownership registry schema ratified;
-  3. planner pushdown for all six `meta.*` filters;
-  4. `affected:` / `invalidated_by:` return typed `NotImplemented` (gated on SEM-02);
-  5. RFC § Claim-Discipline §5 provable.
+  1. channel-subscriber callbacks for `UpsertDirty` / `EvictDirty` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. `UpsertDirty` / `EvictDirty` wire shapes ([producer-handoff.md §3.2.1](../../ssot/producer-handoff.md)) decoded via hand-rolled serde (D18);
+  3. `DirtyBuffer` per-tenant per-repo cap (10k entries) + TTL (300 s default) honored per [producer-handoff.md §3.2.5](../../ssot/producer-handoff.md);
+  4. `DIRTY_STALE_GEN` raised when op gen < active gen; on `Seal { gen=N+1 }` buffer evicts entries pinned to N;
+  5. `DIRTY_BAD_IDENTITY` raised synchronously at apply;
+  6. no advisory-lock dependency — withdrawn ADR-017;
+  7. snapshot catalog state machine + ownership registry schemas ratified;
+  8. planner pushdown for all six `meta.*` filters;
+  9. `affected:` / `invalidated_by:` return typed `NotImplemented` (gated on SEM-02);
+  10. RFC § Claim-Discipline §5 provable.
 - **Size**: L.
-- **Open questions**: feature-scope.md Q5 (`dirty:` semantics).
+- **Open questions**: AMB-PROD-7 (producer emission cadence); AMB-PROD-9 (WAL retention horizon vs TTL).
 
 ### 5.14 SEM-01 — semantic on lexical filter pushdown
 
@@ -862,12 +877,12 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 ### 5.15 SEM-02 — incremental semantic derivatives
 
 - **Title**: Changed-chunk set drives semantic upsert/delete; invalidation catalog edges.
-- **Owner crate(s)**: `quanta-index-semantic`, `quanta-index-control`.
+- **Owner crate(s)**: `quanta-index-semantic`, `quanta-index-core` (invalidation catalog as in-memory state per [channel-architecture.md §5.2](../../ssot/channel-architecture.md)).
 - **Touches contract?**: no.
-- **New port traits or methods**: `SemanticDerivative::apply_delta(delta: &ChangedChunkSet)`.
+- **New port traits or methods**: `SemanticDerivative::apply_delta(delta: &ChangedChunkSet)` — fed by the lexical-track `UpsertChunk` / `DeleteChunk` apply callbacks.
 - **New error codes**: none new.
 - **New invariants**: lexical doc identity == semantic doc identity (RFC § Semantic derivative model §2).
-- **Test rails**: property (1k random file mutations × 50 generations → invalidation catalog converges); historical home `crates/quanta-index-core/tests/property_policies.rs` (subject to G-CONTROL-LOC).
+- **Test rails**: property (1k random file mutations × 50 generations → invalidation catalog converges), home in `crates/quanta-index-core/tests/property_policies.rs`.
 - **Conformance rows**: UC-RT-02, UC-RT-05.
 - **DoD checklist**:
   1. invalidation catalog edges populated on every file delta;
@@ -924,18 +939,20 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 | R1 | Contract churn after Wave-0 breaks producer | H | H | producer CI fails on first PRE-CONTRACT-EXT push | single-PR coordinated cut; per-type handoff doc; no `#[deprecated]` shim | `quanta-index-contract` |
 | R2 | Tantivy 0.22 API drift mid-program | M | M | cargo update flags `tantivy ^0.22 → 0.23` | pin to `=0.22.x`; quarterly audit ticket | `quanta-index-lexical` |
 | R3 | Storage growth from trigram + phrase + symbol shards | M | H | per-generation disk usage > 2× chunk-only baseline | per-sibling retention cap; OBS-01 disk metric | `quanta-index-lexical` |
-| R4 | Regex / structural NFA DoS via adversarial inputs | M | H | criterion `lex_05_regex_bench` p99 jumps >5× | `regex_syntax` upper-bound pre-check; 100k-state cap; fuzz harness | `quanta-index-core`, `quanta-index-structural` |
-| R5 | Delta-apply correctness under writer-coordinator concurrency | M | H | loom test red on lock-acquisition | advisory lock with identity + lease; dual-write split-brain test | `quanta-index-control` |
+| R4 | Regex NFA DoS via adversarial inputs | M | H | criterion `lex_05_regex_bench` p99 jumps >5× | `regex_syntax` upper-bound pre-check; 100k-state cap; fuzz harness | `quanta-index-core` |
 | R6 | Conformance corpus rot (queries valid today, broken silently tomorrow) | H | M | Sourcegraph reference release advances; drift unaccepted | `ci/lq-conformance` blocks; drift report is mandatory PR comment | `tools/ci/` |
 | R7 | Producer sync bottleneck | H | M | PRE-CONTRACT-EXT PR sits >1 week | weekly producer-team sync; named producer-team owner per-ticket | `quanta-index-contract` |
 | R8 | Semgrep / clippy rail drift breaks CI mid-wave | L | M | `cargo clippy --workspace -- -D warnings` red on unrelated change | rail-version pin in `rust-toolchain.toml`; one-PR-per-rail-bump | `tools/ci/` |
-| R9 | Memory-mapped index reader-cache staleness across generation pin | L | H | crash on `EOF` in Tantivy reader after compaction | per-generation `Index` cache (predecessor T3.1 pattern) holds while pin alive; vacuum gated by active-reader presence per RFC § Retention | `quanta-index-lexical` |
+| R9 | Memory-mapped index reader-cache staleness across generation pin | L | H | crash on `EOF` in Tantivy reader after compaction | per-generation `Index` cache holds while pin alive; vacuum gated by active-reader presence per RFC § Retention | `quanta-index-lexical` |
 | R10 | Sourcegraph `⊂ LQ` claim correctness | M | H | conformance row flips `SG=` → `SG~` silently | parity column on every row; flip requires RFC amendment ([usecase.md §6 Versioning policy](usecase.md)) | `tools/ci/` |
 | R11 | IR-evaluation golden set is subjective | M | M | reviewer disagreement on labels > 20% | ≥2 reviewers per label; drop disagreement rows | `quanta-index-lexical` |
 | R12 | OpenTelemetry label cardinality blowup | M | M | metric storage cost > budget | closed label set; cardinality lint at OBS-01 entry | `quanta-index-searchd` |
 | R13 | Cross-instance reproducibility test flakes | L | H | one-of-100 runs differs by 1 byte | CBOR canonical encoding pin + arch-stable f32; CI matrix x86_64 + aarch64 | `quanta-index-core` |
-| R14 | ADR backlog (16 ADR slots seeded) outpaces resolution | H | M | wave-entry-gate blocks on unresolved ADR | ADR-resolution sprint at wave end; named ADR owner per slot | `docs/` |
-| R15 | New crate proliferation (history, structural, bridge) breaks hexagonal lint | M | M | `lint-hexagonal-boundaries.py` red on new edge | every new crate is reviewed against `ALLOWED_CRATE_DEPS` map in same PR | `tools/ci/` |
+| R14 | ADR backlog outpaces resolution | H | M | wave-entry-gate blocks on unresolved ADR | ADR-resolution sprint at wave end; named ADR owner per slot | `docs/` |
+| R15 | New crate proliferation breaks hexagonal lint | M | M | `lint-hexagonal-boundaries.py` red on new edge | every new crate is reviewed against `ALLOWED_CRATE_DEPS` map in same PR | `tools/ci/` |
+| R-PROD-1 | Producer wire shape drift mid-program | H | H | producer fixture stream fails search-side decode with `*_DECODE_FAIL{reason=wire_version_*}` | `wire_version: u32` per record per [producer-handoff.md §5](../../ssot/producer-handoff.md); search-side `[min,max]` range pin; coordinated bump via §8 handshake | `quanta-index-contract` |
+| R-PROD-2 | Producer emission ordering / cadence variance | M | H | `HISTORY_COMMIT_PARENT_UNKNOWN` / `DIRTY_STALE_GEN` appear on observability rail | producer-handoff topological ordering guarantee per [producer-handoff.md §3.1.2](../../ssot/producer-handoff.md); search-side fail-closed (no silent buffering); cadence options recorded per [producer-handoff.md §3.2.2](../../ssot/producer-handoff.md) | producer-side ADR |
+| R-PROD-3 | Channel WAL retention vs RT-01 dirty TTL drift | M | M | search-side restart cannot rebuild dirty buffer within TTL window | producer keeps segments ≥ `max(subscriber_lag, dirty_ttl)` per [producer-handoff.md §3.2.5](../../ssot/producer-handoff.md); search-side TTL default 300 s | producer-side config |
 
 ---
 
@@ -1001,7 +1018,7 @@ Each handoff doc commits with the PRE-CONTRACT-EXT or wave PR:
 - **Conformance corpus runner (PRE-CONF)** is the single source of truth for `ok` / `error_expected` / `blocked`. Owned by [usecase.md §6](usecase.md). Runs as `cargo test -p quanta-index-contract --test lq_conformance`. CI rail `ci/lq-conformance` blocks PRs.
 - **Property tests for canonical-hash determinism** (PRE-NORM): 10k random `LqQueryV1` × normalize-print-normalize-hash → hash unchanged. Runs on x86_64 + aarch64 CI matrix.
 - **Criterion benches** per LEX-* hot path. Regression budget: p99 may not increase >5% across a wave without an ADR.
-- **Loom tests** for writer-coordinator (LEX-04) and executor cancel (LEX-05). Models ≤ 4 threads; race-window enumeration.
+- **Loom tests** for executor cancel (LEX-05) and dispatcher seq ordering (LEX-04). Models ≤ 4 threads; race-window enumeration. Writer-coordinator loom test withdrawn — producer is sole publisher per [channel-architecture.md §4.1](../../ssot/channel-architecture.md).
 - **Cross-instance reproducibility** (LEX-05 + OBS-01): two-process single-binary CI step, asserts byte-identical CBOR envelope.
 
 ### 8.3 Coverage policy
@@ -1037,7 +1054,7 @@ OBS-01 lands the full observability surface. **Every prior wave's exit gate requ
 | 2 | + `lq.plan` | + planner error count + per-tenant fanout | + tenant_id, user_id, canonical_query_hash | planner p99 |
 | 3 | + `lq.exec.fanout`, `lq.exec.shard{*}`, `lq.merge` | + repos scanned, shards scanned, bytes touched, early-stop reason, merge time | + latency_ms, result_count, error_code? | end-to-end p99 (lexical-only) |
 | 4 | + `lq.rank` (sub-span of merge) | + ranking time + IR-eval precision@10 | + ranking metadata | rank p99; cross-instance equality |
-| 5 | + `lq.structural`, `lq.runtime` | + tree-sitter parse time, metadata catalog hit rate | + engine_routed | structural p99, runtime metadata p99 |
+| 5 | + `lq.structural`, `lq.runtime` | + structural match time, parse-tree decode time, dirty-buffer apply time, metadata catalog hit rate | + engine_routed | structural p99, runtime metadata p99 |
 | 6 | + `lq.bridge` | + bridge candidate count, downstream sink latency | + bridge_target | bridge p99 |
 | 7 | + `lq.semantic` | + invalidation catalog edges, ANN top-k latency | + semantic_routed | semantic p99 |
 | 8 | full tree per RFC § Observability Requirements | full per RFC § Execution Model § metric schema | full per RFC § Audit trail | every p50/p95/p99 measured against UC-* corpus |
@@ -1065,23 +1082,29 @@ ADRs we expect to need. Each row pre-seeds a slot; status = `Pending` until the 
 | ADR | Title | Status | Expected resolution wave | Forcing function |
 |---|---|---|---|---|
 | ADR-001 | Parser strategy: hand-rolled recursive descent vs `nom` vs `chumsky` | Pending | Wave 0 | PRE-NORM start |
-| ADR-002 | Symbol shard storage layout: separate Tantivy index vs shared schema | Pending | Wave 2 | LEX-03 start |
-| ADR-003 | Structural engine: tree-sitter per-grammar IR vs unified IR (feature-scope.md Q4) | Pending | Wave 5 | STR-01 start |
+| ADR-002 | LEX-05 tree-sitter vendor (symbol extraction) | **Withdrawn** | — | Search plane does not parse source; producer authors `SymbolRecord` per [producer-handoff.md §3.4](../../ssot/producer-handoff.md). Superseded by ADR-022. |
+| ADR-003 | STR-01 engine choice (tree-sitter per-grammar vs unified IR) | **Withdrawn** | — | Search plane consumes producer-supplied `ParseTreeRecord` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md). Superseded by ADR-024. |
 | ADR-004 | Text embedding model choice (predecessor D21 follow-up) | Pending | Wave 6 | SEM-01 start |
-| ADR-005 | Tree-sitter grammar version pin + update cadence | Pending | Wave 5 | STR-01 start |
+| ADR-005 | Tree-sitter grammar version pin + update cadence | **Withdrawn** | — | No tree-sitter on search side; grammar version is producer concern. |
 | ADR-006 | Conformance corpus format: TOML vs YAML | Pending | Wave 0 | PRE-CONF start |
 | ADR-007 | Planner directive ordering: filter-before-directive vs directive-before-filter | Pending | Wave 1 | LEX-01 start |
 | ADR-008 | ACL source: producer-published metadata vs side-channel registry (feature-scope.md Q3) | Pending | Wave 2 | LEX-02 start |
 | ADR-009 | Admission queue policy: drop-newest vs drop-oldest | Pending | Wave 3 | LEX-05 start |
 | ADR-010 | BM25 parameters `k1`, `b`: Sourcegraph parity vs Tantivy defaults | Pending | Wave 4 | LEX-06 start |
-| ADR-011 | History engine: new crate `quanta-index-history` vs extend `quanta-index-lexical` | Pending | Wave 4 | LEX-07 start |
-| ADR-012 | Structural engine: new crate `quanta-index-structural` confirmation | Pending | Wave 5 | STR-01 start |
+| ADR-011 | History engine: new crate `quanta-index-history` vs extend `quanta-index-lexical` | Resolved → [`quanta-index-lq-history`](../../../crates/quanta-index-lq-history/) shipped on disk | Wave 4 | LEX-07 start |
+| ADR-012 | Structural engine: new crate `quanta-index-structural` confirmation | Resolved → [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) shipped on disk | Wave 5 | STR-01 start |
 | ADR-013 | Hybrid weights: fixed (predecessor D10 = 0.5/0.5) vs learned | Pending | Wave 6 | SEM-01 start |
 | ADR-014 | Invalidation depth cap | Pending | Wave 7 | SEM-02 start |
-| ADR-015 | Bridge engine: new crate `quanta-index-bridge` vs in-tree | Pending | Wave 6 | BRIDGE-01 start |
+| ADR-015 | Bridge engine: new crate `quanta-index-bridge` vs in-tree | Resolved → [`quanta-index-lq-bridge`](../../../crates/quanta-index-lq-bridge/) shipped on disk | Wave 6 | BRIDGE-01 start |
 | ADR-016 | Audit sink: stdout-JSON vs file rotation | Pending | Wave 8 | OBS-01 start |
+| ADR-017 | RT-01 inbound mutation channel (separate `apply_changes` IPC + advisory lock) | **Withdrawn** | — | `BundleChannelPublisher::publish` is sole ingress per [channel-architecture.md §11 rule 6](../../ssot/channel-architecture.md); channel seq monotonicity replaces advisory lock. |
+| ADR-018 | Symbol extraction vendor (ctags-binary / scip / tree-sitter) | **Withdrawn** | — | Producer authors `SymbolRecord`; search plane is decode-only. Superseded by ADR-022. |
+| ADR-022 | **Proposed**: `SymbolRecord` wire-shape ownership | Proposed | Wave 0 → handshake | PRE-CONTRACT-EXT + producer-handoff §8 cutover. Locks `wire_version: u32` per record, `[min,max]` accepted range pin, breaking-first cutover per [producer-handoff.md §3.4.4 + §5](../../ssot/producer-handoff.md). |
+| ADR-023 | **Proposed**: `CommitRecord` wire-shape ownership | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Locks `{sha, parents, applied_at_ms, author, committer, message, is_merge, tags}` per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md); no `DeleteCommit` (force-push = fresh generation). |
+| ADR-024 | **Proposed**: `ParseTreeRecord` wire-shape ownership + Option A/B gating | Proposed | Wave 5 → handshake | STR-01 + producer-handoff §8 cutover. Option A = v1 ship with `UpsertParseTree`; Option B = v2 deferral with `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` typed failure. Integrator picks at wave-5 entry per [producer-handoff.md §3.3 + AMB-PROD-11](../../ssot/producer-handoff.md). |
+| ADR-025 | **Proposed**: Diff hunk authorship — Option Y (separate `UpsertDiffHunk` op) | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Recommendation: Option Y (separate per-hunk op) over Option X (inline `CommitRecord.hunks`) for streaming hygiene per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md). |
 
-ADR file location: `docs/adr/ADR-NNN-<short-title>.md` (pre-seed empty file per slot at Wave-0 entry; populate at forcing-function wave start).
+ADR file location: `docs/adr/ADR-NNN-<short-title>.md` (pre-seed empty file per slot at Wave-0 entry; populate at forcing-function wave start). Withdrawn ADRs do not require an ADR file; the withdrawal rationale lives in this table.
 
 ---
 
@@ -1089,27 +1112,28 @@ ADR file location: `docs/adr/ADR-NNN-<short-title>.md` (pre-seed empty file per 
 
 Pre-seeded from [feature-scope.md §9](feature-scope.md) and [usecase.md §3](usecase.md) flagged gaps. Each question lists the wave whose entry gate is blocked until resolved.
 
-| Q-ID | Question | Source | Blocking wave entry |
+| Q-ID | Question | Source | Status / Blocking wave entry |
 |---|---|---|---|
 | Q-FS-1 | Predicate evaluation timing: parse-time vs query-time | [feature-scope.md §1.1.5](feature-scope.md) | Wave 2 (LEX-03 predicate eval) |
 | Q-FS-2 | `since:` disambiguation: parse-time vs executor-time | [feature-scope.md §1.2.4](feature-scope.md) | Wave 4 (LEX-07) |
-| Q-FS-3 | `visibility:` truth source: producer metadata vs side-channel | [feature-scope.md §1.1.4](feature-scope.md), §4.7 | Wave 2 (LEX-02 ACL) |
-| Q-FS-4 | Structural matching language-awareness: per-grammar IR vs unified | [feature-scope.md §1.3.4](feature-scope.md) | Wave 5 (STR-01) |
-| Q-FS-5 | `dirty:` semantics: producer-source dependency or deferred | [feature-scope.md §1.4.1](feature-scope.md), §4.7 | Wave 5 (RT-01) |
+| Q-FS-3 | `visibility:` truth source: producer metadata vs side-channel | [feature-scope.md §1.1.4](feature-scope.md), §4.7 | Wave 2 (LEX-02 ACL); cross-link [producer-handoff.md §2.2](../../ssot/producer-handoff.md) (producer is sole metadata authority) |
+| Q-FS-4 | Structural matching language-awareness: per-grammar IR vs unified | [feature-scope.md §1.3.4](feature-scope.md) | **CLOSED** — producer-authored `ParseTreeRecord` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md); language is `LangId` field on the record; search-side matcher is language-agnostic over decoded trees |
+| Q-FS-5 | `dirty:` semantics: producer-source dependency or deferred | [feature-scope.md §1.4.1](feature-scope.md), §4.7 | **CLOSED** — `UpsertDirty`/`EvictDirty` channel ops per [producer-handoff.md §3.2](../../ssot/producer-handoff.md); producer authors dirty state |
 | Q-FS-6 | `select:` projection enum: full set vs subset for Phase 1 | [feature-scope.md §1.1.3](feature-scope.md) | Wave 1 (LEX-01) |
 | Q-FS-7 | `count:all` ceiling: fail-closed vs silent truncate | [feature-scope.md §1.1.3, §7](feature-scope.md) | Wave 3 (LEX-05) |
 | Q-FS-8 | Bridge candidate generation stability across mid-flight activation | [feature-scope.md §1.5](feature-scope.md) | Wave 6 (BRIDGE-01) |
-| Q-FS-9 | Sub-language structural ship order: all-together vs phased | [feature-scope.md §1.3.4](feature-scope.md) | Wave 5 (STR-01) |
+| Q-FS-9 | Sub-language structural ship order: all-together vs phased | [feature-scope.md §1.3.4](feature-scope.md) | Wave 5 (STR-01); cross-link [producer-handoff.md §4.1](../../ssot/producer-handoff.md) v1 ship set = Rust/Python/TypeScript/JavaScript/Go |
 | Q-FS-10 | `index:no` mode: parse-rejected vs accepted-then-NotImplemented | [feature-scope.md §1.1.4](feature-scope.md) | Wave 1 (LEX-01) |
 | Q-UC-1 | `LexicalCandidate` extension vs sibling type for symbol kind (GAP-01) | [usecase.md §3](usecase.md) | Wave 0 (PRE-CONTRACT-EXT) |
-| Q-UC-2 | `CommitCandidate` / `DiffCandidate` shape (GAP-02) | [usecase.md §3](usecase.md) | Wave 0 |
+| Q-UC-2 | `CommitCandidate` / `DiffCandidate` shape (GAP-02) | [usecase.md §3](usecase.md) | Wave 0; cross-link [producer-handoff.md §3.1.1 + §3.1.4](../../ssot/producer-handoff.md) for `CommitRecord` and `DiffHunkRecord` wire shapes |
 | Q-UC-3 | `StructuralCandidate` bindings shape (GAP-03) | [usecase.md §3](usecase.md) | Wave 0 |
 | Q-UC-4 | `BridgeCandidatePacket` shape (GAP-04) | [usecase.md §3](usecase.md) | Wave 0 |
 | Q-UC-5 | `SearchExplanation` v2 minimum schema (GAP-05) | [usecase.md §3](usecase.md) | Wave 0 |
 | Q-UC-6 | `LexicalQueryError` enum surface (GAP-06) | [usecase.md §3](usecase.md) | Wave 0 |
 | Q-FS-omitted-history | LEX-07 scope: `parent:` / `merge:` / `tag:` / `revisions:` enumerated | [feature-scope.md §4.7](feature-scope.md) | Wave 4 (LEX-07) — RFC LEX-07 scope amendment required |
 | Q-FS-context | `context:` lifecycle owner (Phase 4+ authz) | [feature-scope.md §4.7](feature-scope.md) | post-Wave-8 |
-| G-CONTROL-LOC | Where does control-plane state live post-working-tree deletion of `quanta-index-control`? See §2.3a. | this plan, §2.3a | Wave 0 (PRE-CONTRACT-EXT) |
+| G-CONTROL-LOC | Where does control-plane state live? | this plan, §2.3a | **CLOSED** — in-memory ledgers per [channel-architecture.md §5.2](../../ssot/channel-architecture.md); no SQLite, no `quanta-index-control` crate |
+| AMB-PROD-1..11 | Producer-handoff ambiguities (commit ordering, wire shapes, cadence, Option A/B, TTL) | [tickets/INDEX.md §3.7](tickets/INDEX.md) | Tracked in [producer-handoff.md §7 decision matrix](../../ssot/producer-handoff.md); blocking §8 handshake cutover per ticket |
 
 ---
 
@@ -1139,7 +1163,8 @@ Gaps this plan surfaces back to the RFC and sibling docs. Each is filed as a fol
 - **RFC-GAP-3** — RFC § Observability Requirements §4 forward-refers to "implementation-plan.md § Telemetry" for the metric schema; this plan covers spans + label discipline in §9 but does not pin a per-metric schema doc. **Action**: either authors a separate `docs/plans/may-24-lexical-indexing-sorucegraph/telemetry.md` or fold into OBS-01 ticket scope.
 - **RFC-GAP-4** — RFC § Capacity and SLO Targets gives p50/p95/p99 only for "single-repo lexical" and "100-repo fanout"; structural / history / runtime / bridge SLO targets are absent. **Action**: extend RFC § Latency SLOs.
 - **RFC-GAP-5** — RFC § Security and Authz Model §1 names "tenant_id and user_id" but the contract crate `LqQuery` has neither field. PRE-CONTRACT-EXT plants `lq_version` but does not currently plant `tenant_id` / `user_id`. **Action**: extend PRE-CONTRACT-EXT scope **OR** RFC clarifies which surface carries auth identity (request envelope vs canonical AST).
-- **RFC-GAP-6** — RFC § Failure and Recovery Model §4 names a "writer registry in the control plane" without specifying its physical location. Combined with G-CONTROL-LOC (§2.3a working-tree deletion), Wave-3 LEX-04 entry gate is ambiguous. **Action**: ADR-001 / ADR-011 family must pin control-plane physical owner before Wave-3.
+- **RFC-GAP-6** — RFC § Failure and Recovery Model §4 names a "writer registry in the control plane". Per producer-authorship correction below, there is no search-side writer registry: the producer is sole publisher per `publisher.lock` ([channel-architecture.md §4.1](../../ssot/channel-architecture.md)). **Action**: RFC § Failure and Recovery Model amendment to rephrase against the channel-architecture SSOT.
+- **RFC-GAP-PROD** — Producer-authorship correction (2026-05-25). The RFC's framing of LEX-05 (tree-sitter on search side), LEX-07 (search-plane git access), STR-01 (tree-sitter on search side), and RT-01 (separate `apply_changes` IPC) all violate the authorship rule lock in [channel-architecture.md §3.1](../../ssot/channel-architecture.md) (producer authors every payload) and the single-ingress rule in [channel-architecture.md §11 rule 6](../../ssot/channel-architecture.md). Corrected spec sheets land 9 new channel ops (`UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, `UpsertDirty`, `EvictDirty`, `UpsertParseTree`, `DeleteParseTree`) with wire shapes in [producer-handoff.md §3](../../ssot/producer-handoff.md); see [tickets/INDEX.md §3.6](tickets/INDEX.md) for the correction table. **Action**: RFC § Ticket Pack rephrasing for the four affected rows + RFC § Canonical Incremental Write Pipeline amendment to name `BundleChannelPublisher::publish` as sole ingress.
 
 ### A.2 [feature-scope.md](feature-scope.md) follow-ups
 

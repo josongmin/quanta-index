@@ -23,9 +23,9 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserializer, Serializer};
 
-use crate::errors::PositionsError;
+use crate::errors::{LimitDimension, PositionsError};
 use crate::index::{PositionsIndex, TermPostingsEntry};
-use crate::types::{DocId, Position};
+use crate::types::{DocId, MAX_PHRASE_LEN, Position};
 
 /// One contiguous phrase hit inside a single doc.
 ///
@@ -162,6 +162,33 @@ pub(crate) fn collect_term_postings(
 /// term yields one match per posting. Multi-term phrases require a strict
 /// `position + 1` chain in the same doc across all terms.
 pub fn query_phrase(idx: &PositionsIndex, terms: &[&str]) -> Result<PhraseMatches, PositionsError> {
+    // LEX-03 §4.2: phrase length cap. `terms.len()` is `usize`; when it
+    // exceeds `u32`, it trivially exceeds `MAX_PHRASE_LEN` — surface that
+    // as the same `PlanLimitExceeded { PhraseLen }` outcome rather than a
+    // generic `IndexCorrupted`, because the failure mode is identical from
+    // the caller's perspective (input shape too large to plan). No silent
+    // default — both arms emit a typed error or fall through to the cap
+    // comparison.
+    match u32::try_from(terms.len()) {
+        Ok(observed) => {
+            if observed > MAX_PHRASE_LEN {
+                return Err(PositionsError::plan_limit_exceeded(
+                    LimitDimension::PhraseLen,
+                    format!("phrase length {observed} exceeds cap={MAX_PHRASE_LEN}"),
+                ));
+            }
+        }
+        Err(_) => {
+            return Err(PositionsError::plan_limit_exceeded(
+                LimitDimension::PhraseLen,
+                format!(
+                    "phrase length {} exceeds u32 (cap={MAX_PHRASE_LEN})",
+                    terms.len()
+                ),
+            ));
+        }
+    }
+
     if terms.is_empty() {
         return Ok(PhraseMatches::empty());
     }
@@ -272,8 +299,9 @@ pub fn query_phrase(idx: &PositionsIndex, terms: &[&str]) -> Result<PhraseMatche
 mod tests {
     use super::{PhraseMatch, PhraseMatches, query_phrase};
     use crate::builder::PositionsBuilder;
+    use crate::errors::{LimitDimension, PositionsErrorCode};
     use crate::index::PositionsIndex;
-    use crate::types::{DocId, NormalizerVersion, Position};
+    use crate::types::{DocId, MAX_PHRASE_LEN, NormalizerVersion, Position};
 
     fn fixture() -> PositionsIndex {
         // Doc 0: "the quick brown fox"
@@ -282,38 +310,28 @@ mod tests {
         // Doc 3: "the quick brown fox jumps over the quick brown fox"
         let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
 
-        for (pos, t) in ["the", "quick", "brown", "fox"].iter().enumerate() {
-            let p = match u32::try_from(pos) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            b.add_token(DocId(0), t, Position(p));
-        }
-        for (pos, t) in ["the", "lazy", "dog"].iter().enumerate() {
-            let p = match u32::try_from(pos) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            b.add_token(DocId(1), t, Position(p));
-        }
-        for (pos, t) in ["quick", "brown", "the", "fox"].iter().enumerate() {
-            let p = match u32::try_from(pos) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            b.add_token(DocId(2), t, Position(p));
-        }
-        for (pos, t) in [
-            "the", "quick", "brown", "fox", "jumps", "over", "the", "quick", "brown", "fox",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let p = match u32::try_from(pos) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            b.add_token(DocId(3), t, Position(p));
+        let docs: &[(DocId, &[&str])] = &[
+            (DocId(0), &["the", "quick", "brown", "fox"]),
+            (DocId(1), &["the", "lazy", "dog"]),
+            (DocId(2), &["quick", "brown", "the", "fox"]),
+            (
+                DocId(3),
+                &[
+                    "the", "quick", "brown", "fox", "jumps", "over", "the", "quick", "brown", "fox",
+                ],
+            ),
+        ];
+        for (doc_id, tokens) in docs {
+            for (pos, t) in tokens.iter().enumerate() {
+                let p = match u32::try_from(pos) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Err(e) = b.add_token(*doc_id, t, Position(p)) {
+                    assert!(false, "{e}");
+                    unreachable!()
+                }
+            }
         }
 
         match b.finish() {
@@ -490,6 +508,50 @@ mod tests {
         match got {
             Ok(v) => assert_eq!(v, pm),
             Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn phrase_length_cap_fails_closed_at_one_over_cap() {
+        // LEX-03 §4.2: phrase length > MAX_PHRASE_LEN → PlanLimitExceeded
+        // with dimension=PhraseLen. The fixture index is irrelevant — the
+        // cap check runs before any postings are consulted.
+        let idx = fixture();
+        // Build a vector of (cap+1) cheap, valid terms.
+        let Ok(n_usize) = usize::try_from(MAX_PHRASE_LEN.saturating_add(1)) else {
+            assert!(false, "cap+1 fits in usize");
+            return;
+        };
+        let terms: Vec<&str> = vec!["the"; n_usize];
+        match query_phrase(&idx, &terms) {
+            Ok(_) => assert!(false, "expected PlanLimitExceeded"),
+            Err(e) => {
+                assert_eq!(e.code, PositionsErrorCode::PlanLimitExceeded);
+                assert_eq!(e.dimension, Some(LimitDimension::PhraseLen));
+            }
+        }
+    }
+
+    #[test]
+    fn phrase_length_at_cap_is_accepted() {
+        // Boundary: `terms.len() == MAX_PHRASE_LEN` is the largest accepted
+        // input. Result set is irrelevant; we only assert no cap error.
+        let idx = fixture();
+        let Ok(n_usize) = usize::try_from(MAX_PHRASE_LEN) else {
+            assert!(false, "cap fits in usize");
+            return;
+        };
+        let terms: Vec<&str> = vec!["absent_token"; n_usize];
+        match query_phrase(&idx, &terms) {
+            Ok(r) => assert!(r.matches.is_empty()),
+            Err(e) => {
+                assert_ne!(
+                    e.code,
+                    PositionsErrorCode::PlanLimitExceeded,
+                    "must not trigger cap at exactly MAX_PHRASE_LEN"
+                );
+                assert!(false, "{e}");
+            }
         }
     }
 

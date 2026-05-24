@@ -20,8 +20,40 @@ use core::cmp::Ordering;
 
 use crate::cosine::cosine_similarity;
 use crate::errors::{LimitDimension, SemanticError, SemanticErrorCode};
+use crate::hnsw::{HnswIndexBuilder, HnswParams, query_hnsw};
 use crate::index::SemanticIndex;
 use crate::types::{DocId, EXACT_NN_CUTOFF, Embedding, MAX_TOP_K};
+
+/// Caller-facing options for the cosine top-k executor.
+///
+/// `disable_hnsw=false` (the default) lets the executor build an
+/// HNSW backend on-the-fly when `corpus_size > EXACT_NN_CUTOFF`, using
+/// the params attached to the index (if any) or falling back to
+/// [`HnswParams::DEFAULTS`]. `disable_hnsw=true` preserves the
+/// pre-HNSW behaviour: corpora above the cutoff surface
+/// [`SemanticErrorCode::SemAnnNondeterministic`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueryOpts {
+    pub disable_hnsw: bool,
+    pub hnsw_params_override: Option<HnswParams>,
+}
+
+impl QueryOpts {
+    /// Default: HNSW enabled, no params override.
+    #[must_use]
+    pub const fn default_opts() -> Self {
+        Self {
+            disable_hnsw: false,
+            hnsw_params_override: None,
+        }
+    }
+}
+
+impl Default for QueryOpts {
+    fn default() -> Self {
+        Self::default_opts()
+    }
+}
 
 /// A single hit from the executor. `score` is the cosine similarity in
 /// the canonical `[-1.0, 1.0]` interval (subject to `f32` rounding).
@@ -113,8 +145,28 @@ impl<'de> serde::Deserialize<'de> for AnnResult {
     }
 }
 
-/// Execute a cosine top-k query against `idx`. Fails closed on every
-/// documented anomaly:
+/// Execute a cosine top-k query against `idx` using the default
+/// options ([`QueryOpts::default_opts`]). See
+/// [`query_cosine_topk_with`] for the full surface.
+///
+/// Policy: corpora above [`EXACT_NN_CUTOFF`] transparently fall
+/// through to a deterministic HNSW backend. The HNSW configuration
+/// is the one attached to `idx` via
+/// [`SemanticIndex::with_hnsw_params`], or [`HnswParams::DEFAULTS`]
+/// if nothing is attached. To preserve the legacy fail-closed
+/// behaviour, use [`query_cosine_topk_with`] with
+/// `QueryOpts { disable_hnsw: true, .. }`.
+pub fn query_cosine_topk(
+    idx: &SemanticIndex,
+    query: &Embedding,
+    top_k: u32,
+) -> Result<Vec<AnnResult>, SemanticError> {
+    query_cosine_topk_with(idx, query, top_k, QueryOpts::default_opts())
+}
+
+/// Execute a cosine top-k query against `idx` with explicit options.
+///
+/// Fails closed on every documented anomaly:
 ///
 /// - `top_k == 0` returns an empty `Vec` (no work). The AST gate at
 ///   construction time should reject 0 with `PARSE_INVALID_FILTER_VALUE`
@@ -122,17 +174,24 @@ impl<'de> serde::Deserialize<'de> for AnnResult {
 /// - `top_k > MAX_TOP_K` returns
 ///   [`SemanticErrorCode::PlanLimitExceeded`] with
 ///   [`LimitDimension::TopK`].
-/// - `idx.corpus_size() > EXACT_NN_CUTOFF` returns
-///   [`SemanticErrorCode::SemAnnNondeterministic`]; pinned-seed HNSW
-///   for larger corpora is deferred.
 /// - dim mismatch between `query` and `idx` returns
 ///   [`SemanticErrorCode::SemDimMismatch`].
+/// - `idx.corpus_size() > EXACT_NN_CUTOFF` with
+///   `opts.disable_hnsw=true` returns
+///   [`SemanticErrorCode::SemAnnNondeterministic`].
+/// - `idx.corpus_size() > EXACT_NN_CUTOFF` with
+///   `opts.disable_hnsw=false` (default) builds a deterministic
+///   HNSW backend using
+///   `opts.hnsw_params_override` -> `idx.hnsw_params()` ->
+///   [`HnswParams::DEFAULTS`] (in that fallback order) and routes
+///   through [`query_hnsw`].
 ///
 /// Any cosine kernel error propagates up unchanged.
-pub fn query_cosine_topk(
+pub fn query_cosine_topk_with(
     idx: &SemanticIndex,
     query: &Embedding,
     top_k: u32,
+    opts: QueryOpts,
 ) -> Result<Vec<AnnResult>, SemanticError> {
     if top_k == 0 {
         return Ok(Vec::new());
@@ -150,15 +209,26 @@ pub fn query_cosine_topk(
         ));
     }
     if idx.corpus_size() > EXACT_NN_CUTOFF {
-        return Err(SemanticError::new(
-            SemanticErrorCode::SemAnnNondeterministic,
-            format!(
-                "corpus_size {} > EXACT_NN_CUTOFF {EXACT_NN_CUTOFF}; pinned-seed HNSW not yet shipped",
-                idx.corpus_size()
-            ),
-        ));
+        if opts.disable_hnsw {
+            return Err(SemanticError::new(
+                SemanticErrorCode::SemAnnNondeterministic,
+                format!(
+                    "corpus_size {} > EXACT_NN_CUTOFF {EXACT_NN_CUTOFF}; caller disabled HNSW fallback",
+                    idx.corpus_size()
+                ),
+            ));
+        }
+        return run_hnsw_path(idx, query, top_k, opts.hnsw_params_override);
     }
 
+    exact_nn_topk(idx, query, top_k)
+}
+
+fn exact_nn_topk(
+    idx: &SemanticIndex,
+    query: &Embedding,
+    top_k: u32,
+) -> Result<Vec<AnnResult>, SemanticError> {
     let q = query.as_slice();
     let mut hits: Vec<AnnResult> = Vec::with_capacity(idx.corpus_size());
     for (doc_id, vec) in idx.iter() {
@@ -187,6 +257,28 @@ pub fn query_cosine_topk(
         hits.truncate(k);
     }
     Ok(hits)
+}
+
+/// Build an HNSW index from the `SemanticIndex` corpus and route the
+/// query through it.
+///
+/// The build happens in ascending [`DocId`] order so two callers with
+/// identical `(corpus, params)` produce byte-identical graphs.
+fn run_hnsw_path(
+    idx: &SemanticIndex,
+    query: &Embedding,
+    top_k: u32,
+    override_params: Option<HnswParams>,
+) -> Result<Vec<AnnResult>, SemanticError> {
+    let params = override_params
+        .unwrap_or_else(|| idx.hnsw_params().copied().unwrap_or(HnswParams::DEFAULTS));
+    let mut builder = HnswIndexBuilder::new(idx.generation(), idx.dim(), params)?;
+    for (doc_id, vec) in idx.iter() {
+        let embedding = Embedding::new(vec.to_vec())?;
+        builder.add_embedding(doc_id, &embedding)?;
+    }
+    let hnsw_idx = builder.finish();
+    query_hnsw(&hnsw_idx, query, top_k)
 }
 
 #[cfg(test)]

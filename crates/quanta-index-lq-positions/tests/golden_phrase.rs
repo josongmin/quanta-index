@@ -39,7 +39,9 @@ fn build_corpus() -> PositionsIndex {
             let Ok(p) = u32::try_from(idx) else {
                 fatal("position overflow in fixture");
             };
-            b.add_token(*doc_id, t, Position(p));
+            if let Err(e) = b.add_token(*doc_id, t, Position(p)) {
+                fatal(&format!("{e}"));
+            }
         }
     }
     match b.finish() {

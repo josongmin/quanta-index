@@ -37,12 +37,19 @@
 
 pub mod cosine;
 pub mod errors;
+pub mod hnsw;
 pub mod index;
 pub mod query;
+pub mod since_time;
 pub mod types;
 
 pub use cosine::cosine_similarity;
 pub use errors::{LimitDimension, SemanticError, SemanticErrorCode};
+pub use hnsw::{
+    HnswIndex, HnswIndexBuilder, HnswNode, HnswParams, MAX_EF as HNSW_MAX_EF,
+    MAX_LEVEL as HNSW_MAX_LEVEL, MAX_M as HNSW_MAX_M, MIN_M as HNSW_MIN_M, query_hnsw,
+};
 pub use index::{SemanticIndex, SemanticIndexBuilder};
-pub use query::{AnnResult, query_cosine_topk};
+pub use query::{AnnResult, QueryOpts, query_cosine_topk, query_cosine_topk_with};
+pub use since_time::{AppliedAtMs, ParsedSince, parse_since_filter};
 pub use types::{DistanceMetric, DocId, EXACT_NN_CUTOFF, Embedding, MAX_EMBEDDING_DIM, MAX_TOP_K};

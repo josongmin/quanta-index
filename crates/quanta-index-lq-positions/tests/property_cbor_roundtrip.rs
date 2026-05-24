@@ -32,7 +32,7 @@ fn build_index(
 ) -> Result<PositionsIndex, PositionsError> {
     let mut b = PositionsBuilder::new(generation, NormalizerVersion::new(nv_major, nv_minor));
     for (term, doc, pos) in tokens {
-        b.add_token(DocId(*doc), term, Position(*pos));
+        b.add_token(DocId(*doc), term, Position(*pos))?;
     }
     b.finish()
 }

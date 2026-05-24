@@ -26,10 +26,138 @@ use crate::limits::MAX_FANOUT_PER_NODE;
 /// violation (e.g. fan-out after flattening). The `LqParseError` shape is
 /// shared with parse so callers see one typed surface.
 pub fn normalize(mut q: LqNormalizedQuery) -> Result<LqNormalizedQuery, LqParseError> {
+    // First pass: scan Regex leaves for `(?i)` prefix canonicalization and
+    // mid-pattern flag rejection. Walks expr + filter-embedded leaves.
+    let mut saw_leading_i = false;
+    canonicalize_regex_inline_flags_expr(&mut q.expr, &mut saw_leading_i)?;
+    for f in &mut q.filters {
+        if let LqFilter::Content { leaf } = f {
+            canonicalize_regex_inline_flags_leaf(leaf, &mut saw_leading_i)?;
+        }
+    }
+    if saw_leading_i {
+        q.options.case = Some(LqCase::Insensitive);
+    }
     q.expr = normalize_expr(q.expr, q.options.case)?;
     sort_filters(&mut q.filters);
     sort_directives(&mut q.directives);
     Ok(q)
+}
+
+/// Walk `expr` and canonicalize regex inline-flag prefixes per dsl.md §6.2.
+///
+/// - `(?i)BODY` → `BODY`, and `saw_leading_i` set to `true` for the whole
+///   query (the option carrier is query-scoped, not per-leaf).
+/// - any inline flag group not at byte position 0 → `ForbiddenSyntax`
+/// - other prefix flags `(?m)`, `(?s)`, `(?x)` are preserved verbatim
+///   (deferred to v2 per ticket §12).
+///
+/// Idempotent: stripping a regex twice produces the same result.
+fn canonicalize_regex_inline_flags_expr(
+    expr: &mut LqExpr,
+    saw_leading_i: &mut bool,
+) -> Result<(), LqParseError> {
+    match expr {
+        LqExpr::Empty => Ok(()),
+        LqExpr::Leaf(l) => canonicalize_regex_inline_flags_leaf(l, saw_leading_i),
+        LqExpr::Not(inner) => canonicalize_regex_inline_flags_expr(inner, saw_leading_i),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            for c in children {
+                canonicalize_regex_inline_flags_expr(c, saw_leading_i)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn canonicalize_regex_inline_flags_leaf(
+    leaf: &mut LqLeaf,
+    saw_leading_i: &mut bool,
+) -> Result<(), LqParseError> {
+    let s = match leaf {
+        LqLeaf::Regex(s) => s,
+        LqLeaf::Keyword(_)
+        | LqLeaf::Phrase(_)
+        | LqLeaf::RawString(_)
+        | LqLeaf::StructuralBlock(_)
+        | LqLeaf::Predicate { .. } => return Ok(()),
+    };
+    let stripped = strip_leading_case_insensitive(s, saw_leading_i);
+    reject_mid_pattern_inline_flags(&stripped)?;
+    *s = stripped;
+    Ok(())
+}
+
+/// Try to strip a leading `(?i)` from the regex source.
+///
+/// Returns the (possibly identical) stripped string. Sets `saw_leading_i`
+/// to true if a `(?i)` prefix was found and removed. Idempotent: the
+/// post-strip string never starts with `(?i)` again.
+///
+/// Only the pure case-insensitive form `(?i)` is stripped. Combined or
+/// alternative-character flag groups like `(?im)`, `(?is)`, or `(?-i)`
+/// are not stripped here; they fall through to
+/// `reject_mid_pattern_inline_flags` if they appear elsewhere and to
+/// the regex compiler otherwise. PRE-NORM v1 only canonicalizes the
+/// most common form per dsl.md §6.2.
+fn strip_leading_case_insensitive(src: &str, saw_leading_i: &mut bool) -> String {
+    src.strip_prefix("(?i)").map_or_else(
+        || src.to_owned(),
+        |rest| {
+            *saw_leading_i = true;
+            rest.to_owned()
+        },
+    )
+}
+
+/// Scan the regex body and surface `ForbiddenSyntax` on any inline-flag
+/// group `(?<flags>)` or `(?<flags>:` occurrence.
+///
+/// The caller has already stripped a leading `(?i)`; any remaining inline
+/// flag group is by definition mid-pattern.
+fn reject_mid_pattern_inline_flags(src: &str) -> Result<(), LqParseError> {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let Some(&b) = bytes.get(i) else { break };
+        if b == b'\\' {
+            // Skip the next byte (escape).
+            let Some(next) = i.checked_add(2) else { break };
+            i = next;
+            continue;
+        }
+        if b == b'(' {
+            let Some(after) = i.checked_add(1) else { break };
+            if bytes.get(after) == Some(&b'?') {
+                // Scan flag characters [imsxU-]+ and look for terminating `)` or `:`.
+                let Some(mut j) = after.checked_add(1) else {
+                    break;
+                };
+                let flag_start = j;
+                while let Some(&c) = bytes.get(j) {
+                    if matches!(c, b'i' | b'm' | b's' | b'x' | b'U' | b'R' | b'-') {
+                        let Some(next) = j.checked_add(1) else { break };
+                        j = next;
+                    } else {
+                        break;
+                    }
+                }
+                if j > flag_start {
+                    let term = bytes.get(j).copied();
+                    if matches!(term, Some(b')' | b':')) {
+                        return Err(LqParseError::new(
+                            crate::errors::LqParseErrorCode::ForbiddenSyntax,
+                            crate::errors::LqSpan::synthetic(0),
+                            "mid-pattern inline regex flag is forbidden",
+                        ));
+                    }
+                }
+            }
+        }
+        let Some(next) = i.checked_add(1) else { break };
+        i = next;
+    }
+    Ok(())
 }
 
 fn normalize_expr(expr: LqExpr, case: Option<LqCase>) -> Result<LqExpr, LqParseError> {
@@ -112,10 +240,12 @@ fn apply_case_to_leaf(leaf: LqLeaf, case: Option<LqCase>) -> LqLeaf {
         LqLeaf::Phrase(s) => LqLeaf::Phrase(s.to_lowercase()),
         // Raw strings and regex bodies are case-preserved: their
         // case-handling is delegated to the regex engine / literal matcher.
-        // Structural patterns are not case-folded either (per dsl.md §8).
+        // Structural patterns and predicates are not case-folded either
+        // (per dsl.md §8 / predicate semantics are planner-scope).
         LqLeaf::RawString(s) => LqLeaf::RawString(s),
         LqLeaf::Regex(s) => LqLeaf::Regex(s),
-        LqLeaf::StructuralBlock(s) => LqLeaf::StructuralBlock(s),
+        LqLeaf::StructuralBlock(b) => LqLeaf::StructuralBlock(b),
+        LqLeaf::Predicate { name, args } => LqLeaf::Predicate { name, args },
     }
 }
 
@@ -193,9 +323,92 @@ fn write_leaf_key(out: &mut String, leaf: &LqLeaf) {
             out.push_str("X:");
             out.push_str(s);
         }
-        LqLeaf::StructuralBlock(s) => {
+        LqLeaf::StructuralBlock(block) => {
             out.push_str("S:");
+            write_structural_block_key(out, block);
+        }
+        LqLeaf::Predicate { name, args } => {
+            out.push_str("PRED:");
+            out.push_str(name);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_predicate_arg_key(out, a);
+            }
+            out.push(')');
+        }
+    }
+}
+
+fn write_structural_block_key(out: &mut String, block: &crate::ast::LqStructuralBlock) {
+    out.push('[');
+    match &block.lang {
+        Some(l) => {
+            out.push_str("lang=");
+            out.push_str(l);
+        }
+        None => out.push_str("lang=_"),
+    }
+    out.push(';');
+    for (i, node) in block.nodes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_structural_node_key(out, node);
+    }
+    out.push(']');
+}
+
+fn write_structural_node_key(out: &mut String, node: &crate::ast::LqStructuralNode) {
+    match node {
+        crate::ast::LqStructuralNode::Literal(s) => {
+            out.push_str("LIT:");
             out.push_str(s);
+        }
+        crate::ast::LqStructuralNode::MetaVar(mv) => {
+            out.push_str("MV:");
+            out.push_str(mv.as_str());
+        }
+        crate::ast::LqStructuralNode::Group(children) => {
+            out.push_str("G(");
+            for (i, c) in children.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_structural_node_key(out, c);
+            }
+            out.push(')');
+        }
+    }
+}
+
+fn write_predicate_arg_key(out: &mut String, arg: &crate::ast::LqPredicateArg) {
+    match arg {
+        crate::ast::LqPredicateArg::Keyword(s) => {
+            out.push_str("K:");
+            out.push_str(s);
+        }
+        crate::ast::LqPredicateArg::Phrase(s) => {
+            out.push_str("P:");
+            out.push_str(s);
+        }
+        crate::ast::LqPredicateArg::RawString(s) => {
+            out.push_str("R:");
+            out.push_str(s);
+        }
+        crate::ast::LqPredicateArg::Number(n) => {
+            out.push_str("N:");
+            // Use a Display-stable form; canonical_key is engineering-only.
+            let s = format!("{n}");
+            out.push_str(&s);
+        }
+        crate::ast::LqPredicateArg::Filter { name, value } => {
+            out.push_str("F:");
+            out.push_str(name);
+            out.push(':');
+            out.push_str(value);
         }
     }
 }
@@ -359,6 +572,8 @@ mod tests {
             "repo:foo@main file:lib path:src tokio",
             "Iterator -dyn",
             "Foo case:no",
+            "/(?i)hello/",
+            "/foo/",
         ];
         for s in cases {
             let q1 = run(s);
@@ -370,6 +585,80 @@ mod tests {
                 }
             };
             assert_eq!(q1, q2, "idempotency failed on {s:?}");
+        }
+    }
+
+    // ---- Step 4: `(?i)` inline-flag stripping tests ----
+
+    #[test]
+    fn regex_leading_case_insensitive_flag_is_stripped() {
+        let q = run("/(?i)hello/");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Regex(s)) => assert_eq!(s, "hello"),
+            other => {
+                assert!(false, "expected Regex leaf, got {other:?}");
+            }
+        }
+        assert_eq!(q.options.case, Some(LqCase::Insensitive));
+    }
+
+    #[test]
+    fn regex_without_inline_flag_is_unchanged() {
+        let q = run("/hello/");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Regex(s)) => assert_eq!(s, "hello"),
+            other => {
+                assert!(false, "expected Regex leaf, got {other:?}");
+            }
+        }
+        assert_eq!(q.options.case, None);
+    }
+
+    #[test]
+    fn regex_inline_flag_strip_is_idempotent() {
+        let q1 = run("/(?i)hello/");
+        let q2 = match normalize(q1.clone()) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "second normalize failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(q1, q2);
+        // Triple-normalize for extra safety.
+        let q3 = match normalize(q2.clone()) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "third normalize failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(q2, q3);
+    }
+
+    #[test]
+    fn regex_mid_pattern_inline_flag_is_forbidden() {
+        let toks = match tokenize("/foo(?i)bar/") {
+            Ok(t) => t,
+            Err(e) => {
+                assert!(false, "tokenize failed: {e}");
+                return;
+            }
+        };
+        let q = match parse(&toks, "/foo(?i)bar/") {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "parse failed: {e}");
+                return;
+            }
+        };
+        match normalize(q) {
+            Ok(_) => assert!(false, "expected ForbiddenSyntax"),
+            Err(e) => assert_eq!(
+                e.code,
+                crate::errors::LqParseErrorCode::ForbiddenSyntax,
+                "got {e}"
+            ),
         }
     }
 }

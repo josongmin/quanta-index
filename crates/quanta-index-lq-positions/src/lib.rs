@@ -53,9 +53,10 @@ pub mod varint;
 
 pub use adjacency_query::query_adjacency;
 pub use builder::PositionsBuilder;
-pub use errors::{PositionsError, PositionsErrorCode};
+pub use errors::{LimitDimension, PositionsError, PositionsErrorCode};
 pub use index::{PositionsIndex, TermPostings, TermPostingsEntry};
 pub use phrase_query::{PhraseMatch, PhraseMatches, query_phrase};
 pub use types::{
-    AdjacencyConfig, DEFAULT_WINDOW_TOKENS, DocId, MAX_WINDOW_TOKENS, NormalizerVersion, Position,
+    AdjacencyConfig, DEFAULT_WINDOW_TOKENS, DocId, MAX_ADJACENCY_SCAN_DEPTH, MAX_DOCS_PER_TERM,
+    MAX_PHRASE_LEN, MAX_POSITIONS_PER_CELL, MAX_WINDOW_TOKENS, NormalizerVersion, Position,
 };

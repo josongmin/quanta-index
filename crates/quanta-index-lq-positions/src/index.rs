@@ -325,12 +325,20 @@ mod tests {
 
     fn build_simple() -> PositionsIndex {
         let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
-        b.add_token(DocId(0), "alpha", Position(0));
-        b.add_token(DocId(0), "alpha", Position(3));
-        b.add_token(DocId(2), "alpha", Position(7));
-        b.add_token(DocId(0), "beta", Position(1));
-        b.add_token(DocId(2), "beta", Position(8));
-        b.add_token(DocId(3), "gamma", Position(0));
+        let inserts: &[(DocId, &str, Position)] = &[
+            (DocId(0), "alpha", Position(0)),
+            (DocId(0), "alpha", Position(3)),
+            (DocId(2), "alpha", Position(7)),
+            (DocId(0), "beta", Position(1)),
+            (DocId(2), "beta", Position(8)),
+            (DocId(3), "gamma", Position(0)),
+        ];
+        for (d, t, p) in inserts {
+            if let Err(e) = b.add_token(*d, t, *p) {
+                assert!(false, "{e}");
+                unreachable!()
+            }
+        }
         match b.finish() {
             Ok(idx) => idx,
             Err(e) => {
@@ -381,10 +389,18 @@ mod tests {
         // Insert non-sequential positions and high doc ids; the iterator
         // must reproduce the ascending absolute values.
         let mut b = PositionsBuilder::new(7, NormalizerVersion::new(2, 1));
-        b.add_token(DocId(100), "t", Position(50));
-        b.add_token(DocId(100), "t", Position(10));
-        b.add_token(DocId(100), "t", Position(30));
-        b.add_token(DocId(1_000_000), "t", Position(0));
+        let inserts: &[(DocId, &str, Position)] = &[
+            (DocId(100), "t", Position(50)),
+            (DocId(100), "t", Position(10)),
+            (DocId(100), "t", Position(30)),
+            (DocId(1_000_000), "t", Position(0)),
+        ];
+        for (d, t, p) in inserts {
+            if let Err(e) = b.add_token(*d, t, *p) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
         let idx = match b.finish() {
             Ok(idx) => idx,
             Err(e) => {

@@ -13,8 +13,16 @@
 //!   implementations live in LEX-04 (regex) and STR-01 (structural) per
 //!   the LEX-00 ticket §3 deferral pin.
 //!
-//! `NFC_DEFERRED`: Unicode NFC normalization at the input boundary is a
-//! follow-up. The tokenizer is byte-indexed over the raw `&str` today.
+//! NFC contract: when `input` contains any non-ASCII byte, the tokenizer
+//! first applies Unicode NFC (canonical composition) via
+//! [`crate::nfc::normalize_nfc`] and then tokenizes the normalized form.
+//! Pure-ASCII input skips the pass (fast path). Consequence: emitted
+//! [`Token::byte_start`] / [`Token::byte_end`] index into the
+//! **NFC-normalized** form of the input, not the raw caller-supplied
+//! bytes. Callers that need offsets into the raw input must compute their
+//! own mapping (out of scope for LEX-00; the LEX-00 wire contract is
+//! "tokens carry offsets into the normalized form the writer/reader pair
+//! shares").
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
 
@@ -22,6 +30,7 @@ use core::fmt;
 
 use crate::errors::{LexNormError, LexNormErrorCode};
 use crate::lang::LangId;
+use crate::nfc::normalize_nfc;
 use crate::patterntype::PatternType;
 
 /// Maximum supported chunk size, in bytes. Inputs above this fail with
@@ -216,9 +225,32 @@ pub fn tokenize_text(
             "lang not in v1 ship set",
         ));
     }
+    // NFC pass at input boundary. ASCII-only input is byte-identical to
+    // its NFC form by definition, so we skip the allocation in that case.
+    // Non-ASCII inputs are normalized before tokenization; emitted token
+    // byte offsets index into this normalized form (see module header).
+    let normalized: String;
+    let work: &str = if input.is_ascii() {
+        input
+    } else {
+        normalized = normalize_nfc(input);
+        &normalized
+    };
+    // NFC composition can shrink the input (e.g. decomposed `e + ́`
+    // becomes single `é` codepoint), never enlarge it past the original
+    // byte length cap in practical terms, but a future spec change might
+    // expand combining-mark sequences. Recheck the cap after NFC to keep
+    // the contract honest.
+    if work.len() > MAX_CHUNK_BYTES {
+        return Err(LexNormError::new(
+            LexNormErrorCode::OversizedChunk,
+            u32_from_usize_clamped(MAX_CHUNK_BYTES),
+            "NFC-normalized input exceeds 64 KiB cap",
+        ));
+    }
     match pt {
-        PatternType::Literal => tokenize_literal(input),
-        PatternType::Keyword | PatternType::Standard => tokenize_identifier_aware(input),
+        PatternType::Literal => tokenize_literal(work),
+        PatternType::Keyword | PatternType::Standard => tokenize_identifier_aware(work),
         PatternType::Regexp => Err(LexNormError::new(
             LexNormErrorCode::UnknownPatternType,
             0,
@@ -613,5 +645,72 @@ mod tests {
             tokenize_text("foo", LangId::Rust, PatternType::Standard),
         );
         assert_eq!(toks.len(), 1);
+    }
+
+    #[test]
+    fn ascii_fast_path_offsets_match_raw_input() {
+        // ASCII path must skip NFC and preserve the byte-identical offset
+        // contract callers had before NFC landed.
+        let raw = "hello world";
+        let toks = must_ok(
+            "ascii-fast-path",
+            tokenize_text(raw, LangId::Rust, PatternType::Standard),
+        );
+        assert_eq!(toks.len(), 2);
+        let Some(t0) = toks.first() else {
+            assert!(false, "no first token");
+            return;
+        };
+        assert_eq!(&*t0.surface, "hello");
+        assert_eq!(t0.byte_start, 0);
+        assert_eq!(t0.byte_end, 5);
+    }
+
+    #[test]
+    fn empty_input_after_nfc_path() {
+        let toks = must_ok(
+            "empty-literal",
+            tokenize_text("", LangId::Rust, PatternType::Literal),
+        );
+        assert!(toks.is_empty());
+    }
+
+    #[test]
+    fn nfc_equivalence_precomposed_vs_decomposed() {
+        // Precomposed `é` (U+00E9) and decomposed `e + U+0301` must
+        // tokenize to identical token streams (modulo internal offsets,
+        // which both anchor into the same NFC form).
+        let precomposed = "caf\u{00E9}";
+        let decomposed = "caf\u{0065}\u{0301}";
+        let a = must_ok(
+            "nfc-precomposed",
+            tokenize_text(precomposed, LangId::Rust, PatternType::Standard),
+        );
+        let b = must_ok(
+            "nfc-decomposed",
+            tokenize_text(decomposed, LangId::Rust, PatternType::Standard),
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn token_offsets_index_into_normalized_form() {
+        // Decomposed input "caf e + combining-acute" is 6 bytes raw
+        // (c=1, a=1, f=1, e=1, U+0301=2). After NFC it is "café" = 5
+        // bytes (é = 2 bytes). The single emitted Word token must span
+        // 0..5, i.e. the normalized form's byte range, NOT the raw 0..6.
+        let decomposed = "caf\u{0065}\u{0301}";
+        assert_eq!(decomposed.len(), 6);
+        let toks = must_ok(
+            "nfc-offsets",
+            tokenize_text(decomposed, LangId::Rust, PatternType::Standard),
+        );
+        assert_eq!(toks.len(), 1);
+        let Some(t0) = toks.first() else {
+            assert!(false, "no token");
+            return;
+        };
+        assert_eq!(t0.byte_start, 0);
+        assert_eq!(t0.byte_end, 5);
     }
 }

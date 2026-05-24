@@ -31,10 +31,14 @@ pub enum SemanticErrorCode {
     /// — L2 and Dot are reserved name-wise but unsupported at MVP.
     SemMetricUnsupported,
     /// ANN backend's pinned-seed contract has been violated, or the
-    /// corpus size exceeded the deterministic exact-NN cutoff and HNSW
-    /// with pinned seed is not yet shipped. Per SEM-01 spec §10
-    /// R-ANN-DET and §4.4.
+    /// corpus size exceeded the deterministic exact-NN cutoff *and*
+    /// the caller explicitly opted out of HNSW (`disable_hnsw=true`).
+    /// Per SEM-01 spec §10 R-ANN-DET and §4.4.
     SemAnnNondeterministic,
+    /// HNSW build / search parameters out of range. Surfaces from
+    /// [`crate::hnsw::HnswParams::validate`] when `m`, `ef_construction`,
+    /// or `ef_search` falls outside the documented bounds.
+    SemHnswParamsInvalid,
     /// A per-query or per-corpus cap was exceeded. Carrier is always
     /// paired with a [`LimitDimension`] tag describing which cap fired.
     PlanLimitExceeded,
@@ -55,6 +59,7 @@ impl SemanticErrorCode {
             Self::SemInvalidVector => "SEM_INVALID_VECTOR",
             Self::SemMetricUnsupported => "SEM_METRIC_UNSUPPORTED",
             Self::SemAnnNondeterministic => "SEM_ANN_NONDETERMINISTIC",
+            Self::SemHnswParamsInvalid => "SEM_HNSW_PARAMS_INVALID",
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
             Self::IndexDeserialize => "INDEX_DESERIALIZE",
             Self::IndexCorrupted => "INDEX_CORRUPTED",
@@ -70,6 +75,7 @@ impl SemanticErrorCode {
             "SEM_INVALID_VECTOR" => Self::SemInvalidVector,
             "SEM_METRIC_UNSUPPORTED" => Self::SemMetricUnsupported,
             "SEM_ANN_NONDETERMINISTIC" => Self::SemAnnNondeterministic,
+            "SEM_HNSW_PARAMS_INVALID" => Self::SemHnswParamsInvalid,
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             "INDEX_DESERIALIZE" => Self::IndexDeserialize,
             "INDEX_CORRUPTED" => Self::IndexCorrupted,
@@ -322,6 +328,7 @@ mod tests {
         SemanticErrorCode::SemInvalidVector,
         SemanticErrorCode::SemMetricUnsupported,
         SemanticErrorCode::SemAnnNondeterministic,
+        SemanticErrorCode::SemHnswParamsInvalid,
         SemanticErrorCode::PlanLimitExceeded,
         SemanticErrorCode::IndexDeserialize,
         SemanticErrorCode::IndexCorrupted,

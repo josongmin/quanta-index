@@ -17,3 +17,4 @@ serde = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 ciborium = { workspace = true }
+proptest = { workspace = true }

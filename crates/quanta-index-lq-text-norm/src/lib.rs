@@ -18,20 +18,24 @@
 //! chunks. The orthogonal LQ DSL query normalizer (PRE-NORM) lives at
 //! `quanta-index-lq-norm` and is not consumed here.
 //!
-//! `NFC_DEFERRED`: Unicode NFC normalization is currently a no-op at the
-//! input boundary. Adding it is a follow-up that pulls in
-//! `unicode-normalization` as a workspace dep. Callers must not rely on NFC
-//! equivalence yet.
+//! NFC: Unicode NFC (canonical composition) is applied at the tokenizer
+//! input boundary whenever the input contains a non-ASCII byte, so the
+//! precomposed `é` (U+00E9) and the decomposed `e + U+0301` tokenize
+//! identically. ASCII-only inputs skip the pass (fast path). Token byte
+//! offsets index into the NFC-normalized form; see
+//! [`tokenizer`] for the offset contract.
 
 pub mod errors;
 pub mod folder;
 pub mod lang;
+pub mod nfc;
 pub mod patterntype;
 pub mod tokenizer;
 
 pub use errors::{LexNormError, LexNormErrorCode};
 pub use folder::{CaseFold, fold_case};
 pub use lang::{LangId, detect_lang};
+pub use nfc::normalize_nfc;
 pub use patterntype::{DEFAULT_PATTERN_TYPE, PatternType};
 pub use tokenizer::{Token, TokenKind, tokenize_text};
 

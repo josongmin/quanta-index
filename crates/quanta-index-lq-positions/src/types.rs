@@ -20,6 +20,41 @@ pub const DEFAULT_WINDOW_TOKENS: u32 = 8;
 /// [`crate::errors::PositionsErrorCode::WindowOutOfRange`].
 pub const MAX_WINDOW_TOKENS: u32 = 1024;
 
+/// Maximum phrase length (in normalized tokens) per LEX-03 §4.2.
+///
+/// `query_phrase` with `terms.len() > MAX_PHRASE_LEN` fails closed with
+/// [`crate::errors::PositionsErrorCode::PlanLimitExceeded`] carrying
+/// [`crate::errors::LimitDimension::PhraseLen`].
+pub const MAX_PHRASE_LEN: u32 = 64;
+
+/// Maximum candidate-pair scan budget for `query_adjacency` per LEX-03
+/// §4.2 (default `100_000`; the spec table also documents the floor
+/// `1_000` and the ceiling `1_000_000`).
+///
+/// Exceeding this scan depth — measured as the running count of
+/// position-pair comparisons across all docs that hold both terms — fails
+/// closed with [`crate::errors::PositionsErrorCode::PlanLimitExceeded`]
+/// carrying [`crate::errors::LimitDimension::AdjacencyScanDepth`].
+pub const MAX_ADJACENCY_SCAN_DEPTH: u32 = 100_000;
+
+/// Maximum positions retained for a single `(term, doc)` cell per LEX-03
+/// §4.2.
+///
+/// `PositionsBuilder::add_token` increments a per-`(term, doc)` counter
+/// and returns [`crate::errors::PositionsErrorCode::PlanLimitExceeded`]
+/// with [`crate::errors::LimitDimension::PositionsPerCell`] when the
+/// counter would exceed this value. No silent truncation.
+pub const MAX_POSITIONS_PER_CELL: u32 = 4_096;
+
+/// Maximum distinct docs in a single term's posting list per LEX-03 §4.2:
+/// `2^25 = 33_554_432`.
+///
+/// `PositionsBuilder::finish` walks per-term doc lists; a list whose
+/// length exceeds this cap fails closed with
+/// [`crate::errors::PositionsErrorCode::PlanLimitExceeded`] and
+/// [`crate::errors::LimitDimension::DocsPerTerm`].
+pub const MAX_DOCS_PER_TERM: u32 = 1 << 25;
+
 /// Per-generation document identifier.
 ///
 /// Newtype around `u64`. Shape (`pub u64`) is deliberately identical to the
@@ -318,6 +353,18 @@ mod tests {
         assert!(AdjacencyConfig::new(1).is_some());
         assert!(AdjacencyConfig::new(MAX_WINDOW_TOKENS).is_some());
         assert!(AdjacencyConfig::new(MAX_WINDOW_TOKENS.saturating_add(1)).is_none());
+    }
+
+    #[test]
+    fn plan_limit_constants_match_spec() {
+        // LEX-03 §4.2 default-knob row: pinned so a casual edit can't drift
+        // the wire-visible caps. Floors/ceilings are not enforced by this
+        // crate (planner concern) so only the defaults are pinned here.
+        assert_eq!(super::MAX_PHRASE_LEN, 64);
+        assert_eq!(super::MAX_ADJACENCY_SCAN_DEPTH, 100_000);
+        assert_eq!(super::MAX_POSITIONS_PER_CELL, 4_096);
+        assert_eq!(super::MAX_DOCS_PER_TERM, 33_554_432);
+        assert_eq!(super::MAX_DOCS_PER_TERM, 1u32 << 25);
     }
 
     #[test]

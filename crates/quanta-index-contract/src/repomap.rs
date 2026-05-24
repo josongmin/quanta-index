@@ -1,4 +1,4 @@
-//! RepoMap contract surface.
+//! `RepoMap` contract surface.
 
 use std::collections::BTreeMap;
 

@@ -9,7 +9,8 @@
 
 use crate::ast::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf,
-    LqNormalizedQuery, LqOptions, LqPatternType, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    LqMetaVar, LqNormalizedQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect,
+    LqStructuralBlock, LqStructuralNode, LqType, LqVisibility, LqYesNoOnly,
 };
 use crate::errors::{LqParseError, LqParseErrorCode, LqSpan};
 use crate::limits::{MAX_AST_DEPTH, MAX_FANOUT_PER_NODE};
@@ -176,6 +177,7 @@ impl Parser<'_> {
                 | LqTokenKind::Regex(_)
                 | LqTokenKind::StructuralBlock(_)
                 | LqTokenKind::ColonValue(_)
+                | LqTokenKind::Predicate { .. }
                 | LqTokenKind::Colon
                 | LqTokenKind::Not
                 | LqTokenKind::Dash
@@ -257,7 +259,8 @@ impl Parser<'_> {
             | LqTokenKind::And
             | LqTokenKind::RParen
             | LqTokenKind::Colon
-            | LqTokenKind::ColonValue(_) => Err(LqParseError::new(
+            | LqTokenKind::ColonValue(_)
+            | LqTokenKind::Predicate { .. } => Err(LqParseError::new(
                 LqParseErrorCode::SyntaxError,
                 self.peek_span(),
                 "unexpected token in atom position",
@@ -281,8 +284,14 @@ impl Parser<'_> {
         match head.kind {
             LqTokenKind::Phrase(s) => Ok(Some(LqExpr::Leaf(LqLeaf::Phrase(s)))),
             LqTokenKind::RawString(s) => Ok(Some(LqExpr::Leaf(LqLeaf::RawString(s)))),
-            LqTokenKind::Regex(s) => Ok(Some(LqExpr::Leaf(LqLeaf::Regex(s)))),
-            LqTokenKind::StructuralBlock(s) => Ok(Some(LqExpr::Leaf(LqLeaf::StructuralBlock(s)))),
+            LqTokenKind::Regex(s) => {
+                crate::regex_guard::precheck_regex(&s, head.span)?;
+                Ok(Some(LqExpr::Leaf(LqLeaf::Regex(s))))
+            }
+            LqTokenKind::StructuralBlock(raw) => {
+                let block = parse_structural_body(&raw, head.span)?;
+                Ok(Some(LqExpr::Leaf(LqLeaf::StructuralBlock(block))))
+            }
             LqTokenKind::KeywordOrFilterName(name) => {
                 if matches!(self.peek_kind(), LqTokenKind::Colon) {
                     self.consume();
@@ -295,15 +304,37 @@ impl Parser<'_> {
                         ));
                     };
                     self.cursor = self.cursor.saturating_add(1);
-                    let LqTokenKind::ColonValue(val) = value.kind else {
-                        return Err(LqParseError::new(
+                    match value.kind {
+                        LqTokenKind::ColonValue(val) => {
+                            self.absorb_filter_or_option(&name, &val, head.span)?;
+                            Ok(None)
+                        }
+                        LqTokenKind::Predicate { dotted, args_raw } => {
+                            let canonical_name = format!("{name}.{dotted}");
+                            let args = parse_predicate_args(&args_raw, value.span)?;
+                            Ok(Some(LqExpr::Leaf(LqLeaf::Predicate {
+                                name: canonical_name,
+                                args,
+                            })))
+                        }
+                        LqTokenKind::Phrase(_)
+                        | LqTokenKind::RawString(_)
+                        | LqTokenKind::Regex(_)
+                        | LqTokenKind::StructuralBlock(_)
+                        | LqTokenKind::KeywordOrFilterName(_)
+                        | LqTokenKind::And
+                        | LqTokenKind::Or
+                        | LqTokenKind::Not
+                        | LqTokenKind::Dash
+                        | LqTokenKind::LParen
+                        | LqTokenKind::RParen
+                        | LqTokenKind::Colon
+                        | LqTokenKind::Eof => Err(LqParseError::new(
                             LqParseErrorCode::InvalidFilterValue,
                             value.span,
                             "missing filter value",
-                        ));
-                    };
-                    self.absorb_filter_or_option(&name, &val, head.span)?;
-                    Ok(None)
+                        )),
+                    }
                 } else {
                     Ok(Some(LqExpr::Leaf(LqLeaf::Keyword(name))))
                 }
@@ -316,6 +347,7 @@ impl Parser<'_> {
             | LqTokenKind::RParen
             | LqTokenKind::Colon
             | LqTokenKind::ColonValue(_)
+            | LqTokenKind::Predicate { .. }
             | LqTokenKind::Eof => Err(LqParseError::new(
                 LqParseErrorCode::SyntaxError,
                 head.span,
@@ -612,7 +644,556 @@ fn parse_pattern_type(v: &str) -> Option<LqPatternType> {
     Some(p)
 }
 
+/// Parse the parenthesised argument body of a predicate token.
+///
+/// Args are comma-separated; each arg is one of:
+/// - `"..."` — quoted phrase
+/// - `'...'` — raw string
+/// - `name:value` — nested filter shape (value runs to next `,` or end)
+/// - bare token — keyword if not a number, else `Number`
+///
+/// Whitespace surrounding each arg is trimmed. An empty body parses to an
+/// empty `args` list. Unterminated quotes surface
+/// [`LqParseErrorCode::UnclosedQuote`].
+fn parse_predicate_args(raw: &str, span: LqSpan) -> Result<Vec<LqPredicateArg>, LqParseError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<LqPredicateArg> = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut pos: usize = 0;
+    let len = bytes.len();
+    loop {
+        // Skip leading whitespace.
+        while pos < len {
+            let Some(&b) = bytes.get(pos) else { break };
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                let next = pos.checked_add(1).ok_or_else(|| {
+                    LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        span,
+                        "predicate args offset overflow",
+                    )
+                })?;
+                pos = next;
+            } else {
+                break;
+            }
+        }
+        if pos >= len {
+            break;
+        }
+        let Some(&head) = bytes.get(pos) else {
+            break;
+        };
+        let arg = match head {
+            b'"' => {
+                let (consumed, value) = read_quoted_arg(bytes, pos, b'"', span)?;
+                pos = consumed;
+                LqPredicateArg::Phrase(value)
+            }
+            b'\'' => {
+                let (consumed, value) = read_quoted_arg(bytes, pos, b'\'', span)?;
+                pos = consumed;
+                LqPredicateArg::RawString(value)
+            }
+            _ => {
+                // Read until `,` (top-level) or EOF.
+                let (consumed, value) = read_bare_arg(bytes, pos, span)?;
+                pos = consumed;
+                let trimmed_val = value.trim();
+                if trimmed_val.is_empty() {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        span,
+                        "empty predicate argument",
+                    ));
+                }
+                classify_bare_arg(trimmed_val)
+            }
+        };
+        out.push(arg);
+        // Skip trailing whitespace.
+        while pos < len {
+            let Some(&b) = bytes.get(pos) else { break };
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                let next = pos.checked_add(1).ok_or_else(|| {
+                    LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        span,
+                        "predicate args offset overflow",
+                    )
+                })?;
+                pos = next;
+            } else {
+                break;
+            }
+        }
+        if pos >= len {
+            break;
+        }
+        let Some(&sep) = bytes.get(pos) else { break };
+        if sep == b',' {
+            let next = pos.checked_add(1).ok_or_else(|| {
+                LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span,
+                    "predicate args offset overflow",
+                )
+            })?;
+            pos = next;
+            continue;
+        }
+        // Anything else here is a syntax error — the bare reader stops at
+        // `,` only, and quoted readers stopped at the closing quote.
+        return Err(LqParseError::new(
+            LqParseErrorCode::SyntaxError,
+            span,
+            "unexpected character in predicate args",
+        ));
+    }
+    Ok(out)
+}
+
+fn read_quoted_arg(
+    bytes: &[u8],
+    start: usize,
+    terminator: u8,
+    span: LqSpan,
+) -> Result<(usize, String), LqParseError> {
+    let mut pos = start.checked_add(1).ok_or_else(|| {
+        LqParseError::new(
+            LqParseErrorCode::SyntaxError,
+            span,
+            "predicate args offset overflow",
+        )
+    })?;
+    let mut buf = String::new();
+    while let Some(&b) = bytes.get(pos) {
+        if b == terminator {
+            let next = pos.checked_add(1).ok_or_else(|| {
+                LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span,
+                    "predicate args offset overflow",
+                )
+            })?;
+            return Ok((next, buf));
+        }
+        if b == b'\\' && terminator == b'"' {
+            let after = pos.checked_add(1).ok_or_else(|| {
+                LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span,
+                    "predicate args offset overflow",
+                )
+            })?;
+            let Some(&esc) = bytes.get(after) else {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    span,
+                    "trailing backslash in predicate phrase",
+                ));
+            };
+            let mapped = match esc {
+                b'\\' => '\\',
+                b'"' => '"',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                _ => {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::TokenInvalid,
+                        span,
+                        "unknown phrase escape in predicate arg",
+                    ));
+                }
+            };
+            buf.push(mapped);
+            pos = after.checked_add(1).ok_or_else(|| {
+                LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    span,
+                    "predicate args offset overflow",
+                )
+            })?;
+            continue;
+        }
+        let rest = bytes.get(pos..).unwrap_or(&[]);
+        let ch = match core::str::from_utf8(rest) {
+            Ok(s) => match s.chars().next() {
+                Some(c) => c,
+                None => {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::TokenInvalid,
+                        span,
+                        "invalid UTF-8 in predicate arg",
+                    ));
+                }
+            },
+            Err(_e) => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    span,
+                    "invalid UTF-8 in predicate arg",
+                ));
+            }
+        };
+        buf.push(ch);
+        let step = ch.len_utf8();
+        pos = pos.checked_add(step).ok_or_else(|| {
+            LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                span,
+                "predicate args offset overflow",
+            )
+        })?;
+    }
+    Err(LqParseError::new(
+        LqParseErrorCode::UnclosedQuote,
+        span,
+        "unterminated quoted predicate arg",
+    ))
+}
+
+fn read_bare_arg(
+    bytes: &[u8],
+    start: usize,
+    span: LqSpan,
+) -> Result<(usize, String), LqParseError> {
+    let mut pos = start;
+    let mut buf = String::new();
+    while let Some(&b) = bytes.get(pos) {
+        if b == b',' {
+            break;
+        }
+        let rest = bytes.get(pos..).unwrap_or(&[]);
+        let ch = match core::str::from_utf8(rest) {
+            Ok(s) => match s.chars().next() {
+                Some(c) => c,
+                None => break,
+            },
+            Err(_e) => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    span,
+                    "invalid UTF-8 in predicate arg",
+                ));
+            }
+        };
+        buf.push(ch);
+        let step = ch.len_utf8();
+        pos = pos.checked_add(step).ok_or_else(|| {
+            LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                span,
+                "predicate args offset overflow",
+            )
+        })?;
+    }
+    Ok((pos, buf))
+}
+
+fn classify_bare_arg(s: &str) -> LqPredicateArg {
+    if let Some((name, value)) = s.split_once(':') {
+        return LqPredicateArg::Filter {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        };
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return LqPredicateArg::Number(n);
+    }
+    LqPredicateArg::Keyword(s.to_owned())
+}
+
+/// Parse the raw body of a `match { ... }` block into a typed structural
+/// block (with `lang: None` for v1) per dsl.md §8.
+///
+/// Caller passes the body bytes captured by the tokenizer (the segment
+/// between the outer `{` and `}`). Returns:
+///
+/// - `SyntaxError` on unbalanced braces or malformed metavar
+/// - `LimitExceededStructural` on > `MAX_STRUCTURAL_NODES` total nodes
+fn parse_structural_body(raw: &str, span: LqSpan) -> Result<LqStructuralBlock, LqParseError> {
+    let mut parser = StructuralParser::new(raw, span);
+    let nodes = parser.parse_group_body(0)?;
+    if parser.pos < parser.bytes.len() {
+        return Err(LqParseError::new(
+            LqParseErrorCode::SyntaxError,
+            span,
+            "trailing input after structural body",
+        ));
+    }
+    let mut node_count: u32 = 0;
+    for n in &nodes {
+        count_structural_nodes(n, &mut node_count, span)?;
+    }
+    Ok(LqStructuralBlock { lang: None, nodes })
+}
+
+fn count_structural_nodes(
+    node: &LqStructuralNode,
+    acc: &mut u32,
+    span: LqSpan,
+) -> Result<(), LqParseError> {
+    let limit = crate::limits::MAX_STRUCTURAL_NODES;
+    *acc = acc.checked_add(1).ok_or_else(|| {
+        LqParseError::new(
+            LqParseErrorCode::LimitExceededStructural,
+            span,
+            "structural node count overflowed u32",
+        )
+    })?;
+    if *acc > limit {
+        return Err(LqParseError::new(
+            LqParseErrorCode::LimitExceededStructural,
+            span,
+            "structural pattern node count exceeds cap",
+        ));
+    }
+    match node {
+        LqStructuralNode::Literal(_) | LqStructuralNode::MetaVar(_) => Ok(()),
+        LqStructuralNode::Group(children) => {
+            for c in children {
+                count_structural_nodes(c, acc, span)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+struct StructuralParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    span: LqSpan,
+}
+
+impl<'a> StructuralParser<'a> {
+    fn new(raw: &'a str, span: LqSpan) -> Self {
+        Self {
+            bytes: raw.as_bytes(),
+            pos: 0,
+            span,
+        }
+    }
+
+    fn bump(&mut self) -> Result<(), LqParseError> {
+        self.pos = self.pos.checked_add(1).ok_or_else(|| {
+            LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "structural offset overflow",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn parse_group_body(&mut self, depth: u32) -> Result<Vec<LqStructuralNode>, LqParseError> {
+        let max_depth = crate::limits::MAX_AST_DEPTH;
+        if depth > max_depth {
+            return Err(LqParseError::new(
+                LqParseErrorCode::LimitExceededDepth,
+                self.span,
+                "structural nesting depth exceeds 32",
+            ));
+        }
+        let mut out: Vec<LqStructuralNode> = Vec::new();
+        let mut literal_buf: Vec<u8> = Vec::new();
+        loop {
+            let Some(&b) = self.bytes.get(self.pos) else {
+                if !literal_buf.is_empty() {
+                    out.push(LqStructuralNode::Literal(bytes_to_box(
+                        &literal_buf,
+                        self.span,
+                    )?));
+                    literal_buf.clear();
+                }
+                return Ok(out);
+            };
+            match b {
+                b'}' => {
+                    if !literal_buf.is_empty() {
+                        out.push(LqStructuralNode::Literal(bytes_to_box(
+                            &literal_buf,
+                            self.span,
+                        )?));
+                        literal_buf.clear();
+                    }
+                    return Ok(out);
+                }
+                b'{' => {
+                    if !literal_buf.is_empty() {
+                        out.push(LqStructuralNode::Literal(bytes_to_box(
+                            &literal_buf,
+                            self.span,
+                        )?));
+                        literal_buf.clear();
+                    }
+                    self.bump()?;
+                    let next_depth = depth.checked_add(1).ok_or_else(|| {
+                        LqParseError::new(
+                            LqParseErrorCode::LimitExceededDepth,
+                            self.span,
+                            "structural depth counter overflow",
+                        )
+                    })?;
+                    let inner = self.parse_group_body(next_depth)?;
+                    if self.bytes.get(self.pos) != Some(&b'}') {
+                        return Err(LqParseError::new(
+                            LqParseErrorCode::SyntaxError,
+                            self.span,
+                            "unbalanced '{' — missing closing '}'",
+                        ));
+                    }
+                    self.bump()?;
+                    out.push(LqStructuralNode::Group(inner));
+                }
+                b'$' => {
+                    if !literal_buf.is_empty() {
+                        out.push(LqStructuralNode::Literal(bytes_to_box(
+                            &literal_buf,
+                            self.span,
+                        )?));
+                        literal_buf.clear();
+                    }
+                    self.bump()?;
+                    let mv = self.parse_metavar_dollar()?;
+                    out.push(LqStructuralNode::MetaVar(mv));
+                }
+                b':' if self.peek_alias() => {
+                    if !literal_buf.is_empty() {
+                        out.push(LqStructuralNode::Literal(bytes_to_box(
+                            &literal_buf,
+                            self.span,
+                        )?));
+                        literal_buf.clear();
+                    }
+                    self.bump()?;
+                    self.bump()?;
+                    let mv = self.parse_metavar_until(b']')?;
+                    if self.bytes.get(self.pos) != Some(&b']') {
+                        return Err(LqParseError::new(
+                            LqParseErrorCode::SyntaxError,
+                            self.span,
+                            "metavariable ':[name]' missing closing ']'",
+                        ));
+                    }
+                    self.bump()?;
+                    out.push(LqStructuralNode::MetaVar(mv));
+                }
+                _ => {
+                    literal_buf.push(b);
+                    self.bump()?;
+                }
+            }
+        }
+    }
+
+    fn peek_alias(&self) -> bool {
+        let Some(n) = self.pos.checked_add(1) else {
+            return false;
+        };
+        self.bytes.get(n) == Some(&b'[')
+    }
+
+    fn parse_metavar_dollar(&mut self) -> Result<LqMetaVar, LqParseError> {
+        let start = self.pos;
+        while let Some(&b) = self.bytes.get(self.pos) {
+            let is_first = self.pos == start;
+            let ok = if is_first {
+                b.is_ascii_alphabetic() || b == b'_'
+            } else {
+                b.is_ascii_alphanumeric() || b == b'_'
+            };
+            if !ok {
+                break;
+            }
+            self.bump()?;
+        }
+        if self.pos == start {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "metavariable '$' missing name",
+            ));
+        }
+        let Some(name_bytes) = self.bytes.get(start..self.pos) else {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "internal: metavar slice invalid",
+            ));
+        };
+        let name = match core::str::from_utf8(name_bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_e) => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    self.span,
+                    "invalid UTF-8 in metavar name",
+                ));
+            }
+        };
+        Ok(LqMetaVar::new(name))
+    }
+
+    fn parse_metavar_until(&mut self, terminator: u8) -> Result<LqMetaVar, LqParseError> {
+        let start = self.pos;
+        while let Some(&b) = self.bytes.get(self.pos) {
+            if b == terminator {
+                break;
+            }
+            self.bump()?;
+        }
+        if self.pos == start {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "metavariable ':[name]' missing name",
+            ));
+        }
+        let Some(name_bytes) = self.bytes.get(start..self.pos) else {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "internal: metavar slice invalid",
+            ));
+        };
+        let name = match core::str::from_utf8(name_bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_e) => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::TokenInvalid,
+                    self.span,
+                    "invalid UTF-8 in metavar name",
+                ));
+            }
+        };
+        Ok(LqMetaVar::new(name))
+    }
+}
+
+fn bytes_to_box(buf: &[u8], span: LqSpan) -> Result<Box<str>, LqParseError> {
+    let s = match core::str::from_utf8(buf) {
+        Ok(s) => s,
+        Err(_e) => {
+            return Err(LqParseError::new(
+                LqParseErrorCode::TokenInvalid,
+                span,
+                "invalid UTF-8 in structural literal",
+            ));
+        }
+    };
+    Ok(s.to_owned().into_boxed_str())
+}
+
 #[cfg(test)]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "test fixtures pin exact AST shapes and surface unexpected variants via assert!(false, …); fail-loud catch is the intent"
+)]
 mod tests {
     use super::parse;
     use crate::ast::{
@@ -836,5 +1417,180 @@ mod tests {
     fn type_filter_accepted() {
         let q = parse_input("type:file foo");
         assert_eq!(q.filters, vec![LqFilter::Type { kind: LqType::File }]);
+    }
+
+    // ---- Predicate sub-parser tests (Step 1) ----
+
+    #[test]
+    fn predicate_repo_has_file_with_filter_arg() {
+        let q = parse_input("repo:has.file(path:src)");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                assert_eq!(name, "repo.has.file");
+                assert_eq!(
+                    args,
+                    vec![crate::ast::LqPredicateArg::Filter {
+                        name: "path".to_owned(),
+                        value: "src".to_owned(),
+                    }]
+                );
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_repo_contains_content_with_phrase_arg() {
+        let q = parse_input("repo:contains.content(\"TODO\")");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                assert_eq!(name, "repo.contains.content");
+                assert_eq!(
+                    args,
+                    vec![crate::ast::LqPredicateArg::Phrase("TODO".to_owned())]
+                );
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_dotted_multi_segment_name() {
+        let q = parse_input("repo:contains.commit.after(2024)");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                assert_eq!(name, "repo.contains.commit.after");
+                assert_eq!(args, vec![crate::ast::LqPredicateArg::Number(2024)]);
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_unknown_name_accepts_at_parse() {
+        // Unknown names parse cleanly — semantic rejection is planner-scope.
+        let q = parse_input("repo:made.up.predicate(x)");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, .. }) => {
+                assert_eq!(name, "repo.made.up.predicate");
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_unclosed_paren_errors() {
+        // Tokenizer surfaces the missing `)` as SyntaxError.
+        assert_eq!(parse_err("repo:has.file(x"), LqParseErrorCode::SyntaxError);
+    }
+
+    #[test]
+    fn predicate_multiple_args_split_on_comma() {
+        let q = parse_input("repo:has.file(path:src, name:lib)");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { args, .. }) => {
+                assert_eq!(args.len(), 2);
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    // ---- Structural inner-parse tests (Step 2) ----
+
+    #[test]
+    fn structural_block_parses_pure_literal_body() {
+        let q = parse_input("match { hello }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                assert!(block.lang.is_none());
+                assert_eq!(block.nodes.len(), 1);
+                match block.nodes.first() {
+                    Some(crate::ast::LqStructuralNode::Literal(s)) => {
+                        assert_eq!(s.as_ref(), " hello ");
+                    }
+                    other => {
+                        assert!(false, "expected Literal, got {other:?}");
+                    }
+                }
+            }
+            other => {
+                assert!(false, "expected StructuralBlock leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn structural_block_parses_metavar_dollar_form() {
+        let q = parse_input("match { fn $X() }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                // " fn ", $X, "() "
+                let metavars: Vec<&crate::ast::LqStructuralNode> = block
+                    .nodes
+                    .iter()
+                    .filter(|n| matches!(n, crate::ast::LqStructuralNode::MetaVar(_)))
+                    .collect();
+                assert_eq!(metavars.len(), 1);
+                if let Some(crate::ast::LqStructuralNode::MetaVar(m)) = metavars.first().copied() {
+                    assert_eq!(m.as_str(), "X");
+                } else {
+                    assert!(false, "expected $X metavar");
+                }
+            }
+            other => {
+                assert!(false, "expected StructuralBlock leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn structural_block_parses_alias_form() {
+        let q = parse_input("match { fn :[name]() }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                let metavars: Vec<&crate::ast::LqStructuralNode> = block
+                    .nodes
+                    .iter()
+                    .filter(|n| matches!(n, crate::ast::LqStructuralNode::MetaVar(_)))
+                    .collect();
+                assert_eq!(metavars.len(), 1);
+                if let Some(crate::ast::LqStructuralNode::MetaVar(m)) = metavars.first().copied() {
+                    assert_eq!(m.as_str(), "name");
+                } else {
+                    assert!(false, "expected :[name] metavar");
+                }
+            }
+            other => {
+                assert!(false, "expected StructuralBlock leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn structural_block_parses_nested_group() {
+        let q = parse_input("match { fn $X() { $body } }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                // expect at least one Group child for the inner `{ $body }`
+                let has_group = block
+                    .nodes
+                    .iter()
+                    .any(|n| matches!(n, crate::ast::LqStructuralNode::Group(_)));
+                assert!(has_group, "expected at least one nested Group");
+            }
+            other => {
+                assert!(false, "expected StructuralBlock leaf, got {other:?}");
+            }
+        }
     }
 }

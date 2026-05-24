@@ -31,3 +31,11 @@ pub use ipc::*;
 pub use query::*;
 pub use repomap::*;
 pub use results::*;
+
+// PRE-CONTRACT-EXT additive scaffold — canonical LQ-family wire types.
+// New module, additive only; downstream LQ-crate migration is a separate
+// ticket. Names live under `quanta_index_contract::lex::*` and are NOT
+// re-exported at the crate root to avoid shadowing the existing
+// `results::SearchExplanation` re-export above. See
+// `crates/quanta-index-contract/src/lex/mod.rs` for the canonical surface.
+pub mod lex;

@@ -13,10 +13,10 @@
 //!
 //! Missing terms surface as an empty result set — not an error.
 
-use crate::errors::{PositionsError, PositionsErrorCode};
+use crate::errors::{LimitDimension, PositionsError, PositionsErrorCode};
 use crate::index::PositionsIndex;
 use crate::phrase_query::{PhraseMatch, PhraseMatches, collect_term_postings};
-use crate::types::{AdjacencyConfig, MAX_WINDOW_TOKENS};
+use crate::types::{AdjacencyConfig, MAX_ADJACENCY_SCAN_DEPTH, MAX_WINDOW_TOKENS};
 
 /// Run an adjacency query for `term_a` near `term_b` within `cfg`.
 ///
@@ -55,6 +55,12 @@ pub fn query_adjacency(
     }
 
     let mut out: Vec<PhraseMatch> = Vec::new();
+    // LEX-03 §4.2 adjacency scan-depth cap: count every position-pair
+    // comparison across all docs that hold both terms. The cap is checked
+    // *before* each comparison so the (cap+1)-th candidate fails closed
+    // without doing the work — no silent truncation of the result set.
+    let mut scan_depth: u64 = 0;
+    let cap: u64 = u64::from(MAX_ADJACENCY_SCAN_DEPTH);
     for (doc_id, a_positions) in &a_map {
         let Some(b_positions) = b_map.get(doc_id) else {
             continue;
@@ -65,6 +71,15 @@ pub fn query_adjacency(
         // Symmetry is implicit because the window is two-sided.
         for a in a_positions {
             for b in b_positions {
+                scan_depth = scan_depth.saturating_add(1);
+                if scan_depth > cap {
+                    return Err(PositionsError::plan_limit_exceeded(
+                        LimitDimension::AdjacencyScanDepth,
+                        format!(
+                            "adjacency candidate-pair scan exceeded cap={MAX_ADJACENCY_SCAN_DEPTH}"
+                        ),
+                    ));
+                }
                 let diff = a.0.abs_diff(b.0);
                 if diff == 0 {
                     // Same position — only possible if both terms map to
@@ -97,9 +112,12 @@ pub fn query_adjacency(
 mod tests {
     use super::query_adjacency;
     use crate::builder::PositionsBuilder;
-    use crate::errors::PositionsErrorCode;
+    use crate::errors::{LimitDimension, PositionsErrorCode};
     use crate::index::PositionsIndex;
-    use crate::types::{AdjacencyConfig, DocId, MAX_WINDOW_TOKENS, NormalizerVersion, Position};
+    use crate::types::{
+        AdjacencyConfig, DocId, MAX_ADJACENCY_SCAN_DEPTH, MAX_WINDOW_TOKENS, NormalizerVersion,
+        Position,
+    };
 
     fn fixture() -> PositionsIndex {
         // Doc 0: positions [a@0, x@1, x@2, x@3, x@4, b@5]  -> distance 5
@@ -108,19 +126,24 @@ mod tests {
         // Doc 3: positions [a@0, b@1, b@8, b@9]            -> distances 1, 8, 9
         let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
 
-        b.add_token(DocId(0), "a", Position(0));
-        b.add_token(DocId(0), "b", Position(5));
-
-        b.add_token(DocId(1), "b", Position(0));
-        b.add_token(DocId(1), "a", Position(3));
-
-        b.add_token(DocId(2), "a", Position(0));
-        b.add_token(DocId(2), "b", Position(20));
-
-        b.add_token(DocId(3), "a", Position(0));
-        b.add_token(DocId(3), "b", Position(1));
-        b.add_token(DocId(3), "b", Position(8));
-        b.add_token(DocId(3), "b", Position(9));
+        let inserts: &[(DocId, &str, Position)] = &[
+            (DocId(0), "a", Position(0)),
+            (DocId(0), "b", Position(5)),
+            (DocId(1), "b", Position(0)),
+            (DocId(1), "a", Position(3)),
+            (DocId(2), "a", Position(0)),
+            (DocId(2), "b", Position(20)),
+            (DocId(3), "a", Position(0)),
+            (DocId(3), "b", Position(1)),
+            (DocId(3), "b", Position(8)),
+            (DocId(3), "b", Position(9)),
+        ];
+        for (d, t, p) in inserts {
+            if let Err(e) = b.add_token(*d, t, *p) {
+                assert!(false, "{e}");
+                unreachable!()
+            }
+        }
 
         match b.finish() {
             Ok(idx) => idx,
@@ -237,6 +260,63 @@ mod tests {
         match query_adjacency(&idx, "a", "b", &cfg) {
             Ok(_) => assert!(false, "expected WindowOutOfRange"),
             Err(e) => assert_eq!(e.code, PositionsErrorCode::WindowOutOfRange),
+        }
+    }
+
+    #[test]
+    fn adjacency_scan_depth_cap_fails_closed() {
+        // LEX-03 §4.2: when the candidate position-pair scan would exceed
+        // MAX_ADJACENCY_SCAN_DEPTH, fail closed with PlanLimitExceeded +
+        // dimension=AdjacencyScanDepth. Construct a single doc with two
+        // terms each at `n` distinct positions such that `n*n > cap`.
+        // Use spaced positions so neither term overlaps the other.
+        // n=400 → 160_000 > 100_000 cap; both 400 ≤ MAX_POSITIONS_PER_CELL.
+        let mut b = PositionsBuilder::new(1, NormalizerVersion::new(1, 0));
+        let n: u32 = 400;
+        for i in 0..n {
+            // `a` positions at 0, 10, 20, …
+            if let Err(e) = b.add_token(DocId(0), "a", Position(i.saturating_mul(10))) {
+                assert!(false, "{e}");
+                return;
+            }
+            // `b` positions at 100_000, 100_010, … — far away from any
+            // `a` so the result set is irrelevant to the cap check.
+            let bp = 100_000u32.saturating_add(i.saturating_mul(10));
+            if let Err(e) = b.add_token(DocId(0), "b", Position(bp)) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        let idx = match b.finish() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        let cfg = AdjacencyConfig::default_window();
+        match query_adjacency(&idx, "a", "b", &cfg) {
+            Ok(_) => assert!(false, "expected PlanLimitExceeded"),
+            Err(e) => {
+                assert_eq!(e.code, PositionsErrorCode::PlanLimitExceeded);
+                assert_eq!(e.dimension, Some(LimitDimension::AdjacencyScanDepth));
+                // Sanity: the documented cap is referenced — checked by
+                // the assertions above plus the `types::plan_limit_constants_match_spec`
+                // unit test. No additional inline check needed here.
+                assert!(MAX_ADJACENCY_SCAN_DEPTH >= 1_000);
+            }
+        }
+    }
+
+    #[test]
+    fn adjacency_scan_below_cap_succeeds() {
+        // Sanity boundary: a scan well below the cap returns Ok. The
+        // fixture exercises 4*4=16 candidate pairs in doc 3 (largest doc).
+        let idx = fixture();
+        let cfg = AdjacencyConfig::default_window();
+        match query_adjacency(&idx, "a", "b", &cfg) {
+            Ok(r) => assert!(!r.matches.is_empty()),
+            Err(e) => assert!(false, "{e}"),
         }
     }
 

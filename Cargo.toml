@@ -115,6 +115,7 @@ tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "net", "io-util", "macros", "signal", "sync", "time"] }
+unicode-normalization = "0.1"
 
 [profile.release]
 panic = "abort"

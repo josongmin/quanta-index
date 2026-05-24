@@ -22,13 +22,16 @@
 
 pub mod ast;
 pub mod errors;
+pub mod hasher;
 pub mod limits;
 pub mod normalizer;
 pub mod parser;
+pub mod regex_guard;
 pub mod tokenizer;
 
 pub use ast::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf,
-    LqNormalizedQuery, LqOptions, LqPatternType, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    LqMetaVar, LqNormalizedQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect,
+    LqStructuralBlock, LqStructuralNode, LqType, LqVisibility, LqYesNoOnly,
 };
 pub use errors::{LqParseError, LqParseErrorCode, LqSpan};

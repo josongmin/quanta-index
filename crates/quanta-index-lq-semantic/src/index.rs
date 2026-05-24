@@ -29,17 +29,26 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use crate::errors::{LimitDimension, SemanticError, SemanticErrorCode};
+use crate::hnsw::HnswParams;
 use crate::types::{DocId, Embedding, MAX_EMBEDDING_DIM};
 
 /// Authoritative per-generation semantic-vector index.
 ///
-/// Two indices that share `(generation, dim, by_doc)` (in that `BTreeMap`'s
-/// canonical iteration order) compare equal and serialize byte-identical.
+/// Two indices that share `(generation, dim, by_doc, hnsw_params)`
+/// (in `BTreeMap` canonical iteration order) compare equal and
+/// serialize byte-identical.
+///
+/// `hnsw_params` is the HNSW backend configuration the executor uses
+/// when corpus size exceeds [`crate::types::EXACT_NN_CUTOFF`]. When
+/// absent (`None`) and the corpus crosses the cutoff, the executor
+/// falls back to [`HnswParams::DEFAULTS`] unless the caller opted out
+/// of HNSW via the options entry point.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticIndex {
     generation: u64,
     dim: u32,
     by_doc: BTreeMap<DocId, Vec<f32>>,
+    hnsw_params: Option<HnswParams>,
 }
 
 impl SemanticIndex {
@@ -82,6 +91,29 @@ impl SemanticIndex {
         self.by_doc.get(&doc_id).map(Vec::as_slice)
     }
 
+    /// Borrow the persisted HNSW configuration, if attached.
+    #[must_use]
+    pub const fn hnsw_params(&self) -> Option<&HnswParams> {
+        self.hnsw_params.as_ref()
+    }
+
+    /// Builder-style: attach a validated [`HnswParams`] to this
+    /// index. The params are persisted alongside the corpus so the
+    /// executor can spin up an HNSW backend deterministically.
+    /// Fails closed on invalid params.
+    pub fn with_hnsw_params(mut self, params: HnswParams) -> Result<Self, SemanticError> {
+        params.validate()?;
+        self.hnsw_params = Some(params);
+        Ok(self)
+    }
+
+    /// Builder-style: clear any attached HNSW params.
+    #[must_use]
+    pub fn without_hnsw_params(mut self) -> Self {
+        self.hnsw_params = None;
+        self
+    }
+
     /// Serialize as canonical CBOR. See module-level docs for the wire
     /// shape. Failures route through [`SemanticErrorCode::IndexDeserialize`]
     /// (the encode side of the same wire-shape contract).
@@ -115,10 +147,14 @@ impl serde::Serialize for SemanticIndex {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(3))?;
+        let n = if self.hnsw_params.is_some() { 4 } else { 3 };
+        let mut m = ser.serialize_map(Some(n))?;
         m.serialize_entry("generation", &self.generation)?;
         m.serialize_entry("dim", &self.dim)?;
         m.serialize_entry("by_doc", &ByDocSeq(&self.by_doc))?;
+        if let Some(p) = self.hnsw_params.as_ref() {
+            m.serialize_entry("hnsw_params", p)?;
+        }
         m.end()
     }
 }
@@ -188,6 +224,7 @@ impl<'de> serde::Deserialize<'de> for SemanticIndex {
                 let mut generation: Option<u64> = None;
                 let mut dim: Option<u32> = None;
                 let mut by_doc_seq: Option<Vec<(DocId, Vec<f32>)>> = None;
+                let mut hnsw_params: Option<HnswParams> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "generation" => {
@@ -208,10 +245,16 @@ impl<'de> serde::Deserialize<'de> for SemanticIndex {
                             }
                             by_doc_seq = Some(map.next_value()?);
                         }
+                        "hnsw_params" => {
+                            if hnsw_params.is_some() {
+                                return Err(serde::de::Error::duplicate_field("hnsw_params"));
+                            }
+                            hnsw_params = Some(map.next_value()?);
+                        }
                         other => {
                             return Err(serde::de::Error::unknown_field(
                                 other,
-                                &["generation", "dim", "by_doc"],
+                                &["generation", "dim", "by_doc", "hnsw_params"],
                             ));
                         }
                     }
@@ -262,6 +305,7 @@ impl<'de> serde::Deserialize<'de> for SemanticIndex {
                     generation,
                     dim,
                     by_doc,
+                    hnsw_params,
                 })
             }
         }
@@ -367,13 +411,16 @@ impl SemanticIndexBuilder {
         Ok(())
     }
 
-    /// Finalise the builder into a [`SemanticIndex`].
+    /// Finalise the builder into a [`SemanticIndex`]. The result has
+    /// no attached HNSW configuration; use
+    /// [`SemanticIndex::with_hnsw_params`] to opt in.
     #[must_use]
     pub fn finish(self) -> SemanticIndex {
         SemanticIndex {
             generation: self.generation,
             dim: self.dim,
             by_doc: self.by_doc,
+            hnsw_params: None,
         }
     }
 }
