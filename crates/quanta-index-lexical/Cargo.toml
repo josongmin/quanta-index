@@ -1,0 +1,23 @@
+[package]
+name = "quanta-index-lexical"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Driven adapter for lexical index build and open"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tantivy = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

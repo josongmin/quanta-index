@@ -51,6 +51,11 @@
 - core crate must not import `rusqlite`, `tantivy`, `lancedb`, or raw filesystem layout
 - storage/query vendor choices belong to adapters only
 
+### Build hygiene
+
+- no proc-macro derives for serialization: `#[derive(serde::Serialize)]`, `#[derive(serde::Deserialize)]`, `#[derive(Serialize)]`, `#[derive(Deserialize)]` are banned. Write manual `impl serde::Serialize` / `impl serde::Deserialize` instead. Reason: proc-macro expansion is the dominant build-time cost in serde-heavy crates; manual impls keep cold-build seconds bounded and make wire shape auditable.
+- the ban applies workspace-wide (contract, core, adapters, searchd, tests, benches). Enforced by semgrep rule `rust-no-serde-derive`.
+
 ### Verification
 
 - compile claims require a real `cargo` run
@@ -70,6 +75,27 @@
 - default Rust test rail: `cargo test --workspace`
 - behavior changes require regression tests
 - prompt-manager changes require `tools/prompt-manager/tests/test_pm.py`
+- policy/validator changes require property tests in `crates/quanta-index-core/tests/property_policies.rs`
+- hot-path validator changes require updating `crates/quanta-index-core/benches/policy_bench.rs`
+
+## Test rails
+
+- unit: `just rust-test-unit`
+- integration: `just rust-test-integration`
+- e2e smoke: `just rust-test-e2e`
+- pyramid: `just rust-test-pyramid`
+- property invariants: included in the integration rail (proptest)
+- benchmark regression guard: `just rust-bench` (criterion)
+
+## Heavy correctness rail
+
+- `just rust-miri` — Miri UB detection (nightly, contract + core only; rusqlite FFI is excluded)
+- `just rust-careful` — cargo-careful stacked-borrows / debug-assert run (nightly)
+- `just rust-tsan` / `just rust-asan` — ThreadSanitizer / AddressSanitizer (nightly + `-Z build-std`)
+- `just rust-mutants` — cargo-mutants on `quanta-index-core`
+- `just rust-udeps` — unused-dep detection via rustc (nightly)
+- aggregate: `just verify-rust-heavy`
+- CI: scheduled nightly + workflow_dispatch via `.github/workflows/correctness.yml`
 
 
 ---
@@ -81,6 +107,10 @@
 - default workspace check: `cargo check --workspace`
 - default lint rail: `cargo clippy --workspace --all-targets -- -D warnings`
 - default format rail: `cargo fmt --all -- --check`
+- default MSRV pin: 1.92.0 (verified by the `rust-msrv` CI job and `just rust-msrv`)
+- bench compile guard: `just rust-bench-build` (criterion)
+- unused-dep guard: `just rust-machete` (cargo-machete) — workspace-level only, not per-crate
+- supply-chain guard: `just rust-deny` (cargo-deny) — advisories `yanked=deny`, `unmaintained=all`, `unsound=all`
 - build/test claims must name the exact command
 
 
@@ -103,7 +133,7 @@
 There is no build queue controller in this repo.
 
 Current control-plane meaning:
-- SQLite control-plane in `quanta-index-control-sqlite`
+- control-plane crate `quanta-index-control` (current backend: SQLite, kept as internal implementation detail)
 - prepared bundle outbox
 - generation catalog
 - activation/readiness state

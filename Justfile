@@ -34,7 +34,7 @@ rust-test-unit:
 
 rust-test-integration:
     {{cargo}} test -p quanta-index-core --test policy_contracts --all-features --locked
-    {{cargo}} test -p quanta-index-control-sqlite --test control_plane --all-features --locked
+    {{cargo}} test -p quanta-index-control --test control_plane --all-features --locked
     {{cargo}} test -p quanta-index-searchd --test bootstrap --all-features --locked
 
 rust-test-e2e:
@@ -48,6 +48,43 @@ rust-test-pyramid:
 rust-doc:
     RUSTDOCFLAGS="-D warnings" {{cargo}} doc --workspace --all-features --no-deps --locked
 
+rust-msrv:
+    cargo +1.92.0 check --workspace --all-targets --all-features --locked
+    cargo +1.92.0 test --workspace --all-features --locked --no-run
+
+rust-bench:
+    {{cargo}} bench --workspace --all-features --locked
+
+rust-bench-build:
+    {{cargo}} bench --workspace --all-features --locked --no-run
+
+rust-machete:
+    cargo machete --with-metadata
+
+rust-miri:
+    RUSTUP_TOOLCHAIN=nightly cargo miri setup
+    RUSTUP_TOOLCHAIN=nightly MIRIFLAGS="-Zmiri-strict-provenance" \
+        cargo miri test -p quanta-index-contract -p quanta-index-core --lib --all-features
+
+rust-careful:
+    RUSTUP_TOOLCHAIN=nightly cargo careful test --workspace --all-features --locked
+
+rust-tsan:
+    RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zsanitizer=thread" \
+        cargo test -Z build-std --target $(rustc -vV | sed -n 's|host: ||p') \
+            --workspace --all-features --lib --tests
+
+rust-asan:
+    RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zsanitizer=address" \
+        cargo test -Z build-std --target $(rustc -vV | sed -n 's|host: ||p') \
+            --workspace --all-features --lib --tests
+
+rust-mutants:
+    cargo mutants --package quanta-index-core --timeout 60 --baseline=skip --no-shuffle
+
+rust-udeps:
+    RUSTUP_TOOLCHAIN=nightly cargo udeps --workspace --all-targets --all-features
+
 rust-deny:
     bash scripts/run-cargo-deny.sh
 
@@ -57,8 +94,12 @@ rust-workspace-lints:
 rust-no-allow:
     bash scripts/check-rust-allow-attributes.sh
 
+rust-hexagonal:
+    python3 tools/ci/lint/lint-hexagonal-boundaries.py
+
 rust-policy:
     @just rust-workspace-lints
+    @just rust-hexagonal
     @just rust-no-allow
     @just rust-deny
 
@@ -67,8 +108,18 @@ verify-rust:
     @just rust-check
     @just rust-clippy
     @just rust-policy
+    @just rust-machete
+    @just rust-bench-build
     @just rust-test-pyramid
     @just rust-doc
+
+# Heavy correctness rail. Requires nightly toolchain + cargo-careful/miri/etc.
+# Use `just verify-rust-heavy` locally before merging anything load-bearing.
+verify-rust-heavy:
+    @just rust-miri
+    @just rust-careful
+    @just rust-mutants
+    @just rust-udeps
 
 semgrep:
     bash scripts/run-semgrep.sh

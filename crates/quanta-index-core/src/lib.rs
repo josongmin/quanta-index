@@ -3,31 +3,25 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
-pub mod artifact_objects;
-pub mod bundle_ingest;
+pub mod domains;
 pub mod error;
-pub mod generation_registry;
-pub mod ports;
-pub mod query_serving;
-pub mod services;
 
-pub use artifact_objects::{
-    PublishedSearchArtifactStorePort, SearchPlaneEmbeddingProviderPort,
-    SearchPlaneLexicalIndexBuildPort, SearchPlaneLexicalIndexStorePort,
-    SearchPlaneMetadataStorePort, SearchPlaneSemanticIndexBuildPort,
-    SearchPlaneVectorIndexStorePort,
-};
-pub use bundle_ingest::{
+pub use domains::bundle_ingest::{
     BundlePolicy, PublishedSearchBundleDeltaApplyPort, PublishedSearchBundlePreparePort,
 };
-pub use error::*;
-pub use generation_registry::{
+pub use domains::generation::{
     ActivationPolicy, PublishedSearchActivationStatePort, PublishedSearchBundleInspectPort,
     PublishedSearchGenerationActivatePort, PublishedSearchGenerationCatalogPort,
     PublishedSearchGenerationReadinessPort,
 };
-pub use query_serving::{
-    QueryPolicy, SearchPlaneExplainQueryPort, SearchPlaneHybridQueryPort,
+pub use domains::materialization::{
+    LexicalBuildInput, SearchPlaneLexicalIndexBuildPort, SearchPlaneLexicalIndexStorePort,
+    SearchPlaneMetadataStorePort, SearchPlaneSemanticIndexBuildPort,
+    SearchPlaneVectorIndexStorePort, SemanticBuildInput,
+};
+pub use domains::query::{
+    GenerationPinPort, QueryPolicy, SearchPlaneExplainQueryPort, SearchPlaneHybridQueryPort,
     SearchPlaneLexicalQueryPort, SearchPlaneQueryContractPort, SearchPlaneQueryValidator,
     SearchPlaneSemanticQueryPort,
 };
+pub use error::*;

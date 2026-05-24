@@ -127,6 +127,15 @@ repos:
         files: ^(Cargo\.toml|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
+      - id: hexagonal-boundaries
+        name: hexagonal domain boundaries
+        entry: python3 tools/ci/lint/lint-hexagonal-boundaries.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/lint-hexagonal-boundaries\.py)$
+        stages: [pre-commit, pre-push]
+
       - id: rust-no-allow
         name: rust no allow attributes
         entry: bash scripts/check-rust-allow-attributes.sh
@@ -143,6 +152,24 @@ repos:
         pass_filenames: false
         always_run: true
         files: ^(Cargo\.toml|Cargo\.lock|deny\.toml|crates/.*/Cargo\.toml)$
+        stages: [pre-push]
+
+      - id: cargo-machete
+        name: cargo machete (unused deps)
+        entry: cargo machete --with-metadata
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/Cargo\.toml)$
+        stages: [pre-push]
+
+      - id: cargo-bench-build
+        name: cargo bench --no-run
+        entry: ./scripts/cargow bench --workspace --all-features --locked --no-run
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/(src|benches)/.*\.rs|crates/.*/Cargo\.toml)$
         stages: [pre-push]
 
       - id: prompt-manager-tests

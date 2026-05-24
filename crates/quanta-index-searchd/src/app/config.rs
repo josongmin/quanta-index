@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::cli::ServeOptions;
+
 #[derive(Clone, Debug)]
 pub struct SearchdConfig {
     pub state_root: PathBuf,
@@ -33,6 +35,27 @@ impl SearchdConfig {
     #[must_use]
     pub fn from_cache_root(cache_root: &Path) -> Self {
         Self::from_state_root(cache_root.join("state"))
+    }
+
+    /// Layer operator overrides on top of an environment-derived config.
+    ///
+    /// CLI flag values win over `QUANTA_INDEX_STATE_ROOT` / cache-root
+    /// defaults: `--state-root` re-derives all paths; `--socket-path`
+    /// overrides only the socket without touching the control-plane DB path.
+    #[must_use]
+    pub fn with_overrides(self, overrides: &ServeOptions) -> Self {
+        let base = overrides
+            .state_root
+            .as_ref()
+            .map_or(self, |root| Self::from_state_root(root.clone()));
+        let socket_path = match overrides.socket_path.as_ref() {
+            Some(p) => p.clone(),
+            None => base.socket_path.clone(),
+        };
+        Self {
+            socket_path,
+            ..base
+        }
     }
 }
 

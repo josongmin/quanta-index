@@ -1,0 +1,192 @@
+name: correctness
+
+# Heavy correctness tooling (Miri / sanitizers / mutation testing / unused-dep
+# scans). These run nightly on a schedule, on pull requests, and on demand via
+# workflow_dispatch. They are intentionally separate from `ci.yml` because they
+# take significantly longer than the regular test rail.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: correctness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-miri:
+    name: rust-miri (UB detection)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly with miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Cache target dir
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/quanta-index/target
+          key: miri-target-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            miri-target-${{ runner.os }}-
+
+      - name: cargo miri setup
+        run: cargo miri setup
+
+      # Miri cannot execute FFI (rusqlite/sqlite3), so we only run miri on
+      # crates that have no FFI dependencies in their library tests.
+      - name: cargo miri test (contract + core)
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo miri test \
+            -p quanta-index-contract \
+            -p quanta-index-core \
+            --lib \
+            --all-features
+
+  rust-careful:
+    name: rust-careful (stacked borrows / debug assertions)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-careful
+        uses: taiki-e/install-action@cargo-careful
+
+      - name: cargo careful test (full workspace)
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo careful test --workspace --all-features --locked
+
+  rust-tsan:
+    name: rust-tsan (ThreadSanitizer)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          targets: x86_64-unknown-linux-gnu
+
+      - name: cargo test (TSan)
+        env:
+          RUSTFLAGS: "-Zsanitizer=thread"
+          RUSTDOCFLAGS: "-Zsanitizer=thread"
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo test \
+            -Z build-std \
+            --target x86_64-unknown-linux-gnu \
+            --workspace \
+            --all-features \
+            --lib --tests
+
+  rust-asan:
+    name: rust-asan (AddressSanitizer)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          targets: x86_64-unknown-linux-gnu
+
+      - name: cargo test (ASan)
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo test \
+            -Z build-std \
+            --target x86_64-unknown-linux-gnu \
+            --workspace \
+            --all-features \
+            --lib --tests
+
+  rust-mutants:
+    name: rust-mutants (mutation testing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      # Mutate only the core crate (vendor-neutral logic) — that's where
+      # policy correctness lives and where test-suite signal is highest value.
+      - name: cargo mutants -p quanta-index-core
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo mutants \
+            --package quanta-index-core \
+            --timeout 60 \
+            --baseline=skip \
+            --no-shuffle
+
+  rust-udeps:
+    name: rust-udeps (unused deps, rustc)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@cargo-udeps
+
+      - name: cargo udeps
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo udeps --workspace --all-targets --all-features

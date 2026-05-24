@@ -50,7 +50,7 @@ rules:
     languages: [rust]
     severity: ERROR
     patterns:
-      - pattern-regex: '#!?\\[allow\\('
+      - pattern-regex: '#!?\[allow\('
 
   - id: python-no-except-pass
     message: Do not swallow Python exceptions with pass.
@@ -96,3 +96,38 @@ rules:
       include:
         - "/.github/workflows/*.yml"
     pattern-regex: '(?m)^\\s*continue-on-error:\\s*true\\s*$'
+
+  - id: core-no-vendor-import
+    message: quanta-index-core must stay vendor-neutral. Put rusqlite/tantivy/lancedb in adapter crates.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-core/**"
+    patterns:
+      - pattern-either:
+          - pattern: use rusqlite
+          - pattern: use tantivy
+          - pattern: use lancedb
+          - pattern: use lance
+
+  - id: contract-no-port-trait
+    message: Port traits belong in quanta-index-core domains, not the contract crate.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-contract/**"
+    pattern: |
+      pub trait $NAME { ... }
+
+  - id: rust-no-serde-derive
+    message: |
+      Serde proc-macro derives are banned workspace-wide. Write manual
+      `impl serde::Serialize for T` / `impl<'de> serde::Deserialize<'de> for T`
+      instead. Reason: derive expansion dominates cold-build time and hides the
+      wire shape from review.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-regex: '#\[derive\([^)]*\b(?:serde::)?(?:Serialize|Deserialize)\b[^)]*\)\]'

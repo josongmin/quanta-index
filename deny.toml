@@ -8,9 +8,19 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-unmaintained = "workspace"
-unsound = "workspace"
-ignore = []
+unmaintained = "all"
+unsound = "all"
+ignore = [
+  # tantivy 0.22 pulls measure_time -> instant 0.1.13 (unmaintained); no safe
+  # upgrade exists in the tantivy 0.22 dep tree.
+  { id = "RUSTSEC-2024-0384", reason = "tantivy 0.22 transitive: measure_time -> instant 0.1.13 unmaintained" },
+  # tantivy 0.22 pins lru 0.12.5; upstream advisory RUSTSEC-2026-0002 reports an
+  # IterMut soundness defect. We do not call IterMut from quanta-index code.
+  { id = "RUSTSEC-2026-0002", reason = "tantivy 0.22 transitive: lru 0.12.5 IterMut unsound; not invoked by our code" },
+  # lance 6.0.1 transitive: datafusion-common -> paste 1.0.15 is unmaintained
+  # (RUSTSEC-2024-0436). No safe upgrade path in datafusion 53.x; lance pins it.
+  { id = "RUSTSEC-2024-0436", reason = "lance 6.0.1 transitive: datafusion-common@53.1.0 depends on paste@1.0.15; no upstream replacement yet" },
+]
 
 [bans]
 multiple-versions = "deny"
@@ -23,7 +33,27 @@ deny = [
   { crate = "openssl-sys", use-instead = "rustls", reason = "Prefer Rust-native TLS unless a crate-specific exception is approved." },
 ]
 skip = []
-skip-tree = []
+skip-tree = [
+  # tantivy 0.22 pulls fs4 0.8 (rustix 0.38 / linux-raw-sys 0.4) which
+  # conflicts with tempfile's rustix 1.x / linux-raw-sys 0.12. Scope the
+  # skip-tree to fs4 so the bypass is bounded to that subtree.
+  { crate = "fs4@0.8", reason = "tantivy 0.22 transitive duplicate of rustix / linux-raw-sys via fs4" },
+  # tantivy 0.22 -> rand 0.8 -> getrandom 0.2 / rand_core 0.6 conflicts with
+  # tempfile's getrandom 0.3 line. Scope the bypass to rand 0.8.
+  { crate = "rand@0.8", reason = "tantivy 0.22 transitive duplicate of getrandom via rand 0.8 / rand_core 0.6" },
+  # tantivy 0.22 -> lru 0.12 -> hashbrown 0.15 conflicts with rusqlite's
+  # hashbrown 0.14 (via hashlink). Scope the bypass to the lru subtree.
+  { crate = "lru@0.12", reason = "tantivy 0.22 transitive duplicate of hashbrown via lru 0.12" },
+  # tantivy 0.22 -> uuid -> getrandom 0.3 is a second getrandom edge separate
+  # from the rand 0.8 / 0.2 path. Scope to uuid.
+  { crate = "uuid@1", reason = "tantivy 0.22 transitive duplicate of getrandom via uuid" },
+  # lance 6.0.1 brings datafusion 53.1 + arrow 58.3, a stack so large it
+  # duplicates many internal-only deps relative to other workspace crates
+  # (hashbrown 0.14/0.15/0.16/0.17, itertools 0.12/0.13/0.14, thiserror 1/2,
+  # object_store 0.12/0.13, cpufeatures 0.2/0.3, etc). Scope the bypass to
+  # the lance subtree only so non-lance dependents stay strict.
+  { crate = "lance@6.0.1", reason = "lance 6.0.1 transitive: many internal duplicate versions of hashbrown / itertools / thiserror / object_store / cpufeatures / nom / rand_distr / lz4_flex inside the datafusion+arrow stack" },
+]
 
 [licenses]
 confidence-threshold = 0.93
@@ -33,7 +63,33 @@ allow = [
   "MIT",
   "Unicode-3.0",
 ]
-exceptions = []
+exceptions = [
+  # tantivy 0.22 transitive: hashbrown -> foldhash 0.1.5 is Zlib-licensed.
+  # Permissive license but not in baseline allowlist; scope the exception
+  # tightly to the crate.
+  { name = "foldhash", allow = ["Zlib"] },
+  # tantivy 0.22 transitive: measure_time -> instant 0.1.13 is BSD-3-Clause.
+  { name = "instant", allow = ["BSD-3-Clause"] },
+  # lance 6.0.1 transitive: brotli compression stack (BSD-3-Clause).
+  { name = "alloc-no-stdlib", allow = ["BSD-3-Clause"] },
+  { name = "alloc-stdlib", allow = ["BSD-3-Clause"] },
+  { name = "brotli", allow = ["BSD-3-Clause"] },
+  # lance 6.0.1 transitive: reqwest -> encoding_rs has a BSD-3-Clause segment.
+  { name = "encoding_rs", allow = ["BSD-3-Clause"] },
+  # lance 6.0.1 transitive: lance-core dev-pinned mock_instant under 0BSD.
+  { name = "mock_instant", allow = ["0BSD"] },
+  # lance 6.0.1 transitive: dirs-sys -> option-ext is MPL-2.0. Permissive
+  # weak copyleft on a tiny crate consumed only inside lance's storage path.
+  { name = "option-ext", allow = ["MPL-2.0"] },
+  # lance 6.0.1 transitive: rustls stack (reqwest TLS) is ISC-licensed.
+  { name = "ring", allow = ["ISC"] },
+  { name = "rustls-webpki", allow = ["ISC"] },
+  { name = "untrusted", allow = ["ISC"] },
+  # lance 6.0.1 transitive: datafusion-common -> subtle is BSD-3-Clause.
+  { name = "subtle", allow = ["BSD-3-Clause"] },
+  # lance 6.0.1 transitive: xxhash-rust is BSL-1.0 (permissive).
+  { name = "xxhash-rust", allow = ["BSL-1.0"] },
+]
 
 [licenses.private]
 ignore = true

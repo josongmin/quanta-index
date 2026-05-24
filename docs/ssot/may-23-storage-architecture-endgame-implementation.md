@@ -1,891 +1,759 @@
-# Storage Architecture Endgame Implementation Plan
+# quanta-index Search Plane Implementation Plan
 
-Status: `Canonical implementation plan`
+Status: `Canonical implementation plan for this repo`
 
 ## Scope
 
-이 문서는 storage RFC를 실제 코드 구조로 내리는 구현 순서를 고정한다.
+이 문서는 **external search-plane** (`quanta-index`)의 **내부 구현 순서**만 고정한다.
+
+**외부 인터페이스는 이미 확정**되어 있다. producer(`semantica-codegraph-v2`)와 query client가 보는 계약은 `quanta-index-contract` DTO/IPC envelope이며, 이 레포 작업은 그 계약을 **충실히 구현**하는 것이다. contract shape 변경은 producer coordination 없이 하지 않는다.
+
+| 경계 | SSOT crate / module | 상태 |
+|------|---------------------|------|
+| **외부 (frozen)** | `quanta-index-contract` | **확정** — cross-repo 유일 surface |
+| **내부 (this doc)** | `quanta-index-core` ports, adapters, `searchd` wiring | 구현 진행 중 |
+
+아키텍처 방향:
+
+1. **domain 구분** — bounded context 단위로 책임을 나눈다
+2. **hexagonal** — domain은 port로만 바깥과 통신하고, vendor/transport는 adapter에 둔다
 
 핵심 전제:
 
-1. `Phase 1`은 hexagonal abstraction + LMDB backend
-2. `Phase 2`는 custom `mmap packed segment`
-3. storage SSOT는 이 레포 내부에 유지
+1. producer/indexing authority는 `semantica-codegraph-v2`에 남는다
+2. 이 레포는 published bundle 수신, generation activation, index materialization, query serving만 담당한다
+3. **외부 wire/API = contract DTO**; **내부 port trait = core only**
+4. storage object engine / LMDB / mmap segment endgame은 **이 레포 범위 밖**이다
 
-## Final Verdict
+## Out of Scope (other repo)
 
-### Keep
+- `quanta-storage-*`, `QueryExecutor` artifact store, reasoning graph storage, published graph segment authority
+- producer storage SSOT는 `semantica-codegraph-v2` plan을 따른다
 
-1. `ChangeEventIncrementalIndexingRailV1`
-2. `indexing_machine_v2` SQLite WAL control plane
-3. `PublishedManifestStoreV1`
-4. query/runtime public ids and public rail naming
+## Domain Model
 
-### Replace
+search-plane는 아래 **4개 domain**으로 나눈다. domain 간 직접 호출은 금지하고, `searchd::app` composition root가 use case를 orchestrate 한다.
 
-1. `ArtifactStore<Vec<u8>>` as primary artifact persistence API
-2. reasoning graph `sync -> async artifact store` dispatch bridge
-3. structured graph docs as traversal authority
+| Domain | `quanta-index-core` module | 책임 | Producer seam |
+|--------|---------------------------|------|-----------------|
+| **bundle-ingest** | `domains::bundle_ingest` | prepared outbox 수신, delta apply, manifest ref 검증 | `prepare_commit_publish_v1` |
+| **generation** | `domains::generation` | generation catalog, activation, readiness, inspect | finalize / activation |
+| **materialization** | `domains::materialization` | bundle artifact load, lexical/semantic index build·open | (internal, post-prepare/activate) |
+| **query** | `domains::query` | lexical / semantic / hybrid / explain 실행 | UDS IPC caller |
 
-## Current Integration Seams
+**Transport** (UDS byte codec)는 domain이 아니라 **driving adapter** 구현 상세다. request/response **payload shape**는 `quanta-index-contract::ipc`에 확정되어 있다.
 
-### 1. QueryExecutor artifact write
-
-- `persist_prepared_execution_v1()` writes memo outputs into generic artifact store
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/execute_core_store.rs:259`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/execute_core_store.rs:259>)
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/execute_core_store.rs:310`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/execute_core_store.rs:310>)
-
-### 2. QueryExecutor artifact read
-
-- `serve_memo_hit_output()` loads raw bytes and decodes them
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/artifact_codec.rs:195`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/artifact_codec.rs:195>)
-
-### 3. QueryExecutor constructor surface
-
-- runtime generic constructor takes `artifact_store: Arc<A>`
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/constructors.rs:61`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/constructors.rs:61>)
-
-### 4. Reasoning graph storage surface
-
-- contract:
-  - [`packages/analysis/quanta-v2/crates/quanta-core-contract/src/ports/reasoning_graph_store_port.rs:29`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-core-contract/src/ports/reasoning_graph_store_port.rs:29>)
-- current impl:
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/artifact_backed.rs:23`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/artifact_backed.rs:23>)
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/coordinator.rs:41`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/coordinator.rs:41>)
-
-### 5. Published graph read surface
-
-- current published graph reader pins manifest and materializes `Vec<IndexProjectionDocV1>`
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/published_surfaces.rs:72`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/published_surfaces.rs:72>)
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/structured_store.rs:970`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/structured_store.rs:970>)
-
-### 6. Publish/bundle seam
-
-- current best seam is `prepare_commit_publish_v1()`
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/commit_prepare.rs:51`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/commit_prepare.rs:51>)
-- current publish finalize side effects happen in `apply_publish_store_mutations_v1()`
-  - [`packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/commit_finalize/publish_store_mutations.rs:71`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/commit_finalize/publish_store_mutations.rs:71>)
-
-## Canonical Crate Split
+### Domain dependency rule
 
 ```text
-packages/analysis/quanta-v2/crates/
-  quanta-contract-storage/
-    src/
-      object_store.rs
-      retention.rs
-      graph_segments.rs
+bundle-ingest ──► generation ──► materialization ──► query
+       │               │                │
+       └───────────────┴────────────────┴──► contract DTOs only (no sideways imports)
+```
+
+1. domain 모듈 간 `use crate::domains::<other>` 금지 — `tools/ci/lint/lint-hexagonal-boundaries.py`가 검사
+2. cross-domain orchestration은 `quanta-index-searchd::app` only
+3. `query`는 materialized index **outbound store port**만 본다 (vendor index 타입 직접 참조 금지)
+
+## Hexagonal Layout
+
+```text
+                    ┌──────────────────────────────────────┐
+  producer / CLI    │  Driving adapters (primary)           │
+  ───────────────►  │  quanta-index-searchd                 │
+                    │    app/          composition root     │
+                    │    cli/          operator entry        │
+                    │    query/        StubQueryEngine       │
+                    │    runtime/      bootstrap + state    │
+                    │  quanta-index-ipc (transport)          │
+                    └──────────────────┬───────────────────┘
+                                       │
+                    ┌──────────────────▼───────────────────┐
+                    │  quanta-index-core :: domains::*      │
+                    └──────────┬─────────────┬─────────────┘
+                               │ driven ports │
+         ┌─────────────────────┼─────────────┼─────────────────────┐
+         ▼                     ▼             ▼                     ▼
+  quanta-index-control   quanta-index-   quanta-index-   quanta-index-
+  store/ (SQLite)        artifact        lexical         semantic
+```
+
+### Layer roles
+
+| Layer | Location | 허용 | 금지 |
+|-------|----------|------|------|
+| **Contract** | `crates/quanta-index-contract` | DTO, ids, IPC envelopes | logic, port traits, vendor |
+| **Application** | `crates/quanta-index-core/src/domains` | policies, inbound/outbound ports | `rusqlite`, `tantivy`, `lancedb`, raw FS layout |
+| **Driven adapter** | `quanta-index-control`, `quanta-index-artifact`, `quanta-index-lexical`, `quanta-index-semantic` | outbound port impl | domain policy duplication |
+| **Driving adapter** | `quanta-index-searchd`, `quanta-index-ipc` | wiring, transport, CLI | business rules beyond orchestration |
+
+## Repository Layout (current)
+
+Current workspace members (`Cargo.toml`):
+
+- `quanta-index-contract` — frozen external interface
+- `quanta-index-core` — domains + ports
+- `quanta-index-control` — control-plane persistence (SQLite today)
+- `quanta-index-searchd` — composition root + process entry
+
+```text
+quanta-index/
+  scripts/
+    cargow                      # cargo wrapper → external cache target
+    quanta-index-env.sh         # CARGO_TARGET_DIR, PYTEST_CACHE_DIR, state paths
+    check_workspace_lints.py
+    check-rust-allow-attributes.sh
+    run-cargo-deny.sh
+    run-semgrep.sh
+  tools/ci/
+    lint/
+      lint-hexagonal-boundaries.py
+      lint-root-hygiene.sh
+      lint-doc-paths.py
+    semgrep/rules.yml
+    tests/
+  crates/
+    quanta-index-contract/src/
+      bundle/                   # PreparedBundleOutbox, manifest, mutation delta
+      control/                  # prepare/activate/delta/inspect DTOs
+      query/                    # LqQuery, filters, options
+      results/                  # candidates, explanation
+      ipc/                      # request/response envelopes
       ids.rs
-      manifest_registry.rs
-
-  quanta-storage-in-memory/
-    src/
-      object_store.rs
-      graph_segments.rs
-
-  quanta-storage-lmdb/
-    src/
-      object_store.rs
-      retention.rs
-      index_tables.rs
-      env.rs
-
-  quanta-storage-segment/
-    src/
-      object_segments/
-      graph_segments/
-      compaction/
-      inspect/
-      verify/
-
-  quanta-storage-runtime-adapters/
-    src/
-      query_executor_storage.rs
-      reasoning_graph.rs
-      published_graph.rs
+    quanta-index-core/src/
+      domains/
+        mod.rs
+        bundle_ingest/
+          outbound.rs           # PublishedSearchBundle{Prepare,DeltaApply}Port
+          service.rs              # BundlePolicy
+        generation/
+          outbound.rs           # activate, readiness, inspect, catalog, activation state
+          service.rs              # ActivationPolicy
+        materialization/
+          outbound.rs           # artifact + index build/store ports
+        query/
+          inbound.rs              # lexical/semantic/hybrid/explain query ports
+          outbound.rs             # GenerationPinPort, SearchPlaneQueryValidator
+          service.rs              # QueryPolicy
+      error.rs                    # CoreError
+      lib.rs                      # crate-root re-exports
+      benches/policy_bench.rs
+      tests/policy_contracts.rs
+      tests/property_policies.rs
+    quanta-index-control/src/
+      lib.rs                      # pub use store::*
+      store/
+        mod.rs                    # ControlPlane + open()
+        schema.rs                 # SQLite DDL bootstrap
+        bundle_ingest.rs          # impl PublishedSearchBundlePreparePort
+        generation_registry.rs    # impl activate/readiness/inspect
+        helpers.rs
+        tests.rs
+      tests/control_plane.rs
+    quanta-index-searchd/src/
+      lib.rs
+      bin/quanta-index-searchd.rs
+      app/
+        config.rs               # SearchdConfig, state_root / socket paths
+        searchd.rs                # serve entry (bootstrap only today)
+        mod.rs
+      cli/
+      runtime/
+        bootstrap.rs              # ControlPlane::open
+        state.rs                  # SearchRuntime
+      query/
+        stub_engine.rs            # NotImplemented query inbound ports
+      tests/bootstrap.rs
+      tests/serve_smoke.rs
+  docs/ssot/                      # this file
 ```
 
-## Interface Set
+Planned crates (not in workspace yet):
 
-### 1. Object storage
+- `quanta-index-artifact`
+- `quanta-index-lexical`
+- `quanta-index-semantic`
+- `quanta-index-ipc`
 
-```rust
-pub trait ArtifactObjectStorePort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-    type ReadView<'a>: AsRef<[u8]> + 'a
-    where
-        Self: 'a;
+### Adapter crate naming (decided)
 
-    fn get_view<'a>(
-        &'a self,
-        artifact_ref: &'a ArtifactRef,
-    ) -> BoxFuture<'a, Result<Option<Self::ReadView<'a>>, Self::Error>>;
+**crate 이름에 vendor/DB 이름을 넣지 않는다** (`tantivy`, `lance`, `lancedb` 등).  
+crate는 capability 기준(`artifact`, `lexical`, `semantic`, `ipc`)이고, 구체 엔진은 **crate 내부 구현**으로 숨긴다.
 
-    fn put_canonical(
-        &self,
-        bytes: Vec<u8>,
-        kind: ArtifactKind,
-        schema_version: SchemaVersion,
-        codec: Codec,
-    ) -> BoxFuture<'_, Result<ArtifactPublishOutcome, Self::Error>>;
+### Adapter crate split: lexical vs semantic (decided)
 
-    fn exists<'a>(
-        &'a self,
-        artifact_ref: &'a ArtifactRef,
-    ) -> BoxFuture<'a, Result<bool, Self::Error>>;
-}
+**lexical adapter crate와 semantic adapter crate는 분리**한다. 한 crate에 두 인덱스 엔진을 넣지 않는다.
+
+| Crate | Implements (core outbound ports) | Status |
+|-------|----------------------------------|--------|
+| `quanta-index-artifact` | `PublishedSearchArtifactStorePort` | planned |
+| `quanta-index-lexical` | `SearchPlaneLexicalIndexBuildPort`, `SearchPlaneLexicalIndexStorePort` | planned |
+| `quanta-index-semantic` | `SearchPlaneSemanticIndexBuildPort`, `SearchPlaneVectorIndexStorePort`, `SearchPlaneEmbeddingProviderPort` (if needed) | planned |
+| `quanta-index-ipc` | frozen `contract::ipc` ↔ wire bytes | planned |
+
+규칙:
+
+1. adapter crate 이름은 **capability-only** — vendor 문자열 금지
+2. lexical / semantic adapter crate는 **서로 depend 하지 않는다** (lint enforced)
+3. vendor dependency는 해당 adapter crate **내부**에만 추가 (core/contract 금지)
+4. `domains::query` hybrid는 `searchd::app`이 lexical + semantic store를 조합 (세 번째 search adapter crate 없음)
+5. `quanta-index-searchd`가 composition root로 adapter들을 wiring
+
+`SearchPlaneMetadataStorePort` owner는 구현 시 `quanta-index-artifact` 또는 `quanta-index-lexical` 중 하나로 고정한다.
+
+## Runtime Layout
+
+`SearchdConfig` (`quanta-index-searchd::app::config`) 기준:
+
+| Env / input | Path |
+|-------------|------|
+| `QUANTA_INDEX_STATE_ROOT` | explicit state root |
+| default | `{QUANTA_INDEX_CACHE_ROOT}/state` or macOS `~/Library/Caches/quanta-index/state` |
+| control plane DB | `{state_root}/control-plane.sqlite3` |
+| UDS socket path (listener impl pending) | `{state_root}/search-plane/searchd.sock` |
+
+Build/cache (repo 밖):
+
+| Variable | Default |
+|----------|---------|
+| `CARGO_TARGET_DIR` | `{cache_root}/target` |
+| `PYTEST_CACHE_DIR` | `{cache_root}/pytest` |
+| `RUFF_CACHE_DIR` | `{cache_root}/ruff` |
+
+`scripts/quanta-index-env.sh` / `just` / `pre-commit` / `./scripts/cargow` 가 위 경로를 설정한다.
+
+### Search-plane on-disk layout (decided)
+
+All search-plane runtime data lives under `{state_root}`.
+
+```text
+{state_root}/
+  control-plane.sqlite3
+  search-plane/
+    searchd.sock
+  bundles/
+    {repo_id}/
+      {revision_id}/
+        prepared/
+          {outbox_id}/
+            manifest.json
+            artifacts/
+        generations/
+          {manifest_generation}/
+            manifest.json
+            delta/
+              chunks.jsonl
+              symbols.jsonl
+              embeddings.jsonl
+  indexes/
+    lexical/
+      {repo_id}/
+        {revision_id}/
+          g{manifest_generation}/
+    semantic/
+      {repo_id}/
+        {revision_id}/
+          g{manifest_generation}/
 ```
 
-계약 원칙:
+Rules:
 
-1. 이 포트가 `Phase 1`과 `Phase 2` 공통 hot-path read surface다
-2. `LMDB` adapter는 이 포트를 만족해야 하며 `ArtifactStore::get() -> Vec<u8>` 형태를 새 hot path에 남기지 않는다
-3. `Phase 2` 자체엔진으로 넘어가도 이 포트 방향은 유지된다
+1. `BundleArtifactRef.relative_path` is always resolved relative to `{state_root}/bundles/{repo_id}/{revision_id}/`.
+2. `PreparedBundleOutbox.manifest_ref` must point into `prepared/{outbox_id}/...`; absolute paths are invalid.
+3. `record_generation_manifest(...)` canonicalizes the active manifest to `generations/{manifest_generation}/manifest.json`.
+4. lexical and semantic indexes are generation-scoped directories; active generations are discovered from `generation_activation_state`, not by scanning `indexes/`.
+5. query UDS transport uses one socket per `state_root`, not one socket per repo or revision.
 
-### 2. Rollback / delete
+## Frozen External Interface (`quanta-index-contract`)
 
-```rust
-pub trait ArtifactRollbackPort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
+확정된 cross-repo surface. **이 레포에서 필드/variant 추가·삭제·rename 금지** (breaking-first, producer sync 필수).
 
-    fn delete_created(
-        &self,
-        artifact_hash: &ArtifactHash,
-    ) -> Result<DeleteCreatedOutcome, Self::Error>;
-}
+### Public ids (`ids.rs`)
+
+- `RepoId`, `RevisionId`, `ManifestGeneration`, `GenerationId`, `ManifestDigest`, `FileId`, `RepoRelativePath`
+
+### Bundle (`bundle/`)
+
+- `PreparedBundleOutbox`, `PublishedSearchBundleManifest`, `PublishedGenerationSet`
+- `BundleArtifactRef`, `BundleMode`, `BundleEncoding`
+- `SearchBundleMutationDelta`, `SearchBundleMutationOp` (chunk/symbol/embedding upsert/delete)
+- `FileMaterializationPacket` is producer-side materialization context; search-plane does not consume it directly on its public wire
+
+### Control (`control/`)
+
+| Request | Response |
+|---------|----------|
+| `PublishedSearchBundlePrepareRequest` | `PublishedSearchBundlePrepareResponse` |
+| `PublishedSearchBundleDeltaApplyRequest` | `PublishedSearchBundleDeltaApplyResponse` |
+| `PublishedSearchGenerationActivateRequest` | `PublishedSearchGenerationActivateResponse` |
+| (readiness: `RepoId` + `RevisionId`) | `PublishedSearchGenerationReadinessResponse` |
+| (inspect: `PublishedGenerationSet`) | `PublishedSearchBundleInspectResponse` |
+
+### Query + results (`query/`, `results/`)
+
+- `LqQuery`, `LqExpr`, `LqFilterSet`, `LqOptionSet`, `LqDirectiveSet`
+- `SearchPlaneLexicalQueryRequest`, `SearchPlaneSemanticQueryRequest`, `SearchPlaneHybridQueryRequest`, `SearchPlaneExplainQueryRequest`
+- matching `*QueryResponse`, `LexicalCandidate`, explanation types
+
+### IPC (`ipc/`)
+
+- `SearchPlaneIpcRequestEnvelope { request_id, payload }`
+- `SearchPlaneIpcRequest`: `Lexical` | `Semantic` | `Hybrid` | `Explain`
+- `SearchPlaneIpcResponseEnvelope { request_id, payload }`
+- `SearchPlaneIpcResponse`: typed success variants | `Error(SearchPlaneIpcError { code, message })`
+
+Producer/query client는 위 타입만 import한다. `quanta-index-core` port trait는 **repo 내부**이며 외부에 노출하지 않는다.
+
+## Internal Port Inventory (`quanta-index-core`)
+
+내부 port trait는 domain module에만 정의한다. adapter가 impl한다.
+
+### `domains::bundle_ingest`
+
+| File | Symbol | Direction | Impl today |
+|------|--------|-----------|------------|
+| `outbound.rs` | `PublishedSearchBundlePreparePort` | driven | `quanta-index-control::store` |
+| `outbound.rs` | `PublishedSearchBundleDeltaApplyPort` | driven | **missing** |
+| `service.rs` | `BundlePolicy` | domain policy | unit/property tests |
+
+### `domains::generation`
+
+| File | Symbol | Direction | Impl today |
+|------|--------|-----------|------------|
+| `outbound.rs` | `PublishedSearchGenerationActivatePort` | driven | `quanta-index-control::store` |
+| `outbound.rs` | `PublishedSearchGenerationReadinessPort` | driven | `quanta-index-control::store` |
+| `outbound.rs` | `PublishedSearchBundleInspectPort` | driven | `quanta-index-control::store` (placeholder manifest) |
+| `outbound.rs` | `PublishedSearchGenerationCatalogPort` | driven | **missing** |
+| `outbound.rs` | `PublishedSearchActivationStatePort` | driven | **missing** |
+| `service.rs` | `ActivationPolicy` | domain policy | unit/property tests |
+
+### `domains::materialization`
+
+| File | Symbol | Direction | Impl today |
+|------|--------|-----------|------------|
+| `outbound.rs` | `PublishedSearchArtifactStorePort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneLexicalIndexBuildPort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneSemanticIndexBuildPort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneLexicalIndexStorePort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneVectorIndexStorePort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneMetadataStorePort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneEmbeddingProviderPort` | driven | **missing** |
+
+### `domains::query`
+
+| File | Symbol | Direction | Impl today |
+|------|--------|-----------|------------|
+| `inbound.rs` | `SearchPlaneLexicalQueryPort` | driving | `searchd::query::StubQueryEngine` (NotImplemented) |
+| `inbound.rs` | `SearchPlaneSemanticQueryPort` | driving | stub |
+| `inbound.rs` | `SearchPlaneHybridQueryPort` | driving | stub |
+| `inbound.rs` | `SearchPlaneExplainQueryPort` | driving | stub |
+| `inbound.rs` | `SearchPlaneQueryContractPort` | driving aggregate | stub |
+| `outbound.rs` | `GenerationPinPort` | driven | **missing** |
+| `outbound.rs` | `SearchPlaneQueryValidator` | driving hook | policy via `QueryPolicy` |
+| `service.rs` | `QueryPolicy` | domain policy | unit/property tests |
+
+내부 orchestration hook (contract 밖, `searchd::app` only):
+
+- materialize-before-activate sequencing
+- `GenerationPinPort` lifecycle
+
+## Crate Dependency Matrix
+
+`lint-hexagonal-boundaries.py`가 고정:
+
+| Crate | May depend on |
+|-------|----------------|
+| `quanta-index-contract` | (none) |
+| `quanta-index-core` | `quanta-index-contract` |
+| `quanta-index-control` | `contract`, `core` |
+| `quanta-index-searchd` | `contract`, `core`, `control` |
+
+## Producer Integration Seams
+
+모든 seam은 **확정된 contract DTO**로만 crossing한다.
+
+Transport split (decided):
+
+| Path | Transport | Owner | Notes |
+|------|-----------|-------|-------|
+| prepare / finalize / delta / readiness | direct Rust call against `quanta-index-control::ControlPlane` on shared `state_root` | producer + control-plane adapter | query UDS를 재사용하지 않는다 |
+| lexical / semantic / hybrid / explain query | UDS stream socket at `{state_root}/search-plane/searchd.sock` | `searchd` | one daemon multiplexes all repos/revisions |
+
+### 1. bundle-ingest ← prepare
+
+- producer seam: `prepare_commit_publish_v1(...)`
+- **external**: `PublishedSearchBundlePrepareRequest` / `PublishedSearchBundlePrepareResponse`
+- **internal**: `PublishedSearchBundlePreparePort` → `quanta-index-control/src/store/bundle_ingest.rs`
+- reference: `semantica-codegraph-v2/.../index_projection_writer/commit_prepare.rs`
+
+### 2. generation ← finalize
+
+- producer seam: after `publish_prepared_manifest_after_prepare_v1`, `finalize_published_commit_receipt_v1`
+- **external**: `PublishedSearchGenerationActivateRequest`, `PublishedSearchGenerationReadinessResponse`, `PublishedSearchBundleDeltaApplyRequest` (when delta present)
+- **internal**: generation outbound ports → `quanta-index-control/src/store/generation_registry.rs`
+- reference: `semantica-codegraph-v2/.../index_projection_writer/commit_finalize.rs`
+
+### 3. query ← fluent engine UDS client
+
+- producer seam: `search_*_hits_v1`
+- **external**: `SearchPlaneIpcRequestEnvelope` / `SearchPlaneIpcResponseEnvelope` (payload types frozen)
+- **internal**: UDS byte codec adapter + `domains::query` inbound handlers
+- reference: `semantica-codegraph-v2/.../codegraph_shared/infra/fluent_engine.py`
+
+## Runtime Orchestration (decided)
+
+`searchd::app` is the only cross-domain orchestrator. Producer never drives index build directly and never flips readiness bits itself.
+
+### Lifecycle owner
+
+1. producer owns bundle creation and prepare/finalize intent
+2. `quanta-index-control` owns durable control-plane state
+3. `searchd` owns materialization, readiness, activation ordering, and query serving
+
+### Single-daemon model
+
+1. one `searchd` process per `{state_root}`
+2. one UDS listener per `{state_root}`
+3. the daemon multiplexes repo/revision/generation inside the process; it does not spawn one socket per repo
+
+### Canonical sequence
+
+1. producer writes bundle artifacts under `bundles/{repo_id}/{revision_id}/prepared/{outbox_id}/...`
+2. producer calls `prepare_bundle(PublishedSearchBundlePrepareRequest)`
+3. control-plane persists `prepared_bundle_outbox`, sets `claim_state='prepared'`, returns duplicate-aware response
+4. producer records canonical generation manifest through `record_generation_manifest(PublishedSearchBundleManifest)`
+5. if `mutation_delta` exists, producer calls `apply_bundle_delta(PublishedSearchBundleDeltaApplyRequest)`
+6. `searchd` control loop claims the prepared generation, loads the canonical manifest, and materializes lexical first and semantic second
+7. only after both materializations open successfully does `searchd` call `activate_generation(...)` with `lexical_ready=true` and `semantic_ready=true`
+8. queries resolve against the pinned or active generation only after activation commits
+
+Fail-closed rules:
+
+1. producer does not call `activate_generation(...)` directly in the steady-state architecture
+2. `activate_generation(...)` is the last step after successful materialization, never a trigger for materialization
+3. partial lexical-only or semantic-only success never produces an active generation
+4. if materialization fails, query serving remains on the prior active generation and the new generation stays non-active
+
+## Control-plane State Model (decided)
+
+Current SQLite schema is the control-plane SSOT until dedicated storage adapters land.
+
+### Table roles
+
+| Table | Authority | Meaning |
+|-------|-----------|---------|
+| `prepared_bundle_outbox` | prepare ingress | durable prepare receipt + manifest ref + claim state |
+| `generation_catalog` | generation registry | per-generation manifest and component generation metadata |
+| `generation_activation_state` | serve head | exactly one active manifest generation per repo/revision |
+| `external_search_consumer_ack` | producer feedback | duplicate / accepted / failed outcome visible to producer |
+| `indexing_jobs` + dependency tables | `searchd` internal orchestration | future async job ledger; producer must not write them directly |
+| replay / closeout tables | recovery | daemon recovery and replay bookkeeping |
+
+### State transitions
+
+`prepared_bundle_outbox.claim_state`:
+
+```text
+prepared -> claimed -> materialized -> activated
+prepared -> claimed -> failed
 ```
 
-### 3. Retention / GC
+`external_search_consumer_ack.ack_state`:
 
-```rust
-pub enum RetentionRoot {
-    Snapshot(SnapshotId),
-    PublishedGeneration(ManifestGeneration),
-    ReasoningHead {
-        namespace: String,
-        state_ref: ArtifactRef,
-    },
-    Session(StorageSessionId),
-}
-
-pub trait ArtifactRetentionPort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    fn pin_root(&self, root: &RetentionRoot)
-        -> Result<(), Self::Error>;
-
-    fn release_root(&self, root: &RetentionRoot)
-        -> Result<(), Self::Error>;
-
-    fn sweep_unpinned(&self) -> Result<SweepStats, Self::Error>;
-}
+```text
+accepted | duplicate | failed
 ```
 
-### 4. Manifest registry
+`generation_catalog.state` target values:
 
-```rust
-pub trait ManifestRegistryPort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    fn register_generation(
-        &self,
-        request: ManifestGenerationRegistration,
-    ) -> Result<ManifestGenerationRecord, Self::Error>;
-
-    fn pin_latest(&self) -> Result<ManifestPin, Self::Error>;
-
-    fn pin_generation(
-        &self,
-        generation: ManifestGeneration,
-    ) -> Result<ManifestPin, Self::Error>;
-
-    fn activate_generation(
-        &self,
-        generation: ManifestGeneration,
-    ) -> Result<(), Self::Error>;
-}
+```text
+prepared | materialized | active | failed
 ```
 
-### 5. Graph topology writer
+Rules:
 
-```rust
-pub trait GraphTopologyWriterPort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
+1. `claim_state` is daemon-owned after the prepare row is inserted.
+2. `generation_activation_state` is the only query-time serve-head authority.
+3. `generation_catalog` may contain future generations that are not active yet.
+4. indexing job tables are implementation detail; they do not replace `prepared_bundle_outbox` or `generation_activation_state` as authority.
 
-    fn write_generation(
-        &self,
-        request: GraphTopologyWriteRequest,
-    ) -> Result<GraphTopologyGenerationBundle, Self::Error>;
-}
-```
+## Bundle-ingest and Delta Apply Rules (decided)
 
-### 6. Graph topology reader
+### Prepare semantics
 
-```rust
-pub trait GraphTopologyReaderPort: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
+1. `prepare_bundle(...)` validates `outbox_id`, `manifest_ref.relative_path`, and `bundle_schema_version` through `BundlePolicy`.
+2. duplicate prepare (`UNIQUE(repo_id, revision_id, manifest_digest)` hit) returns `accepted=false`, `state="prepared"`, `reason="prepared bundle already exists"`.
+3. prepare stores the manifest reference only; it does not activate, materialize, or mutate indexes.
 
-    fn open_generation(
-        &self,
-        generation: &GraphTopologyGenerationBundle,
-    ) -> Result<Box<dyn GraphTopologyCursorPort>, Self::Error>;
-}
-```
+### `record_generation_manifest(...)`
 
-## Identity Model
+1. canonical manifest bytes are stored at `bundles/{repo_id}/{revision_id}/generations/{manifest_generation}/manifest.json`
+2. `inspect_bundle(...)` must load from that canonical path once implemented; placeholder artifacts are temporary only
+3. manifest persistence happens before delta apply and before materialization
 
-이 계획은 ID를 3계층으로 나눈다.
+### Delta apply target
 
-```rust
-pub struct EntityLogicalId(pub [u8; 32]);
-pub struct RevisionNodeId(pub [u8; 32]);
-pub struct PhysicalNodeId(pub u32);
-```
+`apply_bundle_delta(...)` never patches the active query indexes in place. It mutates the staging area of the target generation only.
 
-원칙:
+| Operation | Target staging surface | Materialization effect |
+|-----------|------------------------|------------------------|
+| `UpsertChunk` / `DeleteChunk` | `delta/chunks.jsonl` | affects lexical chunk rows for the target generation |
+| `UpsertSymbol` / `DeleteSymbol` | `delta/symbols.jsonl` | affects symbol rows and lexical symbol lookups |
+| `UpsertEmbedding` / `DeleteEmbedding` | `delta/embeddings.jsonl` | affects semantic embedding inputs / records |
 
-1. `EntityLogicalId`
-   - file/module/top-level symbol/import/export 같은 비교적 stable entity
-2. `RevisionNodeId`
-   - revision/snapshot scoped local HIR node
-3. `PhysicalNodeId`
-   - packed segment 내부 traversal id
+Rules:
 
-금지:
+1. delta apply is scoped by `(repo_id, revision_id, manifest_generation)` and never crosses generations
+2. repeated identical delta against the same target generation is idempotent and returns `applied=false` with a duplicate reason
+3. delta apply after activation of the same manifest generation is rejected fail-closed
+4. delta apply against a generation without a recorded canonical manifest is rejected fail-closed
 
-1. `file_digest`를 stable logical id 핵심축으로 직접 쓰는 것
-2. local HIR node에 revision을 넘어가는 강한 stable id를 억지로 부여하는 것
+## Generation Rules (decided)
 
-## Hot-Path Genericity Policy
+### Stale activation (`E-SP2`)
 
-1. `QueryExecutor`, reasoning graph coordinator, published graph reader는 backend에 대해 generic 유지
-2. hot path에서 `dyn ArtifactObjectStorePort` 같은 trait object 금지
-3. `StorageBackendFactory`는 concrete backend를 선택하고 fully-wired runtime handle을 만든다
-4. borrowed read capability를 유지해야 하므로 object safety 때문에 hot-path surface를 후퇴시키지 않는다
-5. app-level payload cache miss/fallback 계층은 도입하지 않는다
-6. `LMDB`는 primary read substrate로 직접 붙고 residency는 OS page cache에 맡긴다
+Reject activation when any of the following holds for the same `(repo_id, revision_id)`:
+
+1. requested `manifest_generation` is lower than `generation_activation_state.active_manifest_generation`
+2. `generation_catalog` already contains a strictly higher `manifest_generation` in `materialized` or `active` state
+3. requested component generations do not match the recorded manifest generation row
+
+Return shape:
+
+- control path: `PublishedSearchGenerationActivateResponse { activated: false, active_generation: <current>, reason: Some("stale generation") }`
+
+### Inspect semantics
+
+1. `inspect_bundle(...)` is generation-catalog-backed, not placeholder-backed
+2. it returns the canonical manifest plus the artifact refs reachable from that manifest
+3. failure to load the canonical manifest is a storage failure, not an empty success
+
+## Query Semantics (decided)
+
+### Generation resolution
+
+For lexical / semantic / hybrid requests:
+
+1. if `request.generation` is `Some(g)`, the daemon must use exactly `g`
+2. else if a query-time pin exists, use the pinned generation
+3. else use `generation_activation_state` active generation
+4. if none exists, return `SearchPlaneIpcError { code: "NOT_READY", ... }`
+
+Failure mapping:
+
+1. explicit generation not found in `generation_catalog` -> `UNKNOWN_GENERATION`
+2. generation exists but `lexical_ready=false` or `semantic_ready=false` for the requested mode -> `NOT_READY`
+3. `LqExpr::MatchAll` or malformed request contract -> `INVALID_REQUEST`
+
+### Hybrid merge
+
+Hybrid query uses reciprocal-rank fusion.
+
+Rules:
+
+1. run lexical and semantic retrieval against the same resolved generation
+2. fuse by `rrf_score = 1/(60 + lexical_rank) + 1/(60 + semantic_rank)`
+3. stable tie-break order: higher `rrf_score`, then lexical presence, then `candidate_id`
+4. `top_k` is applied after fusion
+
+### Explain
+
+1. explain accepts a `LexicalCandidate` that came from a prior lexical / semantic / hybrid response for the same generation
+2. searchd does not invent candidate identities for explain
+3. generation mismatch between request candidate and resolved generation is `INVALID_REQUEST`
+
+### CoreError -> IPC mapping
+
+| Source | IPC error code |
+|--------|----------------|
+| `CoreError::InvalidContract` | `INVALID_REQUEST` |
+| `CoreError::NotReady` | `NOT_READY` |
+| `CoreError::NotImplemented` | `NOT_IMPLEMENTED` |
+| `CoreError::Storage` | `INTERNAL` |
+
+Adapter-only codes:
+
+- `UNKNOWN_GENERATION`
+- `FRAMING_ERROR`
+
+## UDS Wire Protocol (decided)
+
+Transport is AF_UNIX stream socket. Payload types remain the frozen `contract::ipc` envelopes.
+
+### Frame format
+
+1. 4-byte little-endian unsigned length prefix
+2. UTF-8 JSON body containing exactly one `SearchPlaneIpcRequestEnvelope` or `SearchPlaneIpcResponseEnvelope`
+3. maximum frame size: 8 MiB request, 8 MiB response
+
+### Connection model
+
+1. one connection may carry multiple sequential requests
+2. phase-1 server rule: at most one in-flight request per connection
+3. responses preserve request order and echo `request_id`
+
+### Framing failure policy
+
+1. invalid length prefix or payload larger than cap -> close connection immediately
+2. JSON decode failure before a full envelope is available -> close connection immediately
+3. decoded envelope with invalid payload contract -> `Error(SearchPlaneIpcError { code: "INVALID_REQUEST", ... })`
+4. transport/frame failure never falls back to empty results
+
+## Architecture Principles
+
+1. **contract-first** — 외부 interface는 `quanta-index-contract`에 frozen; port trait는 내부 only
+2. **domain isolation** — enforced by `lint-hexagonal-boundaries.py` + semgrep
+3. **hexagonal boundary** — application I/O는 outbound port impl을 통해서만
+4. **fail-closed** — unreadiness / incomplete materialization에 silent empty fallback 금지
+5. **generation pin** — `GenerationPinPort` + query path (impl pending)
+6. **breaking-first** — legacy top-level core modules (`generation_registry`, `artifact_objects`, …) 재도입 금지
+
+## Implementation Status
+
+| Area | Layer | Status |
+|------|-------|--------|
+| **external interface** (`quanta-index-contract`) | frozen | **done / 확정** |
+| `domains/*` module tree + crate re-exports | internal | **done** |
+| hexagonal boundary lint + pre-commit + CI | internal | **done** |
+| `BundlePolicy`, `ActivationPolicy`, `QueryPolicy` | internal | **done** |
+| control: `prepare_bundle`, `activate_generation`, readiness, inspect | internal adapter | **partial** (inspect placeholder) |
+| control: `apply_bundle_delta`, `record_generation_manifest` | internal adapter | **missing** |
+| materialization adapters | internal adapter | **missing** |
+| query inbound handlers | internal | **stub** |
+| UDS byte codec + listener | internal transport | **missing** |
+| `searchd::app` orchestration | internal | **missing** (bootstrap-only serve) |
+| producer E2E against frozen contract | integration | **missing** |
 
 ## Scenario Matrix
 
-이 문서는 아래 scenario ids를 구현/검증 단위로 사용한다.
-
 ### Usecase
 
-1. `U1 Cold restart memo reuse`
-   - owner:
-     - `QueryExecutor`
-     - `ArtifactObjectStorePort`
-   - proof:
-     - restart 후 same snapshot / same args memo hit
-     - source re-read / HIR rebuild 없이 artifact reuse
-2. `U2 Published generation pin under concurrent prepare`
-   - owner:
-     - `ManifestRegistryPort`
-     - `ArtifactRetentionPort`
-   - proof:
-     - `G1` pin reader가 `G2` prepare 동안 끝까지 `G1`만 본다
-     - `G1` release 전 sweep 금지
-3. `U3 Reasoning graph restore after restart`
-   - owner:
-     - reasoning graph runtime adapter
-     - object store
-   - proof:
-     - restart 후 state snapshot / fragment lookup restore
-     - stale-write CAS 유지
-4. `U4 Incremental small edit with old roots retained`
-   - owner:
-     - retention roots
-     - incremental control plane integration
-   - proof:
-     - new writes가 old roots를 손상시키지 않는다
-     - retained roots가 있는 object는 sweep되지 않는다
+| ID | Given | When | Then | Observe |
+|----|-------|------|------|---------|
+| `U-SP1` | producer created prepared manifest under `prepared/{outbox_id}/` | producer calls `prepare_bundle(...)` | outbox row exists with `claim_state='prepared'` and duplicate-aware response | `prepared_bundle_outbox`, `external_search_consumer_ack` |
+| `U-SP2` | canonical manifest exists for `G2`, optional delta staged | `searchd` materializes then activates `G2` | `generation_catalog.state='active'`, `generation_activation_state.active_manifest_generation=G2`, query requests serve `G2` | `generation_catalog`, `generation_activation_state`, UDS query response generation |
+| `U-SP3` | `G1` was active before daemon restart | `searchd` restarts and reopens control plane + indexes | active generation remains `G1`; no re-prepare required | restart smoke test + readiness query |
+| `U-SP4` | query request pinned on `G1`, producer prepares `G2` concurrently | pinned query runs while `G2` is materialized/activated | in-flight query stays on `G1`; only subsequent queries may observe `G2` | query response generation, activation timestamp ordering |
 
 ### Edge
 
-1. `E1 Duplicate canonical put`
-   - owner:
-     - object store publish path
-     - rollback delete path
-   - proof:
-     - repeated put does not duplicate physical object
-     - rollback delete does not remove shared artifact
-2. `E2 Multi-root retention overlap`
-   - owner:
-     - retention root accounting
-   - proof:
-     - one root release 후에도 remaining root가 있으면 object 보존
-3. `E3 Stale manifest pin / activation request`
-   - owner:
-     - manifest registry
-   - proof:
-     - stale pin/activate reject
-     - active head unchanged
+| ID | Given | When | Then | Observe |
+|----|-------|------|------|---------|
+| `E-SP1` | identical `(repo_id, revision_id, manifest_digest)` already prepared | producer calls `prepare_bundle(...)` again | response is `accepted=false`; no new outbox state transition | prepare response + unchanged rowcount |
+| `E-SP2` | `G5` already active or `G6` already materialized | caller tries to activate `G4` | activation rejected with `activated=false`, `reason="stale generation"` | activation response + unchanged active generation |
+| `E-SP3` | manifest ref path escapes bundle root or file is missing | `searchd` tries to materialize | materialization fails closed; prior active generation remains authoritative | failure reason + no activation row change |
 
 ### Corner
 
-1. `C1 Empty or tiny graph shard`
-   - owner:
-     - graph segment writer/reader
-   - proof:
-     - empty shard open succeeds
-     - footer/offset invariants hold
-2. `C2 High-fanout node`
-   - owner:
-     - graph topology cursor
-   - proof:
-     - no offset overflow
-     - no full materialization requirement
-3. `C3 Physical repack without logical drift`
-   - owner:
-     - graph compaction
-     - logical/physical mapping
-   - proof:
-     - logical query result parity across repack
+| ID | Given | When | Then | Observe |
+|----|-------|------|------|---------|
+| `C-SP1` | no active generation and no pin | client sends query with `generation=None` | `SearchPlaneIpcError { code: "NOT_READY", ... }` | UDS error envelope |
+| `C-SP2` | generation exists but requested mode is not fully ready | lexical/semantic/hybrid query arrives | request fails with `NOT_READY`; no empty-hit fallback | UDS error envelope + readiness row |
 
 ### Hellgate
 
-1. `H1 Crash between segment write and registry swap`
-   - owner:
-     - segment writer
-     - manifest registry
-   - proof:
-     - incomplete segment reject
-     - last committed registry head preserved
-2. `H2 Corrupted footer or checksum mismatch`
-   - owner:
-     - segment reader/open path
-   - proof:
-     - fail-closed open reject
-     - no best-effort recovery on active path
-3. `H3 Rollback delete races with shared reachability`
-   - owner:
-     - rollback delete
-     - retention accounting
-   - proof:
-     - only truly-created object deleted
-4. `H4 Graph authority split-brain during cutover`
-   - owner:
-     - shadow parity gate
-   - proof:
-     - parity red blocks authority promotion
-5. `H5 Sweep under mixed roots`
-   - owner:
-     - retention sweep
-     - manifest/session/reasoning root accounting
-   - proof:
-     - deterministic reachability
-     - no premature delete
-     - no immortal leaked objects
+| ID | Given | When | Then | Observe |
+|----|-------|------|------|---------|
+| `H-SP1` | build/open of lexical or semantic index has not completed | any actor attempts activation | activation is blocked; `generation_activation_state` unchanged | activation response or missing write |
+| `H-SP2` | generation row exists but readiness flags are false | query explicitly targets that generation | daemon returns `NOT_READY`; never serves partial results | UDS error envelope |
+| `H-SP3` | malformed length prefix or oversized frame | client writes invalid bytes to socket | connection closes or `FRAMING_ERROR` is emitted if envelope boundary was already known | socket close / transport error telemetry |
 
-## Phase 0: Spec Freeze
+## Phase Plan
 
-목표:
-
-1. storage contract namespace 고정
-2. old/new owner boundary 고정
-3. blast radius 목록 고정
-4. retention root taxonomy 고정
-5. manifest registry contract 고정
-6. hot-path genericity policy 고정
-
-수정 파일:
-
-1. `docs/plans/may-23-storage-architecture-endgame/*`
-2. optional `docs/ssot/*` cross-link only when implementation starts
+### Phase 0: External interface + structure freeze
 
 산출물:
 
-1. crate tree
-2. port signatures
-3. generation/retention model
-4. test matrix
-5. workspace membership policy
-6. shadow parity gate
-7. scenario matrix
+1. **frozen** `quanta-index-contract` (producer/query client SSOT)
+2. `domains/*` internal port layout
+3. boundary lint
 
-## Phase 1: Hex Ports + LMDB Adapter
+상태: **done** — 이후 작업은 contract를 바꾸지 않고 adapter/orchestration만 채운다
 
-### Goal
+### Phase 1: control adapter completion
 
-`LMDB`는 최종 backend가 아니라:
+1. `PublishedSearchBundleDeltaApplyPort` on `quanta-index-control::store`
+2. `PublishedSearchGenerationCatalogPort` (+ manifest persistence policy)
+3. replace `inspect_bundle` placeholder with artifact-backed path once Phase 2.1 lands
 
-1. production-grade disk-backed adapter
-2. port semantics 검증기
-3. later segment cutover를 위한 backend isolation
+gates: `U-SP1`, `E-SP1`, `E-SP2`
 
-역할만 맡는다.
+### Phase 2: materialization adapters
 
-추가 원칙:
+1. `quanta-index-artifact` — `PublishedSearchArtifactStorePort`
+2. `quanta-index-lexical` — lexical build/open ports
+3. `quanta-index-semantic` — semantic/vector build/open ports (vendor deps only inside this crate)
+4. `searchd::app` orchestration hook for materialize-before-activate
 
-1. `LMDB` 단계도 mmap-native read surface를 그대로 쓴다
-2. `LMDB` 채택을 이유로 owned-bytes artifact API를 보존하지 않는다
-3. `Phase 1`에서 만든 hot-path port shape는 `Phase 2` 자체엔진 선행작업이다
+gates: `U-SP2`, `E-SP3`, `H-SP1`
 
-### Phase-1.1 Contract Crate
+### Phase 3: query + transport
 
-새 crate:
+1. real `domains::query` inbound impl (replace `StubQueryEngine`) — **frozen IPC payload** decode/encode
+2. `GenerationPinPort` impl + `U-SP4`
+3. `quanta-index-ipc` — UDS **wire codec only** (envelope types 변경 없음)
 
-- `quanta-contract-storage`
-
-작업:
-
-1. `ArtifactObjectStorePort`
-2. `ArtifactRollbackPort`
-3. `ArtifactRetentionPort`
-4. `ManifestRegistryPort`
-5. `GraphTopology*` contracts
-6. `EntityLogicalId / RevisionNodeId / PhysicalNodeId`
-
-기존 legacy residue:
-
-- `ArtifactStore`
-- `ArtifactGcPort`
-
-처리:
-
-1. breaking-first 기준으로 new runtime hot path는 new storage ports만 사용
-2. compat residue는 owner-local test scaffolding 또는 bounded bridge로만 허용
-3. compat residue를 production hot path에 남기지 않는다
-
-### Phase-1.2 In-Memory Adapter
-
-새 crate:
-
-- `quanta-storage-in-memory`
-
-역할:
-
-1. test harness
-2. unit tests
-3. no-disk fixtures
-
-이유:
-
-- 지금 test harness들이 `InMemoryArtifactStore::new()`에 강하게 묶여 있다
-  - 예: [`packages/analysis/quanta-v2/crates/quanta-runtime/tests/support/harness_orchestrator.rs:447`](</Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/tests/support/harness_orchestrator.rs:447>)
-
-phase gate:
-
-1. `U1`
-2. `E1`
-3. `E2`
-
-### Phase-1.3 LMDB Adapter
-
-새 crate:
-
-- `quanta-storage-lmdb`
-
-역할:
-
-1. `ArtifactObjectStorePort`
-2. `ArtifactRollbackPort`
-3. `ArtifactRetentionPort`
-
-하지 않을 것:
-
-1. graph topology CSR/CSC
-2. graph published reader cutover
-
-phase gate:
-
-1. `U1`
-2. `U2`
-3. `E1`
-4. `E2`
-5. `E3`
-6. `H3`
-
-### Phase-1.4 QueryExecutor Cutover
-
-수정 파일:
-
-1. `packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/constructors.rs`
-2. `packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/query_executor/execute_core_store.rs`
-3. `packages/analysis/quanta-v2/crates/quanta-runtime/src/executor/artifact_codec.rs`
-
-변경:
-
-1. generic bound를 `ArtifactStore`에서 `ArtifactObjectStorePort`로 교체
-2. rollback bound를 `ArtifactGcPort`에서 `ArtifactRollbackPort`로 교체
-3. `get() -> Vec<u8>`를 `get_view()`로 교체
-4. decode rail은 borrowed bytes를 허용하도록 조정
-
-의미:
-
-1. `LMDB` 단계에서도 direct object-store read를 primary path로 사용
-2. app-level payload cache layer는 추가하지 않음
-3. 이 cutover 자체가 `Phase 2` packed segment용 선행작업
-
-phase gate:
-
-1. `U1`
-2. `E1`
-3. `H3`
-
-### Phase-1.5 Bootstrap / Harness Factory Cutover
-
-수정 파일:
-
-1. `packages/analysis/quanta-v2/crates/quanta-pyo3/src/client/helpers/executor.rs`
-2. `packages/analysis/quanta-v2/crates/quanta-runtime/tests/support/**`
-3. `packages/analysis/quanta-v2/crates/quanta-bench/tests/common/**`
-
-변경:
-
-1. `InMemoryArtifactStore` concrete alias 제거
-2. `StorageBackendFactory` 도입
-3. prod/dev/test backend 선택을 wiring layer로 이동
-
-정책:
-
-1. production wiring은 `LMDB`를 primary substrate로 직접 선택
-2. fallback cache 계층을 bootstrap에서 추가하지 않는다
-
-### Phase-1.6 Reasoning Graph on New Object Store
-
-수정 파일:
-
-1. `packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/coordinator.rs`
-2. `packages/analysis/quanta-v2/crates/quanta-runtime/src/adapters/reasoning_graph_runtime/artifact_backed.rs`
-
-변경:
-
-1. generic CAS object persistence는 유지
-2. backend만 new object store로 교체
-3. stale-write CAS / head pointer semantics 유지
-
-하지 않을 것:
-
-1. 이 단계에서 graph topology CSR/CSC 구현
-2. public `ReasoningGraphStorePort` shape 변경
-
-phase gate:
-
-1. `U3`
-2. `U4`
-3. `H5`
-
-### Phase-1.7 Existing Graph Reader Keep-As-Is
-
-이 단계에서는:
-
-- `PublishedStructuredGraphSearchPortV1`
-- `StructuredProjectionBackendStoreV1`
-
-를 유지한다.
-
-이유:
-
-1. Phase 1은 storage object abstraction 단계
-2. graph topology reader cutover는 Phase 2 책임
-
-## Phase 2: Custom mmap Packed Segment
-
-### Goal
-
-1. LMDB prod default 제거
-2. custom object segment + graph topology segment 도입
-
-### Phase-2.1 Segment Object Store
-
-새 crate:
-
-- `quanta-storage-segment`
-
-하위 모듈:
-
-1. `object_segments`
-2. `object_index`
-3. `retention`
-4. `inspect`
-5. `verify`
-
-형식:
-
-1. immutable segment files
-2. side index mmap files
-3. generation pin/sweep
-
-핵심:
-
-1. `Phase 1`에서 이미 도입한 mmap-native read surface를 backend만 segment로 교체한다
-2. 이 단계는 read contract 재설계가 아니라 physical layout / locality / compaction 교체다
-
-필수 포맷 규약:
-
-1. header에 `magic / schema_version / segment_kind / segment_id / checksum_kind`
-2. footer에 `offset table / object count / complete marker / footer checksum`
-3. footer 검증 전 segment는 invalid
-4. manifest registry는 sealed segment만 참조 가능
-5. compaction publish는 `new segment set write -> registry swap -> old segment retire` 순서
-6. corruption / partial write / checksum mismatch는 fail-closed open reject
-
-phase gate:
-
-1. `H1`
-2. `H2`
-3. `H5`
-
-### Phase-2.2 Graph Topology Segment
-
-형식:
-
-1. `out_offsets.bin`
-2. `out_edges.bin`
-3. `in_offsets.bin`
-4. `in_edges.bin`
-5. `entity_logical_to_physical.bin`
-6. `revision_logical_to_physical.bin`
-7. `node_columns.bin`
-8. `edge_columns.bin`
-
-정렬:
-
-1. `(src_physical, edge_kind, dst_physical)`
-2. reverse side는 별도 CSC 유지
-
-phase gate:
-
-1. `C1`
-2. `C2`
-
-### Phase-2.3 Delta Overlay
-
-구성:
-
-1. base packed segment
-2. delta segments
-3. tombstone bitmaps
-4. overlay read order in manifest
-
-정책:
-
-1. delta depth budget
-2. tombstone ratio threshold
-3. background repack trigger
-
-phase gate:
-
-1. `U4`
-2. `C3`
-3. `H5`
-
-### Phase-2.4 Shadow Parity Gate
-
-목표:
-
-1. structured docs authority와 segment authority를 같은 generation에서 동시에 산출
-2. graph exact-hit / graph_path / basic traversal parity 검증
-3. parity green 이후에만 segment authority 승격
-
-금지:
-
-1. parity proof 없이 direct authority flip
-2. docs authority와 segment authority를 장기간 병행 SSOT로 두는 것
-
-phase gate:
-
-1. `H4`
-2. `C3`
-
-### Phase-2.5 Reasoning Graph Unification
-
-새 구현:
-
-- `SegmentBackedReasoningGraphStore`
-- `SegmentBackedQueryToFragmentLookup`
-
-목표:
-
-1. artifact-backed state snapshot CAS를 segment storage로 내림
-2. sync-over-async dispatch bridge 제거
-3. high-level `ReasoningGraphStorePort`는 유지
-
-### Phase-2.6 Published Graph Reader Cutover
-
-새 구현:
-
-- `PublishedSegmentGraphSearchPort`
-
-수정 파일:
-
-1. `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/published_surfaces.rs`
-2. graph reader consumers
-
-변경:
-
-1. `published_docs_for_generation_v1()` full-doc restore를 graph authority에서 제거
-2. manifest pin 후 graph segment refs를 열도록 변경
-
-phase gate:
-
-1. `U2`
-2. `C1`
-3. `C2`
-4. `H4`
-
-## Detailed Integration Points
-
-### A. QueryExecutor
-
-현재:
-
-1. `persist_prepared_execution_v1()`가 CAS write owner
-2. `serve_memo_hit_output()`가 CAS read owner
-
-최종:
-
-1. `query_executor_storage.rs`가 new storage port 호출을 캡슐화
-2. `QueryExecutor`는 storage backend concrete type을 모름
-
-### B. Reasoning Graph
-
-현재:
-
-1. `ArtifactBackedReasoningGraphCoordinator`
-2. `ArtifactBackedReasoningGraphStore`
-
-최종:
-
-1. `SegmentBackedReasoningGraphStore`
-2. `SegmentBackedQueryToFragmentLookup`
-3. `ReasoningGraphStorePort` surface 유지
-
-### C. Published Graph Search
-
-현재:
-
-1. `PublishedStructuredGraphSearchPortV1`
-2. manifest pin
-3. full doc vector restore
-
-최종:
-
-1. `PublishedSegmentGraphSearchPort`
-2. manifest pin
-3. segment bundle open
-4. topology cursor traversal
-
-## Compile Fallout
-
-Workspace policy:
-
-1. 새 crate는 `packages/analysis/quanta-v2/crates/quanta-storage-*` immediate child로만 추가
-2. root workspace 새 top-level package 추가 금지
-3. initial admission은 `packages/analysis/quanta-v2/Cargo.toml`의 `members` only
-4. `default-members` 승격은 owner-local compile proof 뒤에만 허용
-
-Phase 1에서 예상되는 compile fallout:
-
-1. `ArtifactStore` generic bound를 가진 runtime/executor 타입 alias 전반
-2. `InMemoryArtifactStore`를 concrete type으로 박아둔 PyO3 helper
-3. `InMemoryArtifactStore::new()`를 직접 쓰는 test harness/benches
-4. reasoning graph runtime generic bound
-
-Phase 2에서 예상되는 compile fallout:
-
-1. published graph search port consumers
-2. graph-path / dependency reasoning readers
+gates: `U-SP3`, `U-SP4`, `C-SP*`, `H-SP2`, `H-SP3`
 
 ## Verification Plan
 
-### Phase 1
+| Rail | Command |
+|------|---------|
+| format | `just fmt-check` |
+| compile | `just rust-check` |
+| clippy | `just rust-clippy` |
+| hexagonal boundaries | `just rust-hexagonal` |
+| workspace lints / deny / no-allow | `just rust-policy` |
+| unit | `just rust-test-unit` |
+| integration | `just rust-test-integration` |
+| e2e smoke | `just rust-test-e2e` |
+| full verify | `just verify` |
 
-1. object store parity tests
-2. rollback delete tests
-3. retention root pin/release/sweep tests
-4. LMDB reopen/durability tests
-5. QueryExecutor memo hit/write/read tests
-6. reasoning graph persist/restore/stale-write tests
-7. harness/bootstrap compile proofs
-8. scenario gates:
-   - `U1`
-   - `U2`
-   - `U3`
-   - `U4`
-   - `E1`
-   - `E2`
-   - `E3`
-   - `H3`
-   - `H5`
+Enforcement:
 
-### Phase 2
-
-1. segment inspect/verify tests
-2. graph topology parity tests
-3. overlay depth / tombstone / compaction tests
-4. manifest generation pin correctness tests
-5. shadow parity gate proofs
-6. scenario gates:
-   - `C1`
-   - `C2`
-   - `C3`
-   - `H1`
-   - `H2`
-   - `H4`
-   - `H5`
+- `tools/ci/lint/lint-hexagonal-boundaries.py` — crate deps, domain isolation, legacy module ban, contract-no-trait
+- semgrep — `core-no-vendor-import`, `contract-no-port-trait`, `rust-no-unwrap`, …
+- pre-commit hook `hexagonal-boundaries`
 
 ## Hellgate Policy
 
-아래는 green 아니면 cutover 금지다.
-
-1. `H1` red면 segment backend publish 금지
-2. `H2` red면 segment reader enable 금지
-3. `H3` red면 new object store를 `QueryExecutor` hot path에 올리지 않는다
-4. `H4` red면 published graph authority flip 금지
-5. `H5` red면 retention sweep 자동화 금지
+1. `H-SP1` red → activation 승격 금지
+2. `H-SP2` red → query serve enable 금지
+3. `H-SP3` red → UDS production listener 금지
 
 ## No-Resurrection Rules
 
-1. new runtime code에서 `InMemoryArtifactStore::new()` 직접 호출 금지
-2. new hot path에서 `ArtifactStore::get() -> Vec<u8>` 복사 재도입 금지
-3. graph traversal authority에 `published_docs_for_generation_v1()` 재사용 금지
-4. rollback delete semantics를 retention sweep로 대체 금지
-5. physical segment packing이 logical identity에 영향을 주게 만들기 금지
-6. scenario gates를 우회하고 owner-local manual override로 cutover 승인 금지
-7. `LMDB` 단계라는 이유로 app-level payload cache fallback을 새로 도입하는 것 금지
+1. **frozen contract 변경 금지** — producer sync 없이 `quanta-index-contract` public type/field/variant 수정하지 않는다
+2. domain 간 direct import 금지 (`lint-hexagonal-boundaries.py`)
+3. contract에 port trait / vendor type 금지
+4. adapter에 domain policy 복제 금지
+5. legacy core modules (`generation_registry`, `artifact_objects`, `query_serving`, top-level `ports.rs`) 재도입 금지
+6. unreadiness empty-hit fallback 금지
+7. repo-local `target/`, `state/`, pytest/ruff cache 커밋 금지 (`lint-root-hygiene.sh`)
 
-## First PR Shape
+## First PR Shape (updated)
 
-### PR-1
+### PR-1 — control outbound ports
 
-1. `quanta-contract-storage`
-2. `quanta-storage-in-memory`
-3. owner-local test bridge only when compile bootstrap requires it
+1. `PublishedSearchBundleDeltaApplyPort` impl
+2. `PublishedSearchGenerationCatalogPort` impl
+3. integration tests (`control_plane.rs`)
 
-### PR-2
+### PR-2 — `quanta-index-artifact`
 
-1. `QueryExecutor` storage port cutover
-2. rollback / retention contract cutover
+### PR-3 — `quanta-index-lexical` + `quanta-index-semantic` + materialize orchestration
 
-### PR-3
+### PR-4 — query engine + `quanta-index-ipc` + `searchd::app` wiring
 
-1. PyO3/bootstrap/harness factory cutover
-2. LMDB adapter
-3. reasoning graph on new object store
-
-### PR-4
-
-1. `quanta-storage-segment` object tier
-2. LMDB prod default -> segment prod default
-
-### PR-5
-
-1. graph topology segment
-2. shadow parity gate
-3. `PublishedSegmentGraphSearchPort`
+### PR-5 — `GenerationPinPort` + `U-SP4` proofs
 
 ## Done Definition
 
-storage RFC closeout은 아래를 만족해야 한다.
-
-1. runtime hot path가 backend concrete type을 모르며 port only로 동작
-2. prod backend가 in-memory/generic CAS가 아님
-3. rollback delete와 retention sweep가 분리된 계약으로 검증됨
-4. reasoning graph가 dispatch bridge 없이 storage backend를 직접 사용
-5. published graph read가 full doc vector materialization에 의존하지 않음
-6. shadow parity gate 없이 graph authority가 승격되지 않음
-7. generation pin / retention / manifest registry가 fail-closed로 검증됨
-8. `U* / E* / C* / H*` scenario matrix가 owner-local proof rail로 green
-9. `Phase 1` hot-path storage surface가 `Phase 2` 자체엔진으로 그대로 carry 가능한 mmap-native contract임이 증명됨
+1. **frozen** `quanta-index-contract`를 producer/query client가 그대로 사용 가능
+2. `quanta-index-core/src/domains/*` + adapters가 contract DTO를 end-to-end로 honor
+3. boundary lint + semgrep + CI/pre-commit green
+4. `searchd::app`만 cross-domain orchestration
+5. driven adapters가 outbound port만 구현
+6. producer prepare/finalize + UDS query E2E green (contract types unchanged)
+7. `quanta-index-core`에 vendor import 없음
+8. `U/E/C/H-SP*` scenario matrix green

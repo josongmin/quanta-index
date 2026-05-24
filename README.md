@@ -6,7 +6,7 @@ Current scope:
 
 - shared contract crate with bundle/control/query DTOs
 - hexagonal core crate with port traits and validation services
-- SQLite control-plane adapter
+- control-plane adapter (current backend: SQLite, kept as internal implementation detail)
 - `searchd` binary scaffold for same-host UDS-based serving
 
 Build artifacts:
@@ -36,18 +36,22 @@ Repo layout:
   - vendor-neutral port traits
   - application validation services
   - no `rusqlite`, no `tantivy`, no `lancedb`
-- `crates/quanta-index-control-sqlite`
-  - SQLite control-plane adapter
+- `crates/quanta-index-control`
+  - control-plane adapter (backend is an internal implementation detail; currently SQLite)
   - schema bootstrap
   - outbox/activation/readiness plumbing
+- `crates/quanta-index-artifact`, `quanta-index-lexical`, `quanta-index-semantic`
+  - driven adapters (skeleton; vendor engines live inside each crate, not in the name)
+- `crates/quanta-index-ipc`
+  - IPC transport adapter (skeleton)
 - `crates/quanta-index-searchd`
-  - external search-plane process scaffold
+  - composition root + process entry
   - state-root/bootstrap/wiring
-  - query engine stubs
+  - query engine stubs (until lexical/semantic adapters land)
 
-Implementation packet:
+Implementation packet (search-plane SSOT for this repo):
 
-- [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](/Users/songmin/Documents/code-new/quanta-index/docs/ssot/may-23-storage-architecture-endgame-implementation.md)
+- [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](docs/ssot/may-23-storage-architecture-endgame-implementation.md)
 
 Producer integration points in `semantica-codegraph-v2`:
 

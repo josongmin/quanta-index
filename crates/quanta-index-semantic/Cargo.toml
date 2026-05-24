@@ -1,0 +1,23 @@
+[package]
+name = "quanta-index-semantic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Driven adapter for semantic / vector index build and open"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+lance = { workspace = true }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+thiserror = { workspace = true }

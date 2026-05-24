@@ -83,6 +83,26 @@ jobs:
       - name: rust nextest
         run: ./scripts/cargow nextest run --workspace --all-features --locked
 
+  rust-msrv:
+    name: rust-msrv (1.92.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install MSRV toolchain (exact)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+
+      - name: cargo +1.92.0 check
+        run: cargo +1.92.0 check --workspace --all-targets --all-features --locked
+
+      - name: cargo +1.92.0 test --no-run
+        run: cargo +1.92.0 test --workspace --all-features --locked --no-run
+
   rust-docs:
     runs-on: ubuntu-latest
     steps:
@@ -112,6 +132,37 @@ jobs:
       - name: cargo deny
         run: bash scripts/run-cargo-deny.sh
 
+  rust-machete:
+    name: rust-machete (unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@cargo-machete
+
+      - name: cargo machete
+        run: cargo machete --with-metadata
+
+  rust-bench-build:
+    name: rust-bench-build (compile only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: cargo bench --no-run
+        run: ./scripts/cargow bench --workspace --all-features --locked --no-run
+
   rust-policy:
     runs-on: ubuntu-latest
     steps:
@@ -132,6 +183,9 @@ jobs:
 
       - name: Ban #[allow]
         run: bash scripts/check-rust-allow-attributes.sh
+
+      - name: Hexagonal domain boundaries
+        run: python3 tools/ci/lint/lint-hexagonal-boundaries.py
 
   semgrep:
     runs-on: ubuntu-latest
