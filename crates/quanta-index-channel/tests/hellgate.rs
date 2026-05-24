@@ -100,9 +100,9 @@ fn crc_mismatch_is_fail_closed() -> TestResult {
     let dir = tempfile::tempdir()?;
     {
         let publisher = open_lexical_publisher(dir.path())?;
-        let _ = publisher.publish(mk_upsert("c-1", b"alpha"))?;
-        let _ = publisher.publish(mk_upsert("c-2", b"bravo"))?;
-        let _ = publisher.publish(mk_upsert("c-3", b"charlie"))?;
+        let _seq = publisher.publish(mk_upsert("c-1", b"alpha"))?;
+        let _seq = publisher.publish(mk_upsert("c-2", b"bravo"))?;
+        let _seq = publisher.publish(mk_upsert("c-3", b"charlie"))?;
         publisher.flush()?;
     }
 
@@ -121,20 +121,19 @@ fn crc_mismatch_is_fail_closed() -> TestResult {
 
     {
         let mut file = OpenOptions::new().read(true).write(true).open(&seg_path)?;
-        let _ = file.seek(SeekFrom::Start(u64::try_from(corrupt_off)?))?;
+        let _pos = file.seek(SeekFrom::Start(u64::try_from(corrupt_off)?))?;
         let mut byte = [0u8; 1];
         file.read_exact(&mut byte)?;
         let flipped_slot = byte.get_mut(0).ok_or_else(|| boxed("byte slice missing"))?;
         *flipped_slot ^= 0x5A;
-        let _ = file.seek(SeekFrom::Start(u64::try_from(corrupt_off)?))?;
+        let _pos = file.seek(SeekFrom::Start(u64::try_from(corrupt_off)?))?;
         file.write_all(&byte)?;
         file.sync_data()?;
     }
 
     let mut subscriber = open_lexical_subscriber(dir.path())?;
-    let evt1 = match subscriber.next_event()? {
-        Some(e) => e,
-        None => return Err(boxed("expected evt1, got None")),
+    let Some(evt1) = subscriber.next_event()? else {
+        return Err(boxed("expected evt1, got None"));
     };
     if evt1.seq.get() != 1 {
         return Err(boxed(format!(
@@ -176,7 +175,7 @@ fn truncated_frame_at_segment_tail() -> TestResult {
     {
         let publisher = open_lexical_publisher(dir.path())?;
         for i in 0..4u64 {
-            let _ = publisher.publish(mk_upsert(&format!("c-{i}"), b"payload-bytes"))?;
+            let _seq = publisher.publish(mk_upsert(&format!("c-{i}"), b"payload-bytes"))?;
         }
         publisher.flush()?;
     }
@@ -194,11 +193,8 @@ fn truncated_frame_at_segment_tail() -> TestResult {
 
     let mut subscriber = open_lexical_subscriber(dir.path())?;
     for expected in 1u64..=3 {
-        let evt = match subscriber.next_event()? {
-            Some(e) => e,
-            None => {
-                return Err(boxed(format!("expected event at seq {expected}, got None")));
-            }
+        let Some(evt) = subscriber.next_event()? else {
+            return Err(boxed(format!("expected event at seq {expected}, got None")));
         };
         if evt.seq.get() != expected {
             return Err(boxed(format!(
@@ -209,7 +205,7 @@ fn truncated_frame_at_segment_tail() -> TestResult {
     }
 
     match subscriber.next_event() {
-        Err(ChannelError::Corrupted { .. }) | Err(ChannelError::Io(_)) => Ok(()),
+        Err(ChannelError::Corrupted { .. } | ChannelError::Io(_)) => Ok(()),
         Err(other) => Err(boxed(format!("expected Corrupted or Io, got {other:?}"))),
         Ok(opt) => Err(boxed(format!(
             "expected error, got Ok({:?})",
@@ -257,11 +253,8 @@ fn publisher_restart_resumes_seq_after_partial_tail_write() -> TestResult {
 
     let mut subscriber = open_lexical_subscriber(dir.path())?;
     let mut seen: Vec<u64> = Vec::new();
-    loop {
-        match subscriber.next_event()? {
-            Some(evt) => seen.push(evt.seq.get()),
-            None => break,
-        }
+    while let Some(evt) = subscriber.next_event()? {
+        seen.push(evt.seq.get());
     }
     if seen != vec![1u64, 2, 3] {
         return Err(boxed(format!("expected seqs [1,2,3], got {seen:?}")));
@@ -275,7 +268,7 @@ fn cursor_regression_is_rejected() -> TestResult {
     {
         let publisher = open_lexical_publisher(dir.path())?;
         for i in 0..5u64 {
-            let _ = publisher.publish(mk_upsert(&format!("c-{i}"), b"x"))?;
+            let _seq = publisher.publish(mk_upsert(&format!("c-{i}"), b"x"))?;
         }
         publisher.flush()?;
     }
@@ -283,9 +276,8 @@ fn cursor_regression_is_rejected() -> TestResult {
     let mut subscriber = open_lexical_subscriber(dir.path())?;
     let mut last_seq = ChannelSeq::ZERO;
     for _ in 0..3 {
-        let evt = match subscriber.next_event()? {
-            Some(e) => e,
-            None => return Err(boxed("ran out of events before seq 3")),
+        let Some(evt) = subscriber.next_event()? else {
+            return Err(boxed("ran out of events before seq 3"));
         };
         last_seq = evt.seq;
     }
@@ -322,7 +314,7 @@ fn segment_rotation_preserves_continuity() -> TestResult {
     {
         let publisher = open_lexical_publisher(dir.path())?;
         for i in 0..TOTAL {
-            let _ = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
+            let _seq = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
                 repo_id: repo(),
                 revision_id: revision(),
                 generation: gen_1(),
@@ -337,9 +329,8 @@ fn segment_rotation_preserves_continuity() -> TestResult {
     let mut seg_count: usize = 0;
     for entry in std::fs::read_dir(&seg_dir)? {
         let entry = entry?;
-        let name = match entry.file_name().into_string() {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
         };
         if name.starts_with("log.wal.") {
             seg_count = seg_count.saturating_add(1);
@@ -353,19 +344,14 @@ fn segment_rotation_preserves_continuity() -> TestResult {
 
     let mut subscriber = open_lexical_subscriber(dir.path())?;
     let mut expected: u64 = 1;
-    loop {
-        match subscriber.next_event()? {
-            Some(evt) => {
-                if evt.seq.get() != expected {
-                    return Err(boxed(format!(
-                        "gap detected: expected seq {expected}, got {}",
-                        evt.seq.get()
-                    )));
-                }
-                expected = expected.saturating_add(1);
-            }
-            None => break,
+    while let Some(evt) = subscriber.next_event()? {
+        if evt.seq.get() != expected {
+            return Err(boxed(format!(
+                "gap detected: expected seq {expected}, got {}",
+                evt.seq.get()
+            )));
         }
+        expected = expected.saturating_add(1);
     }
     let last_seen = expected.saturating_sub(1);
     if last_seen != TOTAL {
@@ -380,7 +366,7 @@ fn double_subscriber_independent_cursors() -> TestResult {
     {
         let publisher = open_lexical_publisher(dir.path())?;
         for i in 0..4u64 {
-            let _ = publisher.publish(mk_upsert(&format!("c-{i}"), b"p"))?;
+            let _seq = publisher.publish(mk_upsert(&format!("c-{i}"), b"p"))?;
         }
         publisher.flush()?;
     }
@@ -486,11 +472,8 @@ fn producer_can_publish_after_subscriber_open() -> TestResult {
     }
 
     // Subscriber must re-scan the segments directory and surface the new event.
-    let evt = match subscriber.next_event()? {
-        Some(e) => e,
-        None => {
-            return Err(boxed("subscriber failed to pick up late-arriving segment"));
-        }
+    let Some(evt) = subscriber.next_event()? else {
+        return Err(boxed("subscriber failed to pick up late-arriving segment"));
     };
     if evt.seq.get() != 1 {
         return Err(boxed(format!(
@@ -504,8 +487,12 @@ fn producer_can_publish_after_subscriber_open() -> TestResult {
                 return Err(boxed("late bundle payload mismatch"));
             }
         }
-        other => {
-            return Err(boxed(format!("expected FullBundle, got {other:?}")));
+        LexicalChannelOp::UpsertChunk(_)
+        | LexicalChannelOp::DeleteChunk(_)
+        | LexicalChannelOp::UpsertSymbol(_)
+        | LexicalChannelOp::DeleteSymbol(_)
+        | LexicalChannelOp::Seal(_) => {
+            return Err(boxed(format!("expected FullBundle, got {:?}", evt.seq)));
         }
     }
     Ok(())
@@ -516,7 +503,7 @@ fn publisher_lock_releases_on_drop() -> TestResult {
     let dir = tempfile::tempdir()?;
     {
         let first = open_lexical_publisher(dir.path())?;
-        let _ = first.publish(mk_upsert("c-1", b"x"))?;
+        let _seq = first.publish(mk_upsert("c-1", b"x"))?;
         // first drops here, releasing the advisory lock.
     }
 
@@ -530,4 +517,137 @@ fn publisher_lock_releases_on_drop() -> TestResult {
         )));
     }
     Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Additional hellgate scenarios identified by the test-coverage audit.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn oversized_payload_is_rejected_with_encoding_error() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let publisher = open_lexical_publisher(dir.path())?;
+    // MAX_FIELD_LEN = 16 MiB. Push a payload one byte past the cap and verify
+    // the publisher rejects with Encoding (NOT silent truncation, NOT Io).
+    let oversized: Vec<u8> = vec![0u8; (16 * 1024 * 1024) + 1];
+    let result = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: gen_1(),
+        chunk_id: ChunkId::new("big"),
+        payload: oversized,
+    }));
+    match result {
+        Err(ChannelError::Encoding(_)) => Ok(()),
+        other => Err(boxed(format!("expected Encoding, got {other:?}"))),
+    }
+}
+
+#[test]
+fn ack_future_seq_is_rejected_or_advances_safely() -> TestResult {
+    // Spec leaves the future-ack case to implementor judgment. The current
+    // subscriber accepts any ack >= cursor (it only rejects regressions). We
+    // pin that behavior here so a future tightening (reject "future" acks
+    // beyond the highest emitted seq) is flagged by the test, not by a silent
+    // production regression.
+    let dir = tempfile::tempdir()?;
+    let publisher = open_lexical_publisher(dir.path())?;
+    let seq1 = publisher.publish(mk_upsert("c1", b"x"))?;
+    drop(publisher);
+
+    let mut sub = open_lexical_subscriber(dir.path())?;
+    drop(sub.next_event()?);
+    // ack a seq strictly greater than what we've emitted.
+    let future = ChannelSeq::new(seq1.get().saturating_add(100));
+    sub.ack(future)?;
+    if sub.cursor().get() < future.get() {
+        return Err(boxed("future ack did not advance cursor"));
+    }
+    Ok(())
+}
+
+#[test]
+fn cursor_file_corruption_is_fail_closed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    {
+        let publisher = open_lexical_publisher(dir.path())?;
+        let _seq = publisher.publish(mk_upsert("c1", b"x"))?;
+        let _seq = publisher.publish(mk_upsert("c2", b"y"))?;
+    }
+    // Consume + ack first event so the cursor file exists and has a valid
+    // header.
+    {
+        let mut sub = open_lexical_subscriber(dir.path())?;
+        let evt = sub
+            .next_event()?
+            .ok_or_else(|| boxed("expected first event"))?;
+        sub.ack(evt.seq)?;
+    }
+    // Corrupt the cursor magic (first 4 bytes).
+    let cursor_path = lexical_segment_dir(dir.path()).join("cursor");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&cursor_path)?;
+    let _pos = file.seek(SeekFrom::Start(0))?;
+    file.write_all(b"BAD!")?;
+    file.sync_data()?;
+    drop(file);
+
+    let opened = open_lexical_subscriber(dir.path());
+    match opened {
+        Err(ChannelError::State(msg)) if msg.to_lowercase().contains("magic") => Ok(()),
+        Err(other) => Err(boxed(format!(
+            "expected ChannelError::State magic mismatch, got {other:?}"
+        ))),
+        Ok(_) => Err(boxed(
+            "subscriber opened over a corrupt cursor — fail-closed contract violated",
+        )),
+    }
+}
+
+#[test]
+fn corrupt_segment_magic_is_fail_closed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    {
+        let publisher = open_lexical_publisher(dir.path())?;
+        let _seq = publisher.publish(mk_upsert("c1", b"x"))?;
+    }
+    // Flip the segment magic.
+    let segment = lexical_segment_file(dir.path());
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&segment)?;
+    let _pos = file.seek(SeekFrom::Start(0))?;
+    file.write_all(b"XXXX")?;
+    file.sync_data()?;
+    drop(file);
+
+    // Subscriber open performs segment-header validation; must fail closed
+    // either at open or on first read — both are acceptable, neither must
+    // silently surface zero events.
+    match open_lexical_subscriber(dir.path()) {
+        Err(ChannelError::State(msg)) => {
+            if !msg.to_lowercase().contains("magic") && !msg.to_lowercase().contains("segment") {
+                return Err(boxed(format!("expected magic / segment error, got: {msg}")));
+            }
+            Ok(())
+        }
+        Err(other) => Err(boxed(format!("expected State magic error, got {other:?}"))),
+        Ok(mut sub) => match sub.next_event() {
+            Err(ChannelError::State(msg)) => {
+                if !msg.to_lowercase().contains("magic")
+                    && !msg.to_lowercase().contains("segment")
+                {
+                    return Err(boxed(format!("expected magic / segment error, got: {msg}")));
+                }
+                Ok(())
+            }
+            Err(other) => Err(boxed(format!("expected State magic error, got {other:?}"))),
+            Ok(_) => Err(boxed(
+                "subscriber read a corrupt segment magic — fail-closed contract violated",
+            )),
+        },
+    }
 }

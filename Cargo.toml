@@ -7,8 +7,6 @@ members = [
     "crates/quanta-index-semantic",
     "crates/quanta-index-ipc",
     "crates/quanta-index-searchd",
-    "crates/quanta-index-lq-norm",
-    "crates/quanta-index-conformance",
 ]
 resolver = "2"
 

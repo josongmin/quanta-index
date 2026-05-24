@@ -7,6 +7,7 @@ use serde::{
 };
 
 use crate::{
+    RepoMapQueryRequestV1, RepoMapQueryResponseV1,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest,
     SearchPlaneHybridQueryResponse, SearchPlaneLexicalQueryRequest,
     SearchPlaneLexicalQueryResponse, SearchPlaneSemanticQueryRequest,
@@ -97,17 +98,20 @@ pub enum SearchPlaneIpcRequest {
     Lexical(SearchPlaneLexicalQueryRequest),
     Semantic(SearchPlaneSemanticQueryRequest),
     Hybrid(SearchPlaneHybridQueryRequest),
+    RepoMapQuery(RepoMapQueryRequestV1),
     Explain(SearchPlaneExplainQueryRequest),
 }
 
 impl SearchPlaneIpcRequest {
-    const VARIANTS: &'static [&'static str] = &["Lexical", "Semantic", "Hybrid", "Explain"];
+    const VARIANTS: &'static [&'static str] =
+        &["Lexical", "Semantic", "Hybrid", "RepoMapQuery", "Explain"];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Lexical(_) => "Lexical",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
         }
     }
@@ -126,6 +130,7 @@ impl Serialize for SearchPlaneIpcRequest {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
         }
         state.end()
@@ -176,6 +181,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcRequestVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryRequest = map.next_value()?;
                             SearchPlaneIpcRequest::Hybrid(inner)
+                        }
+                        "RepoMapQuery" => {
+                            let inner: RepoMapQueryRequestV1 = map.next_value()?;
+                            SearchPlaneIpcRequest::RepoMapQuery(inner)
                         }
                         "Explain" => {
                             let inner: SearchPlaneExplainQueryRequest = map.next_value()?;
@@ -299,19 +308,21 @@ pub enum SearchPlaneIpcResponse {
     Lexical(SearchPlaneLexicalQueryResponse),
     Semantic(SearchPlaneSemanticQueryResponse),
     Hybrid(SearchPlaneHybridQueryResponse),
+    RepoMapQuery(RepoMapQueryResponseV1),
     Explain(SearchPlaneExplainQueryResponse),
     Error(SearchPlaneIpcError),
 }
 
 impl SearchPlaneIpcResponse {
     const VARIANTS: &'static [&'static str] =
-        &["Lexical", "Semantic", "Hybrid", "Explain", "Error"];
+        &["Lexical", "Semantic", "Hybrid", "RepoMapQuery", "Explain", "Error"];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Lexical(_) => "Lexical",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
             Self::Error(_) => "Error",
         }
@@ -331,6 +342,7 @@ impl Serialize for SearchPlaneIpcResponse {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
             Self::Error(inner) => state.serialize_field("payload", inner)?,
         }
@@ -382,6 +394,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcResponseVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryResponse = map.next_value()?;
                             SearchPlaneIpcResponse::Hybrid(inner)
+                        }
+                        "RepoMapQuery" => {
+                            let inner: RepoMapQueryResponseV1 = map.next_value()?;
+                            SearchPlaneIpcResponse::RepoMapQuery(inner)
                         }
                         "Explain" => {
                             let inner: SearchPlaneExplainQueryResponse = map.next_value()?;

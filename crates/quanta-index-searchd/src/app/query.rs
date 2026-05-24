@@ -6,14 +6,15 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     GenerationPin, LqDirectiveSet, LqExpr, LqFilterSet, LqOptionSet, LqQuery, ManifestGeneration,
-    RepoId, RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
-    SearchPlaneIpcError, SearchPlaneIpcRequest, SearchPlaneIpcResponse,
+    RepoId, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId, SearchExplanation,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest,
+    SearchPlaneHybridQueryResponse, SearchPlaneIpcError, SearchPlaneIpcRequest,
+    SearchPlaneIpcResponse,
     SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
     SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
 };
 use quanta_index_core::{
-    CoreError, HybridOrchestratorPolicy, LexicalIndexOpenPort, LexicalPolicy,
+    CoreError, HybridOrchestratorPolicy, LexicalIndexOpenPort, LexicalPolicy, RepoMapPolicy,
     SemanticIndexOpenPort, SemanticPolicy,
 };
 use quanta_index_ipc::QueryDispatcher;
@@ -24,6 +25,7 @@ use crate::runtime::Ledger;
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
+const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
 
@@ -184,6 +186,19 @@ impl SearchPlaneDispatcher {
         })
     }
 
+    fn repo_map(
+        &self,
+        request: RepoMapQueryRequestV1,
+    ) -> Result<RepoMapQueryResponseV1, CoreError> {
+        RepoMapPolicy::validate_query(&request)?;
+        Err(CoreError::NotImplemented(format!(
+            "repo-map query plane not wired yet (repo={}, revision={}, generation={})",
+            request.generation.repo_id.as_str(),
+            request.generation.revision_id.as_str(),
+            request.generation.manifest_generation.get()
+        )))
+    }
+
     fn snapshot_lex_seal(&self) -> Result<Option<ManifestGeneration>, CoreError> {
         let guard = self
             .ledger
@@ -216,6 +231,10 @@ impl QueryDispatcher for SearchPlaneDispatcher {
                 Ok(resp) => SearchPlaneIpcResponse::Hybrid(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },
+            SearchPlaneIpcRequest::RepoMapQuery(req) => match self.repo_map(req) {
+                Ok(resp) => SearchPlaneIpcResponse::RepoMapQuery(resp),
+                Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
+            },
             SearchPlaneIpcRequest::Explain(req) => match self.explain(req) {
                 Ok(resp) => SearchPlaneIpcResponse::Explain(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
@@ -229,7 +248,7 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
         CoreError::InvalidContract(msg) => (ERR_INVALID, msg),
         CoreError::NotReady(msg) => (ERR_NOT_READY, msg),
         CoreError::NotImplemented(msg) => (ERR_NOT_IMPLEMENTED, msg),
-        CoreError::NotFound(msg) => (ERR_NOT_READY, msg),
+        CoreError::NotFound(msg) => (ERR_NOT_FOUND, msg),
         CoreError::Storage(msg) => (ERR_INTERNAL, msg),
     };
     SearchPlaneIpcError {

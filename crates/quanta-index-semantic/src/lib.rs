@@ -222,15 +222,25 @@ impl SnapshotSemanticSearcher {
             revision_id: self.revision_id.clone(),
             generation: self.generation,
         };
-        let hits = store.rows.get(&key).map_or_else(Vec::new, |bucket| {
-            bucket.index.as_ref().map_or_else(Vec::new, |index| {
-                if index.dim() == query_vector.len() {
-                    index.search(query_vector, limit)
-                } else {
-                    Vec::new()
-                }
-            })
-        });
+        // Fail-closed on dim mismatch: silently returning an empty result
+        // would let a query with the wrong embedder model claim "no matches"
+        // when the real issue is a shape disagreement between producer and
+        // searcher.
+        let Some(bucket) = store.rows.get(&key) else {
+            return Ok(Vec::new());
+        };
+        let Some(index) = bucket.index.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if index.dim() != query_vector.len() {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: query vector dim {} does not match index dim {} for generation {}",
+                query_vector.len(),
+                index.dim(),
+                self.generation.get()
+            )));
+        }
+        let hits = index.search(query_vector, limit);
         drop(store);
         Ok(hits)
     }

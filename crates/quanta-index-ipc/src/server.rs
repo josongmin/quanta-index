@@ -130,16 +130,30 @@ impl ShutdownHandle {
     }
 }
 
+/// Per-connection read/write timeout.
+///
+/// Prevents slow-loris `DoS` where a peer opens a connection, writes a length
+/// prefix, and never sends a body — the single-flight accept loop would
+/// otherwise stall every other client.
+const CONNECTION_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn handle_connection<D: QueryDispatcher + ?Sized>(mut stream: UnixStream, dispatcher: &D) {
     // Each connection may carry multiple sequential requests until close.
     if stream.set_nonblocking(false).is_err() {
         // Cannot operate the connection in blocking mode here; drop it.
         return;
     }
+    // Apply a bounded read/write timeout so a stalled peer cannot pin the
+    // dispatcher thread indefinitely.
+    if stream.set_read_timeout(Some(CONNECTION_IO_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)).is_err()
+    {
+        return;
+    }
     loop {
         let request = match decode_request(&mut stream) {
             Ok(env) => env,
-            Err(IpcError::Truncated) => return, // peer closed
+            Err(IpcError::Truncated) => return, // peer closed cleanly
             Err(_other_err) => return,          // framing / oversize / decode → close
         };
         let response_payload = dispatcher.dispatch(request.payload);

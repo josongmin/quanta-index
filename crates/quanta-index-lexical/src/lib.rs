@@ -1,10 +1,12 @@
 //! Lexical adapter — Tantivy 0.22-backed inverted index.
 //!
 //! Implements [`LexicalIndexBuildPort`] and [`LexicalIndexOpenPort`] from
-//! `quanta-index-core::domains::lexical`. The adapter materializes channel
-//! events into a `(repo, revision, generation) -> Tantivy index` directory
-//! tree rooted at the adapter's `state_root` and services queries via
-//! BM25 over the indexed `chunk_text` field.
+//! `quanta-index-core::domains::lexical`.
+//!
+//! The adapter materializes channel events into a
+//! `(repo, revision, generation) -> Tantivy index` directory tree rooted at
+//! the adapter's `state_root` and services queries via BM25 over the indexed
+//! `chunk_text` field.
 //!
 //! Layout:
 //!   `{state_root}/{repo_id}/{revision_id}/g{generation}/`
@@ -83,9 +85,11 @@ struct GenKey {
     generation: ManifestGeneration,
 }
 
-/// Open writer + index handle for an active generation. Shared via
-/// `Arc<Mutex<_>>` so multiple `build` invocations for the same generation
-/// serialize on a single Tantivy writer (Tantivy writers are not Sync).
+/// Open writer + index handle for an active generation.
+///
+/// Shared via `Arc<Mutex<_>>` so multiple `build` invocations for the same
+/// generation serialize on a single Tantivy writer (Tantivy writers are not
+/// Sync).
 struct GenerationWriter {
     index: Index,
     writer: IndexWriter,
@@ -118,25 +122,27 @@ impl LexicalAdapter {
     }
 
     fn open_or_create_index(&self, path: &Path) -> Result<Index, CoreError> {
-        std::fs::create_dir_all(path)
-            .map_err(|err| CoreError::Storage(format!("lexical: mkdir {path:?}: {err}")))?;
-        let directory = tantivy::directory::MmapDirectory::open(path)
-            .map_err(|err| CoreError::Storage(format!("lexical: mmap open {path:?}: {err}")))?;
+        std::fs::create_dir_all(path).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: create generation directory {}: {err}",
+                path.display()
+            ))
+        })?;
+        let directory = tantivy::directory::MmapDirectory::open(path).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: open generation directory {}: {err}",
+                path.display()
+            ))
+        })?;
         Index::builder()
             .schema(self.fields.schema.clone())
             .open_or_create(directory)
-            .map_err(|err| CoreError::Storage(format!("lexical: open_or_create: {err}")))
+            .map_err(|err| CoreError::Storage(format!("lexical: open generation index: {err}")))
     }
 
     fn writer_handle(&self, key: &GenKey) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
-        {
-            let guard = self
-                .writers
-                .read()
-                .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
-            if let Some(existing) = guard.get(key) {
-                return Ok(Arc::clone(existing));
-            }
+        if let Some(existing) = self.lookup_writer(key)? {
+            return Ok(existing);
         }
         let mut guard = self
             .writers
@@ -151,13 +157,25 @@ impl LexicalAdapter {
             .writer(WRITER_MEMORY_BUDGET_BYTES)
             .map_err(|err| CoreError::Storage(format!("lexical: writer: {err}")))?;
         let handle = Arc::new(Mutex::new(GenerationWriter { index, writer }));
-        drop(guard.insert(key.clone(), Arc::clone(&handle)));
+        let _prior = guard.insert(key.clone(), Arc::clone(&handle));
+        drop(guard);
         Ok(handle)
+    }
+
+    fn lookup_writer(
+        &self,
+        key: &GenKey,
+    ) -> Result<Option<Arc<Mutex<GenerationWriter>>>, CoreError> {
+        let guard = self
+            .writers
+            .read()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+        Ok(guard.get(key).map(Arc::clone))
     }
 
     fn apply_op(
         &self,
-        writer: &mut IndexWriter,
+        writer: &IndexWriter,
         key: &GenKey,
         op: &LexicalChannelOp,
     ) -> Result<bool, CoreError> {
@@ -184,11 +202,13 @@ impl LexicalAdapter {
                 let _opstamp = writer.delete_term(term);
                 Ok(true)
             }
-            // FullBundle / Seal carry no document-level effect on the adapter;
-            // the dispatcher's ledger update observes Seal, not us.
-            LexicalChannelOp::FullBundle(_) | LexicalChannelOp::Seal(_) => Ok(false),
-            // Symbols are out-of-scope for the lexical chunk index.
-            LexicalChannelOp::UpsertSymbol(_) | LexicalChannelOp::DeleteSymbol(_) => Ok(false),
+            // FullBundle/Seal carry no document-level effect (dispatcher's
+            // ledger update observes Seal). Symbol ops are out-of-scope for
+            // the lexical chunk index.
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::Seal(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::DeleteSymbol(_) => Ok(false),
         }
     }
 }
@@ -221,12 +241,27 @@ impl LexicalIndexBuildPort for LexicalAdapter {
             generation,
         };
         let handle = self.writer_handle(&key)?;
+        self.commit_ops_under_lock(&handle, &key, ops)
+    }
+}
+
+impl LexicalAdapter {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "writer guard must span the full op-apply + commit so partial commits cannot interleave with sibling builds for the same generation"
+    )]
+    fn commit_ops_under_lock(
+        &self,
+        handle: &Arc<Mutex<GenerationWriter>>,
+        key: &GenKey,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError> {
         let mut guarded = handle
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
         let mut needs_commit = false;
         for op in ops {
-            if self.apply_op(&mut guarded.writer, &key, op)? {
+            if self.apply_op(&guarded.writer, key, op)? {
                 needs_commit = true;
             }
         }
@@ -255,7 +290,8 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         let path = self.index_path(&key);
         if !path.exists() {
             return Err(CoreError::NotFound(format!(
-                "lexical: no index at {path:?}"
+                "lexical: no index at {}",
+                path.display()
             )));
         }
         // Prefer the cached writer's index handle when present (it reflects

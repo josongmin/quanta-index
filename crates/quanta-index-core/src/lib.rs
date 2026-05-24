@@ -19,6 +19,10 @@ pub use domains::lexical::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness,
     LexicalSearcher,
 };
+pub use domains::repomap::{
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,
+    RepoMapService, RepoMapSnapshotReadPort,
+};
 pub use domains::semantic::{
     SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,
     SemanticReadiness, SemanticSearcher,

@@ -15,6 +15,7 @@ pub mod channel;
 pub mod ids;
 pub mod ipc;
 pub mod query;
+pub mod repomap;
 pub mod results;
 
 pub use channel::{
@@ -25,4 +26,5 @@ pub use channel::{
 pub use ids::*;
 pub use ipc::*;
 pub use query::*;
+pub use repomap::*;
 pub use results::*;

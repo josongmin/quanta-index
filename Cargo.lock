@@ -811,6 +811,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-repomap"
+version = "0.1.0"
+dependencies = [
+ "quanta-index-contract",
+ "quanta-index-core",
+]
+
+[[package]]
 name = "quanta-index-searchd"
 version = "0.1.0"
 dependencies = [

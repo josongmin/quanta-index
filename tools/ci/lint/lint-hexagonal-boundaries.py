@@ -46,6 +46,11 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # publishes the canonical `LqQuery` carrier in the contract crate, at
     # which point this crate will start depending on quanta-index-contract.
     "quanta-index-lq-norm": frozenset({"quanta-index-contract"}),
+    # PRE-NORM text normalization helper, peer of lq-norm. Same posture
+    # until PRE-CONTRACT-EXT lands.
+    "quanta-index-lq-text-norm": frozenset({"quanta-index-contract"}),
+    # LQ scorer (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-scorer": frozenset({"quanta-index-contract"}),
     # CI / conformance helpers. No production deps; tests in other crates
     # consume it via dev-dependencies only.
     "quanta-index-conformance": frozenset(),

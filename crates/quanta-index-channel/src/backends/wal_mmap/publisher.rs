@@ -13,8 +13,14 @@ use crate::api::publisher::BundleChannelPublisher;
 use super::codec::OpCodec;
 use super::segment::{SegmentLayout, SegmentReader, SegmentWriter, open_segment_for_write};
 
-/// How often (in entries) to fsync if the op is not a Seal. Seal always fsyncs.
-const BATCH_FSYNC_EVERY_N: u64 = 64;
+/// Honest durability default: every published frame is fsync'd before
+/// `publish()` returns.
+///
+/// This guarantees the contract that the returned `ChannelSeq` is durable —
+/// power-loss after `publish()` returns can never lose the entry.
+/// Throughput-sensitive deployments can wrap the publisher in a batch buffer
+/// at a higher layer where the relaxed semantics are visible to the producer.
+const BATCH_FSYNC_EVERY_N: u64 = 1;
 
 pub struct WalPublisher<C: OpCodec> {
     inner: Mutex<PublisherInner>,
