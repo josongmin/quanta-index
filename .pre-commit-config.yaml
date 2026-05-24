@@ -181,6 +181,15 @@ repos:
         files: ^crates/.*/src/.*\.rs$
         stages: [pre-push]
 
+      - id: rust-digest-fallibility
+        name: rust digest fallibility
+        entry: python3 tools/ci/lint/check-digest-fallibility.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^crates/.*\.rs$
+        stages: [pre-commit, pre-push]
+
       - id: cargo-deny
         name: cargo deny
         entry: bash scripts/run-cargo-deny.sh

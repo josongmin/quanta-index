@@ -109,6 +109,9 @@ rust-module-discipline:
 rust-error-shape:
     python3 tools/ci/lint/check-error-shape.py
 
+rust-digest-fallibility:
+    python3 tools/ci/lint/check-digest-fallibility.py
+
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
 
@@ -129,10 +132,16 @@ rust-public-api-update:
 
 rust-fuzz-build:
     cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz build
+    cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz build
 
 rust-fuzz-smoke seconds="60":
     cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time={{seconds}}
     cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time={{seconds}}
+
+rust-fuzz-ranker-smoke seconds="60":
+    cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_no_panic -- -max_total_time={{seconds}}
+    cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_determinism -- -max_total_time={{seconds}}
+    cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run composite_scorer_no_panic -- -max_total_time={{seconds}}
 
 rust-policy:
     @just rust-workspace-lints
@@ -142,6 +151,7 @@ rust-policy:
     @just rust-cargo-toml-hygiene
     @just rust-module-discipline
     @just rust-error-shape
+    @just rust-digest-fallibility
     @just rust-deny
 
 verify-rust:

@@ -5,9 +5,12 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_channel::{open_lexical_subscriber, open_semantic_subscriber};
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort,
+    SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_semantic::SemanticAdapter;
 
 use crate::app::config::SearchdConfig;
@@ -21,6 +24,7 @@ pub struct SearchdRuntime {
     pub config: SearchdConfig,
     pub dispatcher: ChannelDispatcher,
     pub query_server: QueryServer,
+    pub repo_map_store: Arc<RepoMapGenerationStore>,
 }
 
 impl SearchdRuntime {
@@ -34,6 +38,10 @@ impl SearchdRuntime {
             state_root.join("indexes/lexical"),
         ));
         let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::new());
+        let repo_map_store = Arc::new(
+            RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
+                .map_err(anyhow::Error::from)?,
+        );
         let ledger = Arc::new(RwLock::new(Ledger::new()));
 
         // Upcast the concrete adapters to their domain port trait objects. The
@@ -41,12 +49,17 @@ impl SearchdRuntime {
         // types; downstream collaborators depend on the ports only.
         let lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync> =
             Arc::clone(&lex_adapter) as _;
-        let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> =
-            Arc::clone(&lex_adapter) as _;
+        let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter as _;
         let sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync> =
             Arc::clone(&sem_adapter) as _;
-        let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> =
-            Arc::clone(&sem_adapter) as _;
+        let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter as _;
+        let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> =
+            Arc::clone(&repo_map_store) as _;
+        let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
+            Arc::clone(&repo_map_store) as _;
+        let repo_map_generation_activate_port: Arc<
+            dyn RepoMapGenerationActivatePort + Send + Sync,
+        > = Arc::clone(&repo_map_store) as _;
 
         let dispatcher = ChannelDispatcher::new(
             lex_sub,
@@ -59,6 +72,9 @@ impl SearchdRuntime {
         let plane_dispatcher = Arc::new(SearchPlaneDispatcher::new(
             lex_open_port,
             sem_open_port,
+            repo_map_bundle_ingest_port,
+            repo_map_generation_activate_port,
+            repo_map_query_port,
             Arc::clone(&ledger),
         ));
         let query_server = QueryServer::bind(config.socket_path(), plane_dispatcher)
@@ -68,6 +84,7 @@ impl SearchdRuntime {
             config,
             dispatcher,
             query_server,
+            repo_map_store,
         })
     }
 }

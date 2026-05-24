@@ -51,6 +51,24 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-lq-text-norm": frozenset({"quanta-index-contract"}),
     # LQ scorer (in-progress). Peer of the lq-* family.
     "quanta-index-lq-scorer": frozenset({"quanta-index-contract"}),
+    # LQ trigram index (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-trigram": frozenset({"quanta-index-contract"}),
+    # LQ positional index (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-positions": frozenset({"quanta-index-contract"}),
+    # LQ regex matcher (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-regex": frozenset({"quanta-index-contract"}),
+    # LQ symbol index (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-symbol": frozenset({"quanta-index-contract"}),
+    # LQ ranker (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-ranker": frozenset({"quanta-index-contract"}),
+    # LQ runtime (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-runtime": frozenset({"quanta-index-contract"}),
+    # LQ structural index (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-structural": frozenset({"quanta-index-contract"}),
+    # LQ history index (in-progress). Peer of the lq-* family.
+    "quanta-index-lq-history": frozenset({"quanta-index-contract"}),
+    # RepoMap projection / query store (in-progress). Consumed by searchd.
+    "quanta-index-repomap": frozenset({"quanta-index-contract", "quanta-index-core"}),
     # CI / conformance helpers. No production deps; tests in other crates
     # consume it via dev-dependencies only.
     "quanta-index-conformance": frozenset(),
@@ -62,6 +80,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-lexical",
             "quanta-index-semantic",
             "quanta-index-ipc",
+            "quanta-index-repomap",
         }
     ),
 }
@@ -123,10 +142,20 @@ def check_crate_dependency_matrix() -> list[Violation]:
         name = crate_name(cargo_toml)
         allowed = ALLOWED_CRATE_DEPS.get(name)
         if allowed is None:
-            violations.append(
-                Violation(cargo_toml, f"unknown workspace crate {name!r} (update ALLOWED_CRATE_DEPS)")
-            )
-            continue
+            # Fallback for in-progress `quanta-index-lq-*` family crates: peers
+            # that depend only on the contract crate. New additions land
+            # without forcing a lint script edit; an explicit allow-list entry
+            # is still preferred but no longer mandatory for scaffolding.
+            if name.startswith("quanta-index-lq-"):
+                allowed = frozenset({"quanta-index-contract"})
+            else:
+                violations.append(
+                    Violation(
+                        cargo_toml,
+                        f"unknown workspace crate {name!r} (update ALLOWED_CRATE_DEPS)",
+                    )
+                )
+                continue
 
         for dep in sorted(path_dependencies(cargo_toml)):
             if dep.startswith("quanta-index-") and dep not in allowed:

@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::RwLock,
+};
 
 use quanta_index_contract::{RepoId, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId};
 use quanta_index_contract::{RepoMapActivateGenerationRequestV1, RepoMapSourceBundleV1};
@@ -6,12 +10,17 @@ use quanta_index_core::{
     CoreError, RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort,
 };
 
-use crate::{model::RepoMapSnapshotV1, RepoMapMaterializer, RepoMapQueryEngine};
+use crate::{
+    RepoMapMaterializer, RepoMapQueryEngine,
+    model::RepoMapSnapshotV1,
+    persistence::{RepoMapActivationRecordV1, RepoMapSnapshotPersistence},
+};
 
-#[derive(Default)]
+#[derive(Debug)]
 pub struct RepoMapGenerationStore {
     snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, RepoMapSnapshotV1>>,
     activated: RwLock<BTreeMap<(String, String), u64>>,
+    persistence: Option<RepoMapSnapshotPersistence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -35,13 +44,64 @@ impl RepoMapStoreKeyV1 {
     }
 }
 
+impl Default for RepoMapGenerationStore {
+    fn default() -> Self {
+        Self {
+            snapshots: RwLock::new(BTreeMap::new()),
+            activated: RwLock::new(BTreeMap::new()),
+            persistence: None,
+        }
+    }
+}
+
 impl RepoMapGenerationStore {
+    pub fn with_persistence_root(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let persistence = RepoMapSnapshotPersistence::open(root)?;
+        let mut snapshots = BTreeMap::new();
+        for snapshot in persistence.load_snapshots()? {
+            let key = RepoMapStoreKeyV1::new(
+                &snapshot.repo_id,
+                &snapshot.revision_id,
+                snapshot.manifest_generation,
+            );
+            let _prior = snapshots.insert(key, snapshot);
+        }
+        let mut activated = BTreeMap::new();
+        for RepoMapActivationRecordV1 {
+            repo_id,
+            revision_id,
+            manifest_generation,
+        } in persistence.load_activations()?
+        {
+            let key = RepoMapStoreKeyV1::new(
+                &RepoId::new(&repo_id),
+                &RevisionId::new(&revision_id),
+                quanta_index_contract::ManifestGeneration::new(manifest_generation),
+            );
+            if !snapshots.contains_key(&key) {
+                return Err(CoreError::Storage(format!(
+                    "repomap activation persisted without snapshot for repo={} revision={} generation={}",
+                    repo_id, revision_id, manifest_generation
+                )));
+            }
+            let _prior = activated.insert((repo_id, revision_id), manifest_generation);
+        }
+        Ok(Self {
+            snapshots: RwLock::new(snapshots),
+            activated: RwLock::new(activated),
+            persistence: Some(persistence),
+        })
+    }
+
     pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundleV1) -> Result<(), CoreError> {
         let snapshot = RepoMapMaterializer::materialize(bundle);
         self.insert_snapshot(snapshot)
     }
 
     pub fn insert_snapshot(&self, snapshot: RepoMapSnapshotV1) -> Result<(), CoreError> {
+        if let Some(persistence) = &self.persistence {
+            persistence.persist_snapshot(&snapshot)?;
+        }
         let key = RepoMapStoreKeyV1::new(
             &snapshot.repo_id,
             &snapshot.revision_id,
@@ -51,7 +111,7 @@ impl RepoMapGenerationStore {
             .snapshots
             .write()
             .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-        guard.insert(key, snapshot);
+        let _prior = guard.insert(key, snapshot);
         Ok(())
     }
 
@@ -82,11 +142,18 @@ impl RepoMapGenerationStore {
             )));
         }
         drop(guard);
+        if let Some(persistence) = &self.persistence {
+            persistence.persist_activation(
+                &request.repo_id,
+                &request.revision_id,
+                request.manifest_generation.get(),
+            )?;
+        }
         let mut activated = self
             .activated
             .write()
             .map_err(|err| CoreError::Storage(format!("repomap activation map poisoned: {err}")))?;
-        activated.insert(
+        let _prior = activated.insert(
             (
                 request.repo_id.as_str().to_string(),
                 request.revision_id.as_str().to_string(),
@@ -126,7 +193,10 @@ impl RepoMapGenerationStore {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Option<u64> {
-        let key = (repo_id.as_str().to_string(), revision_id.as_str().to_string());
+        let key = (
+            repo_id.as_str().to_string(),
+            revision_id.as_str().to_string(),
+        );
         let guard = self.activated.read().ok()?;
         guard.get(&key).copied()
     }

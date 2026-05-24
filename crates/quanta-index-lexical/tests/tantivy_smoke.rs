@@ -119,6 +119,8 @@ fn tantivy_index_round_trip() -> TestResult {
     Ok(())
 }
 
+/// LRU eviction hellgate.
+///
 /// Drive `LEXICAL_WRITER_CACHE_MAX + 1` distinct generations through the
 /// adapter, then assert
 ///   (a) the writer cache holds at most `LEXICAL_WRITER_CACHE_MAX` entries, and
@@ -172,11 +174,7 @@ fn writer_cache_evicts_lru_after_threshold() -> TestResult {
     }
     let first = hits.first().ok_or("hits empty after length check")?;
     if first.candidate_id != "chunk-g0" {
-        return Err(format!(
-            "expected candidate_id chunk-g0, got {}",
-            first.candidate_id
-        )
-        .into());
+        return Err(format!("expected candidate_id chunk-g0, got {}", first.candidate_id).into());
     }
 
     Ok(())

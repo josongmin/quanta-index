@@ -100,6 +100,20 @@ pub enum LexicalChannelOp {
     DeleteChunk   { repo, revision, generation, chunk_id },
     UpsertSymbol  { repo, revision, generation, symbol: SymbolRecord },
     DeleteSymbol  { repo, revision, generation, symbol_id },
+    // ── History track (LEX-07) — producer ships commit DAG metadata.
+    UpsertCommit  { repo, revision, generation, commit: CommitRecord },
+    UpsertRef     { repo, revision, generation, name: Box<str>, sha: CommitSha },
+    UpsertTag     { repo, revision, generation, name: Box<str>, sha: CommitSha },
+    DeleteRef     { repo, revision, generation, name: Box<str> },
+    DeleteTag     { repo, revision, generation, name: Box<str> },
+    // ── Runtime track (RT-01) — producer marks docs dirty/clean.
+    UpsertDirty   { repo, revision, generation, doc_id, applied_at_ms, payload_hash: [u8;32] },
+    EvictDirty    { repo, revision, generation, doc_id },
+    // ── Structural track (STR-01) — producer ships pre-parsed trees per chunk.
+    // Optional; only emitted when STR-01 is wired in. Search plane consumes
+    // CBOR-encoded parse trees, never parses source on the query path.
+    UpsertParseTree { repo, revision, generation, chunk_id, tree: ParseTreeRecord },
+    DeleteParseTree { repo, revision, generation, chunk_id },
     Seal          { repo, revision, generation },
 }
 
@@ -110,6 +124,27 @@ pub enum SemanticChannelOp {
     Seal          { repo, revision, generation },
 }
 ```
+
+**Authorship rule (locked):** every payload carried by these ops — `ChunkRecord`,
+`SymbolRecord` (including `kind`, `name`, `span`, `lang`), `CommitRecord`
+(including `parents`, `applied_at_ms`), `ParseTreeRecord`, `EmbeddingRecord` —
+is **authored by the producer** in `semantica-codegraph-v2`. Search plane never
+parses source bytes, never walks git, never computes embeddings. It decodes
+producer-supplied records and indexes them. This is the structural inverse of
+the "search engine does its own extraction" pattern in tools like Sourcegraph
+Zoekt or Elasticsearch: here, extraction lives upstream so the search plane is
+a pure index + query plane.
+
+Status of the op set above:
+- Shipped (in `quanta-index-contract::channel`): `FullBundle`, `UpsertChunk`,
+  `DeleteChunk`, `UpsertSymbol`, `DeleteSymbol`, `Seal`,
+  `UpsertEmbedding`, `DeleteEmbedding`.
+- **Proposed, pending producer agreement**: `UpsertCommit`, `UpsertRef`,
+  `UpsertTag`, `DeleteRef`, `DeleteTag`, `UpsertDirty`, `EvictDirty`,
+  `UpsertParseTree`, `DeleteParseTree`. The corresponding ticket specs
+  (LEX-07, RT-01, STR-01) reference these as their authoritative input
+  surface; integration cutover blocks on the producer side accepting these
+  op shapes.
 
 ### 3.2 Factory surface (in `quanta-index-channel`)
 

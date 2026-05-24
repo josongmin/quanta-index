@@ -801,6 +801,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-lq-bridge"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-history"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "quanta-index-lq-hybrid"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "quanta-index-lq-norm"
 version = "0.1.0"
 dependencies = [
@@ -811,7 +839,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-lq-obs"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quanta-index-lq-positions"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-ranker"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "quanta-index-lq-regex"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "quanta-index-lq-trigram",
+ "regex",
+ "regex-syntax",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-runtime"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "quanta-index-lq-scorer"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-semantic"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-structural"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-symbol"
 version = "0.1.0"
 dependencies = [
  "ciborium",
@@ -828,11 +932,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-lq-trigram"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "memchr",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "quanta-index-repomap"
 version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -846,6 +963,7 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-ipc",
  "quanta-index-lexical",
+ "quanta-index-repomap",
  "quanta-index-semantic",
  "tempfile",
  "tokio",
@@ -988,9 +1106,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.3"
+version = "1.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+checksum = "4219d74c6b67a3654a9fbebc4b419e22126d13d2f3c4a07ee0cb61ff79a79619"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1011,9 +1129,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.10"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
 name = "rust-stemmers"

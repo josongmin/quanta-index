@@ -200,3 +200,59 @@ rules:
       - pattern-either:
           - pattern: $E.err().is_some()
           - pattern: $E.err().is_none()
+
+  - id: rust-no-is-ok-as-branch
+    message: |
+      Heuristic-fallback pattern banned: `if x.is_ok() { ... } else { ... }`
+      splits execution on error without typed propagation. The else branch
+      becomes a silent fallback (alternate algorithm / default value / no-op)
+      that masks the typed Err. Use `?` propagation or `match { Ok(v) => ...,
+      Err(e) => return Err(...) }`. Single-branch `if x.is_err() { return
+      Err(...); }` is permitted because it propagates explicitly.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "crates/*/src/**"
+      exclude:
+        - "**/tests/**"
+        - "**/benches/**"
+    patterns:
+      - pattern: |
+          if $X.is_ok() {
+              ...
+          } else {
+              ...
+          }
+
+  - id: rust-no-is-err-as-branch
+    message: |
+      Heuristic-fallback pattern banned: `if x.is_err() { ... } else { ... }`
+      with both branches non-empty inverts the same shape as
+      `rust-no-is-ok-as-branch`. The non-err branch becomes a silent fallback.
+      Single-branch `if x.is_err() { return Err(...); }` is permitted.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "crates/*/src/**"
+      exclude:
+        - "**/tests/**"
+        - "**/benches/**"
+    patterns:
+      - pattern: |
+          if $X.is_err() {
+              ...
+          } else {
+              ...
+          }
+
+  # NOTE: a `rust-no-map-or-else-non-err` rule was considered to catch
+  # `Result::map_or(default, ...)` / `map_or_else` fallback patterns, but
+  # semgrep cannot distinguish `Option::map_or` (legitimate) from
+  # `Result::map_or` (a fallback) at the pattern level — and the
+  # `usize::try_from(x).map_or(MAX, |v| v)` saturation idiom is common
+  # enough that the false-positive rate (~6 of 7 hits in the LQ tree)
+  # outweighs the catch. Coverage of the same shape is instead handled
+  # by `tools/ci/lint/check-digest-fallibility.py` for digest functions
+  # and by manual code review for other call sites.

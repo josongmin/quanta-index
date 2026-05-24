@@ -7,7 +7,8 @@ use serde::{
 };
 
 use crate::{
-    RepoMapQueryRequestV1, RepoMapQueryResponseV1, SearchPlaneExplainQueryRequest,
+    RepoMapActivateGenerationRequestV1, RepoMapMutationAckV1, RepoMapQueryRequestV1,
+    RepoMapQueryResponseV1, RepoMapSourceBundleV1, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
     SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
     SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
@@ -97,19 +98,31 @@ pub enum SearchPlaneIpcRequest {
     Lexical(SearchPlaneLexicalQueryRequest),
     Semantic(SearchPlaneSemanticQueryRequest),
     Hybrid(SearchPlaneHybridQueryRequest),
+    RepoMapIngest(RepoMapSourceBundleV1),
+    RepoMapActivate(RepoMapActivateGenerationRequestV1),
     RepoMapQuery(RepoMapQueryRequestV1),
     Explain(SearchPlaneExplainQueryRequest),
 }
 
 impl SearchPlaneIpcRequest {
     const VARIANTS: &'static [&'static str] =
-        &["Lexical", "Semantic", "Hybrid", "RepoMapQuery", "Explain"];
+        &[
+            "Lexical",
+            "Semantic",
+            "Hybrid",
+            "RepoMapIngest",
+            "RepoMapActivate",
+            "RepoMapQuery",
+            "Explain",
+        ];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Lexical(_) => "Lexical",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::RepoMapIngest(_) => "RepoMapIngest",
+            Self::RepoMapActivate(_) => "RepoMapActivate",
             Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
         }
@@ -129,6 +142,8 @@ impl Serialize for SearchPlaneIpcRequest {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::RepoMapIngest(inner) => state.serialize_field("payload", inner)?,
+            Self::RepoMapActivate(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
         }
@@ -180,6 +195,14 @@ impl<'de> Visitor<'de> for SearchPlaneIpcRequestVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryRequest = map.next_value()?;
                             SearchPlaneIpcRequest::Hybrid(inner)
+                        }
+                        "RepoMapIngest" => {
+                            let inner: RepoMapSourceBundleV1 = map.next_value()?;
+                            SearchPlaneIpcRequest::RepoMapIngest(inner)
+                        }
+                        "RepoMapActivate" => {
+                            let inner: RepoMapActivateGenerationRequestV1 = map.next_value()?;
+                            SearchPlaneIpcRequest::RepoMapActivate(inner)
                         }
                         "RepoMapQuery" => {
                             let inner: RepoMapQueryRequestV1 = map.next_value()?;
@@ -307,6 +330,7 @@ pub enum SearchPlaneIpcResponse {
     Lexical(SearchPlaneLexicalQueryResponse),
     Semantic(SearchPlaneSemanticQueryResponse),
     Hybrid(SearchPlaneHybridQueryResponse),
+    RepoMapMutationAck(RepoMapMutationAckV1),
     RepoMapQuery(RepoMapQueryResponseV1),
     Explain(SearchPlaneExplainQueryResponse),
     Error(SearchPlaneIpcError),
@@ -317,6 +341,7 @@ impl SearchPlaneIpcResponse {
         "Lexical",
         "Semantic",
         "Hybrid",
+        "RepoMapMutationAck",
         "RepoMapQuery",
         "Explain",
         "Error",
@@ -327,6 +352,7 @@ impl SearchPlaneIpcResponse {
             Self::Lexical(_) => "Lexical",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::RepoMapMutationAck(_) => "RepoMapMutationAck",
             Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
             Self::Error(_) => "Error",
@@ -347,6 +373,7 @@ impl Serialize for SearchPlaneIpcResponse {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::RepoMapMutationAck(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
             Self::Error(inner) => state.serialize_field("payload", inner)?,
@@ -399,6 +426,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcResponseVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryResponse = map.next_value()?;
                             SearchPlaneIpcResponse::Hybrid(inner)
+                        }
+                        "RepoMapMutationAck" => {
+                            let inner: RepoMapMutationAckV1 = map.next_value()?;
+                            SearchPlaneIpcResponse::RepoMapMutationAck(inner)
                         }
                         "RepoMapQuery" => {
                             let inner: RepoMapQueryResponseV1 = map.next_value()?;

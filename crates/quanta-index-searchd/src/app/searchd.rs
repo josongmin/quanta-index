@@ -23,9 +23,9 @@ pub fn run(command: SearchdCommand) -> Result<()> {
 /// Run a fully-assembled runtime with an externally-driven shutdown flag.
 pub fn drive(runtime: SearchdRuntime, shutdown: Arc<AtomicBool>) -> Result<()> {
     let SearchdRuntime {
-        config: _,
         mut dispatcher,
         query_server,
+        ..
     } = runtime;
     let server_shutdown = query_server.shutdown_handle();
     let join = query_server.spawn(DEFAULT_ACCEPT_IDLE)?;

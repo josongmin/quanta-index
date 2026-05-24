@@ -11,6 +11,18 @@ members = [
     "crates/quanta-index-lq-text-norm",
     "crates/quanta-index-lq-scorer",
     "crates/quanta-index-lq-norm",
+    "crates/quanta-index-lq-trigram",
+    "crates/quanta-index-lq-positions",
+    "crates/quanta-index-lq-regex",
+    "crates/quanta-index-lq-symbol",
+    "crates/quanta-index-lq-ranker",
+    "crates/quanta-index-lq-history",
+    "crates/quanta-index-lq-runtime",
+    "crates/quanta-index-lq-structural",
+    "crates/quanta-index-lq-semantic",
+    "crates/quanta-index-lq-hybrid",
+    "crates/quanta-index-lq-bridge",
+    "crates/quanta-index-lq-obs",
     "crates/quanta-index-conformance",
 ]
 resolver = "2"
@@ -89,8 +101,11 @@ crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 fs2 = "0.4.3"
 lance = { version = "6.0.1", default-features = false }
+memchr = "2.8"
 memmap2 = "0.9.5"
 proptest = "1.6.0"
+regex = "=1.10.6"
+regex-syntax = "=0.8.5"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

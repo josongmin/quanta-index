@@ -177,11 +177,62 @@ Implementation-plan.md §10 pre-seeded 16 ADR slots. Spec sheets surfaced overla
 | PRE-CONF corpus location | impl-plan vs usecase.md vs rfc.md disagree on directory | Default `usecase-corpus/`; tracked in PRE-CONF §12 |
 | PRE-CONF test target | impl-plan says `quanta-index-contract --test lq_conformance`; spec says new `quanta-index-conformance` crate | Default new crate per PRE-CONF |
 
-### 3.5 G-CONTROL-LOC (blocks Wave-0 entry)
+### 3.5 G-CONTROL-LOC (resolved via channel-arch SSOT)
 
-Working-tree state diverges from `736ddea` snapshot: `quanta-index-control/` deleted, `quanta-index-channel/` added untracked, core `domains/{bundle_ingest,generation,materialization,query}` deleted, `domains/{channel,lexical,semantic}` added untracked. CLAUDE.md still names `quanta-index-control` as the control plane.
+Working-tree state diverges from `736ddea` snapshot: `quanta-index-control/` deleted, `quanta-index-channel/` added, core `domains/{channel,lexical,semantic}` added. **Resolution**: [`docs/ssot/channel-architecture.md`](../../../ssot/channel-architecture.md) §5.2 — generation state is reconstructed from channel events in-memory (no SQLite); per-track ledgers (`LexicalGenerationLedger` / `SemanticGenerationLedger`) live in `domains/<track>`. The abstract "control-plane crate" reference in every ticket maps to this in-memory ledger pattern.
 
-**Every ticket above is physical-path-agnostic** and references "the control-plane crate" abstractly. Wave-0 cannot start until G-CONTROL-LOC resolves. Tracked in 11 of 17 spec sheets §12.
+### 3.6 Producer-authorship correction (CRITICAL — fixed 2026-05-25)
+
+**Original mistake**: LEX-05 / STR-01 / LEX-07 / RT-01 spec sheets were authored assuming the **search plane** parses source bytes, walks git, or accepts a separate `apply_changes` IPC. This is wrong. Per [`docs/ssot/channel-architecture.md`](../../../ssot/channel-architecture.md) §0 + §3.1 (Authorship rule lock):
+
+> Every payload carried by these ops … is **authored by the producer** in `semantica-codegraph-v2`. Search plane never parses source bytes, never walks git, never computes embeddings. It decodes producer-supplied records and indexes them.
+
+**Corrected ticket specs** (2026-05-25):
+
+| Ticket | Mistake | Correction |
+|---|---|---|
+| [LEX-05.md](LEX-05.md) | tree-sitter parse on search side | `SymbolRecordDecoder` trait — decodes `UpsertSymbol.symbol` (producer-extracted `SymbolRecord`). No tree-sitter dep. |
+| [STR-01.md](STR-01.md) | tree-sitter parse on search side | `UpsertParseTree { tree: ParseTreeRecord }` op (proposed). Search plane traverses producer-supplied trees. **Option A** = v1 ship with producer agreement; **Option B** = v2 deferral. |
+| [LEX-07.md](LEX-07.md) | search-plane git access / commit graph self-author | `UpsertCommit { commit: CommitRecord }` + `UpsertRef` + `UpsertTag` ops (proposed). `CommitGraph.add_commit` is a channel-subscriber callback. |
+| [RT-01.md](RT-01.md) | separate `apply_changes` IPC (violates §11 rule 6) | `UpsertDirty` + `EvictDirty` ops (proposed). `DirtyBuffer.apply` / `.evict` are channel-subscriber callbacks. Drops ADR-017 (advisory lock) — channel monotonic seq replaces it. |
+
+**SSOT update** ([channel-architecture.md §3.1](../../../ssot/channel-architecture.md)):
+- **Shipped** ops (already in contract): `FullBundle`, `UpsertChunk`, `DeleteChunk`, `UpsertSymbol`, `DeleteSymbol`, `Seal`, `UpsertEmbedding`, `DeleteEmbedding`.
+- **Proposed, pending producer agreement**: `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, `UpsertDirty`, `EvictDirty`, `UpsertParseTree`, `DeleteParseTree`.
+
+**Code impact** (16 LQ crates already on disk): trait + data shapes preserved. Only naming intent shifts:
+- `lq-symbol` `SymbolExtractor` → reinterpreted as `SymbolRecordDecoder` (input = wire bytes, not source bytes)
+- `lq-structural` `StructuralMatcher::match_pattern(pattern, source)` → reinterpreted as `match_pattern(pattern, parsed_tree)` (input = decoded `ParsedTree`)
+- `lq-history` `CommitGraph::add_commit/ref/tag` → reinterpreted as channel-subscriber callbacks
+- `lq-runtime` `DirtyBuffer::apply` → reinterpreted as channel-subscriber callback (drop `apply_changes` IPC framing)
+- `lq-text-norm` `detect_lang(path)` → still valid; could be eliminated if producer ships `lang` in chunk metadata (open)
+
+### 3.7 New ambiguities surfaced during the correction pass
+
+Filed by the 4 correction agents. Need resolution before integration:
+
+| ID | Description | Owner |
+|---|---|---|
+| AMB-PROD-1 | Producer commit emission ordering (topological? buffered?) | producer-handoff doc |
+| AMB-PROD-2 | `CommitRecord` full wire shape (parents, applied_at_ms, author, committer, message, is_merge, tags, ...) | `quanta-index-contract::channel` pin |
+| AMB-PROD-3 | `DeleteCommit` op absent — force-push handling unclear | producer-handoff doc |
+| AMB-PROD-4 | **Diff hunk authorship gap** — LEX-07 §4.5 needs `diff_hunks/` sibling, but channel has no `UpsertDiffHunk` op | proposed: add `UpsertDiffHunk` op OR inline in `UpsertCommit.commit.hunks` |
+| AMB-PROD-5 | `SymbolRecord` wire shape ownership (producer ADR + search-plane bump policy) | contract pin |
+| AMB-PROD-6 | `ParseTreeRecord` wire shape + version field policy | contract pin |
+| AMB-PROD-7 | Producer `UpsertDirty` emission cadence (per-edit? batched? debounce?) | producer-handoff doc |
+| AMB-PROD-8 | `EvictDirty` vs `UpsertDirty` ordering at same doc_id — channel seq monotonicity is authority but producer contract should guarantee it | producer-handoff doc |
+| AMB-PROD-9 | Channel WAL retention horizon vs RT-01 TTL (300s default) — crash-recovery completeness | channel-arch SSOT §4.3 amendment |
+| AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing (sync at apply vs async eventually-consistent) | RT-01 §8 amendment |
+| AMB-PROD-11 | Q-STR-01-OPTION — A (v1 with `UpsertParseTree`) or B (v2 deferral)? | integrator wave-entry |
+
+### 3.8 Stale references in corrected specs (follow-up pass needed)
+
+The correction was targeted (key sections only) to keep diffs reviewable. Stale references remain in:
+
+- `LEX-05.md` §6 (test names like `symbol_per_lang::*`), §7 (`lq_symbol_extract_ms` metric, `lq.build.symbol.extract` span), §9 (per-file extract perf rows) — should be reworded to "per-record apply" form.
+- `LEX-05.md` §11 row 22 (Sourcegraph claim-discipline) — semantics narrow to "given equivalent extraction".
+
+Follow-up: a tidy-up PR aligning §6/§7/§9 of LEX-05 with the new architecture (low-risk, no behavior change).
 
 ---
 

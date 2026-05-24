@@ -6,6 +6,7 @@
 pub mod delta;
 pub mod materializer;
 pub mod model;
+mod persistence;
 pub mod query;
 pub mod reader;
 pub mod store;

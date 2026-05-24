@@ -463,13 +463,16 @@ mod tests {
     }
 
     fn expect_ok(result: Result<Corpus, CorpusLoadError>) -> Corpus {
-        result.unwrap_or_else(|e| {
-            assert!(false, "expected Ok, got Err: {e}");
-            Corpus {
-                rows: Vec::new(),
-                source_path: PathBuf::new(),
+        match result {
+            Ok(c) => c,
+            Err(e) => {
+                assert!(false, "expected Ok, got Err: {e}");
+                Corpus {
+                    rows: Vec::new(),
+                    source_path: PathBuf::new(),
+                }
             }
-        })
+        }
     }
 
     #[test]

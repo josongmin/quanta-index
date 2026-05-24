@@ -8,19 +8,21 @@
 
 ## 1. Purpose
 
-Land two coupled deliverables that together close the Wave-4 history exit gate and the RFC-GAP-1 callback from [implementation-plan.md § Appendix A.1](../implementation-plan.md):
+Consume producer-supplied commit/ref/tag channel ops and index them so the LQ planner can serve history filters (`parent:`, `merge:`, `tag:`, `revisions:`, `since.time:`) from a local cache. Per [channel-architecture.md § 0](../../../ssot/channel-architecture.md) and [channel-architecture.md § 3.1](../../../ssot/channel-architecture.md), the search plane is a pure index + query plane: it never reads git, never walks remote refs, never authors commit metadata. The producer (`semantica-codegraph-v2`) authors every `CommitRecord` (including `parents` and `applied_at_ms`), every ref pointer, and every tag pointer, and ships them via `LexicalChannelOp::UpsertCommit` / `UpsertRef` / `UpsertTag` / `DeleteRef` / `DeleteTag`.
 
-1. **Generation governance** — promote the manifest to the single authoritative linearization point for every `(repo, rev, generation_set)` activation, including:
+Two coupled deliverables close the Wave-4 history exit gate and the RFC-GAP-1 callback from [implementation-plan.md § Appendix A.1](../implementation-plan.md):
+
+1. **Generation governance (search-plane authority over its own state)** — promote the manifest to the single authoritative linearization point for every `(repo, rev, generation_set)` activation. Inputs are producer-emitted channel ops; the search plane's authority is restricted to its own activation/regression-guard state:
    - manifest-first atomicity (sibling indexes never become reader-visible without `MARKER_OK`);
    - strictly monotonic `manifest_gen` per `(repo, rev)` with non-decreasing per-component generations;
    - stale-activation guard (reject any activation that regresses any component);
-   - write-packet trace per accepted delta apply (verifiable record of `committer_id`, `applied_at_ms`, `before_gen`, `after_gen`, `hash`);
+   - write-packet trace per accepted delta apply (verifiable record of `committer_id`, `applied_at_ms`, `before_gen`, `after_gen`, `hash`). `applied_at_ms` is carried by the producer-supplied `CommitRecord`, not stamped by the search plane;
    - idempotency: re-applying the same packet against the same prior generation is a typed no-op with a trace-match assertion.
-2. **History extensions** — extend the `LQ/History-1.1` planner + history engine to cover the RFC-GAP-1 surface: `parent:`, `merge:`, `tag:`, `revisions:`, and `since.time:` (disambiguated from `since.commit:` per [feature-scope.md § 1.2.4 Q2](../feature-scope.md)). Each filter pushes down into typed indexed authorities; **no request-time `git log`** is permitted on the production path.
+2. **History extensions** — extend the `LQ/History-1.1` planner + history engine to cover the RFC-GAP-1 surface: `parent:`, `merge:`, `tag:`, `revisions:`, and `since.time:` (disambiguated from `since.commit:` per [feature-scope.md § 1.2.4 Q2](../feature-scope.md)). Each filter pushes down into the local cache populated by producer ops; **no request-time `git log`**, no producer-side re-extraction, and no remote ref walk is permitted on the production path.
 
-Together the two halves enforce: (a) every history hit is bound to one canonical `manifest_generation`; (b) `since.time:` truth source is the write-packet trace's `applied_at_ms`, not wall-clock at request time; (c) the history sidecar index version evolves under the same monotonicity rules as content/path/symbol siblings; (d) no silent fallback exists when an authoritative path is absent (refs, ranges, tags, parents).
+Together the two halves enforce: (a) every history hit is bound to one canonical `manifest_generation`; (b) `since.time:` truth source is the producer-supplied `applied_at_ms` recorded in the write-packet trace, not wall-clock at request time; (c) the history sidecar index version evolves under the same monotonicity rules as content/path/symbol siblings; (d) no silent fallback exists when an authoritative input is absent (refs, ranges, tags, parents).
 
-This ticket does **not** redefine the parser. Grammar and EBNF are owned by [dsl.md § 2.2 / § 6](../dsl.md). LEX-07 implements the planner pushdown + indexed authority + monotonicity rails.
+This ticket does **not** redefine the parser. Grammar and EBNF are owned by [dsl.md § 2.2 / § 6](../dsl.md). LEX-07 implements the channel-subscriber callbacks, the local DAG cache, the planner pushdown, and the monotonicity rails.
 
 ---
 
@@ -28,8 +30,8 @@ This ticket does **not** redefine the parser. Grammar and EBNF are owned by [dsl
 
 ### 2.1 Current-state (per [implementation-plan.md § 2](../implementation-plan.md))
 
-- `quanta-index-control` historically owned `bundle_delta_applied` (T1.1) + `generation_manifest` (T1.2) + stale-activation guard (T1.3) + `BoundGenerationPin` factory (T4.2). At plan-authoring time the working tree shows `crates/quanta-index-control/` deleted; control-plane state may be relocating into `quanta-index-channel` (untracked). This ticket is **path-agnostic** — references to "control-plane state" are textual; resolution of physical location is the G-CONTROL-LOC open question in [implementation-plan.md § 2.3a](../implementation-plan.md). LEX-07 MUST NOT freeze a specific crate path.
-- A pre-existing partial impl of monotonicity rails was understood to live in `crates/quanta-index-control/src/store/generation_registry.rs` (deleted in the working tree). The semantics are preserved by this spec but the path is not load-bearing.
+- Per [channel-architecture.md § 3.1](../../../ssot/channel-architecture.md), the canonical producer→search-plane integration surface is `BundleChannelPublisher` / `BundleChannelSubscriber`. The history-track ops `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag` are **proposed, pending producer agreement** in that SSOT — LEX-07 is the search-plane consumer ticket for that op set and cutover blocks on the producer side accepting these shapes.
+- Per [channel-architecture.md § 5.2](../../../ssot/channel-architecture.md), generation state is reconstructed from channel events on startup; there is no SQLite control plane. References below to "generation governance" describe in-memory ledger state derived from observed `Seal` events.
 - The current `LexicalCandidate` cannot represent commit / diff hits. **GAP-02** ([usecase.md § 3](../usecase.md)) lands typed `CommitCandidate` and `DiffCandidate` via PRE-CONTRACT-EXT (Wave 0). LEX-07 wires the planner + index + executor against those types; LEX-07 itself ships no new contract leaf beyond the bridge to those types (Q-UC-2 closed in Wave 0).
 - RFC § LQ/History-1.1 lists `type:commit`, `type:diff`, `author:`, `committer:`, `message:`, `before:`/`after:`/`since:`/`until:`, `diff.added:`/`removed:`/`touched:`. It does **not** enumerate `parent:`, `merge:`, `tag:`, `revisions:`, `since.time:`/`since.commit:`. RFC-GAP-1 ([implementation-plan.md § Appendix A.1](../implementation-plan.md)) names this as a scope amendment LEX-07 must close.
 
@@ -44,7 +46,7 @@ RFC § Atomicity contract requires the manifest write to be the **single** linea
 
 ### 2.3 Why `since.time:` is tied to `applied_at_ms`
 
-Sourcegraph's `since:` is a time-relative filter against producer wall-clock at indexing time. Quanta's posture is fail-closed and authoritative: the only legitimate truth source for "when did this generation enter the search plane" is the write-packet trace's `applied_at_ms` (recorded at delta apply against the same monotonic clock that produces `before_gen` / `after_gen`). Reading wall-clock at request time would re-introduce a non-deterministic boundary — forbidden by RFC § Non-Negotiable Invariants §6 (no incremental claim without delta mutation proof). Hence `since.time:` lowers to a comparison against the trace's `applied_at_ms` field, **not** against `now()`.
+Sourcegraph's `since:` is a time-relative filter against producer wall-clock at indexing time. Quanta's posture is fail-closed and authoritative: the only legitimate truth source for "when did this commit enter the system" is the producer-supplied `applied_at_ms` carried inside `CommitRecord` (per [channel-architecture.md § 3.1 authorship rule](../../../ssot/channel-architecture.md)) and recorded into the write-packet trace at delta apply. Reading wall-clock at request time would re-introduce a non-deterministic boundary — forbidden by RFC § Non-Negotiable Invariants §6 (no incremental claim without delta mutation proof). Hence `since.time:` lowers to a comparison against the trace's `applied_at_ms` field (sourced from the producer commit op), **not** against `now()`, and **not** against any search-plane clock.
 
 ### 2.4 Position in the dependency graph
 
@@ -56,6 +58,21 @@ Sourcegraph's `since:` is a time-relative filter against producer wall-clock at 
 
 ## 3. Inputs
 
+### 3.0 Runtime inputs (authoritative)
+
+LEX-07 consumes only these inputs at runtime. No git, no remote ref walk, no source-bytes parsing.
+
+| Input                                  | Source                                                                                        | Carries                                                                                                          |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `LexicalChannelOp::UpsertCommit`       | producer (`semantica-codegraph-v2`) via `BundleChannelPublisher`                              | `CommitRecord { sha, parents: Vec<CommitSha>, applied_at_ms, author, committer, message, is_merge, tags, ... }` |
+| `LexicalChannelOp::UpsertRef`          | producer                                                                                      | `{ name, sha }` — named pointer; producer authority                                                              |
+| `LexicalChannelOp::UpsertTag`          | producer                                                                                      | `{ name, sha }` — named pointer; producer authority                                                              |
+| `LexicalChannelOp::DeleteRef`          | producer                                                                                      | `{ name }`                                                                                                       |
+| `LexicalChannelOp::DeleteTag`          | producer                                                                                      | `{ name }`                                                                                                       |
+| LQ query carrying history filters      | query client via UDS                                                                          | parsed `parent:` / `merge:` / `tag:` / `revisions:` / `since.time:` / `since.commit:` predicates                |
+
+Per [channel-architecture.md § 3.1 authorship rule](../../../ssot/channel-architecture.md), `CommitRecord` (including `parents` and `applied_at_ms`) is **authored by the producer**. The search plane decodes and indexes; it never extracts. The op set above is **proposed, pending producer agreement** per [channel-architecture.md § 3.1 status](../../../ssot/channel-architecture.md); LEX-07 ships the search-plane consumer.
+
 ### 3.1 Documents
 
 - [rfc.md § LQ/History-1.1](../rfc.md), [§ Canonical Incremental Write Pipeline](../rfc.md), [§ Atomicity contract](../rfc.md), [§ Generation model](../rfc.md), [§ Monotonicity rules](../rfc.md), [§ Index Lifecycle](../rfc.md), [§ Migration and Versioning Policy](../rfc.md), [§ Error Code Taxonomy](../rfc.md).
@@ -63,6 +80,7 @@ Sourcegraph's `since:` is a time-relative filter against producer wall-clock at 
 - [usecase.md § D History](../usecase.md) (UC-HIST-01..08), [§ B Predicate filters § UC-PRED-02](../usecase.md), [§ H Cross-cutting § UC-EDGE-07](../usecase.md), [§ 3 GAP-02](../usecase.md), [§ 4 AC-08, AC-09, AC-13](../usecase.md).
 - [dsl.md § 2.2 LQ/History-1.1 extensions](../dsl.md), [§ 6.6 rev: grammar](../dsl.md), [§ 7 Predicate sub-grammar](../dsl.md), [§ 12 Error taxonomy](../dsl.md), [§ 13 Limits and budgets](../dsl.md).
 - [implementation-plan.md § 5.11 LEX-07 DoD](../implementation-plan.md), [§ Appendix A.1 RFC-GAP-1](../implementation-plan.md), [§ 4.5 Wave 4](../implementation-plan.md), [§ 6 Risk register R3 R5](../implementation-plan.md), [§ 7 Cutover and migration plan Wave 4](../implementation-plan.md), [§ 10 ADR-011](../implementation-plan.md).
+- [channel-architecture.md § 0 Scope](../../../ssot/channel-architecture.md), [§ 3.1 Traits / authorship rule / proposed history ops](../../../ssot/channel-architecture.md), [§ 5 Searchd Internals](../../../ssot/channel-architecture.md).
 - [CLAUDE.md § Agent change posture](../../../../CLAUDE.md), [§ Rule Catalog](../../../../CLAUDE.md), [AGENTS.md](../../../../AGENTS.md).
 
 ### 3.2 Upstream artifacts already landed (or landing in Wave 0/1/2/3)
@@ -77,8 +95,10 @@ Sourcegraph's `since:` is a time-relative filter against producer wall-clock at 
 
 ### 3.3 Producer-side preconditions
 
-- Producer (`semantica-codegraph-v2`) emits commit metadata + diff hunk artifacts inside `PublishedSearchBundleManifest` (already a Wave-4 entry-gate item per [implementation-plan.md § 4.5 entry gate](../implementation-plan.md)).
-- Producer commit-DAG export: each commit row carries `parent_commit_ids: Vec<CommitId>`, a `merge: bool` flag, and the list of tags reachable as of that commit. **Producer cross-team handoff doc must commit alongside the LEX-07 PR** at `docs/handoffs/lq-history-1.1.md` per [implementation-plan.md § 7.3 Producer handoff artifacts](../implementation-plan.md).
+- Producer (`semantica-codegraph-v2`) emits `LexicalChannelOp::UpsertCommit` / `UpsertRef` / `UpsertTag` / `DeleteRef` / `DeleteTag` ops via `BundleChannelPublisher` per [channel-architecture.md § 3.1](../../../ssot/channel-architecture.md). Producer is the codegraph and already has git history loaded; extraction is producer-side, not search-plane-side.
+- Each `UpsertCommit` carries `CommitRecord { sha, parents: Vec<CommitSha>, applied_at_ms, is_merge, author, committer, message, ... }`. The `parents` field is the producer's authoritative DAG export; `applied_at_ms` is the producer's monotonic stamp at the moment the commit was integrated.
+- Ref / tag pointers (`name → sha`) are authored by the producer. The search plane never reads remote refs.
+- **Producer cross-team handoff doc must commit alongside the LEX-07 PR** at `docs/handoffs/lq-history-1.1.md` per [implementation-plan.md § 7.3 Producer handoff artifacts](../implementation-plan.md). The handoff doc carries the wire shape of `CommitRecord` and the ordering guarantee for `UpsertCommit` (open question Q-LEX07-10 in § 12).
 
 ---
 
@@ -96,13 +116,35 @@ Sourcegraph's `since:` is a time-relative filter against producer wall-clock at 
 - `RevisionRange { from: HistoryRef, to: HistoryRef, kind: RangeKind }` with `RangeKind = TwoDot | ThreeDot` per [dsl.md § 6.6 rev: grammar](../dsl.md).
 - `HistoryQueryError` extension variants (new typed codes; see § 8): `HISTORY_REF_NOT_FOUND`, `HISTORY_RANGE_OVERRUN`, `HISTORY_MERGE_CYCLE`.
 
-### 4.3 New port traits (in core; physical home subject to G-CONTROL-LOC)
+### 4.3 New surfaces (in core; physical home subject to G-CONTROL-LOC)
 
-- `SearchPlaneHistoryIndexBuildPort::build_commit_metadata(...)`, `build_diff_hunks(...)`, `build_commit_dag(...)`.
+**`CommitGraph` — local DAG cache (accumulator).** Shape: in-memory map `{ CommitSha → CommitNode }` plus a tag/ref index. Mutated only by channel-subscriber callbacks below. Read by the planner. The shape mirrors what the producer ships; the search plane never derives commit metadata.
+
+Channel-subscriber callbacks (driven by `BundleChannelSubscriber::next_event()` per [channel-architecture.md § 5.3 dispatcher loop](../../../ssot/channel-architecture.md)). These are **callbacks invoked when an op is observed**, not an API for the search plane to author commits:
+
+- `CommitGraph::add_commit(node: CommitNode) -> Result<(), HistoryDecodeError>` — invoked on `UpsertCommit`. Decodes producer-supplied `CommitRecord`, inserts into the cache. Errors: `HISTORY_COMMIT_DECODE_FAIL`, `HISTORY_COMMIT_PARENT_UNKNOWN` (see § 8).
+- `CommitGraph::add_ref(name: &str, sha: CommitSha)` / `delete_ref(name: &str)` — invoked on `UpsertRef` / `DeleteRef`. Errors: `HISTORY_REF_DECODE_FAIL`.
+- `CommitGraph::add_tag(name: &str, sha: CommitSha)` / `delete_tag(name: &str)` — invoked on `UpsertTag` / `DeleteTag`. Errors: `HISTORY_REF_DECODE_FAIL`.
+
+History filter primitives (unchanged shape; read against the local `CommitGraph`):
+
+- `parents_within_depth(start: CommitSha, depth: u32) -> Vec<CommitSha>`
+- `merge_commits(scope: RangeOrAll) -> Vec<CommitSha>`
+- `tag_resolve(pattern: &TagPattern) -> Vec<CommitSha>`
+- `enumerate_revisions(range: &RevisionRange) -> Vec<CommitSha>`
+- `since_time(threshold_ms: i64) -> Vec<CommitSha>` (reads `applied_at_ms` carried by the producer commit op)
+
+Index build / query ports (still search-side because they own the on-disk sibling shards):
+
+- `SearchPlaneHistoryIndexBuildPort::build_commit_metadata(...)`, `build_diff_hunks(...)`, `build_commit_dag(...)` — populate sibling shards from the local `CommitGraph` cache; never re-derive from source bytes.
 - `SearchPlaneHistoryIndexPort::query_commits(plan: &LqHistoryPlan) -> Stream<CommitCandidate>`.
 - `SearchPlaneHistoryIndexPort::query_diffs(plan: &LqHistoryPlan) -> Stream<DiffCandidate>`.
-- `SearchPlaneHistoryIndexPort::resolve_history_ref(repo: &RepoId, r: &HistoryRef) -> Result<ResolvedHistoryRef, LexicalErrorCode>`.
-- `WritePacketTrace::record_history_apply(packet: &HistoryWritePacket) -> Result<TraceRecord, CoreError>` (extends the LEX-04 trace primitive).
+- `SearchPlaneHistoryIndexPort::resolve_history_ref(repo: &RepoId, r: &HistoryRef) -> Result<ResolvedHistoryRef, LexicalErrorCode>` (resolves via `CommitGraph` ref/tag index — not via git).
+
+Activation/regression-guard (search-plane authority over its own state; inputs come from producer ops, not from search-plane-authored packets):
+
+- `WritePacketTrace::record_history_apply(packet: &HistoryWritePacket) -> Result<TraceRecord, CoreError>` — records the apply event of producer-emitted history ops; extends the LEX-04 trace primitive. `packet` is constructed from a decoded producer op, not authored by the search plane.
+- `ManifestLedger::apply(outcome: ApplyOutcome)` — search-plane ledger flips `materialized=true` for a generation when its sibling shards finish building per [channel-architecture.md § 5.2](../../../ssot/channel-architecture.md).
 - `GenerationGovernance::activate(manifest_gen: ManifestGen, siblings: &SiblingGenSet) -> Result<ActivationOutcome, LexicalErrorCode>` (rejects regression; idempotent re-activation returns `ActivationOutcome::AlreadyActive`).
 
 ### 4.4 New planner pushdown (in core)
@@ -139,7 +181,15 @@ Each sibling carries its own `MARKER_OK` and participates in the manifest-first 
 
 ## 5. Implementation steps (TDD)
 
-Each step lands red → green → refactor. No step may merge with a `#[ignore]` test.
+Each step lands red → green → refactor. No step may merge with a `#[ignore]` test. The search plane is a pure consumer of producer-emitted channel ops; no step may introduce commit authorship, git reads, or remote ref walks.
+
+### 5.0 Step Pre-A — Channel op decode + CommitGraph cache (TDD red)
+
+1. Failing test `upsert_commit_decodes_and_inserts`: subscriber observes a well-formed `LexicalChannelOp::UpsertCommit`; `CommitGraph::add_commit` decodes `CommitRecord` and inserts a node carrying `{sha, parents, applied_at_ms, is_merge, ...}` exactly as authored by the producer.
+2. Failing test `upsert_commit_malformed_payload_fails`: malformed CBOR for `CommitRecord` surfaces `HISTORY_COMMIT_DECODE_FAIL`; no partial insert.
+3. Failing test `upsert_commit_parent_unknown_fails`: an `UpsertCommit` whose `parents` reference a sha not yet present in the cache surfaces `HISTORY_COMMIT_PARENT_UNKNOWN` (order-dependence violation); decision on buffer-vs-reject locked by Q-LEX07-10.
+4. Failing test `upsert_ref_and_tag_update_index`: `UpsertRef` / `UpsertTag` insert `{name → sha}` into the ref/tag index; `DeleteRef` / `DeleteTag` remove. Malformed ops surface `HISTORY_REF_DECODE_FAIL`.
+5. Implement `CommitGraph::{add_commit, add_ref, add_tag, delete_ref, delete_tag}` as channel-subscriber callbacks. No code path may construct a `CommitNode` outside these callbacks.
 
 ### 5.1 Step A — Generation governance: monotonicity rails (TDD red)
 
@@ -156,16 +206,20 @@ Each step lands red → green → refactor. No step may merge with a `#[ignore]`
 
 ### 5.3 Step C — Write-packet trace + idempotency (TDD red)
 
+The write packet is **constructed by the search plane from a decoded producer op**, not authored by the search plane. `applied_at_ms` is sourced from `CommitRecord.applied_at_ms` (producer), not stamped here.
+
 1. Extend the `WritePacket` struct (lands as part of LEX-04 in Wave 3) with a `history_identities: Vec<HistoryIdentity>` field; hand-rolled serde per D18.
-2. Failing test `apply_records_trace`: applying a delta produces a `TraceRecord { committer_id, applied_at_ms, before_gen, after_gen, hash }` where `hash = SHA-256(canonical_cbor(packet))`.
+2. Failing test `apply_records_trace`: applying a delta (sourced from a decoded `UpsertCommit` channel event) produces a `TraceRecord { committer_id, applied_at_ms, before_gen, after_gen, hash }` where `hash = SHA-256(canonical_cbor(packet))` and `applied_at_ms` is the value carried by the producer commit op.
 3. Failing test `reapply_same_packet_is_noop`: applying the same packet against the same `before_gen` returns `ApplyOutcome::Idempotent { matched_trace_id }` with no state change.
 4. Implement `WritePacketTrace::record_history_apply` plus the no-op path.
 5. Criterion bench `lex_07_write_trace_bench`: trace record p99 ≤ 1ms.
 
 ### 5.4 Step D — History sidecar shards land as first-class siblings (TDD red)
 
-1. Failing integration test `history_sidecar_atomicity`: build a generation with `commits/`, `diff_hunks/`, `commit_dag/`; rename `commits/MARKER_OK` away; assert reader surface returns `STATE_NOT_READY: STALE_SIBLING`.
-2. Implement `SearchPlaneHistoryIndexBuildPort::build_commit_metadata` / `build_diff_hunks` / `build_commit_dag`.
+Sibling shards are populated **from the in-memory `CommitGraph` cache** (which is itself populated from producer ops in Step Pre-A). No source-bytes parsing, no git access.
+
+1. Failing integration test `history_sidecar_atomicity`: build a generation with `commits/`, `diff_hunks/`, `commit_dag/` from a sequence of producer `UpsertCommit` ops; rename `commits/MARKER_OK` away; assert reader surface returns `STATE_NOT_READY: STALE_SIBLING`.
+2. Implement `SearchPlaneHistoryIndexBuildPort::build_commit_metadata` / `build_diff_hunks` / `build_commit_dag` reading from `CommitGraph`.
 3. Wire `MARKER_OK` per sibling.
 4. Extend the per-generation reader cache pattern (LEX-03 sibling cache) for history shards.
 
@@ -359,9 +413,12 @@ All paths fail closed; no silent fallback. New typed codes introduced by this ti
 
 | Code                              | When fires                                                                                                | Family       | Retry semantics |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------ | --------------- |
-| `HISTORY_REF_NOT_FOUND`           | named ref (branch, tag, sha) does not resolve in the commit-DAG cache for the pinned generation           | `STATE_*`    | not retryable   |
+| `HISTORY_COMMIT_DECODE_FAIL`      | producer-emitted `UpsertCommit` carries a malformed `CommitRecord` payload (CBOR decode failure, missing required field, invalid sha shape) | `STATE_*`    | not retryable   |
+| `HISTORY_REF_DECODE_FAIL`         | producer-emitted `UpsertRef` / `UpsertTag` / `DeleteRef` / `DeleteTag` carries a malformed payload (invalid name encoding, invalid sha shape) | `STATE_*`    | not retryable   |
+| `HISTORY_COMMIT_PARENT_UNKNOWN`   | producer emits an `UpsertCommit` whose `parents` reference a sha not yet present in `CommitGraph` (order-dependence violation between producer emission order and search-plane cache state) | `STATE_*`    | not retryable (default) — see Q-LEX07-10 for buffer-vs-reject |
+| `HISTORY_REF_NOT_FOUND`           | named ref (branch, tag, sha) does not resolve in the `CommitGraph` cache for the pinned generation        | `STATE_*`    | not retryable   |
 | `HISTORY_RANGE_OVERRUN`           | `revisions:<range>` exceeds the `HISTORY_REVISIONS_MAX = 10_000` cap                                      | `PLAN_*`     | not retryable   |
-| `HISTORY_MERGE_CYCLE`             | commit-DAG cache returns a cycle on walk (defense-in-depth; real DAGs are acyclic)                        | `STATE_*`    | not retryable   |
+| `HISTORY_MERGE_CYCLE`             | `CommitGraph` cache returns a cycle on walk (defense-in-depth; real DAGs from a non-corrupt producer are acyclic) | `STATE_*`    | not retryable   |
 | `HISTORY_TRACE_INCOMPLETE`        | `since.time:` queried against a generation whose write-packet trace lacks an entry for the requested time | `STATE_*`    | wait-and-retry  |
 | `HISTORY_UNINDEXED`               | `type:commit` / `type:diff` queried against a `(repo, rev)` whose history shards are absent               | `STATE_*`    | wait-and-retry  |
 
@@ -430,6 +487,8 @@ Capacity:
 | LR-9  | Defensive cycle detection masks a real DAG corruption                                                                    | L    | M      | `HISTORY_MERGE_CYCLE` is a typed alarm, not a silent skip; alerted at OBS-01 audit                                               |
 | LR-10 | `ADR-011` (new `quanta-index-history` crate vs extend `quanta-index-lexical`) unresolved at ticket start                 | H    | M      | wave entry gate blocks on ADR-011 per [implementation-plan.md § 10](../implementation-plan.md)                                   |
 | LR-11 | Storage sharing question: history shard alongside main lexical shard or separate? Tie to candidate ADR-005 (see § 12)    | M    | M      | open question recorded in § 12; ADR-005 candidate; default = separate shard per LR-5 mitigation                                  |
+| LR-12 | Producer commit-stream ordering: parents may arrive after children. Producer's emission order is not guaranteed to be topological in the current [channel-architecture.md § 3.1](../../../ssot/channel-architecture.md) draft | M    | M      | default policy = reject with `HISTORY_COMMIT_PARENT_UNKNOWN`; bounded buffer option locked behind Q-LEX07-10 pending producer ordering guarantee in the cross-team handoff doc |
+| LR-13 | Producer commit payload schema drift: `CommitRecord` wire shape evolves without `lq_version` bump                         | M    | H      | hand-rolled serde rejects unknown required fields; `HISTORY_COMMIT_DECODE_FAIL` typed error; wire-shape versioning policy is Q-LEX07-11 |
 
 ---
 
@@ -475,6 +534,9 @@ Every row cites the artifact that proves it. If any row cannot cite an artifact,
 - **Q-LEX07-7** — G-CONTROL-LOC ([implementation-plan.md § 2.3a](../implementation-plan.md)) gates the physical home of `GenerationGovernance` and `WritePacketTrace`. This ticket is path-agnostic; the resolution may force a follow-up PR re-homing the surfaces. The follow-up is not a re-spec — only a path move — but it must be tracked as a Wave-3-entry blocker (LEX-04 owns the writer-coordinator skeleton).
 - **Q-LEX07-8** — Hybrid history+semantic query routing (e.g., `type:diff` + semantic similarity) — out of scope here, lands in SEM-01 (Wave 6) per [implementation-plan.md § 4.7](../implementation-plan.md).
 - **Q-LEX07-9** — Should `revisions:<range>` honor `tag:<pattern>` as a range endpoint (e.g., `revisions:v1.0..v2.0`)? Default: yes, via tag→commit resolution at parse-canonicalize time. Tag-unknown at either endpoint surfaces `HISTORY_REF_NOT_FOUND`. Confirm with conformance corpus author.
+- **Q-LEX07-10** — Producer emission ordering guarantee for `UpsertCommit`: does the producer guarantee topological order (parents before children) within a `(repo, revision, generation)` window? Default proposal: **reject with `HISTORY_COMMIT_PARENT_UNKNOWN`** on out-of-order arrival; bounded buffer of N entries is an alternative if the producer cannot give a topological guarantee. Lock before LEX-07 PR merges; resolution lives in `docs/handoffs/lq-history-1.1.md`.
+- **Q-LEX07-11** — `CommitRecord` wire-shape versioning policy: when the producer adds / removes fields on `CommitRecord`, what is the version bump rule? Default proposal: additive fields bump the channel-op minor version; removed / semantically-changed fields bump major and require a full-bundle reseed. Reconcile with [channel-architecture.md § 3.1](../../../ssot/channel-architecture.md) before the producer ships `UpsertCommit` outside the proposed set.
+- **Q-LEX07-12** — Need for `DeleteCommit` op: producers rarely delete history, but force-push and history rewrite are real. Default proposal: **no `DeleteCommit` op in LEX-07**; rewrites are handled by emitting a new generation with a fresh `FullBundle` and letting retention vacuum the prior generation per [channel-architecture.md § 5.2](../../../ssot/channel-architecture.md). Confirm the producer team agrees that force-push triggers a fresh generation rather than per-commit deletion.
 
 ---
 
@@ -515,6 +577,9 @@ Every row cites the artifact that proves it. If any row cannot cite an artifact,
 - [implementation-plan.md § 9.1 Wave-4 OBS subset](../implementation-plan.md)
 - [implementation-plan.md § 10 ADR-011](../implementation-plan.md)
 - [implementation-plan.md § 11 Open questions G-CONTROL-LOC](../implementation-plan.md)
+- [channel-architecture.md § 0 Scope](../../../ssot/channel-architecture.md) — search plane is index + query only; producer authors commit/ref/tag
+- [channel-architecture.md § 3.1 Channel ops + authorship rule](../../../ssot/channel-architecture.md) — authoritative input source for LEX-07; `UpsertCommit`/`UpsertRef`/`UpsertTag`/`DeleteRef`/`DeleteTag` proposed-status ops
+- [channel-architecture.md § 5.2 Generation state authority](../../../ssot/channel-architecture.md) — ledger reconstructed from channel events; no SQLite control plane
 - [CLAUDE.md § Agent change posture](../../../../CLAUDE.md)
 - [CLAUDE.md § Rule Catalog](../../../../CLAUDE.md)
 - [AGENTS.md](../../../../AGENTS.md)

@@ -1,0 +1,41 @@
+[package]
+name = "quanta-index-lq-ranker-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Detach from the workspace. cargo-fuzz uses nightly-only flags and ships its
+# own profile; keeping it standalone avoids polluting `cargo check --workspace`
+# and lets the heavy correctness rail drive it explicitly via `just rust-fuzz-*`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+quanta-index-lq-ranker = { path = ".." }
+
+[[bin]]
+name = "weights_hash_no_panic"
+path = "fuzz_targets/weights_hash_no_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "weights_hash_determinism"
+path = "fuzz_targets/weights_hash_determinism.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "composite_scorer_no_panic"
+path = "fuzz_targets/composite_scorer_no_panic.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
