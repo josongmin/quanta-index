@@ -428,8 +428,7 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {
                     if b == b'$'
-                        || (b == b':'
-                            && self.src.get(self.pos.saturating_add(1)) == Some(&b'['))
+                        || (b == b':' && self.src.get(self.pos.saturating_add(1)) == Some(&b'['))
                     {
                         node_count = node_count.saturating_add(1);
                     }
@@ -547,8 +546,7 @@ impl<'a> Lexer<'a> {
 /// Decode one UTF-8 code point at `bytes[at..]`. Returns `None` if invalid.
 fn decode_utf8(bytes: &[u8], at: usize) -> Option<char> {
     let rest = bytes.get(at..)?;
-    core::str::from_utf8(rest)
-        .map_or(None, |s| s.chars().next())
+    core::str::from_utf8(rest).map_or(None, |s| s.chars().next())
 }
 
 #[cfg(test)]
@@ -592,7 +590,10 @@ mod tests {
     fn phrase_with_escape_decodes() {
         assert_eq!(
             ok_kinds(r#""async\tfn""#),
-            vec![LqTokenKind::Phrase("async\tfn".to_owned()), LqTokenKind::Eof]
+            vec![
+                LqTokenKind::Phrase("async\tfn".to_owned()),
+                LqTokenKind::Eof
+            ]
         );
     }
 
@@ -611,10 +612,7 @@ mod tests {
     fn regex_lexes_with_internal_escape() {
         assert_eq!(
             ok_kinds(r"/fn\s+\w+/"),
-            vec![
-                LqTokenKind::Regex(r"fn\s+\w+".to_owned()),
-                LqTokenKind::Eof,
-            ]
+            vec![LqTokenKind::Regex(r"fn\s+\w+".to_owned()), LqTokenKind::Eof,]
         );
     }
 
@@ -686,7 +684,10 @@ mod tests {
 
     #[test]
     fn unclosed_phrase_returns_unclosed_quote() {
-        assert_eq!(err_code(r#""unterminated"#), LqParseErrorCode::UnclosedQuote);
+        assert_eq!(
+            err_code(r#""unterminated"#),
+            LqParseErrorCode::UnclosedQuote
+        );
     }
 
     #[test]

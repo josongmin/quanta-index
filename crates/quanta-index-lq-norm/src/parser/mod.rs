@@ -151,8 +151,7 @@ impl Parser<'_> {
                         ));
                     }
                     self.consume();
-                    let expected_child_count =
-                        children.len().saturating_add(1);
+                    let expected_child_count = children.len().saturating_add(1);
                     let nxt = self.parse_not_or_atom(next_depth)?;
                     let Some(nxt) = nxt else {
                         return Err(LqParseError::new(
@@ -337,10 +336,7 @@ impl Parser<'_> {
         match lower.as_str() {
             "repo" => {
                 let (pat, revs) = parse_repo_value(value);
-                self.filters.push(LqFilter::Repo {
-                    pattern: pat,
-                    revs,
-                });
+                self.filters.push(LqFilter::Repo { pattern: pat, revs });
                 Ok(())
             }
             "file" => {
@@ -756,7 +752,10 @@ mod tests {
 
     #[test]
     fn unknown_filter_errors() {
-        assert_eq!(parse_err("not_a_filter:v foo"), LqParseErrorCode::UnknownFilter);
+        assert_eq!(
+            parse_err("not_a_filter:v foo"),
+            LqParseErrorCode::UnknownFilter
+        );
     }
 
     #[test]

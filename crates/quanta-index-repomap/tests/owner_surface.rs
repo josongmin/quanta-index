@@ -98,7 +98,10 @@ fn query_without_focus_returns_rank_sorted_entries_with_budget_cap() {
     assert_eq!(response.entries[0].rank, 1);
     assert_eq!(response.entries[1].subject_identity, "src/lib.rs::BetaNode");
     assert_eq!(response.entries[1].rank, 2);
-    assert_eq!(response.entries[2].subject_identity, "src/main.rs::GammaNode");
+    assert_eq!(
+        response.entries[2].subject_identity,
+        "src/main.rs::GammaNode"
+    );
     assert!(!response.entries[2].included);
     assert_eq!(response.entries[2].rank, 0);
     assert_eq!(response.dropped_entries_count, 1);

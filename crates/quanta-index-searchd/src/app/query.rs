@@ -359,9 +359,8 @@ mod tests {
 
     use quanta_index_contract::{
         ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV1, RepoMapEntryDtoV1,
-        RepoMapMutationAckV1, RepoMapQueryRequestV1, RepoMapQueryResponseV1,
-        RepoMapSnapshotMetaV1, RepoMapSourceBundleV1, RevisionId, SearchPlaneIpcRequest,
-        SearchPlaneIpcResponse,
+        RepoMapMutationAckV1, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RepoMapSnapshotMetaV1,
+        RepoMapSourceBundleV1, RevisionId, SearchPlaneIpcRequest, SearchPlaneIpcResponse,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapBundleIngestPort,
@@ -524,18 +523,20 @@ mod tests {
             Arc::new(RwLock::new(Ledger::default())),
         );
 
-        let ingest = dispatcher.dispatch(SearchPlaneIpcRequest::RepoMapIngest(RepoMapSourceBundleV1 {
-            repo_id: RepoId::new("repo-map-ipc"),
-            revision_id: RevisionId::new("rev-map-ipc"),
-            manifest_generation: ManifestGeneration::new(9),
-            snapshot_id: "dispatch-snapshot".to_string(),
-            projection_version: 1,
-            authority_digest: "dispatch-digest".to_string(),
-            item_index_availability: "available".to_string(),
-            graph_coverage_class: "full".to_string(),
-            exactness_summary: "exact".to_string(),
-            entry_identities: vec!["src/lib.rs::Owner".to_string()],
-        }));
+        let ingest = dispatcher.dispatch(SearchPlaneIpcRequest::RepoMapIngest(
+            RepoMapSourceBundleV1 {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("rev-map-ipc"),
+                manifest_generation: ManifestGeneration::new(9),
+                snapshot_id: "dispatch-snapshot".to_string(),
+                projection_version: 1,
+                authority_digest: "dispatch-digest".to_string(),
+                item_index_availability: "available".to_string(),
+                graph_coverage_class: "full".to_string(),
+                exactness_summary: "exact".to_string(),
+                entry_identities: vec!["src/lib.rs::Owner".to_string()],
+            },
+        ));
         match ingest {
             SearchPlaneIpcResponse::RepoMapMutationAck(RepoMapMutationAckV1 {
                 repo_id,

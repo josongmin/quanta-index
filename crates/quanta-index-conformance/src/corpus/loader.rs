@@ -42,8 +42,7 @@ const ALLOWED_EXPECTED_KEYS: &[&str] = &["kind", "min", "max", "page_size", "cod
 const ALLOWED_GATES: &[&str] = &["active", "pending", "blocked"];
 
 /// Allow-listed values for `expected.kind`.
-const ALLOWED_EXPECTED_KINDS: &[&str] =
-    &["empty", "single", "multi", "paginated", "error"];
+const ALLOWED_EXPECTED_KINDS: &[&str] = &["empty", "single", "multi", "paginated", "error"];
 
 /// Load a TOML corpus file from disk.
 ///
@@ -618,10 +617,7 @@ mod tests {
         let err = expect_err(parse_corpus(raw, p()));
         assert!(matches!(
             err,
-            CorpusLoadError::MissingField {
-                field: "query",
-                ..
-            }
+            CorpusLoadError::MissingField { field: "query", .. }
         ));
     }
 

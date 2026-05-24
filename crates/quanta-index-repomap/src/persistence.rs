@@ -74,8 +74,8 @@ impl RepoMapSnapshotPersistence {
                     path.display()
                 ))
             })?;
-            let activation = serde_json::from_slice::<RepoMapActivationRecordV1>(&bytes)
-                .map_err(|err| {
+            let activation =
+                serde_json::from_slice::<RepoMapActivationRecordV1>(&bytes).map_err(|err| {
                     CoreError::Storage(format!(
                         "repomap persistence failed to decode activation {}: {err}",
                         path.display()

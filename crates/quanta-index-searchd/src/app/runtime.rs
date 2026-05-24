@@ -6,8 +6,7 @@ use anyhow::Result;
 use quanta_index_channel::{open_lexical_subscriber, open_semantic_subscriber};
 use quanta_index_core::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort,
-    SemanticIndexOpenPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;

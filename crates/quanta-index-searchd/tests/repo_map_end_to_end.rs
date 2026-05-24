@@ -137,13 +137,19 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err("socket never appeared".into());
     }
     let ingest = send_request(&socket, &repo_map_ingest_request())?;
-    if !matches!(ingest.payload, SearchPlaneIpcResponse::RepoMapMutationAck(_)) {
+    if !matches!(
+        ingest.payload,
+        SearchPlaneIpcResponse::RepoMapMutationAck(_)
+    ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("repo-map ingest did not ack".into());
     }
     let activate = send_request(&socket, &repo_map_activate_request())?;
-    if !matches!(activate.payload, SearchPlaneIpcResponse::RepoMapMutationAck(_)) {
+    if !matches!(
+        activate.payload,
+        SearchPlaneIpcResponse::RepoMapMutationAck(_)
+    ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("repo-map activate did not ack".into());
@@ -178,7 +184,10 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     );
     assert_eq!(repo_map.entries[0].owner_path, "src/service/mod.rs");
     assert_eq!(repo_map.entries[0].subject_doc_type, "Symbol");
-    assert_eq!(repo_map.entries[0].projection_evidence_kind, "ParserItemIndex");
+    assert_eq!(
+        repo_map.entries[0].projection_evidence_kind,
+        "ParserItemIndex"
+    );
 
     shutdown.store(true, Ordering::Release);
     match join.join() {
@@ -208,13 +217,19 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         return Err("socket never appeared".into());
     }
     let ingest = send_request(&socket, &repo_map_ingest_request())?;
-    if !matches!(ingest.payload, SearchPlaneIpcResponse::RepoMapMutationAck(_)) {
+    if !matches!(
+        ingest.payload,
+        SearchPlaneIpcResponse::RepoMapMutationAck(_)
+    ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("repo-map ingest did not ack".into());
     }
     let activate = send_request(&socket, &repo_map_activate_request())?;
-    if !matches!(activate.payload, SearchPlaneIpcResponse::RepoMapMutationAck(_)) {
+    if !matches!(
+        activate.payload,
+        SearchPlaneIpcResponse::RepoMapMutationAck(_)
+    ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err("repo-map activate did not ack".into());
@@ -257,7 +272,9 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected RepoMapQuery response after restart, got {other:?}").into());
+            return Err(
+                format!("expected RepoMapQuery response after restart, got {other:?}").into(),
+            );
         }
     };
     assert_eq!(repo_map.repo_id, repo());

@@ -16,9 +16,7 @@
 //! structural form of each sub-tree. It is not the hash output; the hash
 //! is computed by [`crate::hasher`] after normalize completes.
 
-use crate::ast::{
-    LqCase, LqDirective, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions,
-};
+use crate::ast::{LqCase, LqDirective, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions};
 use crate::errors::LqParseError;
 use crate::limits::MAX_FANOUT_PER_NODE;
 

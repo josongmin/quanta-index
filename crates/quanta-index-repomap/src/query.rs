@@ -27,7 +27,9 @@ impl RepoMapQueryEngine {
         });
         let capped = request.token_budget / 64;
         let limit = request.top_k.min(capped.max(1));
-        let include_len = usize::try_from(limit).unwrap_or(usize::MAX).min(entries.len());
+        let include_len = usize::try_from(limit)
+            .unwrap_or(usize::MAX)
+            .min(entries.len());
         for (index, entry) in entries.iter_mut().enumerate() {
             if index < include_len {
                 entry.included = true;

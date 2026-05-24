@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    sync::RwLock,
-};
+use std::{collections::BTreeMap, path::Path, sync::RwLock};
 
 use quanta_index_contract::{RepoId, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId};
 use quanta_index_contract::{RepoMapActivateGenerationRequestV1, RepoMapSourceBundleV1};

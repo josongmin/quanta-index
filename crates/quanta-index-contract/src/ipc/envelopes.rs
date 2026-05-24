@@ -105,16 +105,15 @@ pub enum SearchPlaneIpcRequest {
 }
 
 impl SearchPlaneIpcRequest {
-    const VARIANTS: &'static [&'static str] =
-        &[
-            "Lexical",
-            "Semantic",
-            "Hybrid",
-            "RepoMapIngest",
-            "RepoMapActivate",
-            "RepoMapQuery",
-            "Explain",
-        ];
+    const VARIANTS: &'static [&'static str] = &[
+        "Lexical",
+        "Semantic",
+        "Hybrid",
+        "RepoMapIngest",
+        "RepoMapActivate",
+        "RepoMapQuery",
+        "Explain",
+    ];
 
     const fn kind(&self) -> &'static str {
         match self {
