@@ -119,7 +119,18 @@ pub fn sample_manifest_all_optionals() -> PublishedSearchBundleManifest {
 
 #[must_use]
 pub fn sample_delta_request() -> PublishedSearchBundleDeltaApplyRequest {
-    let generation = sample_generation();
+    delta_request_for(&sample_generation())
+}
+
+/// Build a delta-apply request targeting the supplied generation.
+///
+/// Used by tests that need to apply against a specific non-active generation
+/// (delta governance: applying against the currently-active generation is
+/// rejected).
+#[must_use]
+pub fn delta_request_for(
+    generation: &PublishedGenerationSet,
+) -> PublishedSearchBundleDeltaApplyRequest {
     PublishedSearchBundleDeltaApplyRequest {
         repo_id: generation.repo_id.clone(),
         revision_id: generation.revision_id.clone(),

@@ -145,7 +145,7 @@ impl LanceSemanticAdapter {
 
 impl SearchPlaneSemanticIndexBuildPort for LanceSemanticAdapter {
     fn build_semantic_index(
-        &mut self,
+        &self,
         manifest: &PublishedSearchBundleManifest,
         input: SemanticBuildInput<'_>,
     ) -> Result<(), CoreError> {

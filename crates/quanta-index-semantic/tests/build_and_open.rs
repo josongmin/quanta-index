@@ -145,7 +145,7 @@ fn tempdir() -> Result<TempDir, TestError> {
 #[test]
 fn happy_path_build_then_open() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(7, true);
     let generation = make_generation_set(7);
 
@@ -196,7 +196,7 @@ fn open_dataset_for_query_returns_none_before_build() -> Result<(), TestError> {
 #[test]
 fn open_dataset_for_query_returns_none_when_no_embeddings_built() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(3, false);
     let generation = make_generation_set(3);
 
@@ -222,7 +222,7 @@ fn open_dataset_for_query_returns_none_when_no_embeddings_built() -> Result<(), 
 #[test]
 fn build_with_bad_magic_is_invalid_contract() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(2, true);
 
     let mut bytes = encode_records(4, &[("a", vec![0.0, 0.0, 0.0, 0.0])])?;
@@ -249,7 +249,7 @@ fn build_with_bad_magic_is_invalid_contract() -> Result<(), TestError> {
 #[test]
 fn build_with_dim_mismatch_is_invalid_contract() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(4, true);
 
     let mut body: Vec<u8> = Vec::new();
@@ -275,7 +275,7 @@ fn build_with_dim_mismatch_is_invalid_contract() -> Result<(), TestError> {
 #[test]
 fn duplicate_build_is_idempotent() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(5, true);
     let generation = make_generation_set(5);
     let records = make_records(3, 4)?;
@@ -306,7 +306,7 @@ fn duplicate_build_is_idempotent() -> Result<(), TestError> {
 #[test]
 fn truncated_buffer_is_invalid_contract() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(6, true);
 
     let records = make_records(1, 4)?;
@@ -335,7 +335,7 @@ fn truncated_buffer_is_invalid_contract() -> Result<(), TestError> {
 #[test]
 fn empty_entity_id_is_invalid_contract() -> Result<(), TestError> {
     let tmp = tempdir()?;
-    let mut adapter = LanceSemanticAdapter::with_state_root(tmp.path());
+    let adapter = LanceSemanticAdapter::with_state_root(tmp.path());
     let manifest = make_manifest(8, true);
 
     let mut body: Vec<u8> = Vec::new();

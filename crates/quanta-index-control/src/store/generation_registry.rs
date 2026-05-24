@@ -21,6 +21,18 @@ impl PublishedSearchGenerationActivatePort for ControlPlane {
     ) -> Result<PublishedSearchGenerationActivateResponse, CoreError> {
         ActivationPolicy::validate_request(&request)?;
 
+        // Stale-activation guard (E-SP2 per SSOT): if a generation is already
+        // active for (repo, rev), the incoming generation must be strictly
+        // newer by manifest_generation, AND each present component generation
+        // must be monotonically non-decreasing vs the active one.
+        if let Some(current_active) = read_active_generation(
+            &self.conn,
+            &request.generation.repo_id,
+            &request.generation.revision_id,
+        )? {
+            stale_activation_guard(&current_active, &request.generation)?;
+        }
+
         let catalog_rows = self
             .conn
             .execute(
@@ -263,6 +275,42 @@ impl PublishedSearchGenerationCatalogPort for ControlPlane {
                 "upsert generation manifest affected zero rows".into(),
             ));
         }
+
+        // Catalog state lifecycle (SSOT § generation_catalog.state):
+        //   prepared  ← record_generation_manifest first writes the row
+        //   active    ← activate_generation / mark_active_generation
+        //   materialized / failed ← reserved for future orchestrator hooks
+        //                            (see plan doc, deferred from Phase 1)
+        //
+        // INSERT OR IGNORE: if the row already exists in a higher state
+        // (e.g. 'active' from a prior activate_generation call) we must NOT
+        // downgrade it back to 'prepared'.
+        let _catalog_rows = self
+            .conn
+            .execute(
+                "
+                INSERT OR IGNORE INTO generation_catalog (
+                    repo_id,
+                    revision_id,
+                    manifest_generation,
+                    lexical_generation,
+                    symbol_generation,
+                    structural_generation,
+                    history_generation,
+                    semantic_generation,
+                    metadata_generation,
+                    state
+                ) VALUES (?1, ?2, ?3, 0, 0, NULL, NULL, NULL, NULL, 'prepared')
+                ",
+                params![
+                    manifest.repo_id.as_str(),
+                    manifest.revision_id.as_str(),
+                    sqlite_u64_to_i64("manifest_generation", manifest.manifest_generation.get(),)?,
+                ],
+            )
+            .map_err(|error| {
+                CoreError::Storage(format!("insert catalog 'prepared' row failed: {error}"))
+            })?;
         Ok(())
     }
 }
@@ -320,6 +368,12 @@ impl PublishedSearchBundleInspectPort for ControlPlane {
         if let Some(reference) = &manifest.embedding_records {
             artifacts.push(reference.clone());
         }
+        if let Some(reference) = &manifest.mutation_delta {
+            // `mutation_delta` is itself a `BundleArtifactRef` in the frozen
+            // contract; include it in the artifact union for inspect (P1 fix
+            // per reviewer — earlier impl omitted it).
+            artifacts.push(reference.clone());
+        }
 
         Ok(PublishedSearchBundleInspectResponse {
             artifacts,
@@ -336,6 +390,15 @@ impl PublishedSearchActivationStatePort for ControlPlane {
         generation: &PublishedGenerationSet,
         active_at_ms: u64,
     ) -> Result<(), CoreError> {
+        // Orchestrator-side path still respects the stale-activation guard so
+        // out-of-order build outcomes can't silently roll the active pointer
+        // backwards.
+        if let Some(current_active) =
+            read_active_generation(&self.conn, &generation.repo_id, &generation.revision_id)?
+        {
+            stale_activation_guard(&current_active, generation)?;
+        }
+
         // Orchestrator-side path: builds already proven, so both readiness
         // flags are 1. We still re-affirm the catalog row to guarantee the
         // FK-like invariant (activation_state references a known catalog gen)
@@ -431,5 +494,133 @@ impl PublishedSearchActivationStatePort for ControlPlane {
             ));
         }
         Ok(())
+    }
+}
+
+/// Read the currently active generation for `(repo, rev)`, if any.
+///
+/// Joins `generation_activation_state` with `generation_catalog` so the
+/// returned snapshot is the same shape as what the producer sent in.
+pub(super) fn read_active_generation(
+    conn: &rusqlite::Connection,
+    repo: &RepoId,
+    rev: &RevisionId,
+) -> Result<Option<PublishedGenerationSet>, CoreError> {
+    conn.query_row(
+        "
+        SELECT
+            g.repo_id,
+            g.revision_id,
+            g.manifest_generation,
+            g.lexical_generation,
+            g.symbol_generation,
+            g.structural_generation,
+            g.history_generation,
+            g.semantic_generation,
+            g.metadata_generation
+        FROM generation_catalog g
+        JOIN generation_activation_state a
+          ON a.repo_id = g.repo_id
+         AND a.revision_id = g.revision_id
+         AND a.active_manifest_generation = g.manifest_generation
+        WHERE g.repo_id = ?1 AND g.revision_id = ?2
+        ",
+        params![repo.as_str(), rev.as_str()],
+        row_to_generation_set,
+    )
+    .optional()
+    .map_err(|error| CoreError::Storage(format!("read active generation failed: {error}")))
+}
+
+/// Reject activation requests that would roll the active pointer backwards.
+///
+/// Per SSOT E-SP2 / hellgate H-SP1 follow-up:
+/// - `incoming.manifest_generation` must be strictly greater than
+///   `current.manifest_generation` — equality means the same generation is
+///   being re-activated, which we treat as a stale no-op rather than an
+///   error path (caller should be idempotent), but we return `Ok` from the
+///   guard there and let the upsert overwrite the row.
+/// - Each component generation that is present in both `current` and
+///   `incoming` must be monotonically non-decreasing. A previously-set
+///   component dropping to `None` is also rejected (lossy regression).
+pub(super) fn stale_activation_guard(
+    current: &PublishedGenerationSet,
+    incoming: &PublishedGenerationSet,
+) -> Result<(), CoreError> {
+    let current_manifest = current.manifest_generation.get();
+    let incoming_manifest = incoming.manifest_generation.get();
+    if incoming_manifest < current_manifest {
+        return Err(CoreError::InvalidContract(format!(
+            "stale activation: incoming manifest_generation={incoming_manifest} \
+             < currently-active manifest_generation={current_manifest}"
+        )));
+    }
+
+    if incoming.lexical_generation.get() < current.lexical_generation.get() {
+        return Err(CoreError::InvalidContract(format!(
+            "stale activation: incoming lexical_generation={} < active={}",
+            incoming.lexical_generation.get(),
+            current.lexical_generation.get(),
+        )));
+    }
+    if incoming.symbol_generation.get() < current.symbol_generation.get() {
+        return Err(CoreError::InvalidContract(format!(
+            "stale activation: incoming symbol_generation={} < active={}",
+            incoming.symbol_generation.get(),
+            current.symbol_generation.get(),
+        )));
+    }
+    monotonic_optional(
+        "structural_generation",
+        current
+            .structural_generation
+            .map(quanta_index_contract::GenerationId::get),
+        incoming
+            .structural_generation
+            .map(quanta_index_contract::GenerationId::get),
+    )?;
+    monotonic_optional(
+        "history_generation",
+        current
+            .history_generation
+            .map(quanta_index_contract::GenerationId::get),
+        incoming
+            .history_generation
+            .map(quanta_index_contract::GenerationId::get),
+    )?;
+    monotonic_optional(
+        "semantic_generation",
+        current
+            .semantic_generation
+            .map(quanta_index_contract::GenerationId::get),
+        incoming
+            .semantic_generation
+            .map(quanta_index_contract::GenerationId::get),
+    )?;
+    monotonic_optional(
+        "metadata_generation",
+        current
+            .metadata_generation
+            .map(quanta_index_contract::GenerationId::get),
+        incoming
+            .metadata_generation
+            .map(quanta_index_contract::GenerationId::get),
+    )?;
+    Ok(())
+}
+
+fn monotonic_optional(
+    field: &str,
+    current: Option<u64>,
+    incoming: Option<u64>,
+) -> Result<(), CoreError> {
+    match (current, incoming) {
+        (Some(a), Some(b)) if b < a => Err(CoreError::InvalidContract(format!(
+            "stale activation: incoming {field}={b} < active={a}"
+        ))),
+        (Some(a), None) => Err(CoreError::InvalidContract(format!(
+            "stale activation: incoming {field}=None regresses from active={a}"
+        ))),
+        _ => Ok(()),
     }
 }

@@ -16,7 +16,7 @@ impl SearchdReporter {
         writer: &mut W,
         config: &SearchdConfig,
     ) -> io::Result<()> {
-        writeln!(writer, "quanta-index searchd scaffold")?;
+        writeln!(writer, "quanta-index searchd")?;
         writeln!(writer, "state_root={}", config.state_root.display())?;
         writeln!(
             writer,
@@ -24,10 +24,7 @@ impl SearchdReporter {
             config.control_plane_path.display()
         )?;
         writeln!(writer, "socket_path={}", config.socket_path.display())?;
-        writeln!(
-            writer,
-            "query transport is intentionally not implemented yet"
-        )?;
+        writeln!(writer, "transport=uds codec=cbor max_frame_bytes=16777216")?;
         Ok(())
     }
 }
@@ -55,9 +52,10 @@ mod tests {
                 return;
             }
         };
-        assert!(rendered.contains("quanta-index searchd scaffold"));
+        assert!(rendered.contains("quanta-index searchd"));
         assert!(rendered.contains("state_root=/tmp/quanta-index-state"));
         assert!(rendered.contains("control-plane.sqlite3"));
         assert!(rendered.contains("searchd.sock"));
+        assert!(rendered.contains("transport=uds"));
     }
 }

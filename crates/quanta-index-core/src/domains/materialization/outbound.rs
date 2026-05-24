@@ -37,18 +37,26 @@ pub trait SearchPlaneMetadataStorePort {
 }
 
 /// Driven port: build lexical indexes from a manifest + caller-verified bytes.
+///
+/// Takes `&self` (not `&mut self`) so adapters can be shared via `Arc<T>`
+/// between the materialize orchestrator and the query engine without
+/// requiring callers to wrap them in `Mutex`. Implementations may write to
+/// the filesystem under `state_root` but must not mutate in-memory adapter
+/// state from this method.
 pub trait SearchPlaneLexicalIndexBuildPort {
     fn build_lexical_index(
-        &mut self,
+        &self,
         manifest: &PublishedSearchBundleManifest,
         input: LexicalBuildInput<'_>,
     ) -> Result<(), CoreError>;
 }
 
 /// Driven port: build semantic indexes from a manifest + caller-verified bytes.
+///
+/// `&self` for the same reason as the lexical build port.
 pub trait SearchPlaneSemanticIndexBuildPort {
     fn build_semantic_index(
-        &mut self,
+        &self,
         manifest: &PublishedSearchBundleManifest,
         input: SemanticBuildInput<'_>,
     ) -> Result<(), CoreError>;

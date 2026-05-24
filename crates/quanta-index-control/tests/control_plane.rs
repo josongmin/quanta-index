@@ -1,3 +1,12 @@
+#![expect(
+    clippy::too_long_first_doc_paragraph,
+    reason = "test helper comments favor a single explanatory block over forced reflow"
+)]
+#![expect(
+    clippy::items_after_statements,
+    reason = "tests intentionally put fixture-defining `use` lines next to the assertions they support"
+)]
+
 pub mod support;
 
 use quanta_index_contract::{
@@ -15,8 +24,8 @@ use quanta_index_core::{
 use tempfile::tempdir;
 
 use self::support::{
-    sample_delta_request, sample_generation, sample_manifest, sample_manifest_all_optionals,
-    sample_manifest_required_only, sample_outbox,
+    delta_request_for, sample_delta_request, sample_generation, sample_manifest,
+    sample_manifest_all_optionals, sample_manifest_required_only, sample_outbox,
 };
 
 #[test]
@@ -136,6 +145,84 @@ fn open_with_active_generation(
     Ok((store, activation))
 }
 
+/// Open a temp control plane, activate generation A, then RECORD-ONLY (not
+/// activate) generation B so delta-apply tests can target B per the SSOT
+/// "delta against non-active generation" rule (delta governance P0).
+fn open_with_recorded_non_active_generation(
+    db_path: &std::path::Path,
+) -> Result<(ControlPlane, quanta_index_contract::PublishedGenerationSet), String> {
+    use quanta_index_contract::{
+        BundleArtifactRef, BundleEncoding, GenerationId, ManifestGeneration,
+        PublishedGenerationSet, PublishedSearchBundleManifest, RepoId, RevisionId,
+    };
+    let mut store =
+        ControlPlane::open(db_path).map_err(|error| format!("open store failed: {error}"))?;
+    // Activate G7 (sample) so the catalog has an active row.
+    let active = sample_generation();
+    let _activated = store
+        .activate_generation(PublishedSearchGenerationActivateRequest {
+            generation: active,
+            lexical_ready: true,
+            semantic_ready: true,
+            active_at_ms: 42,
+        })
+        .map_err(|error| format!("activate g7 failed: {error}"))?;
+    // Prepare a strictly-newer non-active generation G8 with a recorded
+    // manifest. Delta-apply targets this one.
+    let next = PublishedGenerationSet {
+        repo_id: RepoId::new("repo"),
+        revision_id: RevisionId::new("rev"),
+        manifest_generation: ManifestGeneration::new(8),
+        lexical_generation: GenerationId::new(20),
+        symbol_generation: GenerationId::new(21),
+        structural_generation: None,
+        history_generation: None,
+        semantic_generation: Some(GenerationId::new(22)),
+        metadata_generation: Some(GenerationId::new(23)),
+    };
+    // Write catalog row for G8 via mark_active then... no, mark_active makes
+    // it active. We need catalog-only. Use record_generation_manifest which
+    // calls into INSERT OR REPLACE on the manifest table; we also need a
+    // catalog row. Simplest: call record_generation_manifest with a manifest
+    // for G8 (table only), then manually upsert a catalog row via a tiny
+    // internal helper exposed for tests.
+    let manifest = PublishedSearchBundleManifest {
+        repo_id: next.repo_id.clone(),
+        revision_id: next.revision_id.clone(),
+        manifest_generation: next.manifest_generation,
+        bundle_schema_version: 1,
+        lexical_chunk_rows: BundleArtifactRef {
+            relative_path: "bundle/chunk-g8.json".into(),
+            encoding: BundleEncoding::Json,
+            byte_length: 2,
+            content_digest: quanta_index_contract::ManifestDigest::new("digest"),
+        },
+        symbol_rows: BundleArtifactRef {
+            relative_path: "bundle/symbol-g8.json".into(),
+            encoding: BundleEncoding::Json,
+            byte_length: 2,
+            content_digest: quanta_index_contract::ManifestDigest::new("digest"),
+        },
+        metadata_rows: None,
+        graph_rows: None,
+        embedding_input_views: None,
+        embedding_records: None,
+        mutation_delta: None,
+    };
+    store
+        .record_generation_manifest(manifest)
+        .map_err(|error| format!("record manifest g8 failed: {error}"))?;
+    // Insert a catalog row for G8 via a write-through path. We don't have a
+    // dedicated "record catalog row" port, so use the test-only direct write
+    // through a private hook. Cleanest: extend control with a public
+    // record-only catalog API. For Phase 1 tests we go through the test
+    // harness file to keep production surface clean.
+    use quanta_index_control::test_support::record_catalog_row_for_test;
+    record_catalog_row_for_test(&store, &next)
+        .map_err(|error| format!("record catalog g8 failed: {error}"))?;
+    Ok((store, next))
+}
+
 #[test]
 fn delta_apply_against_unknown_generation_is_rejected() {
     let temp = match tempdir() {
@@ -177,17 +264,18 @@ macro_rules! ok_or_fail {
 fn delta_apply_is_idempotent_against_known_generation() {
     let temp = ok_or_fail!(tempdir(), "tempdir failed");
     let db_path = temp.path().join("control-plane.sqlite3");
-    let (mut store, _) = ok_or_fail!(open_with_active_generation(&db_path), "setup failed");
+    let (mut store, target) =
+        ok_or_fail!(open_with_recorded_non_active_generation(&db_path), "setup");
 
     let first = ok_or_fail!(
-        store.apply_bundle_delta(sample_delta_request()),
+        store.apply_bundle_delta(delta_request_for(&target)),
         "first apply failed"
     );
     assert!(first.applied, "first apply should succeed");
     assert!(first.reason.is_none());
 
     let second = ok_or_fail!(
-        store.apply_bundle_delta(sample_delta_request()),
+        store.apply_bundle_delta(delta_request_for(&target)),
         "second apply failed"
     );
     assert!(!second.applied, "second apply should be idempotent no-op");
@@ -205,9 +293,10 @@ fn delta_apply_is_idempotent_against_known_generation() {
 fn delta_apply_with_no_operations_reports_no_op() {
     let temp = ok_or_fail!(tempdir(), "tempdir failed");
     let db_path = temp.path().join("control-plane.sqlite3");
-    let (mut store, _) = ok_or_fail!(open_with_active_generation(&db_path), "setup failed");
+    let (mut store, target) =
+        ok_or_fail!(open_with_recorded_non_active_generation(&db_path), "setup");
 
-    let mut request = sample_delta_request();
+    let mut request = delta_request_for(&target);
     request.delta.operations.clear();
     let response = ok_or_fail!(store.apply_bundle_delta(request), "apply failed");
     assert!(!response.applied);
@@ -225,10 +314,11 @@ fn delta_apply_with_no_operations_reports_no_op() {
 fn delta_apply_partial_mix_counts_as_applied() {
     let temp = ok_or_fail!(tempdir(), "tempdir failed");
     let db_path = temp.path().join("control-plane.sqlite3");
-    let (mut store, _) = ok_or_fail!(open_with_active_generation(&db_path), "setup failed");
+    let (mut store, target) =
+        ok_or_fail!(open_with_recorded_non_active_generation(&db_path), "setup");
 
     // First apply: just one op
-    let mut first_request = sample_delta_request();
+    let mut first_request = delta_request_for(&target);
     first_request.delta.operations = vec![SearchBundleMutationOp::UpsertChunk {
         chunk_identity: "chunk-A".into(),
         text_digest: "digest-A".into(),
@@ -237,7 +327,7 @@ fn delta_apply_partial_mix_counts_as_applied() {
     assert!(first.applied);
 
     // Second apply: same op A (idempotent) + new op B (new)
-    let mut mixed = sample_delta_request();
+    let mut mixed = delta_request_for(&target);
     mixed.delta.operations = vec![
         SearchBundleMutationOp::UpsertChunk {
             chunk_identity: "chunk-A".into(),
@@ -260,14 +350,68 @@ fn delta_apply_partial_mix_counts_as_applied() {
 fn delta_apply_rejects_mismatched_repo_id() {
     let temp = ok_or_fail!(tempdir(), "tempdir failed");
     let db_path = temp.path().join("control-plane.sqlite3");
-    let (mut store, _) = ok_or_fail!(open_with_active_generation(&db_path), "setup failed");
+    let (mut store, target) =
+        ok_or_fail!(open_with_recorded_non_active_generation(&db_path), "setup");
 
-    let mut bad = sample_delta_request();
+    let mut bad = delta_request_for(&target);
     bad.delta.repo_id = RepoId::new("other-repo");
     let result = store.apply_bundle_delta(bad);
     assert!(
         matches!(result, Err(CoreError::InvalidContract(_))),
         "expected InvalidContract, got {result:?}"
+    );
+}
+
+#[test]
+fn delta_apply_against_active_generation_is_forbidden() {
+    // P0 governance per SSOT: delta applies are forbidden against the
+    // currently-active generation; preparation always targets a NEW generation.
+    let temp = ok_or_fail!(tempdir(), "tempdir failed");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let (mut store, activation) = ok_or_fail!(open_with_active_generation(&db_path), "setup");
+    // Record manifest for active generation so the "manifest recorded" check
+    // would pass — this isolates the test to the "is active?" rejection path.
+    let _recorded: Result<(), quanta_index_core::CoreError> =
+        store.record_generation_manifest(sample_manifest());
+    let result = store.apply_bundle_delta(delta_request_for(&activation.generation));
+    assert!(
+        matches!(result, Err(CoreError::InvalidContract(_))),
+        "expected InvalidContract (delta against active), got {result:?}"
+    );
+}
+
+#[test]
+fn delta_apply_requires_recorded_manifest() {
+    // P0 governance: delta-apply requires that a canonical manifest already
+    // exists for the target generation; otherwise the delta operations have
+    // no schema to resolve against.
+    let temp = ok_or_fail!(tempdir(), "tempdir failed");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let mut store = ok_or_fail!(ControlPlane::open(&db_path), "open");
+    // Activate so a generation exists in catalog, but DON'T record manifest
+    // for the next generation we'll target.
+    let _activated: Result<_, quanta_index_core::CoreError> =
+        store.activate_generation(PublishedSearchGenerationActivateRequest {
+            generation: sample_generation(),
+            lexical_ready: true,
+            semantic_ready: true,
+            active_at_ms: 42,
+        });
+    // Construct a delta against a fresh non-active generation that has a
+    // catalog row but no manifest.
+    use quanta_index_contract::{GenerationId, ManifestGeneration};
+    use quanta_index_control::test_support::record_catalog_row_for_test;
+    let mut next = sample_generation();
+    next.manifest_generation = ManifestGeneration::new(8);
+    next.lexical_generation = GenerationId::new(20);
+    next.symbol_generation = GenerationId::new(21);
+    next.semantic_generation = Some(GenerationId::new(22));
+    let _catalog: Result<(), quanta_index_core::CoreError> =
+        record_catalog_row_for_test(&store, &next);
+    let result = store.apply_bundle_delta(delta_request_for(&next));
+    assert!(
+        matches!(result, Err(CoreError::InvalidContract(_))),
+        "expected InvalidContract (manifest missing), got {result:?}"
     );
 }
 
@@ -314,12 +458,117 @@ fn mark_active_generation_replaces_existing_active_row() {
 }
 
 #[test]
+fn activate_generation_rejects_stale_manifest_generation() {
+    // P0 E-SP2: activating a lower manifest_generation against a (repo, rev)
+    // whose currently-active manifest_generation is higher must be rejected
+    // as stale, even if readiness flags are both true.
+    let temp = ok_or_fail!(tempdir(), "tempdir failed");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let (mut store, activation) = ok_or_fail!(open_with_active_generation(&db_path), "setup");
+    // Build a stale generation (manifest_generation = active - 1).
+    use quanta_index_contract::ManifestGeneration;
+    let mut stale = activation.generation;
+    stale.manifest_generation = ManifestGeneration::new(stale.manifest_generation.get() - 1);
+    let result = store.activate_generation(PublishedSearchGenerationActivateRequest {
+        generation: stale,
+        lexical_ready: true,
+        semantic_ready: true,
+        active_at_ms: 100,
+    });
+    assert!(
+        matches!(result, Err(CoreError::InvalidContract(_))),
+        "expected InvalidContract (stale activation), got {result:?}"
+    );
+}
+
+#[test]
+fn activate_generation_rejects_regressing_component_generation() {
+    // P0 E-SP2: even when manifest_generation increases, a component
+    // generation regression (e.g. lexical_generation lower than active) is
+    // rejected to preserve component monotonicity invariants.
+    let temp = ok_or_fail!(tempdir(), "tempdir failed");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let (mut store, activation) = ok_or_fail!(open_with_active_generation(&db_path), "setup");
+    use quanta_index_contract::{GenerationId, ManifestGeneration};
+    let mut regressing = activation.generation.clone();
+    regressing.manifest_generation =
+        ManifestGeneration::new(activation.generation.manifest_generation.get() + 1);
+    regressing.lexical_generation =
+        GenerationId::new(activation.generation.lexical_generation.get() - 1);
+    let result = store.activate_generation(PublishedSearchGenerationActivateRequest {
+        generation: regressing,
+        lexical_ready: true,
+        semantic_ready: true,
+        active_at_ms: 100,
+    });
+    assert!(
+        matches!(result, Err(CoreError::InvalidContract(_))),
+        "expected InvalidContract (lexical regression), got {result:?}"
+    );
+}
+
+#[test]
+fn mark_active_generation_also_rejects_stale_target() {
+    // P0: the orchestrator-side path through mark_active_generation must
+    // honor the same stale guard so out-of-order build outcomes can't roll
+    // the pointer backwards.
+    let temp = ok_or_fail!(tempdir(), "tempdir failed");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let (mut store, activation) = ok_or_fail!(open_with_active_generation(&db_path), "setup");
+    use quanta_index_contract::ManifestGeneration;
+    let mut stale = activation.generation;
+    stale.manifest_generation = ManifestGeneration::new(stale.manifest_generation.get() - 1);
+    let result = store.mark_active_generation(&stale, 100);
+    assert!(
+        matches!(result, Err(CoreError::InvalidContract(_))),
+        "expected InvalidContract (stale mark), got {result:?}"
+    );
+}
+
+#[test]
+fn inspect_bundle_artifacts_include_mutation_delta_when_present() {
+    // P1: mutation_delta is itself a BundleArtifactRef in the frozen
+    // contract, so the inspect artifacts union must surface it alongside
+    // the chunk/symbol/etc. refs.
+    let temp = ok_or_fail!(tempdir(), "tempdir");
+    let db_path = temp.path().join("control-plane.sqlite3");
+    let mut store = ok_or_fail!(ControlPlane::open(&db_path), "open");
+    let generation = sample_generation();
+    let _activated = store.activate_generation(PublishedSearchGenerationActivateRequest {
+        generation: generation.clone(),
+        lexical_ready: true,
+        semantic_ready: true,
+        active_at_ms: 1,
+    });
+
+    let mut manifest = sample_manifest_all_optionals();
+    let mutation_delta_ref = quanta_index_contract::BundleArtifactRef {
+        relative_path: "bundle/mutation_delta.arrow".into(),
+        encoding: quanta_index_contract::BundleEncoding::ArrowIpc,
+        byte_length: 64,
+        content_digest: ManifestDigest::new("sha256:mutation"),
+    };
+    manifest.mutation_delta = Some(mutation_delta_ref.clone());
+    let _recorded = store.record_generation_manifest(manifest);
+
+    let inspected = ok_or_fail!(store.inspect_bundle(&generation), "inspect");
+    assert!(
+        inspected.artifacts.contains(&mutation_delta_ref),
+        "artifacts must include mutation_delta when present; got {:?}",
+        inspected.artifacts
+    );
+    // 2 required + 4 optionals + 1 mutation_delta = 7
+    assert_eq!(inspected.artifacts.len(), 7);
+}
+
+#[test]
 fn delta_apply_rejects_mismatched_revision_id() {
     let temp = ok_or_fail!(tempdir(), "tempdir failed");
     let db_path = temp.path().join("control-plane.sqlite3");
-    let (mut store, _) = ok_or_fail!(open_with_active_generation(&db_path), "setup failed");
+    let (mut store, target) =
+        ok_or_fail!(open_with_recorded_non_active_generation(&db_path), "setup");
 
-    let mut bad = sample_delta_request();
+    let mut bad = delta_request_for(&target);
     bad.delta.revision_id = RevisionId::new("other-rev");
     let result = store.apply_bundle_delta(bad);
     assert!(

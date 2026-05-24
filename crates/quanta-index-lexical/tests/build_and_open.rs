@@ -101,7 +101,7 @@ fn building_path(root: &Path, generation: u64) -> std::path::PathBuf {
 #[test]
 fn happy_path_build_open_and_query() {
     let temp = ok_or_fail!(tempdir(), "tempdir");
-    let mut adapter = TantivyLexicalAdapter::with_state_root(temp.path());
+    let adapter = TantivyLexicalAdapter::with_state_root(temp.path());
     let manifest = sample_manifest(42);
     let generation_set = sample_generation_set(42);
 
@@ -149,7 +149,7 @@ fn open_before_build_returns_not_ready() {
 #[test]
 fn duplicate_build_is_idempotent_noop() {
     let temp = ok_or_fail!(tempdir(), "tempdir");
-    let mut adapter = TantivyLexicalAdapter::with_state_root(temp.path());
+    let adapter = TantivyLexicalAdapter::with_state_root(temp.path());
     let manifest = sample_manifest(11);
 
     let chunks = sample_chunk_rows_json();
@@ -189,7 +189,7 @@ fn duplicate_build_is_idempotent_noop() {
 #[test]
 fn malformed_json_returns_invalid_contract() {
     let temp = ok_or_fail!(tempdir(), "tempdir");
-    let mut adapter = TantivyLexicalAdapter::with_state_root(temp.path());
+    let adapter = TantivyLexicalAdapter::with_state_root(temp.path());
     let manifest = sample_manifest(99);
 
     let input = LexicalBuildInput {
@@ -212,7 +212,7 @@ fn malformed_json_returns_invalid_contract() {
 #[test]
 fn empty_chunk_rows_builds_empty_index() {
     let temp = ok_or_fail!(tempdir(), "tempdir");
-    let mut adapter = TantivyLexicalAdapter::with_state_root(temp.path());
+    let adapter = TantivyLexicalAdapter::with_state_root(temp.path());
     let manifest = sample_manifest(5);
     let generation_set = sample_generation_set(5);
 
@@ -249,7 +249,7 @@ fn concurrent_builds_for_different_generations_are_isolated() {
         let first_root = root.clone();
         let first_payload = &first_chunks;
         let first_handle = scope.spawn(move || {
-            let mut adapter = TantivyLexicalAdapter::with_state_root(&first_root);
+            let adapter = TantivyLexicalAdapter::with_state_root(&first_root);
             let manifest = sample_manifest(100);
             let input = LexicalBuildInput {
                 chunk_rows: first_payload,
@@ -260,7 +260,7 @@ fn concurrent_builds_for_different_generations_are_isolated() {
         let second_root = root.clone();
         let second_payload = &second_chunks;
         let second_handle = scope.spawn(move || {
-            let mut adapter = TantivyLexicalAdapter::with_state_root(&second_root);
+            let adapter = TantivyLexicalAdapter::with_state_root(&second_root);
             let manifest = sample_manifest(101);
             let input = LexicalBuildInput {
                 chunk_rows: second_payload,
@@ -306,7 +306,7 @@ fn concurrent_builds_for_different_generations_are_isolated() {
 #[test]
 fn symbol_rows_are_ignored_at_schema_level() {
     let temp = ok_or_fail!(tempdir(), "tempdir");
-    let mut adapter = TantivyLexicalAdapter::with_state_root(temp.path());
+    let adapter = TantivyLexicalAdapter::with_state_root(temp.path());
     let manifest = sample_manifest(77);
     let generation_set = sample_generation_set(77);
 

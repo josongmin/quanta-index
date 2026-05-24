@@ -155,7 +155,7 @@ async fn handle_connection<D: QueryDispatcher + 'static>(
             Err(decode_error) => SearchPlaneIpcResponseEnvelope {
                 request_id: 0,
                 payload: SearchPlaneIpcResponse::Error(SearchPlaneIpcError {
-                    code: "ipc.decode".to_owned(),
+                    code: "IPC_DECODE".to_owned(),
                     message: format!("{decode_error}"),
                 }),
             },
@@ -268,12 +268,13 @@ fn dispatch<D: QueryDispatcher>(
 }
 
 fn core_error_to_ipc(error: &CoreError) -> SearchPlaneIpcResponse {
+    // SCREAMING_SNAKE_CASE per SSOT § error code taxonomy.
     let (code, message) = match error {
-        CoreError::InvalidContract(message) => ("invalid_contract", message.clone()),
-        CoreError::NotReady(message) => ("not_ready", message.clone()),
-        CoreError::NotImplemented(message) => ("not_implemented", message.clone()),
-        CoreError::NotFound(message) => ("not_found", message.clone()),
-        CoreError::Storage(message) => ("storage", message.clone()),
+        CoreError::InvalidContract(message) => ("INVALID_CONTRACT", message.clone()),
+        CoreError::NotReady(message) => ("NOT_READY", message.clone()),
+        CoreError::NotImplemented(message) => ("NOT_IMPLEMENTED", message.clone()),
+        CoreError::NotFound(message) => ("NOT_FOUND", message.clone()),
+        CoreError::Storage(message) => ("STORAGE", message.clone()),
     };
     SearchPlaneIpcResponse::Error(SearchPlaneIpcError {
         code: code.to_owned(),
@@ -550,7 +551,7 @@ mod tests {
         assert_eq!(response.request_id, 0);
         match response.payload {
             SearchPlaneIpcResponse::Error(SearchPlaneIpcError { code, message }) => {
-                assert_eq!(code, "ipc.decode");
+                assert_eq!(code, "IPC_DECODE");
                 assert!(!message.is_empty());
             }
             other => {

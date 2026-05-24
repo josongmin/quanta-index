@@ -34,18 +34,20 @@ pub enum MaterializeOutcome {
 
 /// Orchestrator wiring catalog/activation ports with build ports.
 ///
-/// Holds borrowed mutable references so callers can re-use the same backing
-/// implementations across multiple materialize cycles without surrendering
-/// ownership of the control plane or the adapter handles.
+/// `control` is `&mut` because the catalog/activation ports still require
+/// exclusive access (rusqlite transactions). `lexical` / `semantic` are
+/// borrowed `&` because the build ports now take `&self` (D17 cleanup) —
+/// adapters can therefore be shared via `Arc<T>` with the query engine in
+/// the same composition root, without wrapping them in `Mutex<T>`.
 pub struct MaterializeUseCase<'a, C, L, S>
 where
     C: PublishedSearchGenerationCatalogPort + PublishedSearchActivationStatePort + Send,
-    L: SearchPlaneLexicalIndexBuildPort + Send,
-    S: SearchPlaneSemanticIndexBuildPort + Send,
+    L: SearchPlaneLexicalIndexBuildPort + Sync,
+    S: SearchPlaneSemanticIndexBuildPort + Sync,
 {
     pub control: &'a mut C,
-    pub lexical: &'a mut L,
-    pub semantic: &'a mut S,
+    pub lexical: &'a L,
+    pub semantic: &'a S,
     pub bundle_root: PathBuf,
     pub now_ms: u64,
 }
@@ -53,8 +55,8 @@ where
 impl<C, L, S> MaterializeUseCase<'_, C, L, S>
 where
     C: PublishedSearchGenerationCatalogPort + PublishedSearchActivationStatePort + Send,
-    L: SearchPlaneLexicalIndexBuildPort + Send,
-    S: SearchPlaneSemanticIndexBuildPort + Send,
+    L: SearchPlaneLexicalIndexBuildPort + Sync,
+    S: SearchPlaneSemanticIndexBuildPort + Sync,
 {
     /// Materialize indexes for `manifest`, activate `generation` on success.
     ///
@@ -103,8 +105,8 @@ where
             embedding_records: embedding_records.as_deref(),
         };
 
-        let lexical = &mut *self.lexical;
-        let semantic = &mut *self.semantic;
+        let lexical = self.lexical;
+        let semantic = self.semantic;
         let manifest_ref = &manifest;
         std::thread::scope(|scope| -> Result<(), CoreError> {
             let lexical_handle =
@@ -331,7 +333,7 @@ mod tests {
 
     impl SearchPlaneLexicalIndexBuildPort for MockLexical {
         fn build_lexical_index(
-            &mut self,
+            &self,
             _manifest: &PublishedSearchBundleManifest,
             input: LexicalBuildInput<'_>,
         ) -> Result<(), CoreError> {
@@ -354,7 +356,7 @@ mod tests {
 
     impl SearchPlaneSemanticIndexBuildPort for MockSemantic {
         fn build_semantic_index(
-            &mut self,
+            &self,
             _manifest: &PublishedSearchBundleManifest,
             input: SemanticBuildInput<'_>,
         ) -> Result<(), CoreError> {
@@ -443,20 +445,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 123,
         };
@@ -486,20 +488,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: true,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 123,
         };
@@ -522,20 +524,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: true,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 123,
         };
@@ -563,20 +565,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 5,
         };
@@ -596,20 +598,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 1,
         };
@@ -632,20 +634,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 1,
         };
@@ -669,20 +671,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 1,
         };
@@ -708,20 +710,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 1,
         };
@@ -781,20 +783,20 @@ mod tests {
         let generation = sample_generation();
 
         let mut control = MockControl::default();
-        let mut lexical = MockLexical {
+        let lexical = MockLexical {
             call_count: AtomicUsize::new(0),
             last_bytes_len: AtomicUsize::new(0),
             fail: false,
         };
-        let mut semantic = MockSemantic {
+        let semantic = MockSemantic {
             call_count: AtomicUsize::new(0),
             had_embeddings: AtomicUsize::new(0),
             fail: false,
         };
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root,
             now_ms: 1,
         };

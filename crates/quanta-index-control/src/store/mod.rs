@@ -7,6 +7,9 @@ mod metadata;
 mod schema;
 
 pub use generation_pin::BoundGenerationPin;
+// Re-export crate-internal helper for the `test_support` module in lib.rs.
+#[doc(hidden)]
+pub use helpers::sqlite_u64_to_i64;
 
 #[cfg(test)]
 mod tests;
@@ -21,6 +24,12 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
+    /// Direct connection access for the in-crate `test_support` module.
+    /// Crate-private; production callers go through port traits.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn open(path: &Path) -> Result<Self, CoreError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {

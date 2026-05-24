@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use quanta_index_contract::{
     PublishedSearchBundleDeltaApplyRequest, PublishedSearchBundleDeltaApplyResponse,
     SearchBundleMutationOp,
@@ -7,6 +9,18 @@ use rusqlite::params;
 
 use super::ControlPlane;
 use super::helpers::sqlite_u64_to_i64;
+
+/// Best-effort wall-clock ms since the Unix epoch.
+///
+/// Saturates at `0` if the system clock is set before 1970 (we don't
+/// fail-closed on clock skew here — the only consumer of `applied_at_ms` is
+/// operator-facing diagnostics).
+fn current_unix_millis() -> u64 {
+    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    u64::try_from(duration.as_millis()).map_or(u64::MAX, |value| value)
+}
 
 const OP_UPSERT_CHUNK: &str = "upsert_chunk";
 const OP_DELETE_CHUNK: &str = "delete_chunk";
@@ -73,9 +87,18 @@ impl PublishedSearchBundleDeltaApplyPort for ControlPlane {
     ) -> Result<PublishedSearchBundleDeltaApplyResponse, CoreError> {
         BundlePolicy::validate_delta(&request)?;
 
-        // The (repo, rev, generation) target must already exist in the
-        // generation catalog. We reject deltas against unknown generations
-        // fail-closed to avoid creating orphan delta rows.
+        // Authority checks per SSOT (delta governance):
+        //  1. The (repo, rev, generation) target must exist in the catalog.
+        //  2. The target must NOT be the currently-active generation —
+        //     deltas are applied during preparation, never against an active
+        //     head, to preserve the immutable-active invariant.
+        //  3. A canonical manifest must already be recorded for the target
+        //     so consumers can resolve the delta's chunk/symbol identities
+        //     against a known schema version.
+        let target_manifest_gen = sqlite_u64_to_i64(
+            "request.generation.manifest_generation",
+            request.generation.manifest_generation.get(),
+        )?;
         let catalog_known: i64 = self
             .conn
             .query_row(
@@ -84,10 +107,7 @@ impl PublishedSearchBundleDeltaApplyPort for ControlPlane {
                 params![
                     request.generation.repo_id.as_str(),
                     request.generation.revision_id.as_str(),
-                    sqlite_u64_to_i64(
-                        "request.generation.manifest_generation",
-                        request.generation.manifest_generation.get(),
-                    )?,
+                    target_manifest_gen,
                 ],
                 |row| row.get::<_, i64>(0),
             )
@@ -98,16 +118,56 @@ impl PublishedSearchBundleDeltaApplyPort for ControlPlane {
             ));
         }
 
+        let target_is_active: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_activation_state \
+                 WHERE repo_id = ?1 AND revision_id = ?2 AND active_manifest_generation = ?3",
+                params![
+                    request.generation.repo_id.as_str(),
+                    request.generation.revision_id.as_str(),
+                    target_manifest_gen,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                CoreError::Storage(format!("count active state rows failed: {error}"))
+            })?;
+        if target_is_active > 0 {
+            return Err(CoreError::InvalidContract(
+                "delta apply against currently-active generation is forbidden".into(),
+            ));
+        }
+
+        let manifest_recorded: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_manifest \
+                 WHERE repo_id = ?1 AND revision_id = ?2 AND manifest_generation = ?3",
+                params![
+                    request.generation.repo_id.as_str(),
+                    request.generation.revision_id.as_str(),
+                    target_manifest_gen,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| CoreError::Storage(format!("count manifest rows failed: {error}")))?;
+        if manifest_recorded == 0 {
+            return Err(CoreError::InvalidContract(
+                "delta apply requires a recorded manifest for the target generation".into(),
+            ));
+        }
+
         let repo = request.delta.repo_id.as_str().to_owned();
         let rev = request.delta.revision_id.as_str().to_owned();
         let manifest_generation = sqlite_u64_to_i64(
             "delta.manifest_generation",
             request.delta.manifest_generation.get(),
         )?;
-        let applied_at_ms = sqlite_u64_to_i64(
-            "applied_at_ms",
-            request.generation.manifest_generation.get(),
-        )?;
+        // Real wall-clock at apply time. Earlier revisions mistakenly wrote
+        // `manifest_generation` here (which is a sequence number, not a ms
+        // timestamp) — bug fix per reviewer P0.
+        let applied_at_ms = sqlite_u64_to_i64("applied_at_ms", current_unix_millis())?;
 
         let tx = self
             .conn

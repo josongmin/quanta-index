@@ -23,7 +23,9 @@
 mod row;
 mod schema;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use quanta_index_contract::{PublishedGenerationSet, PublishedSearchBundleManifest};
 use quanta_index_core::{
@@ -49,10 +51,14 @@ const WRITER_MEMORY_BUDGET: usize = 50_000_000;
 /// Tantivy-backed lexical adapter.
 ///
 /// State layout: `{state_root}/lexical/{manifest_generation}/`. The adapter
-/// owns no open handles between calls in Phase 1; each build opens, writes,
-/// commits, and drops the writer.
+/// keeps a small in-memory cache of opened Tantivy `Index` handles keyed by
+/// `manifest_generation` so the hot query path doesn't re-open the index
+/// directory on every request. Cache misses (new generation) open and insert.
+/// Builds do not populate the cache — they always write a fresh index from
+/// scratch, then the next `open_index_for_query` populates lazily.
 pub struct TantivyLexicalAdapter {
     state_root: PathBuf,
+    open_cache: Mutex<BTreeMap<u64, Index>>,
 }
 
 impl TantivyLexicalAdapter {
@@ -63,6 +69,7 @@ impl TantivyLexicalAdapter {
     pub fn with_state_root(root: impl Into<PathBuf>) -> Self {
         Self {
             state_root: root.into(),
+            open_cache: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -89,20 +96,58 @@ impl TantivyLexicalAdapter {
         &self,
         generation: &PublishedGenerationSet,
     ) -> Result<Index, CoreError> {
+        let generation_key = generation.manifest_generation.get();
+        // Fast path: cache hit. Tantivy `Index` is cheap to clone (it shares
+        // segment readers internally), so we hand callers an owned clone
+        // without re-opening the directory on every query.
+        {
+            let guard = self.open_cache.lock().map_err(|error| {
+                CoreError::Storage(format!("lexical cache mutex poisoned: {error}"))
+            })?;
+            if let Some(cached) = guard.get(&generation_key) {
+                return Ok(cached.clone());
+            }
+        }
         let target = self.index_dir(generation);
         if !marker_ok_path(&target).is_file() {
             return Err(CoreError::NotReady(
                 "lexical index not materialised".to_owned(),
             ));
         }
-        Index::open_in_dir(&target)
-            .map_err(|error| CoreError::Storage(format!("tantivy: open lexical index: {error}")))
+        let opened = Index::open_in_dir(&target)
+            .map_err(|error| CoreError::Storage(format!("tantivy: open lexical index: {error}")))?;
+        {
+            let mut guard = self.open_cache.lock().map_err(|error| {
+                CoreError::Storage(format!("lexical cache mutex poisoned: {error}"))
+            })?;
+            // Another caller may have raced us; either branch is fine, both
+            // yield a valid handle. Insert-if-absent semantics avoid replacing
+            // a handle that other callers may already be holding.
+            let _previous = guard
+                .entry(generation_key)
+                .or_insert_with(|| opened.clone());
+        }
+        Ok(opened)
+    }
+
+    /// Drop the cached `Index` handle for `generation` if one is present.
+    ///
+    /// Provided for operator-driven invalidation (e.g., after a re-build that
+    /// replaces the underlying directory). Phase 1 callers do not invoke this
+    /// — the orchestrator atomically renames into the same path, but Tantivy
+    /// segment readers may pin file handles, so the cache remains correct
+    /// across rebuilds in practice. Exposed so future control plane
+    /// machinery can wire explicit invalidation when needed.
+    pub fn invalidate_cached_index(&self, generation: &PublishedGenerationSet) {
+        if let Ok(mut guard) = self.open_cache.lock() {
+            let _removed = guard.remove(&generation.manifest_generation.get());
+        }
     }
 }
 
 impl SearchPlaneLexicalIndexBuildPort for TantivyLexicalAdapter {
     fn build_lexical_index(
-        &mut self,
+        &self,
         manifest: &PublishedSearchBundleManifest,
         input: LexicalBuildInput<'_>,
     ) -> Result<(), CoreError> {

@@ -31,6 +31,7 @@ use quanta_index_searchd::app::{MaterializeUseCase, UdsListener};
 use quanta_index_searchd::query::DomainQueryEngine;
 use quanta_index_semantic::LanceSemanticAdapter;
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -167,12 +168,12 @@ fn u_sp2_activate_then_materialize_then_query_round_trips() {
         ControlPlane::open(&state_root.join("c.sqlite3")),
         "open control"
     );
-    let mut lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
-    let mut semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
+    let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
+    let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
     let mut uc = MaterializeUseCase {
         control: &mut control,
-        lexical: &mut lexical,
-        semantic: &mut semantic,
+        lexical: &lexical,
+        semantic: &semantic,
         bundle_root,
         now_ms: 123,
     };
@@ -198,9 +199,9 @@ fn u_sp2_activate_then_materialize_then_query_round_trips() {
 
     // Query through DomainQueryEngine.
     let engine = DomainQueryEngine {
-        lexical: &lexical,
-        semantic: &semantic,
-        control: &control,
+        lexical: Arc::new(lexical),
+        semantic: Arc::new(semantic),
+        control: Arc::new(Mutex::new(control)),
         embedder: None,
         default_top_k: 5,
     };
@@ -244,12 +245,12 @@ fn u_sp3_cold_restart_preserves_state() {
 
     {
         let mut control = ok_or_fail!(ControlPlane::open(&state_root.join("c.sqlite3")), "open");
-        let mut lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
-        let mut semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
+        let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
+        let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
         let mut uc = MaterializeUseCase {
             control: &mut control,
-            lexical: &mut lexical,
-            semantic: &mut semantic,
+            lexical: &lexical,
+            semantic: &semantic,
             bundle_root: bundle_root.clone(),
             now_ms: 100,
         };
@@ -369,12 +370,12 @@ fn e_sp3_invalid_manifest_ref_fails_closed_before_build() {
     manifest.lexical_chunk_rows.byte_length = 0;
 
     let mut control = ok_or_fail!(ControlPlane::open(&state_root.join("c.sqlite3")), "open");
-    let mut lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
-    let mut semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
+    let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
+    let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
     let mut uc = MaterializeUseCase {
         control: &mut control,
-        lexical: &mut lexical,
-        semantic: &mut semantic,
+        lexical: &lexical,
+        semantic: &semantic,
         bundle_root,
         now_ms: 1,
     };
@@ -405,9 +406,9 @@ fn c_sp1_no_active_generation_is_explicit_not_ready_not_empty() {
     let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
     let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
     let engine = DomainQueryEngine {
-        lexical: &lexical,
-        semantic: &semantic,
-        control: &control,
+        lexical: Arc::new(lexical),
+        semantic: Arc::new(semantic),
+        control: Arc::new(Mutex::new(control)),
         embedder: None,
         default_top_k: 5,
     };
@@ -444,12 +445,12 @@ fn c_sp2_lexical_only_generation_still_serves_lexical_queries() {
     let (manifest, generation) = sample_manifest_pair(&bundle_root, chunk_rows);
 
     let mut control = ok_or_fail!(ControlPlane::open(&state_root.join("c.sqlite3")), "open");
-    let mut lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
-    let mut semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
+    let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
+    let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
     let mut uc = MaterializeUseCase {
         control: &mut control,
-        lexical: &mut lexical,
-        semantic: &mut semantic,
+        lexical: &lexical,
+        semantic: &semantic,
         bundle_root,
         now_ms: 1,
     };
@@ -457,9 +458,9 @@ fn c_sp2_lexical_only_generation_still_serves_lexical_queries() {
         ok_or_fail!(uc.materialize(manifest, generation.clone()), "materialize");
 
     let engine = DomainQueryEngine {
-        lexical: &lexical,
-        semantic: &semantic,
-        control: &control,
+        lexical: Arc::new(lexical),
+        semantic: Arc::new(semantic),
+        control: Arc::new(Mutex::new(control)),
         embedder: None,
         default_top_k: 5,
     };
@@ -499,12 +500,12 @@ fn h_sp1_build_failure_blocks_activation() {
     manifest.lexical_chunk_rows.content_digest = ManifestDigest::new("0".repeat(64));
 
     let mut control = ok_or_fail!(ControlPlane::open(&state_root.join("c.sqlite3")), "open");
-    let mut lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
-    let mut semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
+    let lexical = TantivyLexicalAdapter::with_state_root(state_root.clone());
+    let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
     let mut uc = MaterializeUseCase {
         control: &mut control,
-        lexical: &mut lexical,
-        semantic: &mut semantic,
+        lexical: &lexical,
+        semantic: &semantic,
         bundle_root,
         now_ms: 1,
     };
@@ -537,9 +538,9 @@ fn h_sp2_query_on_unreadied_generation_returns_typed_error() {
         "mark active without build"
     );
     let engine = DomainQueryEngine {
-        lexical: &lexical,
-        semantic: &semantic,
-        control: &control,
+        lexical: Arc::new(lexical),
+        semantic: Arc::new(semantic),
+        control: Arc::new(Mutex::new(control)),
         embedder: None,
         default_top_k: 5,
     };
@@ -689,7 +690,7 @@ async fn h_sp3_uds_framing_error_returns_error_envelope_and_keeps_listener_alive
     };
     match response.payload {
         SearchPlaneIpcResponse::Error(error) => {
-            assert_eq!(error.code, "ipc.decode");
+            assert_eq!(error.code, "IPC_DECODE");
         }
         other => {
             assert!(false, "expected Error envelope, got {other:?}");

@@ -4,6 +4,16 @@
 //! Replaces the [`super::stub_engine::StubQueryEngine`] in the composition
 //! root. The stub is retained behind `#[cfg(test)]` for orchestration tests
 //! that don't need actual search execution.
+//!
+//! Ownership model: every dependency is held via `Arc` so the engine itself
+//! can be `Send + Sync + 'static` and shared across the tokio runtime's
+//! per-connection tasks in `searchd::app::uds_listener`. The control plane
+//! sits behind `Mutex<ControlPlane>` because `rusqlite::Connection` is `Send`
+//! but not `Sync`; reads (pin lookups) and writes (out of band of query)
+//! both go through the mutex. Phase 1 acceptable; a connection pool is a
+//! follow-up optimisation.
+
+use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     LexicalCandidate, LqExpr, LqFilter, LqFilterSet, LqQuery, ManifestGeneration,
@@ -37,17 +47,21 @@ pub trait QueryEmbedder: Send + Sync {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
 }
 
-/// Domain query engine. Holds borrowed references to the adapters and control
-/// plane so callers can re-use the same engine across many requests.
-pub struct DomainQueryEngine<'a> {
-    pub lexical: &'a TantivyLexicalAdapter,
-    pub semantic: &'a LanceSemanticAdapter,
-    pub control: &'a ControlPlane,
-    pub embedder: Option<&'a dyn QueryEmbedder>,
+/// Domain query engine.
+///
+/// All dependencies are reference-counted so a single engine instance can be
+/// cloned cheaply into per-connection tasks. The control plane sits behind a
+/// `Mutex` for `Sync`-safety against the non-`Sync` `rusqlite::Connection`.
+#[derive(Clone)]
+pub struct DomainQueryEngine {
+    pub lexical: Arc<TantivyLexicalAdapter>,
+    pub semantic: Arc<LanceSemanticAdapter>,
+    pub control: Arc<Mutex<ControlPlane>>,
+    pub embedder: Option<Arc<dyn QueryEmbedder>>,
     pub default_top_k: usize,
 }
 
-impl DomainQueryEngine<'_> {
+impl DomainQueryEngine {
     /// Resolve the generation to pin against.
     ///
     /// Explicit request override wins; otherwise the active generation is
@@ -61,8 +75,16 @@ impl DomainQueryEngine<'_> {
         explicit.map_or_else(
             || {
                 let (repo, rev) = filters_repo_rev(filters)?;
-                let pin = self.control.pin_generation(&repo, &rev)?;
-                pin.pinned_generation()?.map_or_else(
+                let snapshot = {
+                    let guard = self.control.lock().map_err(|error| {
+                        CoreError::Storage(format!("control mutex poisoned: {error}"))
+                    })?;
+                    let pin = guard.pin_generation(&repo, &rev)?;
+                    let captured = pin.pinned_generation()?;
+                    drop(guard);
+                    captured
+                };
+                snapshot.map_or_else(
                     || {
                         Err(CoreError::NotReady(format!(
                             "no active generation for repo={} rev={}",
@@ -73,7 +95,43 @@ impl DomainQueryEngine<'_> {
                     Ok,
                 )
             },
-            |generation| Ok(generation.clone()),
+            |generation| {
+                // P1 governance fix per reviewer: explicit generation overrides
+                // MUST be checked against the active-pin snapshot. We accept the
+                // request iff the (repo, rev, manifest_generation) tuple is the
+                // currently-active head. Querying an arbitrary past generation
+                // is out of scope for Phase 1 — the contract reserves
+                // `request.generation` for orchestrator-side pinning of a
+                // freshly-activated head during a serve handoff, not for
+                // arbitrary historical lookup.
+                let pinned = {
+                    let guard = self.control.lock().map_err(|error| {
+                        CoreError::Storage(format!("control mutex poisoned: {error}"))
+                    })?;
+                    let pin = guard.pin_generation(&generation.repo_id, &generation.revision_id)?;
+                    let captured = pin.pinned_generation()?;
+                    drop(guard);
+                    captured
+                };
+                match pinned {
+                    Some(active)
+                        if active.manifest_generation == generation.manifest_generation =>
+                    {
+                        Ok(active)
+                    }
+                    Some(active) => Err(CoreError::InvalidContract(format!(
+                        "UNKNOWN_GENERATION: requested manifest_generation={} \
+                         does not match active manifest_generation={}",
+                        generation.manifest_generation.get(),
+                        active.manifest_generation.get(),
+                    ))),
+                    None => Err(CoreError::NotReady(format!(
+                        "UNKNOWN_GENERATION: no active generation for repo={} rev={}",
+                        generation.repo_id.as_str(),
+                        generation.revision_id.as_str(),
+                    ))),
+                }
+            },
         )
     }
 
@@ -84,7 +142,11 @@ impl DomainQueryEngine<'_> {
         generation: &PublishedGenerationSet,
         top_k: usize,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        let deadline = query.options.timeout_ms.and_then(|raw| {
+            std::time::Instant::now().checked_add(std::time::Duration::from_millis(raw))
+        });
         let index = self.lexical.open_index_for_query(generation)?;
+        check_deadline(deadline, "open_index_for_query")?;
         let reader = index
             .reader()
             .map_err(|error| CoreError::Storage(format!("tantivy reader: {error}")))?;
@@ -93,21 +155,38 @@ impl DomainQueryEngine<'_> {
         let fields = LexicalFields::from_schema(&schema)?;
         let tantivy_query =
             build_tantivy_query(&fields, &index, &query.expr, &query.filters, generation)?;
+        check_deadline(deadline, "build_tantivy_query")?;
         let top_docs = searcher
             .search(tantivy_query.as_ref(), &TopDocs::with_limit(top_k))
             .map_err(|error| CoreError::Storage(format!("tantivy search: {error}")))?;
+        check_deadline(deadline, "search")?;
         let mut out = Vec::with_capacity(top_docs.len());
         for (score, address) in top_docs {
             let doc: TantivyDocument = searcher
                 .doc(address)
                 .map_err(|error| CoreError::Storage(format!("tantivy doc fetch: {error}")))?;
             out.push(doc_to_candidate(&fields, &doc, score)?);
+            check_deadline(deadline, "candidate fetch")?;
         }
         Ok(out)
     }
 }
 
-impl SearchPlaneLexicalQueryPort for DomainQueryEngine<'_> {
+/// Check the per-query deadline (if set) and fail-closed if exceeded.
+///
+/// Cooperative cancellation only — we check between phases rather than
+/// pre-empting an in-flight Tantivy call. `LqOptionSet::timeout_ms` of `None`
+/// keeps the deadline disabled.
+fn check_deadline(deadline: Option<std::time::Instant>, phase: &str) -> Result<(), CoreError> {
+    match deadline {
+        Some(d) if std::time::Instant::now() >= d => Err(CoreError::NotReady(format!(
+            "lexical query exceeded timeout_ms at phase: {phase}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+impl SearchPlaneLexicalQueryPort for DomainQueryEngine {
     fn lexical_query(
         &self,
         request: SearchPlaneLexicalQueryRequest,
@@ -131,7 +210,7 @@ impl SearchPlaneLexicalQueryPort for DomainQueryEngine<'_> {
     }
 }
 
-impl SearchPlaneSemanticQueryPort for DomainQueryEngine<'_> {
+impl SearchPlaneSemanticQueryPort for DomainQueryEngine {
     fn semantic_query(
         &self,
         request: SearchPlaneSemanticQueryRequest,
@@ -139,7 +218,7 @@ impl SearchPlaneSemanticQueryPort for DomainQueryEngine<'_> {
         // Phase 1: semantic search requires a `QueryEmbedder` to turn the
         // textual query into a vector. Without one configured we fail-closed
         // rather than guess (no heuristic fallback to lexical-only).
-        let Some(_embedder) = self.embedder else {
+        let Some(_embedder) = self.embedder.as_ref() else {
             return Err(CoreError::NotImplemented(
                 "semantic_query: no QueryEmbedder configured for this deployment".into(),
             ));
@@ -154,7 +233,7 @@ impl SearchPlaneSemanticQueryPort for DomainQueryEngine<'_> {
     }
 }
 
-impl SearchPlaneHybridQueryPort for DomainQueryEngine<'_> {
+impl SearchPlaneHybridQueryPort for DomainQueryEngine {
     fn hybrid_query(
         &self,
         request: SearchPlaneHybridQueryRequest,
@@ -175,7 +254,7 @@ impl SearchPlaneHybridQueryPort for DomainQueryEngine<'_> {
     }
 }
 
-impl SearchPlaneExplainQueryPort for DomainQueryEngine<'_> {
+impl SearchPlaneExplainQueryPort for DomainQueryEngine {
     fn explain_query(
         &self,
         request: SearchPlaneExplainQueryRequest,
@@ -489,13 +568,14 @@ mod tests {
     };
     use quanta_index_control::ControlPlane;
     use quanta_index_core::{
-        CoreError, LexicalBuildInput, SearchPlaneExplainQueryPort, SearchPlaneHybridQueryPort,
-        SearchPlaneLexicalIndexBuildPort, SearchPlaneLexicalQueryPort,
-        SearchPlaneSemanticQueryPort,
+        CoreError, LexicalBuildInput, PublishedSearchActivationStatePort,
+        SearchPlaneExplainQueryPort, SearchPlaneHybridQueryPort, SearchPlaneLexicalIndexBuildPort,
+        SearchPlaneLexicalQueryPort, SearchPlaneSemanticQueryPort,
     };
     use quanta_index_lexical::TantivyLexicalAdapter;
     use quanta_index_semantic::LanceSemanticAdapter;
     use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     macro_rules! ok_or_fail {
@@ -573,7 +653,7 @@ mod tests {
         state_root: &std::path::Path,
         chunk_rows_json: &[u8],
     ) -> (TantivyLexicalAdapter, PublishedSearchBundleManifest) {
-        let mut adapter = TantivyLexicalAdapter::with_state_root(state_root.to_path_buf());
+        let adapter = TantivyLexicalAdapter::with_state_root(state_root.to_path_buf());
         let manifest = sample_manifest();
         let outcome = adapter.build_lexical_index(
             &manifest,
@@ -597,9 +677,9 @@ mod tests {
         );
 
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };
@@ -638,9 +718,9 @@ mod tests {
         );
 
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };
@@ -678,14 +758,21 @@ mod tests {
         ]"#;
         let (adapter, manifest) = build_lexical_with_rows(&state_root, chunk_rows);
         let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
-        let control = ok_or_fail!(
+        let mut control = ok_or_fail!(
             ControlPlane::open(&state_root.join("c.sqlite3")),
             "open control"
         );
+        // Prime the control plane: explicit generation overrides are now
+        // validated against the active pin, so we must mark the sample
+        // generation active before the engine accepts it.
+        ok_or_fail!(
+            control.mark_active_generation(&sample_generation(), 100),
+            "mark active"
+        );
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };
@@ -733,14 +820,18 @@ mod tests {
         ]"#;
         let (adapter, _) = build_lexical_with_rows(&state_root, chunk_rows);
         let semantic = LanceSemanticAdapter::with_state_root(state_root.clone());
-        let control = ok_or_fail!(
+        let mut control = ok_or_fail!(
             ControlPlane::open(&state_root.join("c.sqlite3")),
             "open control"
         );
+        ok_or_fail!(
+            control.mark_active_generation(&sample_generation(), 100),
+            "mark active"
+        );
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 10,
         };
@@ -780,9 +871,9 @@ mod tests {
             "open control"
         );
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };
@@ -811,9 +902,9 @@ mod tests {
             "open control"
         );
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };
@@ -853,9 +944,9 @@ mod tests {
             "open control"
         );
         let engine = DomainQueryEngine {
-            lexical: &adapter,
-            semantic: &semantic,
-            control: &control,
+            lexical: Arc::new(adapter),
+            semantic: Arc::new(semantic),
+            control: Arc::new(Mutex::new(control)),
             embedder: None,
             default_top_k: 5,
         };

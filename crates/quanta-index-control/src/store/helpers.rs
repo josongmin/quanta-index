@@ -45,7 +45,8 @@ pub(super) fn row_to_generation_set(row: &Row<'_>) -> rusqlite::Result<Published
     })
 }
 
-pub(super) fn sqlite_u64_to_i64(field: &str, value: u64) -> Result<i64, CoreError> {
+#[doc(hidden)]
+pub fn sqlite_u64_to_i64(field: &str, value: u64) -> Result<i64, CoreError> {
     i64::try_from(value).map_err(|error| {
         CoreError::Storage(format!("{field} exceeds sqlite INTEGER range: {error}"))
     })

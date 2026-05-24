@@ -590,6 +590,12 @@ Adapters take **byte slices**, not artifact-store handles. `searchd::app::materi
 | D16 | explain response shape | string summary Phase 1 (flag) |
 | D17 | bundle byte 소유 모델 | producer owner; search-plane = `read+sha256 verify+forget`. retention 0. 별도 artifact-store/loader 크레이트 없음. read+verify는 `searchd::app::materialize` inline ✓ |
 | D18 | serde derive 금지 | workspace 전체 `#[derive(Serialize/Deserialize)]` 금지. 수동 impl만. 이유: cold-build 시간 + wire shape 리뷰 가능성. semgrep `rust-no-serde-derive` 강제 ✓ |
+| D19 | error code casing | `SCREAMING_SNAKE_CASE` (`NOT_READY`, `INVALID_CONTRACT`, `IPC_DECODE`, …) per SSOT § error code taxonomy ✓ |
+| D20 | catalog state lifecycle | Phase 1 ships `prepared` (via `record_generation_manifest`) + `active` (via activate). `materialized` / `failed` deferred to Phase 3.5; needs new orchestrator hooks to call into control between build success and activate, and between build failure and post-mortem |
+| D21 | semantic / hybrid query | deferred-with-reason; needs (a) text-embedding model choice + (b) Lance ANN integration. Fail-closed `NotImplemented` Phase 1. Phase 3.5 follow-up |
+| D22 | delta governance | delta-apply forbidden against currently-active generation; requires recorded manifest for target; rejects on either condition ✓ |
+| D23 | stale activation guard | activation rejects (a) lower or unchanged manifest_generation, (b) any component-generation regression; applied to both `activate_generation` and `mark_active_generation` ✓ |
+| D24 | UNKNOWN_GENERATION mapping | query path: explicit `request.generation` overrides must match the currently-active manifest_generation for `(repo, rev)`. Mismatch → `InvalidContract("UNKNOWN_GENERATION: …")`; absent → `NotReady("UNKNOWN_GENERATION: …")` ✓ |
 
 Decisions flagged "flag for review" must be re-confirmed before the relevant ticket lands.
 
@@ -622,20 +628,20 @@ When a ticket completes, update the status table below.
 
 | Ticket | State | PR | Notes |
 |--------|-------|----|----|
-| T1.1 | **done** | — | 8 integration tests; new `bundle_delta_applied` table + idempotent INSERT OR IGNORE; `BundlePolicy::validate_delta` |
+| T1.1 | **done** | — | 11 integration tests; new `bundle_delta_applied` table + idempotent INSERT OR IGNORE; `BundlePolicy::validate_delta`; **delta-apply governance per SSOT**: rejects (a) target generation not in catalog, (b) target currently-active, (c) no recorded manifest for target; `applied_at_ms` is now real `SystemTime::now()` ms (earlier rev mistakenly wrote `manifest_generation`) |
 | T1.2 | **done** | — | `generation_manifest` table + JSON encoding; `BundlePolicy::validate_artifact_ref`; 4 manifest-shape tests |
-| T1.3 | **done** | — | `mark_active_generation(gen, ts)`; 2 integration tests |
-| T1.4 | **done** | — | `inspect_bundle` reads from `generation_manifest`; `CoreError::NotFound` for unknown gens; placeholder helper removed |
+| T1.3 | **done** | — | `mark_active_generation(gen, ts)`; **stale-activation guard** (rejects lower manifest_generation OR regressing component generation) applies to both `activate_generation` and `mark_active_generation`; 5 integration tests incl. E-SP2 + component regression + orchestrator-side stale mark |
+| T1.4 | **done** | — | `inspect_bundle` reads from `generation_manifest`; `CoreError::NotFound` for unknown gens; placeholder helper removed; **artifacts union includes `mutation_delta`** (also a `BundleArtifactRef`); `record_generation_manifest` now also writes a `state='prepared'` catalog row when none exists, giving the SSOT lifecycle its first transition (`materialized`/`failed` still deferred) |
 | T2.* | dropped | — | E2 epic eliminated per D17 — bundle byte read+verify lives inline in T3.5 |
-| T3.1 | **done** | — | Tantivy 0.22 adapter; 7 integration tests; en_stem schema; tantivy-scoped skip-tree |
+| T3.1 | **done** | — | Tantivy 0.22 adapter; 7 integration tests; en_stem schema; tantivy-scoped skip-tree; **`Index` handle cached per-generation in `Mutex<BTreeMap<u64, Index>>`** to avoid re-opening on every query (hot-path fix) |
 | T3.2 | **done** | — | Lance 6.0.1 adapter; 9 integration tests; manual `wire.rs` RawF32 decoder; lance-scoped skip-tree |
 | T3.3 | **done** | — | `SearchPlaneMetadataStorePort` existence-check via `generation_manifest`; integrated with control |
 | T3.4 | **done** | — | embedding presence verification absorbed into T3.5 inline read+verify (D17) |
 | T3.5 | **done** | — | `MaterializeUseCase` with inline sha256 read+verify + `std::thread::scope` parallel builds; 11 unit tests + 4 scenario tests |
-| T4.1 | **done** | — | `DomainQueryEngine` with real Tantivy queries (Raw/All/Any/Not), generation pin resolution, explain summary; semantic/hybrid NotImplemented (no embedder); 7 unit tests |
+| T4.1 | **partial** | — | Lexical + explain real (Arc-owned engine, Tantivy Raw/All/Any/Not, `timeout_ms` cooperative deadline, **explicit-generation override now validated against active pin = UNKNOWN_GENERATION fail-closed**). **Semantic + hybrid deferred-with-reason**: no `QueryEmbedder` shipped, both return typed `NotImplemented`. Closing this row requires picking a text-embedding model + wiring Lance ANN — flagged as Phase 3.5 follow-up |
 | T4.2 | **done** | — | `BoundGenerationPin` + `ControlPlane::pin_generation`; per-query snapshot; 4 tests incl. U-SP4 |
 | T4.3 | **done** | — | CBOR codec with 16 MiB cap, 21 tests (roundtrip + framing errors + 2 proptests) |
-| T4.4 | **done** | — | `UdsListener` on tokio; per-conn dispatch; decode error → Error envelope keeps listener alive; 3 unit tests + H-SP3 scenario |
+| T4.4 | **done** | — | `UdsListener` on tokio; per-conn dispatch; decode error → Error envelope keeps listener alive; SIGINT/SIGTERM clean shutdown; `searchd::app::serve` composition root wires `DomainQueryEngine` + adapters via `Arc`; **real binary e2e test** spawns `searchd serve`, sends CBOR over UDS, receives typed `not_ready` error, SIGINT triggers clean exit |
 | T4.5 | **done** | — | `--state-root` / `--socket-path` CLI overrides; `ServeOptions` with_overrides composition; 9 unit tests |
-| T5.1 | **done** | — | U-SP1, U-SP2, U-SP3 (cold restart), U-SP4 end-to-end |
-| T5.2 | **done** | — | E-SP1/2/3, C-SP1/2, H-SP1/2/3 (hellgate red→green proven); H-SP3 via real UDS roundtrip |
+| T5.1 | **done** | — | U-SP1 outbox visibility; U-SP2 lexical happy-path via **real `searchd` binary + UDS** (`serve_smoke::serve_binary_happy_path_lexical_roundtrip_over_uds`); U-SP3 **real process restart** (`serve_smoke::serve_binary_restart_preserves_active_generation_and_index` spawns, SIGINTs, respawns, asserts same `LexicalCandidate`s); U-SP4 pin-survives-activate via control pin snapshot |
+| T5.2 | **done** | — | E-SP1 dup prepare; E-SP2 stale activation (3 facets); E-SP3 digest-mismatch fail-closed; C-SP1 NotReady-not-empty; C-SP2 lexical-only readiness; H-SP1 build-fail blocks activation; H-SP2 query-on-unready typed `NotReady`; H-SP3 UDS framing error → `IPC_DECODE` Error envelope, listener stays alive; **error codes use SCREAMING_SNAKE_CASE per SSOT** (`NOT_READY`, `INVALID_CONTRACT`, `NOT_FOUND`, `NOT_IMPLEMENTED`, `STORAGE`, `IPC_DECODE`) |
