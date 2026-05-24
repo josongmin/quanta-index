@@ -7,6 +7,12 @@
 //! Level assignment is deterministic per embedding id (a small LCG seeded
 //! from an FNV-1a hash of the id string) so that tests are reproducible
 //! without depending on `std::collections::DefaultHasher` (also banned).
+//! `log_M(n)` for any realistic `n` stays well below 16.
+
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "module is intentionally crate-internal; pub(crate) items are the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,7 +26,7 @@ const M_MAX0: usize = 32;
 const EF_CONSTRUCTION: usize = 200;
 /// Candidate-list size during query.
 const EF_SEARCH: usize = 64;
-/// Hard cap on assigned levels. log_M(n) for any realistic n stays well
+/// Hard cap on assigned levels. `log_M(n)` for any realistic `n` stays well
 /// below 16.
 const MAX_LEVEL_CAP: usize = 16;
 
@@ -66,7 +72,7 @@ impl HnswIndex {
     }
 
     /// Insert (or replace) an embedding. `vector.len()` must equal `self.dim`.
-    pub(crate) fn insert(&mut self, id: String, vector: Vec<f32>) -> Result<(), CoreError> {
+    pub(crate) fn insert(&mut self, id: String, vector: &[f32]) -> Result<(), CoreError> {
         if vector.len() != self.dim {
             return Err(CoreError::InvalidContract(format!(
                 "hnsw: vector dim {} != index dim {}",
@@ -74,7 +80,7 @@ impl HnswIndex {
                 self.dim
             )));
         }
-        let Some(normalized) = l2_normalize(&vector) else {
+        let Some(normalized) = l2_normalize(vector) else {
             // Zero-norm vector: silently no-op. The contract layer should
             // reject these upstream, but we tolerate them rather than crash.
             return Ok(());
@@ -84,7 +90,7 @@ impl HnswIndex {
         // a fresh one. Cheaper than in-place graph rewire.
         if let Some(existing_idx) = self.id_to_idx.get(&id).copied() {
             self.tombstone_node(existing_idx);
-            let _ = self.id_to_idx.remove(&id);
+            let _removed = self.id_to_idx.remove(&id);
         }
 
         let level = assign_level(&id);
@@ -96,7 +102,7 @@ impl HnswIndex {
             deleted: false,
         };
         self.nodes.push(new_node);
-        let _ = self.id_to_idx.insert(id, new_idx);
+        let _prior = self.id_to_idx.insert(id, new_idx);
 
         // First live node: becomes the entry point.
         let Some(entry) = self.entry_alive() else {
@@ -142,7 +148,7 @@ impl HnswIndex {
     pub(crate) fn delete(&mut self, id: &str) {
         if let Some(idx) = self.id_to_idx.get(id).copied() {
             self.tombstone_node(idx);
-            let _ = self.id_to_idx.remove(id);
+            let _removed = self.id_to_idx.remove(id);
         }
     }
 
@@ -263,7 +269,7 @@ impl HnswIndex {
         dynamic.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         while let Some((c_score, c_idx)) = candidates.first().copied() {
-            let _ = candidates.remove(0);
+            let _removed = candidates.remove(0);
             let worst_in_dynamic = dynamic.last().map_or(f32::NEG_INFINITY, |&(s, _)| s);
             if dynamic.len() >= ef && c_score < worst_in_dynamic {
                 break;
@@ -285,7 +291,7 @@ impl HnswIndex {
                     insert_sorted_desc(&mut candidates, (s, nb));
                     insert_sorted_desc(&mut dynamic, (s, nb));
                     if dynamic.len() > ef {
-                        let _ = dynamic.pop();
+                        let _popped = dynamic.pop();
                     }
                 }
             }
@@ -444,13 +450,11 @@ fn u64_to_unit_f64(raw: u64) -> f64 {
     let upper = mantissa >> 32;
     // `lower` and `upper` are both guaranteed to fit in u32; match for safety
     // without using `unwrap_or_default` (banned on Result).
-    let low_u32 = match u32::try_from(lower) {
-        Ok(v) => v,
-        Err(_) => return 0.0_f64,
+    let Ok(low_u32) = u32::try_from(lower) else {
+        return 0.0_f64;
     };
-    let high_u32 = match u32::try_from(upper) {
-        Ok(v) => v,
-        Err(_) => return 0.0_f64,
+    let Ok(high_u32) = u32::try_from(upper) else {
+        return 0.0_f64;
     };
     let low = f64::from(low_u32);
     let high = f64::from(high_u32);
@@ -458,15 +462,14 @@ fn u64_to_unit_f64(raw: u64) -> f64 {
     let denom: f64 = 9_007_199_254_740_992.0_f64;
     // 2^32 as f64.
     let two_pow_32: f64 = 4_294_967_296.0_f64;
-    (low + high * two_pow_32) / denom
+    high.mul_add(two_pow_32, low) / denom
 }
 
 /// Convert a non-negative, bounded f64 (already clamped to `[0, MAX_LEVEL_CAP]`)
 /// to `usize` via a cascade of `f64::from(u32)` comparisons. Avoids `as` casts.
 fn f64_clamped_to_usize(v: f64) -> usize {
-    let cap_u32 = match u32::try_from(MAX_LEVEL_CAP) {
-        Ok(c) => c,
-        Err(_) => return 0,
+    let Ok(cap_u32) = u32::try_from(MAX_LEVEL_CAP) else {
+        return 0;
     };
     let mut found: u32 = 0;
     for k in 0..=cap_u32 {
@@ -476,10 +479,7 @@ fn f64_clamped_to_usize(v: f64) -> usize {
             break;
         }
     }
-    match usize::try_from(found) {
-        Ok(v) => v,
-        Err(_) => 0,
-    }
+    usize::try_from(found).map_or(0, |v| v)
 }
 
 /// Deterministic level assignment using `mL = 1 / ln(M)`.
@@ -494,9 +494,8 @@ fn assign_level(id: &str) -> usize {
     } else {
         u_raw
     };
-    let m_u32 = match u32::try_from(M) {
-        Ok(v) => v,
-        Err(_) => return 0,
+    let Ok(m_u32) = u32::try_from(M) else {
+        return 0;
     };
     let m_f = f64::from(m_u32);
     let denom = m_f.ln();
@@ -508,9 +507,8 @@ fn assign_level(id: &str) -> usize {
     if !level_f.is_finite() || level_f <= 0.0 {
         return 0;
     }
-    let cap_u32 = match u32::try_from(MAX_LEVEL_CAP) {
-        Ok(v) => v,
-        Err(_) => return 0,
+    let Ok(cap_u32) = u32::try_from(MAX_LEVEL_CAP) else {
+        return 0;
     };
     let cap_f = f64::from(cap_u32);
     let bounded = if level_f > cap_f { cap_f } else { level_f };
@@ -538,7 +536,7 @@ mod tests {
             ("e", [0.5, 0.5, 0.5, 0.5]),
         ];
         for (id, v) in &vecs {
-            index.insert((*id).to_string(), v.to_vec())?;
+            index.insert((*id).to_string(), v.as_slice())?;
         }
         let Some(first) = vecs.first() else {
             return Err("missing first vec".into());
@@ -559,9 +557,9 @@ mod tests {
     #[test]
     fn delete_then_search_excludes() -> TestRes {
         let mut index = HnswIndex::new(3);
-        index.insert("x".to_string(), vec![1.0, 0.0, 0.0])?;
-        index.insert("y".to_string(), vec![0.0, 1.0, 0.0])?;
-        index.insert("z".to_string(), vec![0.0, 0.0, 1.0])?;
+        index.insert("x".to_string(), &[1.0, 0.0, 0.0])?;
+        index.insert("y".to_string(), &[0.0, 1.0, 0.0])?;
+        index.insert("z".to_string(), &[0.0, 0.0, 1.0])?;
         index.delete("y");
         let results = index.search(&[0.0, 1.0, 0.0], 5);
         let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
@@ -574,8 +572,8 @@ mod tests {
     #[test]
     fn dim_mismatch_rejected() -> TestRes {
         let mut index = HnswIndex::new(4);
-        index.insert("a".to_string(), vec![1.0, 0.0, 0.0, 0.0])?;
-        let err = index.insert("b".to_string(), vec![1.0, 0.0, 0.0]);
+        index.insert("a".to_string(), &[1.0, 0.0, 0.0, 0.0])?;
+        let err = index.insert("b".to_string(), &[1.0, 0.0, 0.0]);
         if !matches!(err, Err(CoreError::InvalidContract(_))) {
             return Err(format!("expected InvalidContract error, got {err:?}").into());
         }
@@ -585,9 +583,9 @@ mod tests {
     #[test]
     fn cosine_ordering_correct() -> TestRes {
         let mut index = HnswIndex::new(2);
-        index.insert("east".to_string(), vec![1.0, 0.0])?;
-        index.insert("diag".to_string(), vec![0.7, 0.7])?;
-        index.insert("north".to_string(), vec![0.0, 1.0])?;
+        index.insert("east".to_string(), &[1.0, 0.0])?;
+        index.insert("diag".to_string(), &[0.7, 0.7])?;
+        index.insert("north".to_string(), &[0.0, 1.0])?;
         let results = index.search(&[1.0, 0.0], 3);
         if results.len() != 3 {
             return Err(format!("expected 3 results, got {}", results.len()).into());

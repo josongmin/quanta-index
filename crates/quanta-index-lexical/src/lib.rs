@@ -22,7 +22,6 @@
     reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
 )]
 
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -212,8 +211,7 @@ impl LexicalIndexBuildPort for LexicalAdapter {
             if op.repo_id() != repo || op.revision_id() != revision || op.generation() != generation
             {
                 return Err(CoreError::InvalidContract(
-                    "lexical: op (repo, revision, generation) mismatch with batch key"
-                        .to_string(),
+                    "lexical: op (repo, revision, generation) mismatch with batch key".to_string(),
                 ));
             }
         }
@@ -335,10 +333,8 @@ impl TantivySearcher {
             }
             LqExpr::Not(inner) => {
                 let inner_q = self.compile(inner)?;
-                let clauses: Vec<(Occur, Box<dyn Query>)> = vec![
-                    (Occur::Must, Box::new(AllQuery)),
-                    (Occur::MustNot, inner_q),
-                ];
+                let clauses: Vec<(Occur, Box<dyn Query>)> =
+                    vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
         }

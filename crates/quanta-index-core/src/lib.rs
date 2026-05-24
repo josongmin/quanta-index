@@ -16,8 +16,8 @@ pub use error::CoreError;
 pub use domains::channel::{ChannelDispatchPolicy, ChannelObserver};
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort,
-    LexicalReadiness, LexicalSearcher,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness,
+    LexicalSearcher,
 };
 pub use domains::semantic::{
     SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,

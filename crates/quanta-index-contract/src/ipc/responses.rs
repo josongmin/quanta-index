@@ -6,7 +6,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{LexicalCandidate, GenerationPin, SearchExplanation};
+use crate::{GenerationPin, LexicalCandidate, SearchExplanation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneLexicalQueryResponse {

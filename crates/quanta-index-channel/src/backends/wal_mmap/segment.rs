@@ -47,18 +47,22 @@ pub struct SegmentLayout {
 }
 
 impl SegmentLayout {
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
+    #[must_use]
     pub fn lock_path(&self) -> PathBuf {
         self.root.join("publisher.lock")
     }
 
+    #[must_use]
     pub fn cursor_path(&self) -> PathBuf {
         self.root.join("cursor")
     }
 
+    #[must_use]
     pub fn segment_path(&self, seg_id: u64) -> PathBuf {
         self.root.join(format!("log.wal.{seg_id:020}"))
     }
@@ -125,6 +129,7 @@ impl SegmentWriter {
         })
     }
 
+    #[must_use]
     pub fn seg_id(&self) -> u64 {
         self.seg_id
     }
@@ -169,6 +174,7 @@ impl SegmentWriter {
         Ok(())
     }
 
+    #[must_use]
     pub fn should_rotate(&self) -> bool {
         self.bytes_written >= self.max_bytes || self.entry_count >= self.max_entries
     }
@@ -275,6 +281,7 @@ impl SegmentReader {
         })
     }
 
+    #[must_use]
     pub fn seg_id(&self) -> u64 {
         self.seg_id
     }
@@ -283,6 +290,7 @@ impl SegmentReader {
     /// `read_next_frame` this points just past the last good frame; after a
     /// failed read this still points at the start of the failed frame, since
     /// `pos` is only advanced on success.
+    #[must_use]
     pub fn position(&self) -> u64 {
         self.pos
     }
@@ -342,7 +350,11 @@ impl SegmentReader {
         hasher.update(&body_buf);
         let actual_crc = hasher.finalize();
         if actual_crc != expected_crc {
-            let seq_arr = take_arr::<8>(&body_buf, 0).unwrap_or([0u8; 8]);
+            // body_len_usize >= FRAME_SEQ_PREFIX_USIZE was checked above, so the
+            // seq prefix is always extractable here; propagate via `?` to keep
+            // fail-closed (the impossible Err path still surfaces a typed
+            // ChannelError rather than a zero-fallback).
+            let seq_arr = take_arr::<8>(&body_buf, 0)?;
             return Err(ChannelError::Corrupted {
                 at_seq: ChannelSeq::new(u64::from_le_bytes(seq_arr)),
                 reason: format!("crc mismatch (expected {expected_crc:#x}, got {actual_crc:#x})"),

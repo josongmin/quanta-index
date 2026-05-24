@@ -47,7 +47,7 @@ impl QueryServer {
         let server = self.server;
         let handle = std::thread::Builder::new()
             .name("quanta-index-uds".to_string())
-            .spawn(move || server.run(dispatcher, accept_idle))?;
+            .spawn(move || server.run(&dispatcher, accept_idle))?;
         Ok(handle)
     }
 }

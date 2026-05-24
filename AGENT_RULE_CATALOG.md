@@ -62,12 +62,26 @@
 
 - IPC request/response decoders are fuzzed via cargo-fuzz under `crates/quanta-index-contract/fuzz/` in the heavy correctness rail (`just rust-fuzz-smoke`, `.github/workflows/correctness.yml` job `rust-fuzz-smoke`, 60s/target). Any panic, infinite loop, or non-`Err` exit on malformed bytes is treated as a fail-closed violation.
 
+### Structural integrity (workspace shape)
+
+- **Cargo.toml hygiene** — `tools/ci/lint/check-cargo-toml-hygiene.py` enforces, for every crate in `[workspace.members]`:
+  - `[package]` inherits `version`, `edition`, `license`, `publish` from workspace
+  - `[lints]` inherits from workspace
+  - external deps (non-`quanta-index-*`) use `{ workspace = true }` form — inline-version (`serde = "1.0"`) and inline-path deps are banned
+  - internal deps (`quanta-index-*`) use `{ version = "...", path = "../<crate>" }` form
+  - no `git = "..."` sources; no path deps escaping `crates/`
+  Reason: copy-pasted manifest ad-hoc adds fork the version line across crates and bypass `deny.toml` registry policy. Pre-commit + CI gated.
+- **Module discipline** — `tools/ci/lint/check-module-discipline.py` enforces that every `mod.rs` (workspace-wide) and `quanta-index-contract/src/lib.rs` is a re-export facade only: attributes, comments, `use`/`pub use`, `mod`/`pub mod` only. No inline `fn`/`struct`/`enum`/`trait`/`impl`/`const`/`static`/`macro_rules!`/inline `mod {}` blocks. Reason: when implementation slips into mod.rs, the module's surface becomes uneven, renames cascade poorly, and the contract crate loses its DTO-only invariant at the entrypoint. Pre-push + CI gated. Multi-line `pub use { ... }` trees are recognized via brace-depth tracking.
+- **Error shape** — `tools/ci/lint/check-error-shape.py` enforces that every public `*Error` enum/struct in workspace source either (a) carries `#[derive(... Error ...)]` with `#[error("...")]` on each variant, OR (b) has both `impl std::error::Error for X` and `impl Display for X` in the same file. The manual form is preferred in this repo (consistent with the no-proc-macro-derive build-hygiene rule). Wire-protocol DTOs named `*Error` (currently: `SearchPlaneIpcError`) are allowlisted via `WIRE_DTO_ERRORS`. Reason: a `*Error` that is not `std::error::Error` cannot `?`-propagate, which usually leads to `.ok()` / `unwrap_or` silent fallbacks downstream. Pre-push + CI gated.
+- **Module-tree snapshot** — `tools/ci/lint/check-cargo-modules-snapshot.py` snapshots `cargo modules structure --no-fns` output for `quanta-index-contract` and `quanta-index-core` into `tools/ci/lint/baselines/cargo-modules/<crate>.txt`. Any module rename, deletion, or relocation must accompany a baseline update. Complements `check-public-api.py` (external shape) with internal-shape freeze. Heavy correctness rail.
+
 ### Silent-fallback guards (semgrep)
 
 - `rust-no-silent-or-else-ok` blocks `.or_else(|_| Ok(...))` shaped error-to-success conversions.
 - `rust-no-err-arm-default` blocks `Err(_) => Default::default()` / `Vec::new()` / `None` / etc. in production crate src/ trees.
 - `rust-no-debug-assertions-divergence` blocks `cfg!(debug_assertions)` and `#[cfg(debug_assertions)]` in contract/core production paths so release behavior cannot silently diverge from debug.
 - `rust-no-result-to-option-discard` blocks `.err().is_some()` / `.err().is_none()` which throw away the error payload.
+- *deliberately not enforced via semgrep:* `if let Ok(x) = ... { ... }` with no else. Semgrep's Rust grammar does not handle multi-statement block patterns reliably, and the idiom is too common in legitimate best-effort paths (metrics, logging) to lint without high false-positive rate. Manual code review covers it for now.
 
 ### Verification
 
@@ -94,6 +108,9 @@
 - Rust tests: `cargo test --workspace`
 - Rust policy: `python3 scripts/check_workspace_lints.py` and `bash scripts/check-rust-allow-attributes.sh`
 - Rust derive allowlist: `python3 tools/ci/lint/check-rust-derive-allowlist.py`
+- Rust Cargo.toml hygiene: `python3 tools/ci/lint/check-cargo-toml-hygiene.py`
+- Rust module discipline: `python3 tools/ci/lint/check-module-discipline.py`
+- Rust error shape: `python3 tools/ci/lint/check-error-shape.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
 - Semgrep: `bash scripts/run-semgrep.sh` (silent-fallback / serde-derive / unwrap / vendor-import rules)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
@@ -105,5 +122,6 @@
 - Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps (existing)
 - Monomorphization budget: `python3 tools/ci/lint/check-llvm-lines.py`
 - Contract surface diff: `python3 tools/ci/lint/check-public-api.py`
+- Module-tree snapshot: `python3 tools/ci/lint/check-cargo-modules-snapshot.py`
 - IPC decoder fuzz smoke (60s each): `cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run <target>`
 

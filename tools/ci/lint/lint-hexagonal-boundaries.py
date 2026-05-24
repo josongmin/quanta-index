@@ -17,12 +17,15 @@ except ModuleNotFoundError:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[3]
 CRATES = ROOT / "crates"
 
-DOMAINS = ("bundle_ingest", "generation", "materialization", "query")
+DOMAINS = ("channel", "lexical", "semantic", "hybrid")
 
 LEGACY_CORE_MODULES = (
     "artifact_objects",
     "bundle_ingest",
+    "generation",
     "generation_registry",
+    "materialization",
+    "query",
     "query_serving",
     "ports.rs",
     "services",
@@ -35,16 +38,21 @@ _ADAPTER_CRATE_DEPS = frozenset({"quanta-index-contract", "quanta-index-core"})
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract": frozenset(),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
-    "quanta-index-control": frozenset({"quanta-index-contract", "quanta-index-core"}),
     "quanta-index-channel": frozenset({"quanta-index-contract"}),
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS,
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
+    # PRE-NORM lexical-query normalizer. Stand-alone until PRE-CONTRACT-EXT
+    # publishes the canonical `LqQuery` carrier in the contract crate, at
+    # which point this crate will start depending on quanta-index-contract.
+    "quanta-index-lq-norm": frozenset({"quanta-index-contract"}),
+    # CI / conformance helpers. No production deps; tests in other crates
+    # consume it via dev-dependencies only.
+    "quanta-index-conformance": frozenset(),
     "quanta-index-searchd": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
-            "quanta-index-control",
             "quanta-index-channel",
             "quanta-index-lexical",
             "quanta-index-semantic",
@@ -61,8 +69,13 @@ _ADAPTER_CRATES = frozenset(
     }
 )
 
+_TRANSPORT_LEAK_TOKENS = (
+    re.compile(r"\bwal_mmap\b"),
+    re.compile(r"\bsegment_id\b"),
+)
+
 DOMAIN_USE_RE = re.compile(
-    r"\b(?:crate::domains::|domains::)(?P<target>bundle_ingest|channel|generation|hybrid|lexical|materialization|query|semantic)\b"
+    r"\b(?:crate::domains::|domains::)(?P<target>channel|lexical|semantic|hybrid)\b"
 )
 
 
@@ -95,7 +108,6 @@ def path_dependencies(cargo_toml: Path) -> set[str]:
             if path is not None and isinstance(dep_name, str):
                 deps.add(dep_name)
             elif path is not None:
-                # path-only dep: infer crate folder name from path tail
                 deps.add(Path(str(path)).name.replace("-", "_"))
     return deps
 
@@ -154,11 +166,21 @@ def check_crate_dependency_matrix() -> list[Violation]:
 def check_legacy_core_layout() -> list[Violation]:
     violations: list[Violation] = []
     core_src = CRATES / "quanta-index-core" / "src"
+    if not core_src.is_dir():
+        return violations
     for legacy in LEGACY_CORE_MODULES:
         path = core_src / legacy
         if path.exists():
             violations.append(
-                Violation(path, f"legacy module {legacy!r} must migrate under domains/")
+                Violation(path, f"legacy module {legacy!r} must not exist in core/src/")
+            )
+        legacy_domain = core_src / "domains" / legacy
+        if legacy_domain.exists() and legacy not in DOMAINS:
+            violations.append(
+                Violation(
+                    legacy_domain,
+                    f"legacy domain {legacy!r} removed; new domains are {DOMAINS}",
+                )
             )
     return violations
 
@@ -188,19 +210,24 @@ def check_domain_isolation() -> list[Violation]:
         text = rust_file.read_text(encoding="utf-8")
         for match in DOMAIN_USE_RE.finditer(text):
             target = match.group("target")
-            if target != owner:
-                violations.append(
-                    Violation(
-                        rust_file,
-                        f"domain {owner!r} must not reference domain {target!r}",
-                    )
+            if target == owner:
+                continue
+            if owner == "hybrid" and target in ("lexical", "semantic"):
+                continue
+            violations.append(
+                Violation(
+                    rust_file,
+                    f"domain {owner!r} must not reference domain {target!r}",
                 )
+            )
     return violations
 
 
 def check_contract_is_dto_only() -> list[Violation]:
     violations: list[Violation] = []
     contract_src = CRATES / "quanta-index-contract" / "src"
+    if not contract_src.is_dir():
+        return violations
     for rust_file in sorted(contract_src.rglob("*.rs")):
         text = rust_file.read_text(encoding="utf-8")
         if re.search(r"\bpub\s+trait\b", text):
@@ -210,19 +237,66 @@ def check_contract_is_dto_only() -> list[Violation]:
     return violations
 
 
-def check_control_is_sqlite_only() -> list[Violation]:
+def check_channel_backend_isolation() -> list[Violation]:
     violations: list[Violation] = []
-    control_toml = CRATES / "quanta-index-control" / "Cargo.toml"
-    if not control_toml.is_file():
+    channel_src = CRATES / "quanta-index-channel" / "src"
+    if not channel_src.is_dir():
         return violations
-    deps = tomllib.loads(control_toml.read_text(encoding="utf-8")).get("dependencies", {})
-    if isinstance(deps, dict):
-        for dep in deps:
-            base = dep.split("/")[0]
-            if base in FORBIDDEN_VENDOR_DEPS and base != "rusqlite":
+
+    api_dir = channel_src / "api"
+    backend_dir = channel_src / "backends"
+    if api_dir.is_dir():
+        for rust_file in sorted(api_dir.rglob("*.rs")):
+            text = rust_file.read_text(encoding="utf-8")
+            if re.search(r"\bbackends::\w", text):
                 violations.append(
-                    Violation(control_toml, f"quanta-index-control must not depend on {dep!r}")
+                    Violation(
+                        rust_file,
+                        "channel::api must not reference channel::backends",
+                    )
                 )
+
+    if backend_dir.is_dir():
+        backends = [p for p in backend_dir.iterdir() if p.is_dir()]
+        for backend in backends:
+            other_names = {b.name for b in backends if b != backend}
+            if not other_names:
+                continue
+            for rust_file in sorted(backend.rglob("*.rs")):
+                text = rust_file.read_text(encoding="utf-8")
+                for other in other_names:
+                    if re.search(rf"\bbackends::{re.escape(other)}\b", text):
+                        violations.append(
+                            Violation(
+                                rust_file,
+                                f"channel backend {backend.name!r} must not reference {other!r}",
+                            )
+                        )
+
+    leak_scopes = [
+        CRATES / "quanta-index-core",
+        CRATES / "quanta-index-lexical",
+        CRATES / "quanta-index-semantic",
+        CRATES / "quanta-index-ipc",
+        CRATES / "quanta-index-searchd",
+    ]
+    for scope in leak_scopes:
+        if not scope.is_dir():
+            continue
+        for rust_file in sorted(scope.rglob("*.rs")):
+            if "tests" in rust_file.parts:
+                continue
+            text = rust_file.read_text(encoding="utf-8")
+            for token in _TRANSPORT_LEAK_TOKENS:
+                m = token.search(text)
+                if m is not None:
+                    violations.append(
+                        Violation(
+                            rust_file,
+                            f"transport-specific token {m.group(0)!r} leaked outside channel backend",
+                        )
+                    )
+                    break
     return violations
 
 
@@ -232,7 +306,7 @@ def main() -> int:
         check_legacy_core_layout,
         check_domain_isolation,
         check_contract_is_dto_only,
-        check_control_is_sqlite_only,
+        check_channel_backend_isolation,
     )
 
     violations: list[Violation] = []

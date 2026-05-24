@@ -32,6 +32,6 @@ pub trait SemanticIndexOpenPort: Send + Sync {
 pub trait SemanticSearcher: Send + Sync {
     /// Embed the query externally and pass the dense vector to the searcher.
     /// Returning candidates as `LexicalCandidate` keeps the result shape uniform
-    /// for the hybrid orchestrator's RRF fusion (candidate_id, score, snippet).
+    /// for the hybrid orchestrator's RRF fusion (`candidate_id`, score, snippet).
     fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
 }

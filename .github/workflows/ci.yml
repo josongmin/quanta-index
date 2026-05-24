@@ -190,6 +190,15 @@ jobs:
       - name: Rust derive allowlist
         run: python3 tools/ci/lint/check-rust-derive-allowlist.py
 
+      - name: Cargo.toml hygiene
+        run: python3 tools/ci/lint/check-cargo-toml-hygiene.py
+
+      - name: Module discipline (mod.rs / contract lib.rs facade-only)
+        run: python3 tools/ci/lint/check-module-discipline.py
+
+      - name: Error shape (pub *Error must implement std::error::Error)
+        run: python3 tools/ci/lint/check-error-shape.py
+
   agent-output:
     runs-on: ubuntu-latest
     steps:

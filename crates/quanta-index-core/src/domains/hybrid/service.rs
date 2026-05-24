@@ -6,7 +6,7 @@ use crate::error::CoreError;
 
 /// Reciprocal Rank Fusion constant. Tunable but fixed here so all callers
 /// produce identical fused rankings.
-pub(crate) const RRF_K: f64 = 60.0;
+const RRF_K: f64 = 60.0;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HybridOrchestratorPolicy;
@@ -19,12 +19,8 @@ impl HybridOrchestratorPolicy {
         lex_materialized: Option<ManifestGeneration>,
         sem_materialized: Option<ManifestGeneration>,
     ) -> Result<(), CoreError> {
-        let lex_ok = lex_materialized
-            .map(|g| g.get() >= target.get())
-            .unwrap_or(false);
-        let sem_ok = sem_materialized
-            .map(|g| g.get() >= target.get())
-            .unwrap_or(false);
+        let lex_ok = lex_materialized.is_some_and(|g| g.get() >= target.get());
+        let sem_ok = sem_materialized.is_some_and(|g| g.get() >= target.get());
         if !lex_ok || !sem_ok {
             return Err(CoreError::NotReady(format!(
                 "hybrid: generation {} not jointly ready (lex_ok={lex_ok}, sem_ok={sem_ok})",
@@ -37,7 +33,7 @@ impl HybridOrchestratorPolicy {
     /// Fuse two ranked candidate lists by RRF.
     ///
     /// Tie-break order: higher fused score, then "present in lexical list",
-    /// then candidate_id lexicographic.
+    /// then `candidate_id` lexicographic.
     #[must_use]
     pub fn fuse_rrf(
         lexical: &[LexicalCandidate],
@@ -61,7 +57,10 @@ impl HybridOrchestratorPolicy {
                         .cmp(b.candidate.candidate_id.as_str())
                 })
         });
-        let limit = usize::try_from(top_k).unwrap_or(usize::MAX);
+        // Saturating cap: top_k larger than usize::MAX (only possible on
+        // <64-bit targets) is treated as unlimited. `map_or` is the
+        // clippy-preferred shape; `unwrap_or` is workspace-disallowed.
+        let limit = usize::try_from(top_k).map_or(usize::MAX, |n| n);
         fused
             .into_iter()
             .take(limit)
@@ -83,7 +82,9 @@ fn accumulate(
 ) {
     for (rank, c) in ranked.iter().enumerate() {
         let rank_plus_one = rank.saturating_add(1);
-        let rank_u32 = u32::try_from(rank_plus_one).unwrap_or(u32::MAX);
+        // Saturating: rank index past u32::MAX collapses to the same RRF
+        // tail score. `map_or` keeps the clippy + workspace lints happy.
+        let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
         let rank_f = f64::from(rank_u32);
         let key = c.candidate_id.clone();
         let entry = accs.entry(key).or_insert_with(|| FuseAccumulator {

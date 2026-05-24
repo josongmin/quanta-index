@@ -136,7 +136,7 @@ where
 
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
 /// retrying on `Interrupted`.
-pub(crate) fn read_exact_or_truncated<R: Read>(
+fn read_exact_or_truncated<R: Read>(
     reader: &mut R,
     buf: &mut [u8],
 ) -> Result<(), IpcError> {

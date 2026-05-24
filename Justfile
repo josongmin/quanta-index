@@ -100,6 +100,21 @@ rust-hexagonal:
 rust-derive-allowlist:
     python3 tools/ci/lint/check-rust-derive-allowlist.py
 
+rust-cargo-toml-hygiene:
+    python3 tools/ci/lint/check-cargo-toml-hygiene.py
+
+rust-module-discipline:
+    python3 tools/ci/lint/check-module-discipline.py
+
+rust-error-shape:
+    python3 tools/ci/lint/check-error-shape.py
+
+rust-cargo-modules:
+    python3 tools/ci/lint/check-cargo-modules-snapshot.py
+
+rust-cargo-modules-update:
+    python3 tools/ci/lint/check-cargo-modules-snapshot.py --update-baseline
+
 rust-llvm-lines:
     python3 tools/ci/lint/check-llvm-lines.py
 
@@ -124,6 +139,9 @@ rust-policy:
     @just rust-hexagonal
     @just rust-no-allow
     @just rust-derive-allowlist
+    @just rust-cargo-toml-hygiene
+    @just rust-module-discipline
+    @just rust-error-shape
     @just rust-deny
 
 verify-rust:
@@ -145,6 +163,7 @@ verify-rust-heavy:
     @just rust-udeps
     @just rust-llvm-lines
     @just rust-public-api
+    @just rust-cargo-modules
     @just rust-fuzz-build
 
 semgrep:

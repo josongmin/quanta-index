@@ -242,6 +242,35 @@ jobs:
           source scripts/quanta-index-env.sh
           python3 tools/ci/lint/check-public-api.py
 
+  rust-cargo-modules:
+    name: rust-cargo-modules (module-tree snapshot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Install cargo-modules
+        uses: taiki-e/install-action@cargo-modules
+
+      - name: Diff module tree of guarded crates
+        run: |
+          source scripts/quanta-index-env.sh
+          python3 tools/ci/lint/check-cargo-modules-snapshot.py
+
   rust-fuzz-smoke:
     name: rust-fuzz-smoke (IPC decoders, 60s each)
     runs-on: ubuntu-latest

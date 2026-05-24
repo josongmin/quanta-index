@@ -3,9 +3,11 @@ use std::io;
 
 use quanta_index_contract::ChannelSeq;
 
-/// All channel surface errors. Backend-specific details are deliberately
-/// quarantined inside [`ChannelError::State`] and [`ChannelError::Io`] —
-/// no `SegmentFull`, `MmapRemap`, or other backend-leaking variant lives here.
+/// All channel surface errors.
+///
+/// Backend-specific details are deliberately quarantined inside
+/// [`ChannelError::State`] and [`ChannelError::Io`] — no `SegmentFull`,
+/// `MmapRemap`, or other backend-leaking variant lives here.
 #[derive(Debug)]
 pub enum ChannelError {
     /// The channel was closed (publisher dropped or storage offline).

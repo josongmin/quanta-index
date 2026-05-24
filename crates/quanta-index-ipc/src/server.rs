@@ -1,4 +1,4 @@
-//! AF_UNIX stream server + client.
+//! `AF_UNIX` stream server + client.
 //!
 //! The server accepts connections sequentially (phase-1 rule: at-most-one
 //! in-flight request per connection), decodes a single envelope per frame,
@@ -34,7 +34,7 @@ pub trait QueryDispatcher: Send + Sync {
     fn dispatch(&self, request: SearchPlaneIpcRequest) -> SearchPlaneIpcResponse;
 }
 
-/// Synchronous AF_UNIX stream server.
+/// Synchronous `AF_UNIX` stream server.
 pub struct UdsServer {
     listener: UnixListener,
     socket_path: PathBuf,
@@ -73,6 +73,7 @@ impl UdsServer {
     }
 
     /// Trigger graceful shutdown. Safe to call from any thread / signal handler.
+    #[must_use]
     pub fn shutdown_handle(&self) -> ShutdownHandle {
         ShutdownHandle {
             inner: Arc::clone(&self.shutdown),
@@ -91,13 +92,13 @@ impl UdsServer {
     /// retrying.
     pub fn run<D: QueryDispatcher + ?Sized>(
         &self,
-        dispatcher: Arc<D>,
+        dispatcher: &Arc<D>,
         accept_idle: Duration,
     ) -> Result<(), IpcError> {
         while !self.shutdown.load(Ordering::Acquire) {
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
-                    let dispatcher = Arc::clone(&dispatcher);
+                    let dispatcher = Arc::clone(dispatcher);
                     handle_connection(stream, dispatcher.as_ref());
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {

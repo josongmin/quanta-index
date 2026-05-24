@@ -9,8 +9,8 @@ use quanta_index_contract::{
     RepoId, RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
     SearchPlaneIpcError, SearchPlaneIpcRequest, SearchPlaneIpcResponse,
-    SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse, SearchPlaneSemanticQueryRequest,
-    SearchPlaneSemanticQueryResponse,
+    SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
+    SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
 };
 use quanta_index_core::{
     CoreError, HybridOrchestratorPolicy, LexicalIndexOpenPort, LexicalPolicy,
@@ -260,4 +260,3 @@ pub fn make_pin(
 ) -> GenerationPin {
     GenerationPin::new(repo_id, revision_id, manifest_generation)
 }
-

@@ -75,7 +75,7 @@ impl InMemoryEmbeddingStore {
                     bucket.index = Some(HnswIndex::new(vector.len()));
                 }
                 if let Some(index) = bucket.index.as_mut() {
-                    index.insert(upsert.embedding_id.as_str().to_string(), vector)?;
+                    index.insert(upsert.embedding_id.as_str().to_string(), &vector)?;
                 }
             }
             SemanticChannelOp::DeleteEmbedding(delete) => {
@@ -90,10 +90,9 @@ impl InMemoryEmbeddingStore {
     }
 
     fn ensure_bucket(&mut self, key: GenKey) {
-        if !self.rows.contains_key(&key) {
-            let prior = self.rows.insert(key, GenBucket::new());
-            drop(prior);
-        }
+        // entry API guarantees a single map traversal vs contains_key + insert;
+        // we discard the &mut V handle because we only need the side-effect.
+        let _bucket: &mut GenBucket = self.rows.entry(key).or_insert_with(GenBucket::new);
     }
 }
 
@@ -223,19 +222,15 @@ impl SnapshotSemanticSearcher {
             revision_id: self.revision_id.clone(),
             generation: self.generation,
         };
-        let hits = match store.rows.get(&key) {
-            Some(bucket) => match bucket.index.as_ref() {
-                Some(index) => {
-                    if index.dim() != query_vector.len() {
-                        Vec::new()
-                    } else {
-                        index.search(query_vector, limit)
-                    }
+        let hits = store.rows.get(&key).map_or_else(Vec::new, |bucket| {
+            bucket.index.as_ref().map_or_else(Vec::new, |index| {
+                if index.dim() == query_vector.len() {
+                    index.search(query_vector, limit)
+                } else {
+                    Vec::new()
                 }
-                None => Vec::new(),
-            },
-            None => Vec::new(),
-        };
+            })
+        });
         drop(store);
         Ok(hits)
     }

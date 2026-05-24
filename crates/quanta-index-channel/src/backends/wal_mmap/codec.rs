@@ -25,7 +25,7 @@ pub trait OpCodec: Clone + Send + Sync + 'static {
     type Event: Clone + Send + Sync;
 
     /// Encode the op body — does NOT include the outer length prefix or crc.
-    /// Returns body bytes and the op_tag byte.
+    /// Returns body bytes and the `op_tag` byte.
     fn encode_op(op: &Self::Op, out: &mut Vec<u8>) -> Result<u8, ChannelError>;
 
     /// Decode a frame body back into an op.
@@ -60,7 +60,7 @@ impl OpCodec for LexicalCodec {
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_bytes(out, payload)?;
-                Ok(LexicalOpTag::FullBundle as u8)
+                Ok(LexicalOpTag::FullBundle.to_byte())
             }
             LexicalChannelOp::UpsertChunk(UpsertChunk {
                 repo_id,
@@ -72,7 +72,7 @@ impl OpCodec for LexicalCodec {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, chunk_id.as_str())?;
                 write_bytes(out, payload)?;
-                Ok(LexicalOpTag::UpsertChunk as u8)
+                Ok(LexicalOpTag::UpsertChunk.to_byte())
             }
             LexicalChannelOp::DeleteChunk(DeleteChunk {
                 repo_id,
@@ -82,7 +82,7 @@ impl OpCodec for LexicalCodec {
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, chunk_id.as_str())?;
-                Ok(LexicalOpTag::DeleteChunk as u8)
+                Ok(LexicalOpTag::DeleteChunk.to_byte())
             }
             LexicalChannelOp::UpsertSymbol(UpsertSymbol {
                 repo_id,
@@ -94,7 +94,7 @@ impl OpCodec for LexicalCodec {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, symbol_id.as_str())?;
                 write_bytes(out, payload)?;
-                Ok(LexicalOpTag::UpsertSymbol as u8)
+                Ok(LexicalOpTag::UpsertSymbol.to_byte())
             }
             LexicalChannelOp::DeleteSymbol(DeleteSymbol {
                 repo_id,
@@ -104,7 +104,7 @@ impl OpCodec for LexicalCodec {
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, symbol_id.as_str())?;
-                Ok(LexicalOpTag::DeleteSymbol as u8)
+                Ok(LexicalOpTag::DeleteSymbol.to_byte())
             }
             LexicalChannelOp::Seal(LexicalSeal {
                 repo_id,
@@ -112,7 +112,7 @@ impl OpCodec for LexicalCodec {
                 generation,
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
-                Ok(LexicalOpTag::Seal as u8)
+                Ok(LexicalOpTag::Seal.to_byte())
             }
         }
     }
@@ -223,7 +223,7 @@ impl OpCodec for SemanticCodec {
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_bytes(out, payload)?;
-                Ok(SemanticOpTag::FullBundle as u8)
+                Ok(SemanticOpTag::FullBundle.to_byte())
             }
             SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
                 repo_id,
@@ -235,7 +235,7 @@ impl OpCodec for SemanticCodec {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, embedding_id.as_str())?;
                 write_bytes(out, payload)?;
-                Ok(SemanticOpTag::UpsertEmbedding as u8)
+                Ok(SemanticOpTag::UpsertEmbedding.to_byte())
             }
             SemanticChannelOp::DeleteEmbedding(DeleteEmbedding {
                 repo_id,
@@ -245,7 +245,7 @@ impl OpCodec for SemanticCodec {
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, embedding_id.as_str())?;
-                Ok(SemanticOpTag::DeleteEmbedding as u8)
+                Ok(SemanticOpTag::DeleteEmbedding.to_byte())
             }
             SemanticChannelOp::Seal(SemanticSeal {
                 repo_id,
@@ -253,7 +253,7 @@ impl OpCodec for SemanticCodec {
                 generation,
             }) => {
                 write_common(out, repo_id, revision_id, *generation)?;
-                Ok(SemanticOpTag::Seal as u8)
+                Ok(SemanticOpTag::Seal.to_byte())
             }
         }
     }
@@ -337,6 +337,17 @@ enum LexicalOpTag {
 }
 
 impl LexicalOpTag {
+    const fn to_byte(self) -> u8 {
+        match self {
+            Self::FullBundle => 1,
+            Self::UpsertChunk => 2,
+            Self::DeleteChunk => 3,
+            Self::UpsertSymbol => 4,
+            Self::DeleteSymbol => 5,
+            Self::Seal => 6,
+        }
+    }
+
     fn from_u8(value: u8) -> Option<Self> {
         Some(match value {
             1 => Self::FullBundle,
@@ -360,6 +371,15 @@ enum SemanticOpTag {
 }
 
 impl SemanticOpTag {
+    const fn to_byte(self) -> u8 {
+        match self {
+            Self::FullBundle => 11,
+            Self::UpsertEmbedding => 12,
+            Self::DeleteEmbedding => 13,
+            Self::Seal => 16,
+        }
+    }
+
     fn from_u8(value: u8) -> Option<Self> {
         Some(match value {
             11 => Self::FullBundle,

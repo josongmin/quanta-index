@@ -44,7 +44,7 @@ impl<C: OpCodec> WalPublisher<C> {
             .try_lock_exclusive()
             .map_err(|err| ChannelError::State(format!("publisher lock contention: {err}")))?;
 
-        let (active_seg_id, next_seq) = recover_state::<C>(&layout)?;
+        let (active_seg_id, next_seq) = recover_state(&layout)?;
         let writer = SegmentWriter::open_or_create(&layout, active_seg_id)?;
 
         Ok(Self {
@@ -63,6 +63,10 @@ impl<C: OpCodec> WalPublisher<C> {
 impl<C: OpCodec> BundleChannelPublisher for WalPublisher<C> {
     type Op = C::Op;
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "publish() must operate under the mutex for the entire frame-append + seq-bump critical section; tightening the guard would allow torn frame interleaving"
+    )]
     fn publish(&self, op: Self::Op) -> Result<ChannelSeq, ChannelError> {
         let is_seal = C::is_seal(&op);
         let mut body: Vec<u8> = Vec::with_capacity(256);
@@ -105,6 +109,10 @@ impl<C: OpCodec> BundleChannelPublisher for WalPublisher<C> {
         self.publish(op)
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "flush() needs the mutex held across fsync + counter reset to keep the durability point consistent with subsequent publishers"
+    )]
     fn flush(&self) -> Result<(), ChannelError> {
         let mut guard = self
             .inner
@@ -135,7 +143,7 @@ fn rotate_if_needed(guard: &mut PublisherInner) -> Result<(), ChannelError> {
 /// subscriber would later interpret the garbage tail as a frame header and
 /// raise `Corrupted` — turning a recoverable partial write into a permanently
 /// poisoned channel.
-fn recover_state<C: OpCodec>(layout: &SegmentLayout) -> Result<(u64, u64), ChannelError> {
+fn recover_state(layout: &SegmentLayout) -> Result<(u64, u64), ChannelError> {
     let segments = layout.list_segments()?;
     if segments.is_empty() {
         return Ok((0, 1));

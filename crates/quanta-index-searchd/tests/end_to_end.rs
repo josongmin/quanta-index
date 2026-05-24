@@ -84,9 +84,8 @@ fn make_lq(expr: LqExpr) -> LqQuery {
 fn float_vec_to_bytes(vec: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
     let owned: Vec<f32> = vec.to_vec();
     let mut out: Vec<u8> = Vec::new();
-    ciborium::into_writer(&owned, &mut out).map_err(|err| -> Box<dyn Error> {
-        format!("ciborium encode embedding: {err}").into()
-    })?;
+    ciborium::into_writer(&owned, &mut out)
+        .map_err(|err| -> Box<dyn Error> { format!("ciborium encode embedding: {err}").into() })?;
     Ok(out)
 }
 

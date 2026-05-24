@@ -71,7 +71,7 @@ def test_missing_derive_is_flagged(tmp_path: Path):
     )
     findings = MODULE.audit_file(p)
     messages = [v.message for v in findings]
-    assert any("missing a `#[derive(... Error" in m for m in messages)
+    assert any("does not implement `std::error::Error`" in m for m in messages)
 
 
 def test_variant_missing_error_attr_is_flagged(tmp_path: Path):
@@ -116,6 +116,78 @@ def test_non_error_enums_are_ignored(tmp_path: Path):
         """,
     )
     assert MODULE.audit_file(p) == []
+
+
+def test_manual_error_impl_satisfies_requirement(tmp_path: Path):
+    """Repo convention: manual impl Error + impl Display passes (no thiserror derive)."""
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum HandRolledError {
+            One,
+            Two(String),
+        }
+
+        impl core::fmt::Display for HandRolledError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    Self::One => f.write_str("one"),
+                    Self::Two(s) => write!(f, "two: {s}"),
+                }
+            }
+        }
+
+        impl std::error::Error for HandRolledError {}
+        """,
+    )
+    assert MODULE.audit_file(p) == []
+
+
+def test_manual_impl_skips_variant_attr_check(tmp_path: Path):
+    """Manual impl Display covers the Display surface — per-variant #[error] not required."""
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum NoVariantAttrError {
+            BareA,
+            BareB,
+        }
+
+        impl core::fmt::Display for NoVariantAttrError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("x")
+            }
+        }
+
+        impl std::error::Error for NoVariantAttrError {}
+        """,
+    )
+    assert MODULE.audit_file(p) == []
+
+
+def test_missing_display_impl_still_fails(tmp_path: Path):
+    """Manual impl Error WITHOUT impl Display does NOT count — both are required."""
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum HalfManualError {
+            A,
+        }
+
+        impl std::error::Error for HalfManualError {}
+        """,
+    )
+    findings = MODULE.audit_file(p)
+    assert len(findings) == 1
+    assert "does not implement" in findings[0].message
+
+
+def test_wire_dto_allowlist_recognised():
+    """SearchPlaneIpcError is a wire DTO and must be in the allowlist."""
+    assert "SearchPlaneIpcError" in MODULE.WIRE_DTO_ERRORS
 
 
 def test_repo_audit_passes():

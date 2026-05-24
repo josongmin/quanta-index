@@ -1,4 +1,4 @@
-//! Search-plane IPC driving adapter — CBOR codec + AF_UNIX stream server/client.
+//! Search-plane IPC driving adapter — CBOR codec + `AF_UNIX` stream server/client.
 
 #![forbid(unsafe_code)]
 #![deny(unused_must_use)]

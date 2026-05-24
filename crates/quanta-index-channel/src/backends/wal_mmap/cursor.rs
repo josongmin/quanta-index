@@ -41,19 +41,23 @@ impl CursorFile {
                 if magic != CURSOR_MAGIC {
                     return Err(ChannelError::State("cursor magic mismatch".to_string()));
                 }
-                let version_arr: [u8; 4] = buf
+                let version_slice = buf
                     .get(4..8)
-                    .and_then(|s| s.try_into().ok())
                     .ok_or_else(|| ChannelError::State("cursor version slice".to_string()))?;
+                let version_arr: [u8; 4] = version_slice
+                    .try_into()
+                    .map_err(|_err| ChannelError::State("cursor version slice".to_string()))?;
                 if u32::from_le_bytes(version_arr) != CURSOR_VERSION {
                     return Err(ChannelError::State(
                         "cursor version unsupported".to_string(),
                     ));
                 }
-                let seq_arr: [u8; 8] = buf
+                let seq_slice = buf
                     .get(8..16)
-                    .and_then(|s| s.try_into().ok())
                     .ok_or_else(|| ChannelError::State("cursor seq slice".to_string()))?;
+                let seq_arr: [u8; 8] = seq_slice
+                    .try_into()
+                    .map_err(|_err| ChannelError::State("cursor seq slice".to_string()))?;
                 ChannelSeq::new(u64::from_le_bytes(seq_arr))
             }
             Err(err) if err.kind() == ErrorKind::NotFound => ChannelSeq::ZERO,
@@ -62,13 +66,18 @@ impl CursorFile {
         Ok(Self { path, value })
     }
 
+    #[must_use]
     pub fn value(&self) -> ChannelSeq {
         self.value
     }
 
     pub fn store(&mut self, seq: ChannelSeq) -> Result<(), ChannelError> {
         let mut tmp_path = self.path.clone();
-        let _ = tmp_path.set_extension("cursor.tmp");
+        if !tmp_path.set_extension("cursor.tmp") {
+            return Err(ChannelError::State(
+                "cursor path has no file_name; cannot stage temp file".to_string(),
+            ));
+        }
         let mut buf = [0u8; CURSOR_SIZE];
         if let Some(slot) = buf.get_mut(0..4) {
             slot.copy_from_slice(&CURSOR_MAGIC);

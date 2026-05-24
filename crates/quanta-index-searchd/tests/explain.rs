@@ -141,9 +141,11 @@ fn explain_reports_present_candidate() -> TestResult {
 
     let lex_resp = send_request(&socket, &lex_query("quick", pin.clone()))?;
     let candidate = match lex_resp.payload {
-        SearchPlaneIpcResponse::Lexical(lex) => lex.results.into_iter().next().ok_or_else(|| {
-            Box::<dyn Error>::from("lexical query returned zero candidates")
-        })?,
+        SearchPlaneIpcResponse::Lexical(lex) => lex
+            .results
+            .into_iter()
+            .next()
+            .ok_or_else(|| Box::<dyn Error>::from("lexical query returned zero candidates"))?,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -177,7 +179,11 @@ fn explain_reports_present_candidate() -> TestResult {
     if !explanation.summary.contains("explain-c1") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected candidate id in summary, got: {}", explanation.summary).into());
+        return Err(format!(
+            "expected candidate id in summary, got: {}",
+            explanation.summary
+        )
+        .into());
     }
 
     shutdown.store(true, Ordering::Release);

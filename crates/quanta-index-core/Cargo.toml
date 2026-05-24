@@ -16,9 +16,4 @@ quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 thiserror.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 proptest.workspace = true
-
-[[bench]]
-name = "policy_bench"
-harness = false

@@ -37,9 +37,11 @@ pub trait LexicalIndexOpenPort: Send + Sync {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
 }
 
-/// Searcher handle returned by [`LexicalIndexOpenPort::open`]. One per opened
-/// generation. Searcher is non-Send for performance (some vendor handles are
-/// thread-local); the lexical module is responsible for cache management.
+/// Searcher handle returned by [`LexicalIndexOpenPort::open`].
+///
+/// One per opened generation. Searcher is non-Send for performance (some
+/// vendor handles are thread-local); the lexical module is responsible for
+/// cache management.
 pub trait LexicalSearcher: Send + Sync {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
 }
