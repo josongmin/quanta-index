@@ -102,12 +102,13 @@ mod tests {
     use crate::tokenizer::{Token, TokenKind};
 
     fn t(surface: &str, lowered: &str) -> Token {
+        let end = u32::try_from(surface.len()).map_or(u32::MAX, |v| v);
         Token {
             surface: surface.into(),
             lowered: lowered.into(),
             kind: TokenKind::Word,
             byte_start: 0,
-            byte_end: surface.len().min(u32::MAX as usize) as u32,
+            byte_end: end,
         }
     }
 

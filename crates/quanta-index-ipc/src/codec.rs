@@ -136,10 +136,7 @@ where
 
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
 /// retrying on `Interrupted`.
-fn read_exact_or_truncated<R: Read>(
-    reader: &mut R,
-    buf: &mut [u8],
-) -> Result<(), IpcError> {
+fn read_exact_or_truncated<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), IpcError> {
     let mut filled = 0usize;
     while filled < buf.len() {
         let Some(slot) = buf.get_mut(filled..) else {

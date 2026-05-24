@@ -145,8 +145,12 @@ fn handle_connection<D: QueryDispatcher + ?Sized>(mut stream: UnixStream, dispat
     }
     // Apply a bounded read/write timeout so a stalled peer cannot pin the
     // dispatcher thread indefinitely.
-    if stream.set_read_timeout(Some(CONNECTION_IO_TIMEOUT)).is_err()
-        || stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)).is_err()
+    if stream
+        .set_read_timeout(Some(CONNECTION_IO_TIMEOUT))
+        .is_err()
+        || stream
+            .set_write_timeout(Some(CONNECTION_IO_TIMEOUT))
+            .is_err()
     {
         return;
     }

@@ -11,6 +11,9 @@
 //! * Channel path (`channel`) — typed transport ops produced by producer and consumed
 //!   by `searchd` modules.
 
+#[macro_use]
+mod macros;
+
 pub mod channel;
 pub mod ids;
 pub mod ipc;

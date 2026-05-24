@@ -615,10 +615,7 @@ fn corrupt_segment_magic_is_fail_closed() -> TestResult {
     }
     // Flip the segment magic.
     let segment = lexical_segment_file(dir.path());
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&segment)?;
+    let mut file = OpenOptions::new().read(true).write(true).open(&segment)?;
     let _pos = file.seek(SeekFrom::Start(0))?;
     file.write_all(b"XXXX")?;
     file.sync_data()?;
@@ -637,8 +634,7 @@ fn corrupt_segment_magic_is_fail_closed() -> TestResult {
         Err(other) => Err(boxed(format!("expected State magic error, got {other:?}"))),
         Ok(mut sub) => match sub.next_event() {
             Err(ChannelError::State(msg)) => {
-                if !msg.to_lowercase().contains("magic")
-                    && !msg.to_lowercase().contains("segment")
+                if !msg.to_lowercase().contains("magic") && !msg.to_lowercase().contains("segment")
                 {
                     return Err(boxed(format!("expected magic / segment error, got: {msg}")));
                 }

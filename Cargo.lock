@@ -811,6 +811,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-lq-scorer"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "proptest",
+ "serde",
+]
+
+[[package]]
+name = "quanta-index-lq-text-norm"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "quanta-index-repomap"
 version = "0.1.0"
 dependencies = [

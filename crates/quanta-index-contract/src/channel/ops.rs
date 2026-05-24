@@ -2,8 +2,11 @@
 //!
 //! Each enum variant carries a struct (rather than tuple) so additional optional
 //! fields can be added later without source breaking changes for existing producer
-//! call sites. Op payloads carry opaque CBOR-encoded bodies — the schema is owned
-//! by the lexical / semantic modules, not by transport.
+//! call sites. Op payloads are opaque `Vec<u8>` blobs at the transport layer;
+//! the wire format is owned by the lexical / semantic modules. See the
+//! per-variant doc-comments for what each payload actually carries — formats
+//! vary across variants (raw UTF-8, CBOR, opaque bookkeeping) and are NOT all
+//! CBOR despite the earlier blanket claim that lived on this module.
 
 use crate::{ManifestGeneration, RepoId, RevisionId};
 
@@ -14,7 +17,8 @@ pub struct LexicalFullBundle {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    /// CBOR-encoded `LexicalBundlePayload` (schema owned by the lexical module).
+    /// Opaque manifest blob reserved for producer-side bookkeeping; not
+    /// consumed by the reference adapters.
     pub payload: Vec<u8>,
 }
 
@@ -24,7 +28,9 @@ pub struct UpsertChunk {
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub chunk_id: ChunkId,
-    /// CBOR-encoded chunk record (text + metadata) owned by the lexical module.
+    /// Raw UTF-8 chunk text bytes. The reference lexical adapter decodes via
+    /// `String::from_utf8_lossy`; producers must emit valid UTF-8 to get
+    /// search-correct results.
     pub payload: Vec<u8>,
 }
 
@@ -42,6 +48,8 @@ pub struct UpsertSymbol {
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub symbol_id: SymbolId,
+    /// Opaque payload reserved for future symbol indexing (not consumed by
+    /// the reference adapter today).
     pub payload: Vec<u8>,
 }
 
@@ -118,6 +126,8 @@ pub struct SemanticFullBundle {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    /// Opaque manifest blob reserved for producer-side bookkeeping; not
+    /// consumed by the reference adapters.
     pub payload: Vec<u8>,
 }
 
@@ -127,6 +137,8 @@ pub struct UpsertEmbedding {
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
     pub embedding_id: EmbeddingId,
+    /// CBOR-encoded `Vec<f32>` embedding vector. The reference semantic
+    /// adapter decodes via `ciborium`.
     pub payload: Vec<u8>,
 }
 

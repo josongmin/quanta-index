@@ -13,7 +13,7 @@
 //! - Every scoring failure returns [`ScorerError`] carrying a closed
 //!   [`ScorerErrorCode`]; no silent failure / no silent fallback.
 //! - Same `(generation, query, doc set)` produces byte-identical scores
-//!   across runs and processes (proptest enforces).
+//!   across runs and processes.
 //! - Final score envelope is `f32 ∈ [0.0, 1.0]` via the closed-form
 //!   normalization documented on [`scorer::Bm25Scorer::score_doc`].
 //! - Per-generation IDF tables persist via canonical CBOR through

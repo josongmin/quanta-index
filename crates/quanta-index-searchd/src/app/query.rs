@@ -9,17 +9,14 @@ use quanta_index_contract::{
     RepoId, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId, SearchExplanation,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest,
     SearchPlaneHybridQueryResponse, SearchPlaneIpcError, SearchPlaneIpcRequest,
-    SearchPlaneIpcResponse,
-    SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
+    SearchPlaneIpcResponse, SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
     SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
 };
 use quanta_index_core::{
-    CoreError, HybridOrchestratorPolicy, LexicalIndexOpenPort, LexicalPolicy, RepoMapPolicy,
-    SemanticIndexOpenPort, SemanticPolicy,
+    CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
+    LexicalPolicy, LexicalQueryPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,
 };
 use quanta_index_ipc::QueryDispatcher;
-use quanta_index_lexical::LexicalAdapter;
-use quanta_index_semantic::SemanticAdapter;
 
 use crate::runtime::Ledger;
 
@@ -30,21 +27,21 @@ const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
 
 pub struct SearchPlaneDispatcher {
-    lex_adapter: Arc<LexicalAdapter>,
-    sem_adapter: Arc<SemanticAdapter>,
+    lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+    sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
 }
 
 impl SearchPlaneDispatcher {
     #[must_use]
     pub fn new(
-        lex_adapter: Arc<LexicalAdapter>,
-        sem_adapter: Arc<SemanticAdapter>,
+        lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+        sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
         Self {
-            lex_adapter,
-            sem_adapter,
+            lex_opener,
+            sem_opener,
             ledger,
         }
     }
@@ -60,7 +57,7 @@ impl SearchPlaneDispatcher {
         let materialized = self.snapshot_lex_seal()?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
-            self.lex_adapter
+            self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let results = searcher.search(&request.query, default_top_k())?;
         Ok(SearchPlaneLexicalQueryResponse {
@@ -84,7 +81,7 @@ impl SearchPlaneDispatcher {
         // which is sufficient for a deterministic integration test.
         let query_vector = encode_query_text_as_vector(&request.query_text);
         let searcher =
-            self.sem_adapter
+            self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let results = searcher.search(&query_vector, request.top_k)?;
         Ok(SearchPlaneSemanticQueryResponse {
@@ -109,10 +106,10 @@ impl SearchPlaneDispatcher {
         )?;
 
         let lex_searcher =
-            self.lex_adapter
+            self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let sem_searcher =
-            self.sem_adapter
+            self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let lex_results = lex_searcher.search(&request.lexical_query, request.top_k)?;
         let query_vector = encode_query_text_as_vector(&request.semantic_query_text);
@@ -146,7 +143,7 @@ impl SearchPlaneDispatcher {
         let materialized = self.snapshot_lex_seal()?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
-            self.lex_adapter
+            self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let probe_text = if request.candidate.snippet.is_empty() {
             request.candidate.candidate_id.clone()
@@ -190,12 +187,11 @@ impl SearchPlaneDispatcher {
         &self,
         request: RepoMapQueryRequestV1,
     ) -> Result<RepoMapQueryResponseV1, CoreError> {
-        RepoMapPolicy::validate_query(&request)?;
         Err(CoreError::NotImplemented(format!(
             "repo-map query plane not wired yet (repo={}, revision={}, generation={})",
-            request.generation.repo_id.as_str(),
-            request.generation.revision_id.as_str(),
-            request.generation.manifest_generation.get()
+            request.repo_id.as_str(),
+            request.revision_id.as_str(),
+            request.manifest_generation.get()
         )))
     }
 
@@ -216,18 +212,54 @@ impl SearchPlaneDispatcher {
     }
 }
 
+impl LexicalQueryPort for SearchPlaneDispatcher {
+    fn lexical_query(
+        &self,
+        request: SearchPlaneLexicalQueryRequest,
+    ) -> Result<SearchPlaneLexicalQueryResponse, CoreError> {
+        self.lexical(request)
+    }
+}
+
+impl SemanticQueryPort for SearchPlaneDispatcher {
+    fn semantic_query(
+        &self,
+        request: SearchPlaneSemanticQueryRequest,
+    ) -> Result<SearchPlaneSemanticQueryResponse, CoreError> {
+        self.semantic(request)
+    }
+}
+
+impl HybridQueryPort for SearchPlaneDispatcher {
+    fn hybrid_query(
+        &self,
+        request: SearchPlaneHybridQueryRequest,
+    ) -> Result<SearchPlaneHybridQueryResponse, CoreError> {
+        self.hybrid(request)
+    }
+}
+
+impl ExplainQueryPort for SearchPlaneDispatcher {
+    fn explain_query(
+        &self,
+        request: SearchPlaneExplainQueryRequest,
+    ) -> Result<SearchPlaneExplainQueryResponse, CoreError> {
+        self.explain(request)
+    }
+}
+
 impl QueryDispatcher for SearchPlaneDispatcher {
     fn dispatch(&self, request: SearchPlaneIpcRequest) -> SearchPlaneIpcResponse {
         match request {
-            SearchPlaneIpcRequest::Lexical(req) => match self.lexical(req) {
+            SearchPlaneIpcRequest::Lexical(req) => match self.lexical_query(req) {
                 Ok(resp) => SearchPlaneIpcResponse::Lexical(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },
-            SearchPlaneIpcRequest::Semantic(req) => match self.semantic(req) {
+            SearchPlaneIpcRequest::Semantic(req) => match self.semantic_query(req) {
                 Ok(resp) => SearchPlaneIpcResponse::Semantic(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },
-            SearchPlaneIpcRequest::Hybrid(req) => match self.hybrid(req) {
+            SearchPlaneIpcRequest::Hybrid(req) => match self.hybrid_query(req) {
                 Ok(resp) => SearchPlaneIpcResponse::Hybrid(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },
@@ -235,7 +267,7 @@ impl QueryDispatcher for SearchPlaneDispatcher {
                 Ok(resp) => SearchPlaneIpcResponse::RepoMapQuery(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },
-            SearchPlaneIpcRequest::Explain(req) => match self.explain(req) {
+            SearchPlaneIpcRequest::Explain(req) => match self.explain_query(req) {
                 Ok(resp) => SearchPlaneIpcResponse::Explain(resp),
                 Err(err) => SearchPlaneIpcResponse::Error(core_error_to_ipc(err)),
             },

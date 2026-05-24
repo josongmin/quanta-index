@@ -7,11 +7,10 @@ use serde::{
 };
 
 use crate::{
-    RepoMapQueryRequestV1, RepoMapQueryResponseV1,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest,
-    SearchPlaneHybridQueryResponse, SearchPlaneLexicalQueryRequest,
-    SearchPlaneLexicalQueryResponse, SearchPlaneSemanticQueryRequest,
-    SearchPlaneSemanticQueryResponse,
+    RepoMapQueryRequestV1, RepoMapQueryResponseV1, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
+    SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
+    SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -314,8 +313,14 @@ pub enum SearchPlaneIpcResponse {
 }
 
 impl SearchPlaneIpcResponse {
-    const VARIANTS: &'static [&'static str] =
-        &["Lexical", "Semantic", "Hybrid", "RepoMapQuery", "Explain", "Error"];
+    const VARIANTS: &'static [&'static str] = &[
+        "Lexical",
+        "Semantic",
+        "Hybrid",
+        "RepoMapQuery",
+        "Explain",
+        "Error",
+    ];
 
     const fn kind(&self) -> &'static str {
         match self {

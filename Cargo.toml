@@ -4,11 +4,17 @@ members = [
     "crates/quanta-index-core",
     "crates/quanta-index-channel",
     "crates/quanta-index-lexical",
+    "crates/quanta-index-repomap",
     "crates/quanta-index-semantic",
     "crates/quanta-index-ipc",
     "crates/quanta-index-searchd",
+    "crates/quanta-index-lq-text-norm",
+    "crates/quanta-index-lq-scorer",
+    "crates/quanta-index-lq-norm",
+    "crates/quanta-index-conformance",
 ]
 resolver = "2"
+
 
 [workspace.package]
 edition = "2024"

@@ -4,7 +4,7 @@
 //!
 //! - `Literal` — whitespace-delimited slices emit as a single [`TokenKind::Word`]
 //!   each. No identifier split. Mirrors `dsl.md` §4 literal-mode pin.
-//! - `Keyword` / `Standard` — identifier-aware split on camelCase, snake_case,
+//! - `Keyword` / `Standard` — identifier-aware split on camelCase, `snake_case`,
 //!   kebab-case, and digit boundaries. Sub-parts emit as
 //!   [`TokenKind::IdentifierPart`] tokens; the un-split surface stays
 //!   addressable via the original token's `byte_start..byte_end`.
@@ -13,7 +13,7 @@
 //!   implementations live in LEX-04 (regex) and STR-01 (structural) per
 //!   the LEX-00 ticket §3 deferral pin.
 //!
-//! NFC_DEFERRED: Unicode NFC normalization at the input boundary is a
+//! `NFC_DEFERRED`: Unicode NFC normalization at the input boundary is a
 //! follow-up. The tokenizer is byte-indexed over the raw `&str` today.
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
@@ -278,26 +278,25 @@ fn tokenize_identifier_aware(input: &str) -> Result<Vec<Token>, LexNormError> {
             i = i.saturating_add(1);
             continue;
         }
-        if is_word_byte(*b) {
-            let start = i;
+        let start = i;
+        let is_word = is_word_byte(*b);
+        if is_word {
             while let Some(b2) = bytes.get(i) {
                 if !is_word_byte(*b2) {
                     break;
                 }
                 i = i.saturating_add(1);
             }
-            let end = i;
-            let slice = input
-                .get(start..end)
-                .ok_or_else(|| invalid_slice_err(start))?;
+        } else {
+            i = i.saturating_add(1);
+        }
+        let end = i;
+        let slice = input
+            .get(start..end)
+            .ok_or_else(|| invalid_slice_err(start))?;
+        if is_word {
             push_word_and_parts(&mut out, slice, start, end);
         } else {
-            let start = i;
-            i = i.saturating_add(1);
-            let end = i;
-            let slice = input
-                .get(start..end)
-                .ok_or_else(|| invalid_slice_err(start))?;
             out.push(Token {
                 surface: slice.to_owned().into_boxed_str(),
                 lowered: slice.to_ascii_lowercase().into_boxed_str(),
@@ -354,7 +353,7 @@ fn push_word_and_parts(out: &mut Vec<Token>, slice: &str, start: usize, end: usi
     }
 }
 
-/// Split an identifier into camelCase / snake_case / kebab-case / digit
+/// Split an identifier into camelCase / `snake_case` / kebab-case / digit
 /// boundary parts.
 ///
 /// Returns the slice as-is when no boundary fires (so the caller can detect
@@ -389,31 +388,23 @@ pub(crate) fn split_identifier(s: &str) -> Vec<&str> {
             continue;
         }
         let is_upper = b.is_ascii_uppercase();
-        let is_lower = b.is_ascii_lowercase();
         let is_digit = b.is_ascii_digit();
-        let prev = if i == 0 { None } else { bytes.get(i.saturating_sub(1)) };
-        let next = bytes.get(i.saturating_add(1));
-        let cut_here = match prev {
-            None => false,
-            Some(pb) => {
-                let prev_lower = pb.is_ascii_lowercase();
-                let prev_upper = pb.is_ascii_uppercase();
-                let prev_digit = pb.is_ascii_digit();
-                if prev_lower && is_upper {
-                    true
-                } else if prev_upper
-                    && is_upper
-                    && matches!(next, Some(nb) if nb.is_ascii_lowercase())
-                {
-                    true
-                } else if (prev_digit && !is_digit) || (!prev_digit && is_digit) {
-                    true
-                } else {
-                    let _ = (is_lower, prev_digit);
-                    false
-                }
-            }
+        let prev = if i == 0 {
+            None
+        } else {
+            bytes.get(i.saturating_sub(1))
         };
+        let next = bytes.get(i.saturating_add(1));
+        let cut_here = prev.is_some_and(|pb| {
+            let prev_lower = pb.is_ascii_lowercase();
+            let prev_upper = pb.is_ascii_uppercase();
+            let prev_digit = pb.is_ascii_digit();
+            let lower_to_upper = prev_lower && is_upper;
+            let acronym_break =
+                prev_upper && is_upper && matches!(next, Some(nb) if nb.is_ascii_lowercase());
+            let digit_boundary = (prev_digit && !is_digit) || (!prev_digit && is_digit);
+            lower_to_upper || acronym_break || digit_boundary
+        });
         if cut_here
             && start < i
             && let Some(p) = s.get(start..i)
@@ -447,37 +438,59 @@ fn invalid_slice_err(at: usize) -> LexNormError {
     )
 }
 
-#[expect(
-    clippy::as_conversions,
-    reason = "clamped downcast: any byte length above u32::MAX is already rejected by MAX_CHUNK_BYTES (64 KiB << u32::MAX); the conversion is total."
-)]
-const fn u32_from_usize_clamped(v: usize) -> u32 {
-    if v > u32::MAX as usize { u32::MAX } else { v as u32 }
+fn u32_from_usize_clamped(v: usize) -> u32 {
+    u32::try_from(v).map_or(u32::MAX, |n| n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_CHUNK_BYTES, TokenKind, split_identifier, tokenize_literal, tokenize_text,
+        MAX_CHUNK_BYTES, Token, TokenKind, split_identifier, tokenize_literal, tokenize_text,
     };
-    use crate::errors::LexNormErrorCode;
+    use crate::errors::{LexNormError, LexNormErrorCode};
     use crate::lang::LangId;
     use crate::patterntype::PatternType;
 
+    fn must_ok(label: &str, r: Result<Vec<Token>, LexNormError>) -> Vec<Token> {
+        match r {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{label}: expected Ok, got Err({e})");
+                Vec::new()
+            }
+        }
+    }
+
+    fn must_err(label: &str, r: Result<Vec<Token>, LexNormError>) -> LexNormErrorCode {
+        match r {
+            Ok(v) => {
+                assert!(false, "{label}: expected Err, got {} tokens", v.len());
+                LexNormErrorCode::EmptyTokenStream
+            }
+            Err(e) => e.code,
+        }
+    }
+
     #[test]
     fn empty_input_yields_empty_token_stream() {
-        let toks = tokenize_text("", LangId::Rust, PatternType::Standard);
-        assert!(toks.is_ok());
-        let v = toks.unwrap_or_default();
+        let v = must_ok(
+            "empty",
+            tokenize_text("", LangId::Rust, PatternType::Standard),
+        );
         assert!(v.is_empty());
     }
 
     #[test]
     fn literal_does_not_split_camel_case() {
-        let toks = tokenize_text("getUserName", LangId::Rust, PatternType::Literal)
-            .unwrap_or_default();
+        let toks = must_ok(
+            "literal-camel",
+            tokenize_text("getUserName", LangId::Rust, PatternType::Literal),
+        );
         assert_eq!(toks.len(), 1);
-        let t = toks.first().expect("one token");
+        let Some(t) = toks.first() else {
+            assert!(false, "no token");
+            return;
+        };
         assert_eq!(&*t.surface, "getUserName");
         assert_eq!(&*t.lowered, "getusername");
         assert_eq!(t.kind, TokenKind::Word);
@@ -485,7 +498,13 @@ mod tests {
 
     #[test]
     fn literal_splits_only_on_whitespace() {
-        let toks = tokenize_literal("foo bar  baz").unwrap_or_default();
+        let toks = match tokenize_literal("foo bar  baz") {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
         assert_eq!(toks.len(), 3);
         let surfaces: Vec<&str> = toks.iter().map(|t| &*t.surface).collect();
         assert_eq!(surfaces, vec!["foo", "bar", "baz"]);
@@ -493,8 +512,10 @@ mod tests {
 
     #[test]
     fn standard_splits_camel_case() {
-        let toks = tokenize_text("getUserName", LangId::Rust, PatternType::Standard)
-            .unwrap_or_default();
+        let toks = must_ok(
+            "standard-camel",
+            tokenize_text("getUserName", LangId::Rust, PatternType::Standard),
+        );
         let surfaces: Vec<&str> = toks.iter().map(|t| &*t.surface).collect();
         assert!(surfaces.contains(&"getUserName"));
         assert!(surfaces.contains(&"get"));
@@ -504,8 +525,10 @@ mod tests {
 
     #[test]
     fn standard_splits_snake_case() {
-        let toks = tokenize_text("parse_query_v2", LangId::Rust, PatternType::Standard)
-            .unwrap_or_default();
+        let toks = must_ok(
+            "standard-snake",
+            tokenize_text("parse_query_v2", LangId::Rust, PatternType::Standard),
+        );
         let surfaces: Vec<&str> = toks.iter().map(|t| &*t.surface).collect();
         assert!(surfaces.contains(&"parse_query_v2"));
         assert!(surfaces.contains(&"parse"));
@@ -534,53 +557,61 @@ mod tests {
 
     #[test]
     fn regexp_pattern_type_returns_typed_error() {
-        let err = tokenize_text("foo", LangId::Rust, PatternType::Regexp);
-        match err {
-            Err(e) => assert_eq!(e.code, LexNormErrorCode::UnknownPatternType),
-            Ok(_) => assert!(false, "regexp should defer to LEX-04"),
-        }
+        let code = must_err(
+            "regexp",
+            tokenize_text("foo", LangId::Rust, PatternType::Regexp),
+        );
+        assert_eq!(code, LexNormErrorCode::UnknownPatternType);
     }
 
     #[test]
     fn structural_pattern_type_returns_typed_error() {
-        let err = tokenize_text("foo", LangId::Rust, PatternType::Structural);
-        match err {
-            Err(e) => assert_eq!(e.code, LexNormErrorCode::UnknownPatternType),
-            Ok(_) => assert!(false, "structural should defer to STR-01"),
-        }
+        let code = must_err(
+            "structural",
+            tokenize_text("foo", LangId::Rust, PatternType::Structural),
+        );
+        assert_eq!(code, LexNormErrorCode::UnknownPatternType);
     }
 
     #[test]
     fn unknown_lang_returns_typed_error() {
-        let err = tokenize_text("foo", LangId::Unknown, PatternType::Standard);
-        match err {
-            Err(e) => assert_eq!(e.code, LexNormErrorCode::NormalizerUnknownLang),
-            Ok(_) => assert!(false, "unknown lang must fail closed"),
-        }
+        let code = must_err(
+            "unknown-lang",
+            tokenize_text("foo", LangId::Unknown, PatternType::Standard),
+        );
+        assert_eq!(code, LexNormErrorCode::NormalizerUnknownLang);
     }
 
     #[test]
     fn oversized_chunk_returns_typed_error() {
         let big = "a".repeat(MAX_CHUNK_BYTES.saturating_add(1));
-        let err = tokenize_text(&big, LangId::Rust, PatternType::Standard);
-        match err {
-            Err(e) => assert_eq!(e.code, LexNormErrorCode::OversizedChunk),
-            Ok(_) => assert!(false, "oversized must fail closed"),
-        }
+        let code = must_err(
+            "oversized",
+            tokenize_text(&big, LangId::Rust, PatternType::Standard),
+        );
+        assert_eq!(code, LexNormErrorCode::OversizedChunk);
     }
 
     #[test]
     fn byte_offsets_index_into_input() {
-        let toks = tokenize_text("hello world", LangId::Rust, PatternType::Standard)
-            .unwrap_or_default();
-        let first = toks.first().expect("hello");
+        let toks = must_ok(
+            "hello-world",
+            tokenize_text("hello world", LangId::Rust, PatternType::Standard),
+        );
+        let Some(first) = toks.first() else {
+            assert!(false, "no token");
+            return;
+        };
         assert_eq!(first.byte_start, 0);
         assert_eq!(first.byte_end, 5);
     }
 
     #[test]
     fn single_identifier_emits_no_extra_parts() {
-        let toks = tokenize_text("foo", LangId::Rust, PatternType::Standard).unwrap_or_default();
+        let toks = must_ok(
+            "single-foo",
+            tokenize_text("foo", LangId::Rust, PatternType::Standard),
+        );
         assert_eq!(toks.len(), 1);
     }
 }

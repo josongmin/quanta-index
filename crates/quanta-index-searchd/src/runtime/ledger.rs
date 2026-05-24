@@ -1,15 +1,52 @@
 use quanta_index_contract::{ChannelSeq, ManifestGeneration};
 
-/// In-memory ledger consumed by the dispatcher (write) and the query path
-/// (read, eventually). Records the highest sealed generation observed per
-/// track and the last seq emitted by each subscriber, used to validate
+/// Per-track ledger state. Records the highest sealed generation observed on
+/// the track and the last seq emitted by its subscriber, used to validate
 /// monotonicity across dispatcher invocations.
 #[derive(Debug, Default)]
+pub struct TrackLedger {
+    sealed: Option<ManifestGeneration>,
+    last_seen: ChannelSeq,
+}
+
+impl TrackLedger {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn sealed(&self) -> Option<ManifestGeneration> {
+        self.sealed
+    }
+
+    #[must_use]
+    pub fn last_seen(&self) -> ChannelSeq {
+        self.last_seen
+    }
+
+    /// Monotonically record a sealed generation. A lower or equal generation
+    /// is ignored so that out-of-order observations cannot rewind the seal.
+    pub fn record_seal(&mut self, generation: ManifestGeneration) {
+        let new_value = match self.sealed {
+            Some(current) if current.get() >= generation.get() => current,
+            _ => generation,
+        };
+        self.sealed = Some(new_value);
+    }
+
+    pub fn set_last_seen(&mut self, seq: ChannelSeq) {
+        self.last_seen = seq;
+    }
+}
+
+/// In-memory ledger consumed by the dispatcher (write) and the query path
+/// (read). Internally a strongly-typed pair of [`TrackLedger`] values, one
+/// per indexing track.
+#[derive(Debug, Default)]
 pub struct Ledger {
-    lexical_sealed: Option<ManifestGeneration>,
-    semantic_sealed: Option<ManifestGeneration>,
-    lexical_last_seen: ChannelSeq,
-    semantic_last_seen: ChannelSeq,
+    lexical: TrackLedger,
+    semantic: TrackLedger,
 }
 
 impl Ledger {
@@ -18,47 +55,59 @@ impl Ledger {
         Self::default()
     }
 
+    #[must_use]
+    pub fn lexical(&self) -> &TrackLedger {
+        &self.lexical
+    }
+
+    #[must_use]
+    pub fn semantic(&self) -> &TrackLedger {
+        &self.semantic
+    }
+
+    pub fn lexical_mut(&mut self) -> &mut TrackLedger {
+        &mut self.lexical
+    }
+
+    pub fn semantic_mut(&mut self) -> &mut TrackLedger {
+        &mut self.semantic
+    }
+
+    // --- Thin convenience wrappers preserving the historical API. ---
+
     pub fn lexical_seal(&mut self, generation: ManifestGeneration) {
-        let new_value = match self.lexical_sealed {
-            Some(current) if current.get() >= generation.get() => current,
-            _ => generation,
-        };
-        self.lexical_sealed = Some(new_value);
+        self.lexical.record_seal(generation);
     }
 
     pub fn semantic_seal(&mut self, generation: ManifestGeneration) {
-        let new_value = match self.semantic_sealed {
-            Some(current) if current.get() >= generation.get() => current,
-            _ => generation,
-        };
-        self.semantic_sealed = Some(new_value);
+        self.semantic.record_seal(generation);
     }
 
     #[must_use]
     pub fn lexical_sealed(&self) -> Option<ManifestGeneration> {
-        self.lexical_sealed
+        self.lexical.sealed()
     }
 
     #[must_use]
     pub fn semantic_sealed(&self) -> Option<ManifestGeneration> {
-        self.semantic_sealed
+        self.semantic.sealed()
     }
 
     #[must_use]
     pub fn lexical_last_seen(&self) -> ChannelSeq {
-        self.lexical_last_seen
+        self.lexical.last_seen()
     }
 
     #[must_use]
     pub fn semantic_last_seen(&self) -> ChannelSeq {
-        self.semantic_last_seen
+        self.semantic.last_seen()
     }
 
     pub fn set_lexical_last_seen(&mut self, seq: ChannelSeq) {
-        self.lexical_last_seen = seq;
+        self.lexical.set_last_seen(seq);
     }
 
     pub fn set_semantic_last_seen(&mut self, seq: ChannelSeq) {
-        self.semantic_last_seen = seq;
+        self.semantic.set_last_seen(seq);
     }
 }

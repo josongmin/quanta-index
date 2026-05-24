@@ -40,15 +40,13 @@ fn joint_readiness_both_ahead_is_ok() -> TestResult {
 
 #[test]
 fn joint_readiness_lex_behind_is_not_ready() {
-    let result =
-        HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(4)), Some(g(5)));
+    let result = HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(4)), Some(g(5)));
     assert!(matches!(result, Err(CoreError::NotReady(_))));
 }
 
 #[test]
 fn joint_readiness_sem_behind_is_not_ready() {
-    let result =
-        HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(5)), Some(g(4)));
+    let result = HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(5)), Some(g(4)));
     assert!(matches!(result, Err(CoreError::NotReady(_))));
 }
 

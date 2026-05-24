@@ -33,11 +33,7 @@ fn require<T>(opt: Option<T>, what: &str) -> Result<T, Box<dyn std::error::Error
     opt.ok_or_else(|| format!("expected {what}, got None").into())
 }
 
-fn require_eq<T: PartialEq + std::fmt::Debug>(
-    actual: &T,
-    expected: &T,
-    what: &str,
-) -> TestRes {
+fn require_eq<T: PartialEq + std::fmt::Debug>(actual: &T, expected: &T, what: &str) -> TestRes {
     if actual == expected {
         Ok(())
     } else {
@@ -81,12 +77,18 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
     drop(publisher);
 
     let mut subscriber = open_lexical_subscriber(dir.path())?;
-    require_eq(&subscriber.cursor(), &ChannelSeq::ZERO, "fresh subscriber cursor")?;
+    require_eq(
+        &subscriber.cursor(),
+        &ChannelSeq::ZERO,
+        "fresh subscriber cursor",
+    )?;
 
     let evt1 = require(subscriber.next_event()?, "evt1")?;
     require_eq(&evt1.seq.get(), &1, "evt1.seq")?;
     match evt1.op {
-        LexicalChannelOp::FullBundle(b) => require_eq(&b.payload, &b"manifest-bytes".to_vec(), "evt1 payload")?,
+        LexicalChannelOp::FullBundle(b) => {
+            require_eq(&b.payload, &b"manifest-bytes".to_vec(), "evt1 payload")?
+        }
         LexicalChannelOp::UpsertChunk(_)
         | LexicalChannelOp::DeleteChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
@@ -100,7 +102,11 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
     require_eq(&evt2.seq.get(), &2, "evt2.seq")?;
     match evt2.op {
         LexicalChannelOp::UpsertChunk(u) => {
-            require_eq(&u.chunk_id.as_str().to_owned(), &"chunk-a".to_owned(), "evt2 chunk_id")?;
+            require_eq(
+                &u.chunk_id.as_str().to_owned(),
+                &"chunk-a".to_owned(),
+                "evt2 chunk_id",
+            )?;
             require_eq(&u.payload, &b"chunk-text".to_vec(), "evt2 payload")?;
         }
         LexicalChannelOp::FullBundle(_)
@@ -116,7 +122,11 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
     require_eq(&evt3.seq.get(), &3, "evt3.seq")?;
     match evt3.op {
         LexicalChannelOp::DeleteChunk(d) => {
-            require_eq(&d.chunk_id.as_str().to_owned(), &"chunk-b".to_owned(), "evt3 chunk_id")?;
+            require_eq(
+                &d.chunk_id.as_str().to_owned(),
+                &"chunk-b".to_owned(),
+                "evt3 chunk_id",
+            )?;
         }
         LexicalChannelOp::FullBundle(_)
         | LexicalChannelOp::UpsertChunk(_)

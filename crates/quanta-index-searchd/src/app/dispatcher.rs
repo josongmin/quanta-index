@@ -14,20 +14,25 @@ use quanta_index_channel::{
     BundleChannelSubscriber, LexicalChannelEvent, LexicalWalSubscriber, SemanticChannelEvent,
     SemanticWalSubscriber,
 };
-use quanta_index_contract::{LexicalChannelOp, SemanticChannelOp};
+use quanta_index_contract::{ChannelSeq, LexicalChannelOp, SemanticChannelOp};
 use quanta_index_core::{ChannelDispatchPolicy, LexicalIndexBuildPort, SemanticIndexBuildPort};
-use quanta_index_lexical::LexicalAdapter;
-use quanta_index_semantic::SemanticAdapter;
 
 use crate::runtime::Ledger;
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Identifies which indexing track a ledger read/write targets.
+#[derive(Debug, Clone, Copy)]
+enum ChannelTrack {
+    Lexical,
+    Semantic,
+}
+
 pub struct ChannelDispatcher {
     lex_sub: LexicalWalSubscriber,
     sem_sub: SemanticWalSubscriber,
-    lex_adapter: Arc<LexicalAdapter>,
-    sem_adapter: Arc<SemanticAdapter>,
+    lex_builder: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+    sem_builder: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     poll_interval: Duration,
 }
@@ -37,15 +42,15 @@ impl ChannelDispatcher {
     pub fn new(
         lex_sub: LexicalWalSubscriber,
         sem_sub: SemanticWalSubscriber,
-        lex_adapter: Arc<LexicalAdapter>,
-        sem_adapter: Arc<SemanticAdapter>,
+        lex_builder: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+        sem_builder: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
         Self {
             lex_sub,
             sem_sub,
-            lex_adapter,
-            sem_adapter,
+            lex_builder,
+            sem_builder,
             ledger,
             poll_interval: DEFAULT_POLL_INTERVAL,
         }
@@ -76,26 +81,14 @@ impl ChannelDispatcher {
 
     fn drain_lex(&mut self) -> Result<bool> {
         let mut progressed = false;
-        let mut last_emitted = {
-            let guard = self
-                .ledger
-                .read()
-                .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-            guard.lexical_last_seen()
-        };
+        let mut last_emitted = read_last_seen(ChannelTrack::Lexical, &self.ledger)?;
         while let Some(event) = self.lex_sub.next_event()? {
             ChannelDispatchPolicy::validate_monotonic_seq(event.seq, last_emitted)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             last_emitted = event.seq;
-            apply_lex(&event, &self.lex_adapter, &self.ledger)?;
+            apply_lex(&event, self.lex_builder.as_ref(), &self.ledger)?;
             self.lex_sub.ack(event.seq)?;
-            {
-                let mut guard = self
-                    .ledger
-                    .write()
-                    .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-                guard.set_lexical_last_seen(event.seq);
-            }
+            record_observed(ChannelTrack::Lexical, event.seq, &self.ledger)?;
             progressed = true;
         }
         Ok(progressed)
@@ -103,42 +96,60 @@ impl ChannelDispatcher {
 
     fn drain_sem(&mut self) -> Result<bool> {
         let mut progressed = false;
-        let mut last_emitted = {
-            let guard = self
-                .ledger
-                .read()
-                .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-            guard.semantic_last_seen()
-        };
+        let mut last_emitted = read_last_seen(ChannelTrack::Semantic, &self.ledger)?;
         while let Some(event) = self.sem_sub.next_event()? {
             ChannelDispatchPolicy::validate_monotonic_seq(event.seq, last_emitted)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             last_emitted = event.seq;
-            apply_sem(&event, &self.sem_adapter, &self.ledger)?;
+            apply_sem(&event, self.sem_builder.as_ref(), &self.ledger)?;
             self.sem_sub.ack(event.seq)?;
-            {
-                let mut guard = self
-                    .ledger
-                    .write()
-                    .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-                guard.set_semantic_last_seen(event.seq);
-            }
+            record_observed(ChannelTrack::Semantic, event.seq, &self.ledger)?;
             progressed = true;
         }
         Ok(progressed)
     }
 }
 
+/// Read the `last_seen` cursor for the given track. Centralises the lock-poison
+/// translation so both drain loops share one implementation.
+fn read_last_seen(track: ChannelTrack, ledger: &Arc<RwLock<Ledger>>) -> Result<ChannelSeq> {
+    let guard = ledger
+        .read()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
+    Ok(match track {
+        ChannelTrack::Lexical => guard.lexical_last_seen(),
+        ChannelTrack::Semantic => guard.semantic_last_seen(),
+    })
+}
+
+/// Persist the observed seq into the ledger's per-track cursor. Used after a
+/// successful `apply_*` + `ack` so the next drain validates monotonicity
+/// against a fresh baseline.
+fn record_observed(
+    track: ChannelTrack,
+    seq: ChannelSeq,
+    ledger: &Arc<RwLock<Ledger>>,
+) -> Result<()> {
+    let mut guard = ledger
+        .write()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
+    match track {
+        ChannelTrack::Lexical => guard.set_lexical_last_seen(seq),
+        ChannelTrack::Semantic => guard.set_semantic_last_seen(seq),
+    }
+    Ok(())
+}
+
 fn apply_lex(
     event: &LexicalChannelEvent,
-    adapter: &LexicalAdapter,
+    builder: &(dyn LexicalIndexBuildPort + Send + Sync),
     ledger: &Arc<RwLock<Ledger>>,
 ) -> Result<()> {
     let repo = event.op.repo_id().clone();
     let revision = event.op.revision_id().clone();
     let generation = event.op.generation();
     let ops = [event.op.clone()];
-    adapter
+    builder
         .build(&repo, &revision, generation, &ops)
         .map_err(|e| anyhow::anyhow!("lexical build: {e}"))?;
     if matches!(event.op, LexicalChannelOp::Seal(_)) {
@@ -152,14 +163,14 @@ fn apply_lex(
 
 fn apply_sem(
     event: &SemanticChannelEvent,
-    adapter: &SemanticAdapter,
+    builder: &(dyn SemanticIndexBuildPort + Send + Sync),
     ledger: &Arc<RwLock<Ledger>>,
 ) -> Result<()> {
     let repo = event.op.repo_id().clone();
     let revision = event.op.revision_id().clone();
     let generation = event.op.generation();
     let ops = [event.op.clone()];
-    adapter
+    builder
         .build(&repo, &revision, generation, &ops)
         .map_err(|e| anyhow::anyhow!("semantic build: {e}"))?;
     if matches!(event.op, SemanticChannelOp::Seal(_)) {
