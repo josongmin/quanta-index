@@ -1,4 +1,6 @@
-mod bootstrap;
-mod state;
+//! In-memory generation ledger. Authoritative for query-time activation;
+//! recovery on restart is by channel replay from the persistent cursor.
 
-pub use state::*;
+mod ledger;
+
+pub use ledger::Ledger;

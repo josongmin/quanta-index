@@ -1,9 +1,11 @@
-//! Bounded contexts for the search-plane application core.
+//! Domain modules.
 //!
-//! Domains must not import sibling domains. Cross-domain orchestration belongs in
-//! `quanta-index-searchd::app` only.
+//! Cross-domain imports are forbidden by
+//! `tools/ci/lint/lint-hexagonal-boundaries.py`, with the single exception that
+//! `hybrid` may consume the public surfaces of `lexical` and `semantic` for
+//! orchestration purposes (RRF, generation-coherence checks).
 
-pub mod bundle_ingest;
-pub mod generation;
-pub mod materialization;
-pub mod query;
+pub mod channel;
+pub mod hybrid;
+pub mod lexical;
+pub mod semantic;

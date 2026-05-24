@@ -6,11 +6,11 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{LexicalCandidate, PublishedGenerationSet, SearchExplanation};
+use crate::{LexicalCandidate, GenerationPin, SearchExplanation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneLexicalQueryResponse {
-    pub generation: PublishedGenerationSet,
+    pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
 }
 
@@ -41,7 +41,7 @@ impl<'de> Visitor<'de> for SearchPlaneLexicalQueryResponseVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -89,7 +89,7 @@ impl<'de> Deserialize<'de> for SearchPlaneLexicalQueryResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneSemanticQueryResponse {
-    pub generation: PublishedGenerationSet,
+    pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
 }
 
@@ -120,7 +120,7 @@ impl<'de> Visitor<'de> for SearchPlaneSemanticQueryResponseVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -168,7 +168,7 @@ impl<'de> Deserialize<'de> for SearchPlaneSemanticQueryResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneHybridQueryResponse {
-    pub generation: PublishedGenerationSet,
+    pub generation: GenerationPin,
     pub results: Vec<LexicalCandidate>,
 }
 
@@ -199,7 +199,7 @@ impl<'de> Visitor<'de> for SearchPlaneHybridQueryResponseVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -247,7 +247,7 @@ impl<'de> Deserialize<'de> for SearchPlaneHybridQueryResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneExplainQueryResponse {
-    pub generation: PublishedGenerationSet,
+    pub generation: GenerationPin,
     pub explanation: SearchExplanation,
 }
 
@@ -278,7 +278,7 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryResponseVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {

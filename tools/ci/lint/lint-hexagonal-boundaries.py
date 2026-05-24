@@ -36,6 +36,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract": frozenset(),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     "quanta-index-control": frozenset({"quanta-index-contract", "quanta-index-core"}),
+    "quanta-index-channel": frozenset({"quanta-index-contract"}),
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS,
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
@@ -44,6 +45,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-control",
+            "quanta-index-channel",
             "quanta-index-lexical",
             "quanta-index-semantic",
             "quanta-index-ipc",
@@ -60,7 +62,7 @@ _ADAPTER_CRATES = frozenset(
 )
 
 DOMAIN_USE_RE = re.compile(
-    r"\b(?:crate::domains::|domains::)(?P<target>bundle_ingest|generation|materialization|query)\b"
+    r"\b(?:crate::domains::|domains::)(?P<target>bundle_ingest|channel|generation|hybrid|lexical|materialization|query|semantic)\b"
 )
 
 

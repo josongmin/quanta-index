@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Driving adapter for search-plane IPC transport"
+description = "Driving adapter for search-plane IPC transport (CBOR + UDS)"
 
 [lints]
 workspace = true
@@ -20,3 +20,4 @@ serde = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }

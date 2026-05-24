@@ -1,0 +1,35 @@
+[package]
+name = "quanta-index-contract-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Detach from the workspace. cargo-fuzz uses nightly-only flags and ships its
+# own profile; keeping it standalone avoids polluting `cargo check --workspace`
+# and lets the heavy correctness rail drive it explicitly via `just rust-fuzz-*`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ciborium = "0.2.2"
+quanta-index-contract = { path = ".." }
+
+[[bin]]
+name = "ipc_request_decode"
+path = "fuzz_targets/ipc_request_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_response_decode"
+path = "fuzz_targets/ipc_response_decode.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

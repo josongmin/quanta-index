@@ -6,12 +6,12 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{LexicalCandidate, LqFilterSet, LqQuery, PublishedGenerationSet};
+use crate::{LexicalCandidate, LqFilterSet, LqQuery, GenerationPin};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneLexicalQueryRequest {
     pub query: LqQuery,
-    pub generation: Option<PublishedGenerationSet>,
+    pub generation: Option<GenerationPin>,
 }
 
 const SEARCH_PLANE_LEXICAL_QUERY_REQUEST_FIELDS: &[&str] = &["query", "generation"];
@@ -49,7 +49,7 @@ impl<'de> Visitor<'de> for SearchPlaneLexicalQueryRequestVisitor {
         A: MapAccess<'de>,
     {
         let mut query: Option<LqQuery> = None;
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut generation_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -95,7 +95,7 @@ impl<'de> Deserialize<'de> for SearchPlaneLexicalQueryRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneSemanticQueryRequest {
     pub query_text: String,
-    pub generation: Option<PublishedGenerationSet>,
+    pub generation: Option<GenerationPin>,
     pub lexical_filters: LqFilterSet,
     pub top_k: u32,
 }
@@ -138,7 +138,7 @@ impl<'de> Visitor<'de> for SearchPlaneSemanticQueryRequestVisitor {
         A: MapAccess<'de>,
     {
         let mut query_text: Option<String> = None;
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut generation_seen = false;
         let mut lexical_filters: Option<LqFilterSet> = None;
         let mut top_k: Option<u32> = None;
@@ -207,7 +207,7 @@ impl<'de> Deserialize<'de> for SearchPlaneSemanticQueryRequest {
 pub struct SearchPlaneHybridQueryRequest {
     pub lexical_query: LqQuery,
     pub semantic_query_text: String,
-    pub generation: Option<PublishedGenerationSet>,
+    pub generation: Option<GenerationPin>,
     pub top_k: u32,
 }
 
@@ -254,7 +254,7 @@ impl<'de> Visitor<'de> for SearchPlaneHybridQueryRequestVisitor {
     {
         let mut lexical_query: Option<LqQuery> = None;
         let mut semantic_query_text: Option<String> = None;
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut generation_seen = false;
         let mut top_k: Option<u32> = None;
         while let Some(key) = map.next_key::<String>()? {
@@ -321,7 +321,7 @@ impl<'de> Deserialize<'de> for SearchPlaneHybridQueryRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneExplainQueryRequest {
-    pub generation: PublishedGenerationSet,
+    pub generation: GenerationPin,
     pub candidate: LexicalCandidate,
 }
 
@@ -352,7 +352,7 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryRequestVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut generation: Option<PublishedGenerationSet> = None;
+        let mut generation: Option<GenerationPin> = None;
         let mut candidate: Option<LexicalCandidate> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {

@@ -190,3 +190,79 @@ jobs:
         run: |
           source scripts/quanta-index-env.sh
           cargo udeps --workspace --all-targets --all-features
+
+  rust-llvm-lines:
+    name: rust-llvm-lines (monomorphization budget)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Install cargo-llvm-lines
+        uses: taiki-e/install-action@cargo-llvm-lines
+
+      - name: Check LLVM lines against baseline
+        run: |
+          source scripts/quanta-index-env.sh
+          python3 tools/ci/lint/check-llvm-lines.py
+
+  rust-public-api:
+    name: rust-public-api (contract surface diff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly (cargo-public-api requires it)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cargo-public-api
+        uses: taiki-e/install-action@cargo-public-api
+
+      - name: Diff public API of quanta-index-contract
+        run: |
+          source scripts/quanta-index-env.sh
+          python3 tools/ci/lint/check-public-api.py
+
+  rust-fuzz-smoke:
+    name: rust-fuzz-smoke (IPC decoders, 60s each)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drop rust-toolchain override
+        run: rm -f rust-toolchain.toml
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cargo-fuzz
+
+      - name: Build fuzz targets
+        run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz build
+
+      - name: Smoke-run ipc_request_decode (60s)
+        run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60
+
+      - name: Smoke-run ipc_response_decode (60s)
+        run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60

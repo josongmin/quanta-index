@@ -97,10 +97,33 @@ rust-no-allow:
 rust-hexagonal:
     python3 tools/ci/lint/lint-hexagonal-boundaries.py
 
+rust-derive-allowlist:
+    python3 tools/ci/lint/check-rust-derive-allowlist.py
+
+rust-llvm-lines:
+    python3 tools/ci/lint/check-llvm-lines.py
+
+rust-llvm-lines-update:
+    python3 tools/ci/lint/check-llvm-lines.py --update-baseline
+
+rust-public-api:
+    python3 tools/ci/lint/check-public-api.py
+
+rust-public-api-update:
+    python3 tools/ci/lint/check-public-api.py --update-baseline
+
+rust-fuzz-build:
+    cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz build
+
+rust-fuzz-smoke seconds="60":
+    cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time={{seconds}}
+    cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time={{seconds}}
+
 rust-policy:
     @just rust-workspace-lints
     @just rust-hexagonal
     @just rust-no-allow
+    @just rust-derive-allowlist
     @just rust-deny
 
 verify-rust:
@@ -120,6 +143,9 @@ verify-rust-heavy:
     @just rust-careful
     @just rust-mutants
     @just rust-udeps
+    @just rust-llvm-lines
+    @just rust-public-api
+    @just rust-fuzz-build
 
 semgrep:
     bash scripts/run-semgrep.sh

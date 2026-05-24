@@ -1,11 +1,17 @@
-//! Lexical index driven adapter backed by Tantivy 0.22.
+//! Lexical adapter — Tantivy 0.22-backed inverted index.
 //!
-//! Implements `SearchPlaneLexicalIndexBuildPort` and
-//! `SearchPlaneLexicalIndexStorePort` against an on-disk index laid out as
-//! `{state_root}/lexical/{manifest_generation}/`.
+//! Implements [`LexicalIndexBuildPort`] and [`LexicalIndexOpenPort`] from
+//! `quanta-index-core::domains::lexical`. The adapter materializes channel
+//! events into a `(repo, revision, generation) -> Tantivy index` directory
+//! tree rooted at the adapter's `state_root` and services queries via
+//! BM25 over the indexed `chunk_text` field.
 //!
-//! Phase 1 wire format (D15): `LexicalBuildInput::chunk_rows` is JSON-encoded
-//! `Vec<ChunkRow>`; `symbol_rows` is accepted but not indexed yet.
+//! Layout:
+//!   `{state_root}/{repo_id}/{revision_id}/g{generation}/`
+//!
+//! The adapter caches one `IndexWriter` per generation to amortize the
+//! per-commit cost across many ops, and one `IndexReader` per opened
+//! generation.
 
 #![forbid(unsafe_code)]
 #![deny(unused_must_use)]
@@ -13,297 +19,381 @@
 #![deny(clippy::map_err_ignore)]
 #![expect(
     clippy::multiple_crate_versions,
-    reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys, wit-bindgen) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
-)]
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "schema items use pub(crate) because unreachable_pub forbids bare pub in private modules; both lints cannot be simultaneously satisfied without a module re-export gymnastics that hides the schema type from clippy."
+    reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
 )]
 
-mod row;
-mod schema;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
-use quanta_index_contract::{PublishedGenerationSet, PublishedSearchBundleManifest};
-use quanta_index_core::{
-    CoreError, LexicalBuildInput, SearchPlaneLexicalIndexBuildPort,
-    SearchPlaneLexicalIndexStorePort,
+use quanta_index_contract::{
+    LexicalCandidate, LexicalChannelOp, LqExpr, LqQuery, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId,
 };
-use tantivy::{Index, IndexWriter, doc};
+use quanta_index_core::{
+    CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
+    domains::lexical::LexicalPolicy,
+};
+use tantivy::collector::TopDocs;
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser};
+use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument, Value};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
-pub use row::ChunkRow;
+/// Memory budget for a Tantivy `IndexWriter`. Pinned to the upstream-documented
+/// minimum so adapter setup is bounded and reproducible across test runs.
+const WRITER_MEMORY_BUDGET_BYTES: usize = 15_000_000;
 
-/// Sentinel file written at the end of a successful build.
-const MARKER_OK: &str = "MARKER_OK";
+/// Schema field handles for the lexical index. Cloned cheaply into every
+/// searcher; constructed once per adapter instance.
+#[derive(Clone)]
+struct SchemaFields {
+    schema: Schema,
+    candidate_id: Field,
+    repo_id: Field,
+    revision_id: Field,
+    repo_relative_path: Field,
+    chunk_text: Field,
+}
 
-/// Suffix appended to the target directory while the build is in flight.
-const BUILDING_SUFFIX: &str = ".building";
+impl SchemaFields {
+    fn build() -> Self {
+        let mut builder = Schema::builder();
+        let candidate_id = builder.add_text_field("candidate_id", STRING | STORED);
+        let repo_id = builder.add_text_field("repo_id", STRING | STORED);
+        let revision_id = builder.add_text_field("revision_id", STRING | STORED);
+        let repo_relative_path = builder.add_text_field("repo_relative_path", STRING | STORED);
+        let chunk_text = builder.add_text_field("chunk_text", TEXT | STORED);
+        let schema = builder.build();
+        Self {
+            schema,
+            candidate_id,
+            repo_id,
+            revision_id,
+            repo_relative_path,
+            chunk_text,
+        }
+    }
+}
 
-/// Memory budget given to the Tantivy writer.
-///
-/// 50 MiB matches the value used in the upstream `basic_search` example and
-/// is plenty for Phase 1 (per-generation full rebuild).
-const WRITER_MEMORY_BUDGET: usize = 50_000_000;
+/// Per-generation cache key.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct GenKey {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+}
+
+/// Open writer + index handle for an active generation. Shared via
+/// `Arc<Mutex<_>>` so multiple `build` invocations for the same generation
+/// serialize on a single Tantivy writer (Tantivy writers are not Sync).
+struct GenerationWriter {
+    index: Index,
+    writer: IndexWriter,
+}
 
 /// Tantivy-backed lexical adapter.
-///
-/// State layout: `{state_root}/lexical/{manifest_generation}/`. The adapter
-/// keeps a small in-memory cache of opened Tantivy `Index` handles keyed by
-/// `manifest_generation` so the hot query path doesn't re-open the index
-/// directory on every request. Cache misses (new generation) open and insert.
-/// Builds do not populate the cache — they always write a fresh index from
-/// scratch, then the next `open_index_for_query` populates lazily.
-pub struct TantivyLexicalAdapter {
+pub struct LexicalAdapter {
     state_root: PathBuf,
-    open_cache: Mutex<BTreeMap<u64, Index>>,
+    fields: SchemaFields,
+    writers: Arc<RwLock<BTreeMap<GenKey, Arc<Mutex<GenerationWriter>>>>>,
 }
 
-impl TantivyLexicalAdapter {
-    /// Build a new adapter rooted at `state_root`.
-    ///
-    /// The root directory does not need to exist yet; it will be created on
-    /// the first build that resolves a target underneath it.
-    pub fn with_state_root(root: impl Into<PathBuf>) -> Self {
+impl LexicalAdapter {
+    /// Construct an adapter rooted at the given directory. The directory will
+    /// be created lazily as generations are materialized.
+    #[must_use]
+    pub fn with_state_root(state_root: PathBuf) -> Self {
         Self {
-            state_root: root.into(),
-            open_cache: Mutex::new(BTreeMap::new()),
+            state_root,
+            fields: SchemaFields::build(),
+            writers: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
-    /// Resolve the per-generation index directory.
-    fn index_dir(&self, generation_set: &PublishedGenerationSet) -> PathBuf {
+    fn index_path(&self, key: &GenKey) -> PathBuf {
         self.state_root
-            .join("lexical")
-            .join(generation_set.manifest_generation.get().to_string())
+            .join(key.repo_id.as_str())
+            .join(key.revision_id.as_str())
+            .join(format!("g{}", key.generation.get()))
     }
 
-    /// Resolve the per-generation index directory from a manifest.
-    fn index_dir_for_manifest(&self, manifest: &PublishedSearchBundleManifest) -> PathBuf {
-        self.state_root
-            .join("lexical")
-            .join(manifest.manifest_generation.get().to_string())
+    fn open_or_create_index(&self, path: &Path) -> Result<Index, CoreError> {
+        std::fs::create_dir_all(path)
+            .map_err(|err| CoreError::Storage(format!("lexical: mkdir {path:?}: {err}")))?;
+        let directory = tantivy::directory::MmapDirectory::open(path)
+            .map_err(|err| CoreError::Storage(format!("lexical: mmap open {path:?}: {err}")))?;
+        Index::builder()
+            .schema(self.fields.schema.clone())
+            .open_or_create(directory)
+            .map_err(|err| CoreError::Storage(format!("lexical: open_or_create: {err}")))
     }
 
-    /// Open the Tantivy index for query-side consumption.
-    ///
-    /// Consumed by `searchd::query` only. Phase 1 query plumbing (T4.1) takes
-    /// the returned `Index` handle and constructs its own reader; this crate
-    /// does not expose query traits.
-    pub fn open_index_for_query(
-        &self,
-        generation: &PublishedGenerationSet,
-    ) -> Result<Index, CoreError> {
-        let generation_key = generation.manifest_generation.get();
-        // Fast path: cache hit. Tantivy `Index` is cheap to clone (it shares
-        // segment readers internally), so we hand callers an owned clone
-        // without re-opening the directory on every query.
+    fn writer_handle(&self, key: &GenKey) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
         {
-            let guard = self.open_cache.lock().map_err(|error| {
-                CoreError::Storage(format!("lexical cache mutex poisoned: {error}"))
-            })?;
-            if let Some(cached) = guard.get(&generation_key) {
-                return Ok(cached.clone());
+            let guard = self
+                .writers
+                .read()
+                .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+            if let Some(existing) = guard.get(key) {
+                return Ok(Arc::clone(existing));
             }
         }
-        let target = self.index_dir(generation);
-        if !marker_ok_path(&target).is_file() {
-            return Err(CoreError::NotReady(
-                "lexical index not materialised".to_owned(),
-            ));
+        let mut guard = self
+            .writers
+            .write()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+        if let Some(existing) = guard.get(key) {
+            return Ok(Arc::clone(existing));
         }
-        let opened = Index::open_in_dir(&target)
-            .map_err(|error| CoreError::Storage(format!("tantivy: open lexical index: {error}")))?;
-        {
-            let mut guard = self.open_cache.lock().map_err(|error| {
-                CoreError::Storage(format!("lexical cache mutex poisoned: {error}"))
-            })?;
-            // Another caller may have raced us; either branch is fine, both
-            // yield a valid handle. Insert-if-absent semantics avoid replacing
-            // a handle that other callers may already be holding.
-            let _previous = guard
-                .entry(generation_key)
-                .or_insert_with(|| opened.clone());
-        }
-        Ok(opened)
+        let path = self.index_path(key);
+        let index = self.open_or_create_index(&path)?;
+        let writer: IndexWriter = index
+            .writer(WRITER_MEMORY_BUDGET_BYTES)
+            .map_err(|err| CoreError::Storage(format!("lexical: writer: {err}")))?;
+        let handle = Arc::new(Mutex::new(GenerationWriter { index, writer }));
+        drop(guard.insert(key.clone(), Arc::clone(&handle)));
+        Ok(handle)
     }
 
-    /// Drop the cached `Index` handle for `generation` if one is present.
-    ///
-    /// Provided for operator-driven invalidation (e.g., after a re-build that
-    /// replaces the underlying directory). Phase 1 callers do not invoke this
-    /// — the orchestrator atomically renames into the same path, but Tantivy
-    /// segment readers may pin file handles, so the cache remains correct
-    /// across rebuilds in practice. Exposed so future control plane
-    /// machinery can wire explicit invalidation when needed.
-    pub fn invalidate_cached_index(&self, generation: &PublishedGenerationSet) {
-        if let Ok(mut guard) = self.open_cache.lock() {
-            let _removed = guard.remove(&generation.manifest_generation.get());
+    fn apply_op(
+        &self,
+        writer: &mut IndexWriter,
+        key: &GenKey,
+        op: &LexicalChannelOp,
+    ) -> Result<bool, CoreError> {
+        match op {
+            LexicalChannelOp::UpsertChunk(upsert) => {
+                let candidate_id = upsert.chunk_id.as_str();
+                let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
+                let _opstamp = writer.delete_term(term);
+                let text = String::from_utf8_lossy(&upsert.payload).into_owned();
+                let mut doc = TantivyDocument::new();
+                doc.add_text(self.fields.candidate_id, candidate_id);
+                doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                doc.add_text(self.fields.repo_relative_path, "");
+                doc.add_text(self.fields.chunk_text, text);
+                let _opstamp = writer
+                    .add_document(doc)
+                    .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
+                Ok(true)
+            }
+            LexicalChannelOp::DeleteChunk(delete) => {
+                let term =
+                    Term::from_field_text(self.fields.candidate_id, delete.chunk_id.as_str());
+                let _opstamp = writer.delete_term(term);
+                Ok(true)
+            }
+            // FullBundle / Seal carry no document-level effect on the adapter;
+            // the dispatcher's ledger update observes Seal, not us.
+            LexicalChannelOp::FullBundle(_) | LexicalChannelOp::Seal(_) => Ok(false),
+            // Symbols are out-of-scope for the lexical chunk index.
+            LexicalChannelOp::UpsertSymbol(_) | LexicalChannelOp::DeleteSymbol(_) => Ok(false),
         }
     }
 }
 
-impl SearchPlaneLexicalIndexBuildPort for TantivyLexicalAdapter {
-    fn build_lexical_index(
+impl LexicalIndexBuildPort for LexicalAdapter {
+    fn build(
         &self,
-        manifest: &PublishedSearchBundleManifest,
-        input: LexicalBuildInput<'_>,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        let target = self.index_dir_for_manifest(manifest);
-
-        // Step 2 — idempotent short-circuit.
-        if marker_ok_path(&target).is_file() {
+        if ops.is_empty() {
             return Ok(());
         }
-
-        // Step 4 — decode chunk rows up front. We do this BEFORE creating the
-        // building directory so a malformed payload never leaves filesystem
-        // residue. `symbol_rows` is part of the contract surface but does not
-        // index into the lexical store in Phase 1; destructure to discard it
-        // explicitly without an unused-underscore binding.
-        let LexicalBuildInput {
-            chunk_rows,
-            symbol_rows: _,
-        } = input;
-        let rows = decode_chunk_rows(chunk_rows)?;
-
-        // Step 3 — atomic-ish staging directory `{target}.building`. We
-        // ensure the parent (`{state_root}/lexical/`) exists first; the
-        // building dir itself is fresh per build (best-effort cleanup of a
-        // prior interrupted attempt is NOT mandatory per D14).
-        let building = building_path(&target);
-        ensure_parent_exists(&building)?;
-        std::fs::create_dir_all(&building).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: create building dir {}: {error}",
-                building.display()
-            ))
-        })?;
-
-        // Steps 5–7 — schema, writer, document insertion, commit.
-        let (schema, fields) = schema::build_schema();
-        let index = Index::create_in_dir(&building, schema)
-            .map_err(|error| CoreError::Storage(format!("tantivy: create index: {error}")))?;
-        let mut writer: IndexWriter = index
-            .writer(WRITER_MEMORY_BUDGET)
-            .map_err(|error| CoreError::Storage(format!("tantivy: open writer: {error}")))?;
-
-        for (idx, row) in rows.iter().enumerate() {
-            let chunk_idx = u64::try_from(idx).map_err(|error| {
-                CoreError::InvalidContract(format!("chunk_rows index does not fit in u64: {error}"))
-            })?;
-            let candidate_id = format_candidate_id(manifest, chunk_idx);
-            let document = doc!(
-                fields.candidate_id => candidate_id,
-                fields.repo_id => manifest.repo_id.as_str(),
-                fields.revision_id => manifest.revision_id.as_str(),
-                fields.manifest_generation => manifest.manifest_generation.get(),
-                fields.repo_relative_path => row.repo_relative_path.as_str(),
-                fields.start_line => row.start_line,
-                fields.end_line => row.end_line,
-                fields.text => row.text.as_str(),
-            );
-            let _opstamp = writer
-                .add_document(document)
-                .map_err(|error| CoreError::Storage(format!("tantivy: add_document: {error}")))?;
+        // All ops in a single `build` invocation must share the (repo, rev, gen)
+        // triple. The dispatcher feeds us one op per call today; defending the
+        // invariant here keeps the adapter safe if that changes.
+        for op in ops {
+            if op.repo_id() != repo || op.revision_id() != revision || op.generation() != generation
+            {
+                return Err(CoreError::InvalidContract(
+                    "lexical: op (repo, revision, generation) mismatch with batch key"
+                        .to_string(),
+                ));
+            }
         }
+        let key = GenKey {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation,
+        };
+        let handle = self.writer_handle(&key)?;
+        let mut guarded = handle
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
+        let mut needs_commit = false;
+        for op in ops {
+            if self.apply_op(&mut guarded.writer, &key, op)? {
+                needs_commit = true;
+            }
+        }
+        if needs_commit {
+            let _opstamp = guarded
+                .writer
+                .commit()
+                .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
+        }
+        Ok(())
+    }
+}
 
-        let _commit_opstamp = writer
-            .commit()
-            .map_err(|error| CoreError::Storage(format!("tantivy: commit: {error}")))?;
-        drop(writer);
-        drop(index);
-
-        // Step 8 — atomic move into place. `rename` is rejected if `target`
-        // already exists. We treat that as a typed Storage error rather than
-        // attempting recovery, since concurrent builds for the same
-        // generation are a contract violation.
-        if target.exists() {
-            return Err(CoreError::Storage(format!(
-                "lexical: target directory already exists at {}",
-                target.display()
+impl LexicalIndexOpenPort for LexicalAdapter {
+    fn open(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        let key = GenKey {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation,
+        };
+        let path = self.index_path(&key);
+        if !path.exists() {
+            return Err(CoreError::NotFound(format!(
+                "lexical: no index at {path:?}"
             )));
         }
-        std::fs::rename(&building, &target).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: rename {} -> {}: {error}",
-                building.display(),
-                target.display()
-            ))
-        })?;
-
-        // Step 9 — sentinel file. The file handle is dropped immediately;
-        // creation alone marks the index as ready.
-        let marker = marker_ok_path(&target);
-        let marker_file = std::fs::File::create(&marker).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: create marker {}: {error}",
-                marker.display()
-            ))
-        })?;
-        drop(marker_file);
-
-        Ok(())
+        // Prefer the cached writer's index handle when present (it reflects
+        // commits that may not yet be visible to a freshly-opened reader
+        // before its first reload).
+        let index = {
+            let guard = self
+                .writers
+                .read()
+                .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+            match guard.get(&key) {
+                Some(handle) => {
+                    let guarded = handle.lock().map_err(|err| {
+                        CoreError::Storage(format!("lexical writer poisoned: {err}"))
+                    })?;
+                    guarded.index.clone()
+                }
+                None => self.open_or_create_index(&path)?,
+            }
+        };
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|err| CoreError::Storage(format!("lexical: reader: {err}")))?;
+        reader
+            .reload()
+            .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
+        Ok(Box::new(TantivySearcher {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation,
+            fields: self.fields.clone(),
+            index,
+            reader,
+        }))
     }
 }
 
-impl SearchPlaneLexicalIndexStorePort for TantivyLexicalAdapter {
-    fn open_lexical_store(&self, generation: &PublishedGenerationSet) -> Result<(), CoreError> {
-        let target = self.index_dir(generation);
-        if !marker_ok_path(&target).is_file() {
-            return Err(CoreError::NotReady(
-                "lexical index not materialised".to_owned(),
-            ));
+struct TantivySearcher {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    fields: SchemaFields,
+    index: Index,
+    reader: IndexReader,
+}
+
+impl TantivySearcher {
+    fn compile(&self, expr: &LqExpr) -> Result<Box<dyn Query>, CoreError> {
+        match expr {
+            LqExpr::MatchAll => Err(CoreError::InvalidContract(
+                "lexical: MatchAll not compilable (must be rejected by policy)".to_string(),
+            )),
+            LqExpr::Raw(text) => {
+                let parser = QueryParser::for_index(&self.index, vec![self.fields.chunk_text]);
+                let parsed = parser
+                    .parse_query(text)
+                    .map_err(|err| CoreError::InvalidContract(format!("lexical: parse: {err}")))?;
+                Ok(parsed)
+            }
+            LqExpr::All(parts) => {
+                let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
+                for part in parts {
+                    clauses.push((Occur::Must, self.compile(part)?));
+                }
+                Ok(Box::new(BooleanQuery::new(clauses)))
+            }
+            LqExpr::Any(parts) => {
+                let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
+                for part in parts {
+                    clauses.push((Occur::Should, self.compile(part)?));
+                }
+                Ok(Box::new(BooleanQuery::new(clauses)))
+            }
+            LqExpr::Not(inner) => {
+                let inner_q = self.compile(inner)?;
+                let clauses: Vec<(Occur, Box<dyn Query>)> = vec![
+                    (Occur::Must, Box::new(AllQuery)),
+                    (Occur::MustNot, inner_q),
+                ];
+                Ok(Box::new(BooleanQuery::new(clauses)))
+            }
         }
-        // Verify the index opens cleanly. We do not retain the handle here;
-        // query-side consumers call `open_index_for_query` for an owned
-        // `Index`.
-        let _index = Index::open_in_dir(&target)
-            .map_err(|error| CoreError::Storage(format!("tantivy: open lexical index: {error}")))?;
-        Ok(())
+    }
+
+    fn document_to_candidate(
+        &self,
+        doc: &TantivyDocument,
+        score: f32,
+    ) -> Result<LexicalCandidate, CoreError> {
+        let candidate_id = stored_text(doc, self.fields.candidate_id).ok_or_else(|| {
+            CoreError::Storage("lexical: stored doc missing candidate_id field".to_string())
+        })?;
+        let snippet = stored_text(doc, self.fields.chunk_text).unwrap_or_default();
+        let repo_relative_path =
+            stored_text(doc, self.fields.repo_relative_path).unwrap_or_default();
+        Ok(LexicalCandidate {
+            candidate_id,
+            repo_id: self.repo_id.clone(),
+            revision_id: self.revision_id.clone(),
+            manifest_generation: self.generation,
+            repo_relative_path: RepoRelativePath::new(repo_relative_path),
+            start_line: 0,
+            end_line: 0,
+            score,
+            snippet,
+        })
     }
 }
 
-/// Decode the manifest's `lexical_chunk_rows` payload (JSON `Vec<ChunkRow>`).
-fn decode_chunk_rows(bytes: &[u8]) -> Result<Vec<ChunkRow>, CoreError> {
-    serde_json::from_slice::<Vec<ChunkRow>>(bytes)
-        .map_err(|error| CoreError::InvalidContract(format!("chunk_rows decode: {error}")))
+fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {
+    let value: &OwnedValue = doc.get_first(field)?;
+    Value::as_str(&value).map(str::to_owned)
 }
 
-/// Build the `repo:rev:gen:idx` candidate identifier.
-fn format_candidate_id(manifest: &PublishedSearchBundleManifest, chunk_idx: u64) -> String {
-    format!(
-        "{}:{}:{}:{}",
-        manifest.repo_id.as_str(),
-        manifest.revision_id.as_str(),
-        manifest.manifest_generation.get(),
-        chunk_idx,
-    )
-}
-
-/// Append `.building` to the target directory.
-fn building_path(target: &Path) -> PathBuf {
-    let mut name = target.as_os_str().to_owned();
-    name.push(BUILDING_SUFFIX);
-    PathBuf::from(name)
-}
-
-/// Resolve the `MARKER_OK` sentinel path for a target directory.
-fn marker_ok_path(target: &Path) -> PathBuf {
-    target.join(MARKER_OK)
-}
-
-/// Ensure the parent directory of `path` exists.
-fn ensure_parent_exists(path: &Path) -> Result<(), CoreError> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    std::fs::create_dir_all(parent).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: create parent dir {}: {error}",
-            parent.display()
-        ))
-    })
+impl LexicalSearcher for TantivySearcher {
+    fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
+        LexicalPolicy::validate_query(query)?;
+        let compiled = self.compile(&query.expr)?;
+        let limit = usize::try_from(top_k)
+            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: search: {err}")))?;
+        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
+        for (score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            out.push(self.document_to_candidate(&doc, score)?);
+        }
+        Ok(out)
+    }
 }

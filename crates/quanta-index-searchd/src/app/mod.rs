@@ -1,9 +1,15 @@
-mod config;
-pub mod materialize;
-mod searchd;
-pub mod uds_listener;
+//! Application wiring.
 
-pub use config::*;
-pub use materialize::{MaterializeOutcome, MaterializeUseCase, load_and_verify_artifact};
-pub use searchd::*;
-pub use uds_listener::{QueryDispatcher, UdsListener};
+pub mod config;
+pub mod dispatcher;
+pub mod query;
+pub mod runtime;
+pub mod searchd;
+pub mod server;
+
+pub use config::SearchdConfig;
+pub use dispatcher::ChannelDispatcher;
+pub use query::SearchPlaneDispatcher;
+pub use runtime::SearchdRuntime;
+pub use searchd::run;
+pub use server::QueryServer;

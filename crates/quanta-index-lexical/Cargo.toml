@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Driven adapter for lexical index build and open"
+description = "Driven adapter for lexical index build and open (channel-fed, Tantivy-backed)"
 
 [lints]
 workspace = true
@@ -15,8 +15,6 @@ path = "src/lib.rs"
 [dependencies]
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tantivy = { workspace = true }
 
 [dev-dependencies]

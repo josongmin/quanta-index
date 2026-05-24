@@ -2,7 +2,7 @@
 members = [
     "crates/quanta-index-contract",
     "crates/quanta-index-core",
-    "crates/quanta-index-control",
+    "crates/quanta-index-channel",
     "crates/quanta-index-lexical",
     "crates/quanta-index-semantic",
     "crates/quanta-index-ipc",
@@ -79,8 +79,11 @@ wildcard_enum_match_arm = "deny"
 [workspace.dependencies]
 anyhow = "1.0.100"
 ciborium = "0.2.2"
+crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
+fs2 = "0.4.3"
 lance = { version = "6.0.1", default-features = false }
+memmap2 = "0.9.5"
 proptest = "1.6.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -89,7 +92,7 @@ sha2 = "0.10"
 tantivy = "0.22"
 tempfile = "3.16.0"
 thiserror = "1.0.69"
-tokio = { version = "1.42", default-features = false, features = ["rt", "net", "io-util", "macros", "signal", "sync", "time"] }
+tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "net", "io-util", "macros", "signal", "sync", "time"] }
 
 [profile.release]
 panic = "abort"

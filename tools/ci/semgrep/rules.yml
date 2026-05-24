@@ -131,3 +131,72 @@ rules:
     severity: ERROR
     patterns:
       - pattern-regex: '#\[derive\([^)]*\b(?:serde::)?(?:Serialize|Deserialize)\b[^)]*\)\]'
+
+  - id: rust-no-silent-or-else-ok
+    message: |
+      `.or_else(|_| Ok(...))` silently converts an error into a synthesized
+      success. Propagate the failure or surface a typed domain error.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $E.or_else(|_| Ok($DEFAULT))
+          - pattern: $E.or_else(|$_E| Ok($DEFAULT))
+
+  - id: rust-no-err-arm-default
+    message: |
+      `Err(_) => Default::default()` (or `T::default()` / numeric-zero / empty-
+      collection equivalents) substitutes a placeholder for a real failure on
+      a production code path. Propagate via `?`, convert with `.map_err`, or
+      mark the operation `blocked`.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-contract/src/**"
+        - "/crates/quanta-index-core/src/**"
+        - "/crates/quanta-index-ipc/src/**"
+        - "/crates/quanta-index-searchd/src/**"
+        - "/crates/quanta-index-lexical/src/**"
+        - "/crates/quanta-index-semantic/src/**"
+        - "/crates/quanta-index-control/src/**"
+    patterns:
+      - pattern-either:
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*Default\s*::\s*default\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*Self\s*::\s*default\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*Vec\s*::\s*new\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*String\s*::\s*new\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*BTreeMap\s*::\s*new\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*BTreeSet\s*::\s*new\s*\(\s*\)'
+          - pattern-regex: 'Err\(\s*_\s*\)\s*=>\s*None\b'
+
+  - id: rust-no-debug-assertions-divergence
+    message: |
+      `cfg!(debug_assertions)` / `#[cfg(debug_assertions)]` on a production
+      module makes release-mode behavior diverge from debug-mode behavior.
+      That is a silent-failure shape: bugs trigger in tests but slip in prod.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-core/src/**"
+        - "/crates/quanta-index-contract/src/**"
+      exclude:
+        - "**/tests/**"
+        - "**/benches/**"
+    patterns:
+      - pattern-either:
+          - pattern-regex: 'cfg!\s*\(\s*debug_assertions\s*\)'
+          - pattern-regex: '#\[\s*cfg\s*\(\s*debug_assertions\s*\)'
+
+  - id: rust-no-result-to-option-discard
+    message: |
+      `.err().is_some()` / `result.ok().is_none()` style discards the error
+      payload. If you only care about success, use `is_ok()` / `is_err()`;
+      otherwise destructure to preserve the error.
+    languages: [rust]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $E.err().is_some()
+          - pattern: $E.err().is_none()
