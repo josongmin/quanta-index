@@ -22,10 +22,11 @@ use crate::ast::{
 use crate::errors::LqParseError;
 use crate::limits::MAX_FANOUT_PER_NODE;
 
-/// Normalize a parsed query into canonical form. Returns an error only if
-/// the normalize pass surfaces a deferred limit violation (e.g. fan-out
-/// after flattening). The `LqParseError` shape is shared with parse so
-/// callers see one typed surface.
+/// Normalize a parsed query into canonical form.
+///
+/// Returns an error only if the normalize pass surfaces a deferred limit
+/// violation (e.g. fan-out after flattening). The `LqParseError` shape is
+/// shared with parse so callers see one typed surface.
 pub fn normalize(mut q: LqNormalizedQuery) -> Result<LqNormalizedQuery, LqParseError> {
     q.expr = normalize_expr(q.expr, q.options.case)?;
     sort_filters(&mut q.filters);
@@ -234,6 +235,10 @@ fn directive_canonical_key(d: &LqDirective) -> String {
 pub type NormalizedOptions = LqOptions;
 
 #[cfg(test)]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "test fixtures only assert one happy variant; the wildcard catches the fail-loudly path and is not a production-code blind spot"
+)]
 mod tests {
     use super::normalize;
     use crate::ast::{LqCase, LqExpr, LqLeaf, LqNormalizedQuery, LqOptions};
