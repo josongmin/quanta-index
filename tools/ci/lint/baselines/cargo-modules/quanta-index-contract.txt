@@ -1,0 +1,400 @@
+
+[2m[0m[38;5;68mcrate[0m quanta_index_contract
+[2m├── [0m[38;5;68mmod[0m channel[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m ids[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ChannelSeq[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ChunkId[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m EmbeddingId[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m SymbolId[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m ops[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteChunk[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteEmbedding[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteParseTree[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteParseTreeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteRef[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteRefVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteSymbol[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteTag[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DeleteTagVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m EvictDirty[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m EvictDirtyVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m LexicalChannelOp[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalFullBundle[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSeal[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68menum[0m SemanticChannelOp[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticFullBundle[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticSeal[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertChunk[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertCommit[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertCommitVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertDiffHunk[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertDiffHunkVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertDirty[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertDirtyVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertEmbedding[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertParseTree[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertParseTreeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertRef[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertRefVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertSymbol[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertTag[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m UpsertTagVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mmod[0m serde_bytes_helper[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       ├── [0m[38;5;68mstruct[0m ByteBuf[2m:[0m [38;5;209mpub(super)[0m
+[2m│   │       ├── [0m[38;5;68mstruct[0m ByteBufVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m Bytes[2m:[0m [38;5;209mpub(super)[0m
+[2m│   └── [0m[38;5;68mmod[0m records[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m ChunkRecord[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m ChunkRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m EmbeddingRecord[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m EmbeddingRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m LexicalRepoMetadataRecord[2m:[0m [38;5;107mpub[0m
+[2m│       └── [0m[38;5;68mstruct[0m LexicalRepoMetadataRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│           └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m├── [0m[38;5;68mmod[0m ipc[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m control[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mtype[0m ActivationLikeTuple[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CurrentGenerationRequest[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CurrentGenerationRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationSnapshot[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationSnapshotVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationStatusReport[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationStatusReportVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationStatusRequest[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m GenerationStatusRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneActivateGenerationRequest[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneActivateGenerationRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneActivationAck[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneActivationAckVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m SearchPlaneTrackKind[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneTrackKindVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m TrackReadinessRecord[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m TrackReadinessRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m error[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIpcError[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m SearchPlaneIpcErrorVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m ingest[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m BatchIngestMode[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m BatchIngestModeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m BatchPublishReceipt[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m BatchPublishReceiptVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ByteBuf[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ByteBufVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m Bytes[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyIngestBatch[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyIngestBatchVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m DirtyMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryDiffHunkUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryDiffHunkUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryIngestBatch[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryIngestBatchVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryRefDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryRefDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m HistoryRefMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryRefMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryRefUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m HistoryRefUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mtype[0m HistoryTagDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mtype[0m HistoryTagMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mtype[0m HistoryTagUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalChunkDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalChunkDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m LexicalChunkMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalChunkMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalChunkUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalChunkUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalIngestBatch[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalIngestBatchVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSymbolDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSymbolDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m LexicalSymbolMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSymbolMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSymbolUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m LexicalSymbolUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m ParseTreeMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m SearchPlaneIngestIpcRequest[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcRequestEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcRequestEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m SearchPlaneIngestIpcResponse[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcResponseEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcResponseEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchPlaneIngestIpcResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticEmbeddingDelete[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticEmbeddingDeleteVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68menum[0m SemanticEmbeddingMutation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticEmbeddingMutationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticEmbeddingUpsert[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticEmbeddingUpsertVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticIngestBatch[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SemanticIngestBatchVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m StructuralIngestBatch[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m StructuralIngestBatchVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   └── [0m[38;5;68mmod[0m split[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68menum[0m SearchPlaneControlIpcRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcRequestEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcRequestEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68menum[0m SearchPlaneControlIpcResponse[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcResponseEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcResponseEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneControlIpcResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68menum[0m SearchPlaneQueryIpcRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcRequestEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcRequestEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68menum[0m SearchPlaneQueryIpcResponse[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcResponseEnvelope[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcResponseEnvelopeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       └── [0m[38;5;68mstruct[0m SearchPlaneQueryIpcResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│           └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m├── [0m[38;5;68mmod[0m lex[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m diff[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DiffHunkRecord[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m DiffHunkRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m dirty[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m DirtyRecord[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m DirtyRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m error_code[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68menum[0m LexicalErrorCode[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m LexicalErrorCodeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m explanation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ExplanationRow[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ExplanationRowVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m PlannerTraceNode[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m PlannerTraceNodeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchExplanation[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m SearchExplanationBuilder[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m SearchExplanationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m history[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CommitRecord[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CommitRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CommitSha[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68menum[0m CommitShaParseError[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m CommitShaVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m TagsSer[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m lang[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68menum[0m LangId[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m LangIdVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m parse_tree[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseNode[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseNodeVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseRoleTag[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseRoleTagVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mstruct[0m ParseTreeRecord[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mstruct[0m ParseTreeRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   └── [0m[38;5;68mmod[0m symbol[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68menum[0m SymbolKind[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolKindVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolRecord[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68menum[0m SymbolRelationship[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolRelationshipVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolSpan[2m:[0m [38;5;107mpub[0m
+[2m│       └── [0m[38;5;68mstruct[0m SymbolSpanVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│           └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m├── [0m[38;5;68mmod[0m macros[2m:[0m [38;5;215mpub(crate)[0m
+[2m├── [0m[38;5;68mmod[0m query[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m directives[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m expression[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   ├── [0m[38;5;68mtype[0m LqQuery[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mtype[0m TextQueryAst[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m filters[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mmod[0m options[2m:[0m [38;5;167mpub(self)[0m
+[2m│   └── [0m[38;5;68mmod[0m requests[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m BridgeQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m BridgeQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m HistoryQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m HistoryQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m HybridQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m HybridQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m RuntimeMetadataQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m RuntimeMetadataQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneExplainQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneExplainQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneSourcegraphQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SearchPlaneSourcegraphQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SemanticQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SemanticQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m StructuralQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mstruct[0m StructuralQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│       ├── [0m[38;5;68mstruct[0m SymbolQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       └── [0m[38;5;68mstruct[0m SymbolQueryRequestVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│           └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m├── [0m[38;5;68mmod[0m repomap[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapActivateGenerationRequest[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapActivateGenerationRequestV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapChunkRecordDto[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapChunkRecordDtoV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapEntryDto[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapEntryDtoV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapFileIndexRecord[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapFileIndexRecordV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapFocusSubjectDto[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapFocusSubjectDtoV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapGraphEdgeDto[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapGraphEdgeDtoV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapMutationAck[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapMutationAckV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapQueryRequestV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapQueryResponseV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapSnapshotMeta[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapSnapshotMetaV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapSourceBundle[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapSourceBundleV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m│   ├── [0m[38;5;68mstruct[0m RepoMapSymbolRecordDto[2m:[0m [38;5;107mpub[0m
+[2m│   └── [0m[38;5;68mstruct[0m RepoMapSymbolRecordDtoV1Visitor[2m:[0m [38;5;167mpub(self)[0m
+[2m│       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m└── [0m[38;5;68mmod[0m results[2m:[0m [38;5;107mpub[0m
+[2m    ├── [0m[38;5;68mmod[0m commit_candidate[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m CommitCandidate[2m:[0m [38;5;107mpub[0m
+[2m    │   └── [0m[38;5;68mstruct[0m CommitCandidateVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    ├── [0m[38;5;68mmod[0m explanation[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68menum[0m EarlyStopReason[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m EarlyStopReasonVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68menum[0m EngineTouched[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m EngineTouchedVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68menum[0m PlannerStage[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m PlannerStageVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m PlannerTraceEntry[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m PlannerTraceEntryVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m SearchExplanation[2m:[0m [38;5;107mpub[0m
+[2m    │   └── [0m[38;5;68mstruct[0m SearchExplanationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    └── [0m[38;5;68mmod[0m query_responses[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m HybridQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m HybridQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneBridgeQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneBridgeQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneExplainQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneExplainQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneHistoryQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneHistoryQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneRuntimeMetadataQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneRuntimeMetadataQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneSourcegraphQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneSourcegraphQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneStructuralQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SearchPlaneStructuralQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mstruct[0m SemanticQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m SemanticQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m        │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m        ├── [0m[38;5;68mtype[0m SymbolQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        ├── [0m[38;5;68mstruct[0m TextQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m        └── [0m[38;5;68mstruct[0m TextQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m            └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m

@@ -1,0 +1,61 @@
+
+[2m[0m[38;5;68mcrate[0m quanta_index_core
+[2m├── [0m[38;5;68mmod[0m domains[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m channel[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m ChannelObserver[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m ChannelDispatchPolicy[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m hybrid[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m ExplainQueryPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m HybridQueryPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       ├── [0m[38;5;68mstruct[0m FuseAccumulator[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m HybridOrchestratorPolicy[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m lexical[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m LexicalQueryPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexBuildPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexOpenPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mstruct[0m LexicalReadiness[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m LexicalSearcher[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m LexicalPolicy[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m repomap[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoMapQueryPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoMapBundleIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoMapGenerationActivatePort[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m policy[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mstruct[0m RepoMapPolicy[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m RepoMapService[2m:[0m [38;5;107mpub[0m
+[2m│   ├── [0m[38;5;68mmod[0m semantic[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m SemanticQueryPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticIndexBuildPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticIndexOpenPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mstruct[0m SemanticReadiness[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m SemanticSearcher[2m:[0m [38;5;107mpub[0m
+[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │       └── [0m[38;5;68mstruct[0m SemanticPolicy[2m:[0m [38;5;107mpub[0m
+[2m│   └── [0m[38;5;68mmod[0m structural[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   ├── [0m[38;5;68mstruct[0m StructuralQueryRequest[2m:[0m [38;5;107mpub[0m
+[2m│       │   └── [0m[38;5;68mstruct[0m StructuralQueryResponse[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   ├── [0m[38;5;68menum[0m StructuralError[2m:[0m [38;5;107mpub[0m
+[2m│       │   ├── [0m[38;5;68mtrait[0m StructuralProducerPort[2m:[0m [38;5;107mpub[0m
+[2m│       │   └── [0m[38;5;68menum[0m StructuralReadiness[2m:[0m [38;5;107mpub[0m
+[2m│       ├── [0m[38;5;68mmod[0m policy[2m:[0m [38;5;167mpub(self)[0m
+[2m│       │   └── [0m[38;5;68mstruct[0m StructuralPolicy[2m:[0m [38;5;107mpub[0m
+[2m│       └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
+[2m│           └── [0m[38;5;68mstruct[0m StructuralService[2m:[0m [38;5;107mpub[0m
+[2m└── [0m[38;5;68mmod[0m error[2m:[0m [38;5;107mpub[0m
+[2m    └── [0m[38;5;68menum[0m CoreError[2m:[0m [38;5;107mpub[0m
