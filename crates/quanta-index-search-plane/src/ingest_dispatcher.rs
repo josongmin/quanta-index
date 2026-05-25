@@ -14,11 +14,12 @@ use std::sync::Arc;
 use quanta_index_channel::BundleChannelPublisher;
 use quanta_index_contract::{
     BatchIngestMode, BatchPublishReceipt, DeleteChunk, DeleteEmbedding, DeleteSymbol,
-    LexicalChannelOp, LexicalChunkMutation, LexicalFullBundle, LexicalIngestBatch,
-    LexicalSymbolMutation, RepoMapMutationAck, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneIpcError, SemanticChannelOp,
-    SemanticEmbeddingMutation, SemanticFullBundle, SemanticIngestBatch, UpsertChunk,
-    UpsertEmbedding, UpsertSymbol,
+    DeleteParseTree, DeleteRef, DeleteTag, DirtyIngestBatch, HistoryIngestBatch, LexicalChannelOp,
+    LexicalChunkMutation, LexicalFullBundle, LexicalIngestBatch, LexicalSymbolMutation,
+    RepoMapMutationAck, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneIpcError, SemanticChannelOp, SemanticEmbeddingMutation, SemanticFullBundle,
+    SemanticIngestBatch, StructuralIngestBatch, UpsertChunk, UpsertCommit, UpsertDiffHunk,
+    UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag, EvictDirty,
 };
 use quanta_index_core::{
     CoreError, LexicalIngestPort, RepoMapBundleIngestPort, SemanticIngestPort,
@@ -29,6 +30,21 @@ const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
+
+pub trait HistoryIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+}
+
+pub trait RuntimeMetadataIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+}
+
+pub trait StructuralIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &StructuralIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
+}
 
 // =============================================================================
 // Channel-backed adapters
@@ -228,6 +244,221 @@ impl SemanticIngestPort for ChannelSemanticIngestAdapter {
     }
 }
 
+pub struct ChannelHistoryIngestAdapter {
+    publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+}
+
+impl ChannelHistoryIngestAdapter {
+    #[must_use]
+    pub fn new(
+        publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+    ) -> Self {
+        Self { publisher }
+    }
+}
+
+impl HistoryIngestPort for ChannelHistoryIngestAdapter {
+    fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let mut receipt = BatchPublishReceipt::default();
+        for record in &batch.commits {
+            let seq = self
+                .publisher
+                .publish(LexicalChannelOp::UpsertCommit(UpsertCommit {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    payload: encode_cbor(record).map_err(|err| {
+                        CoreError::InvalidContract(format!(
+                            "history ingest: encode commit record: {err}"
+                        ))
+                    })?,
+                }))
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        for mutation in &batch.refs {
+            let op = match mutation {
+                quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+                    LexicalChannelOp::UpsertRef(UpsertRef {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        name: payload.name.clone(),
+                        sha: *payload.sha.as_bytes(),
+                    })
+                }
+                quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                    LexicalChannelOp::DeleteRef(DeleteRef {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        name: payload.name.clone(),
+                    })
+                }
+            };
+            let seq = self
+                .publisher
+                .publish(op)
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        for mutation in &batch.tags {
+            let op = match mutation {
+                quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+                    LexicalChannelOp::UpsertTag(UpsertTag {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        name: payload.name.clone(),
+                        sha: *payload.sha.as_bytes(),
+                    })
+                }
+                quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                    LexicalChannelOp::DeleteTag(DeleteTag {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        name: payload.name.clone(),
+                    })
+                }
+            };
+            let seq = self
+                .publisher
+                .publish(op)
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        for hunk in &batch.diff_hunks {
+            let seq = self
+                .publisher
+                .publish(LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    commit_sha: *hunk.commit_sha.as_bytes(),
+                    file_path: hunk.file_path.clone(),
+                    payload: encode_cbor(&hunk.record).map_err(|err| {
+                        CoreError::InvalidContract(format!(
+                            "history ingest: encode diff hunk record: {err}"
+                        ))
+                    })?,
+                }))
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        self.publisher
+            .flush()
+            .map_err(|err| channel_error_to_core(&err))?;
+        Ok(receipt)
+    }
+}
+
+pub struct ChannelRuntimeMetadataIngestAdapter {
+    publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+}
+
+impl ChannelRuntimeMetadataIngestAdapter {
+    #[must_use]
+    pub fn new(
+        publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+    ) -> Self {
+        Self { publisher }
+    }
+}
+
+impl RuntimeMetadataIngestPort for ChannelRuntimeMetadataIngestAdapter {
+    fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let mut receipt = BatchPublishReceipt::default();
+        for entry in &batch.entries {
+            let op = match entry {
+                quanta_index_contract::DirtyMutation::Upsert(record) => {
+                    LexicalChannelOp::UpsertDirty(UpsertDirty {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        doc_id: record.doc_id.clone(),
+                        applied_at_ms: record.applied_at_ms,
+                        payload_hash: record.payload_hash,
+                    })
+                }
+                quanta_index_contract::DirtyMutation::Delete(payload) => {
+                    LexicalChannelOp::EvictDirty(EvictDirty {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        doc_id: payload.doc_id.clone(),
+                    })
+                }
+            };
+            let seq = self
+                .publisher
+                .publish(op)
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        self.publisher
+            .flush()
+            .map_err(|err| channel_error_to_core(&err))?;
+        Ok(receipt)
+    }
+}
+
+pub struct ChannelStructuralIngestAdapter {
+    publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+}
+
+impl ChannelStructuralIngestAdapter {
+    #[must_use]
+    pub fn new(
+        publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
+    ) -> Self {
+        Self { publisher }
+    }
+}
+
+impl StructuralIngestPort for ChannelStructuralIngestAdapter {
+    fn publish_batch(
+        &self,
+        batch: &StructuralIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let mut receipt = BatchPublishReceipt::default();
+        for tree in &batch.trees {
+            let op = match tree {
+                quanta_index_contract::ParseTreeMutation::Upsert(payload) => {
+                    LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        chunk_id: payload.chunk_id.clone(),
+                        payload: encode_cbor(&payload.record).map_err(|err| {
+                            CoreError::InvalidContract(format!(
+                                "structural ingest: encode parse tree record: {err}"
+                            ))
+                        })?,
+                    })
+                }
+                quanta_index_contract::ParseTreeMutation::Delete(payload) => {
+                    LexicalChannelOp::DeleteParseTree(DeleteParseTree {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        chunk_id: payload.chunk_id.clone(),
+                    })
+                }
+            };
+            let seq = self
+                .publisher
+                .publish(op)
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.record(seq);
+        }
+        self.publisher
+            .flush()
+            .map_err(|err| channel_error_to_core(&err))?;
+        Ok(receipt)
+    }
+}
+
 // =============================================================================
 // Top-level dispatcher
 // =============================================================================
@@ -238,6 +469,9 @@ impl SemanticIngestPort for ChannelSemanticIngestAdapter {
 pub struct SearchPlaneIngestDispatcher {
     lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
     semantic: Arc<dyn SemanticIngestPort + Send + Sync>,
+    history: Arc<dyn HistoryIngestPort + Send + Sync>,
+    runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
+    structural: Arc<dyn StructuralIngestPort + Send + Sync>,
     repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
 }
 
@@ -246,11 +480,17 @@ impl SearchPlaneIngestDispatcher {
     pub fn new(
         lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
         semantic: Arc<dyn SemanticIngestPort + Send + Sync>,
+        history: Arc<dyn HistoryIngestPort + Send + Sync>,
+        runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
+        structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     ) -> Self {
         Self {
             lexical,
             semantic,
+            history,
+            runtime,
+            structural,
             repomap,
         }
     }
@@ -270,6 +510,24 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
+                match self.history.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
+                match self.runtime.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
+                match self.structural.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::StructuralReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
             SearchPlaneIngestIpcRequest::PublishRepoMapBundle(bundle) => {
                 match self.repomap.ingest_bundle(&bundle) {
                     Ok(()) => SearchPlaneIngestIpcResponse::RepoMapReceipt(RepoMapMutationAck {
@@ -280,6 +538,9 @@ impl SearchPlaneIngestDispatcher {
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
+            // dirty / structural batches now have first-class arms above.
+            // No fallback arm needed.
         }
     }
 }

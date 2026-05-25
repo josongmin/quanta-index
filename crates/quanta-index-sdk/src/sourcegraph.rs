@@ -97,7 +97,8 @@ impl<'a> SourcegraphQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Err(SdkError::Protocol(format!(
                 "expected sourcegraph query response, got {}",
                 QuantaIndex::query_response_kind(&other)
             ))),

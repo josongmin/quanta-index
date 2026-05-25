@@ -655,6 +655,68 @@ impl<'de> Deserialize<'de> for HistoryQueryRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeMetadataQueryRequest {
+    pub text_query: TextQueryRequest,
+}
+
+const RUNTIME_METADATA_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
+
+impl Serialize for RuntimeMetadataQueryRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeMetadataQueryRequest", 1)?;
+        state.serialize_field("text_query", &self.text_query)?;
+        state.end()
+    }
+}
+
+struct RuntimeMetadataQueryRequestVisitor;
+
+impl<'de> Visitor<'de> for RuntimeMetadataQueryRequestVisitor {
+    type Value = RuntimeMetadataQueryRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeMetadataQueryRequest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut text_query: Option<TextQueryRequest> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "text_query" => text_query = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeMetadataQueryRequest {
+            text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeMetadataQueryRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeMetadataQueryRequest",
+            RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
+            RuntimeMetadataQueryRequestVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralQueryRequest {
     pub text_query: TextQueryRequest,
 }

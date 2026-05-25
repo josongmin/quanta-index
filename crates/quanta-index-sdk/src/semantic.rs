@@ -127,14 +127,29 @@ impl<'a> SemanticNamespace<'a> {
         Self { client }
     }
 
+    /// Sugar for `client.ns::<SemanticNs>().query()`. See QI-NS-01.
     #[must_use]
     pub fn query(&self) -> SemanticQueryBuilder<'a> {
-        SemanticQueryBuilder::new(self.client)
+        <SemanticNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// QI-SDK-01: publish a semantic batch through the typed ingest IPC.
-    /// See [`crate::LexicalNamespace::publish`] for the lexical counterpart.
+    /// Sugar for `client.ns::<SemanticNs>().publish(batch)`. See QI-NS-01.
     pub fn publish(&self, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
+        <SemanticNs as crate::NamespaceIngest>::publish(self.client, batch)
+    }
+}
+
+/// QI-NS-01: marker type for the built-in semantic namespace.
+pub struct SemanticNs;
+
+impl crate::NamespaceIngest for SemanticNs {
+    type Batch = SemanticBatch;
+    type Receipt = BatchReceipt;
+
+    fn publish(
+        client: &QuantaIndex,
+        batch: &SemanticBatch,
+    ) -> Result<BatchReceipt, SdkError> {
         let wire_batch = SemanticIngestBatch {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -144,20 +159,29 @@ impl<'a> SemanticNamespace<'a> {
             embeddings: batch.embeddings.iter().map(map_embedding).collect(),
             seal: batch.seal,
         };
-        let response =
-            self.client
-                .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
-                    wire_batch,
-                ))?;
+        let response = client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishSemanticBatch(wire_batch),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::SemanticReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected semantic receipt, got {}",
                 QuantaIndex::ingest_response_kind(&other)
             ))),
         }
+    }
+}
+
+impl crate::NamespaceQuery for SemanticNs {
+    type QueryBuilder<'a> = SemanticQueryBuilder<'a>;
+
+    fn query<'a>(client: &'a QuantaIndex) -> SemanticQueryBuilder<'a> {
+        SemanticQueryBuilder::new(client)
     }
 }
 
@@ -290,7 +314,9 @@ impl<'a> SemanticQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected semantic query response, got {}",
                     QuantaIndex::query_response_kind(&other)

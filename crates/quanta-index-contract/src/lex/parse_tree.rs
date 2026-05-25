@@ -27,6 +27,86 @@ use serde::{
 
 use super::lang::LangId;
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParseRoleTag {
+    pub role: Box<str>,
+    pub byte_start: u32,
+    pub byte_end: u32,
+}
+
+const PARSE_ROLE_TAG_FIELDS: &[&str] = &["role", "byte_start", "byte_end"];
+
+impl Serialize for ParseRoleTag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ParseRoleTag", 3)?;
+        state.serialize_field("role", self.role.as_ref())?;
+        state.serialize_field("byte_start", &self.byte_start)?;
+        state.serialize_field("byte_end", &self.byte_end)?;
+        state.end()
+    }
+}
+
+struct ParseRoleTagVisitor;
+
+impl<'de> Visitor<'de> for ParseRoleTagVisitor {
+    type Value = ParseRoleTag;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ParseRoleTag map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut role: Option<String> = None;
+        let mut byte_start: Option<u32> = None;
+        let mut byte_end: Option<u32> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "role" => {
+                    if role.is_some() {
+                        return Err(de::Error::duplicate_field("role"));
+                    }
+                    role = Some(map.next_value()?);
+                }
+                "byte_start" => {
+                    if byte_start.is_some() {
+                        return Err(de::Error::duplicate_field("byte_start"));
+                    }
+                    byte_start = Some(map.next_value()?);
+                }
+                "byte_end" => {
+                    if byte_end.is_some() {
+                        return Err(de::Error::duplicate_field("byte_end"));
+                    }
+                    byte_end = Some(map.next_value()?);
+                }
+                other => return Err(de::Error::unknown_field(other, PARSE_ROLE_TAG_FIELDS)),
+            }
+        }
+        Ok(ParseRoleTag {
+            role: role
+                .ok_or_else(|| de::Error::missing_field("role"))?
+                .into_boxed_str(),
+            byte_start: byte_start.ok_or_else(|| de::Error::missing_field("byte_start"))?,
+            byte_end: byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ParseRoleTag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("ParseRoleTag", PARSE_ROLE_TAG_FIELDS, ParseRoleTagVisitor)
+    }
+}
+
 /// Producer-authored parse tree node.
 ///
 /// `kind` is a producer-authoritative grammar node name (e.g. `"function_item"`,
@@ -137,20 +217,31 @@ pub struct ParseTreeRecord {
     pub lang: LangId,
     pub root: ParseNode,
     pub source_hash: [u8; 32],
+    pub role_tag_schema_version: u32,
+    pub role_tags: Vec<ParseRoleTag>,
 }
 
-const PARSE_TREE_RECORD_FIELDS: &[&str] = &["wire_version", "lang", "root", "source_hash"];
+const PARSE_TREE_RECORD_FIELDS: &[&str] = &[
+    "wire_version",
+    "lang",
+    "root",
+    "source_hash",
+    "role_tag_schema_version",
+    "role_tags",
+];
 
 impl Serialize for ParseTreeRecord {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ParseTreeRecord", 4)?;
+        let mut state = serializer.serialize_struct("ParseTreeRecord", 6)?;
         state.serialize_field("wire_version", &self.wire_version)?;
         state.serialize_field("lang", &self.lang)?;
         state.serialize_field("root", &self.root)?;
         state.serialize_field("source_hash", &self.source_hash)?;
+        state.serialize_field("role_tag_schema_version", &self.role_tag_schema_version)?;
+        state.serialize_field("role_tags", &self.role_tags)?;
         state.end()
     }
 }
@@ -172,6 +263,8 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
         let mut lang: Option<LangId> = None;
         let mut root: Option<ParseNode> = None;
         let mut source_hash: Option<[u8; 32]> = None;
+        let mut role_tag_schema_version: Option<u32> = None;
+        let mut role_tags: Option<Vec<ParseRoleTag>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "wire_version" => {
@@ -198,6 +291,18 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
                     }
                     source_hash = Some(map.next_value()?);
                 }
+                "role_tag_schema_version" => {
+                    if role_tag_schema_version.is_some() {
+                        return Err(de::Error::duplicate_field("role_tag_schema_version"));
+                    }
+                    role_tag_schema_version = Some(map.next_value()?);
+                }
+                "role_tags" => {
+                    if role_tags.is_some() {
+                        return Err(de::Error::duplicate_field("role_tags"));
+                    }
+                    role_tags = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, PARSE_TREE_RECORD_FIELDS)),
             }
         }
@@ -210,6 +315,9 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
             lang,
             root,
             source_hash,
+            role_tag_schema_version: role_tag_schema_version
+                .ok_or_else(|| de::Error::missing_field("role_tag_schema_version"))?,
+            role_tags: role_tags.ok_or_else(|| de::Error::missing_field("role_tags"))?,
         })
     }
 }

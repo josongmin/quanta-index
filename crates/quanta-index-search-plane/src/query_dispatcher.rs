@@ -436,6 +436,14 @@ impl SearchPlaneDispatcher {
                 Ok(resp) => SearchPlaneQueryIpcResponse::Sourcegraph(resp),
                 Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
             },
+            // QI-RT-02 (in-flight): runtime-metadata query path is defined
+            // in the contract but the dispatcher implementation is not yet
+            // wired. Fail-closed with NOT_IMPLEMENTED per CLAUDE.md.
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(_) => {
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(CoreError::NotImplemented(
+                    "query: runtime-metadata path awaiting QI-RT-02 wiring".to_string(),
+                )))
+            }
         }
     }
 
@@ -943,7 +951,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected repo-map query response, got {other:?}").into())
             }
         }
@@ -1243,7 +1253,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
         }
@@ -1300,7 +1312,8 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => {
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Sourcegraph response, got {other:?}").into());
             }
         }
@@ -1368,7 +1381,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Bridge response, got {other:?}").into());
             }
         }
@@ -1434,7 +1449,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Semantic response, got {other:?}").into());
             }
         }
@@ -1506,7 +1523,9 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Hybrid response, got {other:?}").into());
             }
         }

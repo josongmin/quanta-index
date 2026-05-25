@@ -13,8 +13,9 @@ use crate::{
     RepoMapQueryResponse, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
     SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneSourcegraphQueryRequest, SearchPlaneSourcegraphQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryRequest,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
+    RuntimeMetadataQueryRequest, SemanticQueryRequest, SemanticQueryResponse,
     StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse,
 };
@@ -27,6 +28,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Semantic",
     "Hybrid",
     "History",
+    "RuntimeMetadata",
     "Structural",
     "Bridge",
     "RepoMapQuery",
@@ -39,6 +41,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Semantic",
     "Hybrid",
     "History",
+    "RuntimeMetadata",
     "Structural",
     "Bridge",
     "RepoMapQuery",
@@ -73,6 +76,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Semantic(SemanticQueryRequest),
     Hybrid(HybridQueryRequest),
     History(HistoryQueryRequest),
+    RuntimeMetadata(RuntimeMetadataQueryRequest),
     Structural(StructuralQueryRequest),
     Bridge(BridgeQueryRequest),
     RepoMapQuery(RepoMapQueryRequest),
@@ -93,6 +97,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Semantic(SemanticQueryResponse),
     Hybrid(HybridQueryResponse),
     History(SearchPlaneHistoryQueryResponse),
+    RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse),
     Structural(SearchPlaneStructuralQueryResponse),
     Bridge(SearchPlaneBridgeQueryResponse),
     RepoMapQuery(RepoMapQueryResponse),
@@ -296,6 +301,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::RuntimeMetadata(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "RuntimeMetadata",
+                payload,
+                serializer,
+            ),
             Self::Structural(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "Structural",
@@ -366,6 +377,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                         "Semantic" => SearchPlaneQueryIpcRequest::Semantic(map.next_value()?),
                         "Hybrid" => SearchPlaneQueryIpcRequest::Hybrid(map.next_value()?),
                         "History" => SearchPlaneQueryIpcRequest::History(map.next_value()?),
+                        "RuntimeMetadata" => {
+                            SearchPlaneQueryIpcRequest::RuntimeMetadata(map.next_value()?)
+                        }
                         "Structural" => SearchPlaneQueryIpcRequest::Structural(map.next_value()?),
                         "Bridge" => SearchPlaneQueryIpcRequest::Bridge(map.next_value()?),
                         "RepoMapQuery" => {
@@ -498,6 +512,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::RuntimeMetadata(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "RuntimeMetadata",
+                payload,
+                serializer,
+            ),
             Self::Structural(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Structural",
@@ -574,6 +594,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                         "Semantic" => SearchPlaneQueryIpcResponse::Semantic(map.next_value()?),
                         "Hybrid" => SearchPlaneQueryIpcResponse::Hybrid(map.next_value()?),
                         "History" => SearchPlaneQueryIpcResponse::History(map.next_value()?),
+                        "RuntimeMetadata" => {
+                            SearchPlaneQueryIpcResponse::RuntimeMetadata(map.next_value()?)
+                        }
                         "Structural" => SearchPlaneQueryIpcResponse::Structural(map.next_value()?),
                         "Bridge" => SearchPlaneQueryIpcResponse::Bridge(map.next_value()?),
                         "RepoMapQuery" => {

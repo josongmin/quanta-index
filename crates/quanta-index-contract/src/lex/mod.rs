@@ -16,6 +16,7 @@
 //! `impl<'de> Deserialize<'de>`. No proc-macro derives.
 
 pub mod dirty;
+pub mod diff;
 pub mod error_code;
 pub mod explanation;
 pub mod history;
@@ -24,9 +25,10 @@ pub mod parse_tree;
 pub mod symbol;
 
 pub use dirty::DirtyRecord;
+pub use diff::DiffHunkRecord;
 pub use error_code::LexicalErrorCode;
 pub use explanation::{ExplanationRow, SearchExplanation};
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};
 pub use lang::LangId;
-pub use parse_tree::{ParseNode, ParseTreeRecord};
+pub use parse_tree::{ParseNode, ParseRoleTag, ParseTreeRecord};
 pub use symbol::{SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan};

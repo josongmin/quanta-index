@@ -33,7 +33,9 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::lex::SymbolRecord;
+use crate::lex::{
+    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, ParseTreeRecord, SymbolRecord,
+};
 use crate::{
     ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, ManifestGeneration, RepoId,
     RepoMapMutationAck, RepoMapSourceBundle, RevisionId, SymbolId,
@@ -1044,6 +1046,841 @@ impl<'de> Deserialize<'de> for SemanticIngestBatch {
 }
 
 // =============================================================================
+// History ingest batch
+// =============================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryRefUpsert {
+    pub name: Box<str>,
+    pub sha: CommitSha,
+}
+
+const HISTORY_REF_UPSERT_FIELDS: &[&str] = &["name", "sha"];
+
+impl Serialize for HistoryRefUpsert {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HistoryRefUpsert", 2)?;
+        state.serialize_field("name", self.name.as_ref())?;
+        state.serialize_field("sha", &self.sha)?;
+        state.end()
+    }
+}
+
+struct HistoryRefUpsertVisitor;
+
+impl<'de> Visitor<'de> for HistoryRefUpsertVisitor {
+    type Value = HistoryRefUpsert;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryRefUpsert map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut name: Option<String> = None;
+        let mut sha: Option<CommitSha> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => {
+                    if name.is_some() {
+                        return Err(de::Error::duplicate_field("name"));
+                    }
+                    name = Some(map.next_value()?);
+                }
+                "sha" => {
+                    if sha.is_some() {
+                        return Err(de::Error::duplicate_field("sha"));
+                    }
+                    sha = Some(map.next_value()?);
+                }
+                other => return Err(de::Error::unknown_field(other, HISTORY_REF_UPSERT_FIELDS)),
+            }
+        }
+        Ok(HistoryRefUpsert {
+            name: name
+                .ok_or_else(|| de::Error::missing_field("name"))?
+                .into_boxed_str(),
+            sha: sha.ok_or_else(|| de::Error::missing_field("sha"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryRefUpsert {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HistoryRefUpsert",
+            HISTORY_REF_UPSERT_FIELDS,
+            HistoryRefUpsertVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryRefDelete {
+    pub name: Box<str>,
+}
+
+const HISTORY_REF_DELETE_FIELDS: &[&str] = &["name"];
+
+impl Serialize for HistoryRefDelete {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HistoryRefDelete", 1)?;
+        state.serialize_field("name", self.name.as_ref())?;
+        state.end()
+    }
+}
+
+struct HistoryRefDeleteVisitor;
+
+impl<'de> Visitor<'de> for HistoryRefDeleteVisitor {
+    type Value = HistoryRefDelete;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryRefDelete map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut name: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => {
+                    if name.is_some() {
+                        return Err(de::Error::duplicate_field("name"));
+                    }
+                    name = Some(map.next_value()?);
+                }
+                other => return Err(de::Error::unknown_field(other, HISTORY_REF_DELETE_FIELDS)),
+            }
+        }
+        Ok(HistoryRefDelete {
+            name: name
+                .ok_or_else(|| de::Error::missing_field("name"))?
+                .into_boxed_str(),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryRefDelete {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HistoryRefDelete",
+            HISTORY_REF_DELETE_FIELDS,
+            HistoryRefDeleteVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoryRefMutation {
+    Upsert(HistoryRefUpsert),
+    Delete(HistoryRefDelete),
+}
+
+const HISTORY_REF_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
+
+impl Serialize for HistoryRefMutation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Upsert(payload) => serializer.serialize_newtype_variant(
+                "HistoryRefMutation",
+                0,
+                "Upsert",
+                payload,
+            ),
+            Self::Delete(payload) => serializer.serialize_newtype_variant(
+                "HistoryRefMutation",
+                1,
+                "Delete",
+                payload,
+            ),
+        }
+    }
+}
+
+struct HistoryRefMutationVisitor;
+
+impl<'de> Visitor<'de> for HistoryRefMutationVisitor {
+    type Value = HistoryRefMutation;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryRefMutation enum")
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::EnumAccess<'de>,
+    {
+        let (tag, variant) = data.variant::<String>()?;
+        match tag.as_str() {
+            "Upsert" => Ok(HistoryRefMutation::Upsert(variant.newtype_variant()?)),
+            "Delete" => Ok(HistoryRefMutation::Delete(variant.newtype_variant()?)),
+            other => Err(de::Error::unknown_variant(other, HISTORY_REF_MUTATION_VARIANTS)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryRefMutation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_enum(
+            "HistoryRefMutation",
+            HISTORY_REF_MUTATION_VARIANTS,
+            HistoryRefMutationVisitor,
+        )
+    }
+}
+
+pub type HistoryTagUpsert = HistoryRefUpsert;
+pub type HistoryTagDelete = HistoryRefDelete;
+pub type HistoryTagMutation = HistoryRefMutation;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryDiffHunkUpsert {
+    pub commit_sha: CommitSha,
+    pub file_path: Box<str>,
+    pub record: DiffHunkRecord,
+}
+
+const HISTORY_DIFF_HUNK_UPSERT_FIELDS: &[&str] = &["commit_sha", "file_path", "record"];
+
+impl Serialize for HistoryDiffHunkUpsert {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HistoryDiffHunkUpsert", 3)?;
+        state.serialize_field("commit_sha", &self.commit_sha)?;
+        state.serialize_field("file_path", self.file_path.as_ref())?;
+        state.serialize_field("record", &self.record)?;
+        state.end()
+    }
+}
+
+struct HistoryDiffHunkUpsertVisitor;
+
+impl<'de> Visitor<'de> for HistoryDiffHunkUpsertVisitor {
+    type Value = HistoryDiffHunkUpsert;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryDiffHunkUpsert map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut commit_sha: Option<CommitSha> = None;
+        let mut file_path: Option<String> = None;
+        let mut record: Option<DiffHunkRecord> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "commit_sha" => {
+                    if commit_sha.is_some() {
+                        return Err(de::Error::duplicate_field("commit_sha"));
+                    }
+                    commit_sha = Some(map.next_value()?);
+                }
+                "file_path" => {
+                    if file_path.is_some() {
+                        return Err(de::Error::duplicate_field("file_path"));
+                    }
+                    file_path = Some(map.next_value()?);
+                }
+                "record" => {
+                    if record.is_some() {
+                        return Err(de::Error::duplicate_field("record"));
+                    }
+                    record = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        HISTORY_DIFF_HUNK_UPSERT_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(HistoryDiffHunkUpsert {
+            commit_sha: commit_sha.ok_or_else(|| de::Error::missing_field("commit_sha"))?,
+            file_path: file_path
+                .ok_or_else(|| de::Error::missing_field("file_path"))?
+                .into_boxed_str(),
+            record: record.ok_or_else(|| de::Error::missing_field("record"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryDiffHunkUpsert {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HistoryDiffHunkUpsert",
+            HISTORY_DIFF_HUNK_UPSERT_FIELDS,
+            HistoryDiffHunkUpsertVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub commits: Vec<CommitRecord>,
+    pub refs: Vec<HistoryRefMutation>,
+    pub tags: Vec<HistoryTagMutation>,
+    pub diff_hunks: Vec<HistoryDiffHunkUpsert>,
+}
+
+const HISTORY_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "commits",
+    "refs",
+    "tags",
+    "diff_hunks",
+];
+
+impl Serialize for HistoryIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HistoryIngestBatch", 7)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("commits", &self.commits)?;
+        state.serialize_field("refs", &self.refs)?;
+        state.serialize_field("tags", &self.tags)?;
+        state.serialize_field("diff_hunks", &self.diff_hunks)?;
+        state.end()
+    }
+}
+
+struct HistoryIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
+    type Value = HistoryIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HistoryIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut commits: Option<Vec<CommitRecord>> = None;
+        let mut refs: Option<Vec<HistoryRefMutation>> = None;
+        let mut tags: Option<Vec<HistoryTagMutation>> = None;
+        let mut diff_hunks: Option<Vec<HistoryDiffHunkUpsert>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "commits" => commits = Some(map.next_value()?),
+                "refs" => refs = Some(map.next_value()?),
+                "tags" => tags = Some(map.next_value()?),
+                "diff_hunks" => diff_hunks = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, HISTORY_INGEST_BATCH_FIELDS)),
+            }
+        }
+        Ok(HistoryIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            commits: commits.ok_or_else(|| de::Error::missing_field("commits"))?,
+            refs: refs.ok_or_else(|| de::Error::missing_field("refs"))?,
+            tags: tags.ok_or_else(|| de::Error::missing_field("tags"))?,
+            diff_hunks: diff_hunks.ok_or_else(|| de::Error::missing_field("diff_hunks"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "HistoryIngestBatch",
+            HISTORY_INGEST_BATCH_FIELDS,
+            HistoryIngestBatchVisitor,
+        )
+    }
+}
+
+// =============================================================================
+// Runtime dirty ingest batch
+// =============================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirtyDelete {
+    pub doc_id: ChunkId,
+}
+
+const DIRTY_DELETE_FIELDS: &[&str] = &["doc_id"];
+
+impl Serialize for DirtyDelete {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("DirtyDelete", 1)?;
+        state.serialize_field("doc_id", &self.doc_id)?;
+        state.end()
+    }
+}
+
+struct DirtyDeleteVisitor;
+
+impl<'de> Visitor<'de> for DirtyDeleteVisitor {
+    type Value = DirtyDelete;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a DirtyDelete map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut doc_id: Option<ChunkId> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "doc_id" => doc_id = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, DIRTY_DELETE_FIELDS)),
+            }
+        }
+        Ok(DirtyDelete {
+            doc_id: doc_id.ok_or_else(|| de::Error::missing_field("doc_id"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for DirtyDelete {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("DirtyDelete", DIRTY_DELETE_FIELDS, DirtyDeleteVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DirtyMutation {
+    Upsert(DirtyRecord),
+    Delete(DirtyDelete),
+}
+
+const DIRTY_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
+
+impl Serialize for DirtyMutation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Upsert(payload) => {
+                serializer.serialize_newtype_variant("DirtyMutation", 0, "Upsert", payload)
+            }
+            Self::Delete(payload) => {
+                serializer.serialize_newtype_variant("DirtyMutation", 1, "Delete", payload)
+            }
+        }
+    }
+}
+
+struct DirtyMutationVisitor;
+
+impl<'de> Visitor<'de> for DirtyMutationVisitor {
+    type Value = DirtyMutation;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a DirtyMutation enum")
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::EnumAccess<'de>,
+    {
+        let (tag, variant) = data.variant::<String>()?;
+        match tag.as_str() {
+            "Upsert" => Ok(DirtyMutation::Upsert(variant.newtype_variant()?)),
+            "Delete" => Ok(DirtyMutation::Delete(variant.newtype_variant()?)),
+            other => Err(de::Error::unknown_variant(other, DIRTY_MUTATION_VARIANTS)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DirtyMutation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_enum("DirtyMutation", DIRTY_MUTATION_VARIANTS, DirtyMutationVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirtyIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub entries: Vec<DirtyMutation>,
+}
+
+const DIRTY_INGEST_BATCH_FIELDS: &[&str] = &["repo_id", "revision_id", "generation", "entries"];
+
+impl Serialize for DirtyIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("DirtyIngestBatch", 4)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct DirtyIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for DirtyIngestBatchVisitor {
+    type Value = DirtyIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a DirtyIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut entries: Option<Vec<DirtyMutation>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, DIRTY_INGEST_BATCH_FIELDS)),
+            }
+        }
+        Ok(DirtyIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for DirtyIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "DirtyIngestBatch",
+            DIRTY_INGEST_BATCH_FIELDS,
+            DirtyIngestBatchVisitor,
+        )
+    }
+}
+
+// =============================================================================
+// Structural ingest batch
+// =============================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseTreeUpsert {
+    pub chunk_id: ChunkId,
+    pub record: ParseTreeRecord,
+}
+
+const PARSE_TREE_UPSERT_FIELDS: &[&str] = &["chunk_id", "record"];
+
+impl Serialize for ParseTreeUpsert {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ParseTreeUpsert", 2)?;
+        state.serialize_field("chunk_id", &self.chunk_id)?;
+        state.serialize_field("record", &self.record)?;
+        state.end()
+    }
+}
+
+struct ParseTreeUpsertVisitor;
+
+impl<'de> Visitor<'de> for ParseTreeUpsertVisitor {
+    type Value = ParseTreeUpsert;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ParseTreeUpsert map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut chunk_id: Option<ChunkId> = None;
+        let mut record: Option<ParseTreeRecord> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "chunk_id" => chunk_id = Some(map.next_value()?),
+                "record" => record = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, PARSE_TREE_UPSERT_FIELDS)),
+            }
+        }
+        Ok(ParseTreeUpsert {
+            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
+            record: record.ok_or_else(|| de::Error::missing_field("record"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ParseTreeUpsert {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ParseTreeUpsert",
+            PARSE_TREE_UPSERT_FIELDS,
+            ParseTreeUpsertVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseTreeDelete {
+    pub chunk_id: ChunkId,
+}
+
+const PARSE_TREE_DELETE_FIELDS: &[&str] = &["chunk_id"];
+
+impl Serialize for ParseTreeDelete {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ParseTreeDelete", 1)?;
+        state.serialize_field("chunk_id", &self.chunk_id)?;
+        state.end()
+    }
+}
+
+struct ParseTreeDeleteVisitor;
+
+impl<'de> Visitor<'de> for ParseTreeDeleteVisitor {
+    type Value = ParseTreeDelete;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ParseTreeDelete map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut chunk_id: Option<ChunkId> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "chunk_id" => chunk_id = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, PARSE_TREE_DELETE_FIELDS)),
+            }
+        }
+        Ok(ParseTreeDelete {
+            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ParseTreeDelete {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ParseTreeDelete",
+            PARSE_TREE_DELETE_FIELDS,
+            ParseTreeDeleteVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParseTreeMutation {
+    Upsert(ParseTreeUpsert),
+    Delete(ParseTreeDelete),
+}
+
+const PARSE_TREE_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
+
+impl Serialize for ParseTreeMutation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Upsert(payload) => {
+                serializer.serialize_newtype_variant("ParseTreeMutation", 0, "Upsert", payload)
+            }
+            Self::Delete(payload) => {
+                serializer.serialize_newtype_variant("ParseTreeMutation", 1, "Delete", payload)
+            }
+        }
+    }
+}
+
+struct ParseTreeMutationVisitor;
+
+impl<'de> Visitor<'de> for ParseTreeMutationVisitor {
+    type Value = ParseTreeMutation;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ParseTreeMutation enum")
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::EnumAccess<'de>,
+    {
+        let (tag, variant) = data.variant::<String>()?;
+        match tag.as_str() {
+            "Upsert" => Ok(ParseTreeMutation::Upsert(variant.newtype_variant()?)),
+            "Delete" => Ok(ParseTreeMutation::Delete(variant.newtype_variant()?)),
+            other => Err(de::Error::unknown_variant(other, PARSE_TREE_MUTATION_VARIANTS)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ParseTreeMutation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_enum(
+            "ParseTreeMutation",
+            PARSE_TREE_MUTATION_VARIANTS,
+            ParseTreeMutationVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StructuralIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub trees: Vec<ParseTreeMutation>,
+}
+
+const STRUCTURAL_INGEST_BATCH_FIELDS: &[&str] = &["repo_id", "revision_id", "generation", "trees"];
+
+impl Serialize for StructuralIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("StructuralIngestBatch", 4)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("trees", &self.trees)?;
+        state.end()
+    }
+}
+
+struct StructuralIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
+    type Value = StructuralIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a StructuralIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut trees: Option<Vec<ParseTreeMutation>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "trees" => trees = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(other, STRUCTURAL_INGEST_BATCH_FIELDS));
+                }
+            }
+        }
+        Ok(StructuralIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            trees: trees.ok_or_else(|| de::Error::missing_field("trees"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StructuralIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "StructuralIngestBatch",
+            STRUCTURAL_INGEST_BATCH_FIELDS,
+            StructuralIngestBatchVisitor,
+        )
+    }
+}
+
+// =============================================================================
 // BatchPublishReceipt
 // =============================================================================
 
@@ -1170,12 +2007,18 @@ impl BatchPublishReceipt {
 pub enum SearchPlaneIngestIpcRequest {
     PublishLexicalBatch(LexicalIngestBatch),
     PublishSemanticBatch(SemanticIngestBatch),
+    PublishHistoryBatch(HistoryIngestBatch),
+    PublishDirtyBatch(DirtyIngestBatch),
+    PublishStructuralBatch(StructuralIngestBatch),
     PublishRepoMapBundle(RepoMapSourceBundle),
 }
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishLexicalBatch",
     "PublishSemanticBatch",
+    "PublishHistoryBatch",
+    "PublishDirtyBatch",
+    "PublishStructuralBatch",
     "PublishRepoMapBundle",
 ];
 
@@ -1197,9 +2040,27 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishSemanticBatch",
                 payload,
             ),
-            Self::PublishRepoMapBundle(payload) => serializer.serialize_newtype_variant(
+            Self::PublishHistoryBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 2,
+                "PublishHistoryBatch",
+                payload,
+            ),
+            Self::PublishDirtyBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                3,
+                "PublishDirtyBatch",
+                payload,
+            ),
+            Self::PublishStructuralBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                4,
+                "PublishStructuralBatch",
+                payload,
+            ),
+            Self::PublishRepoMapBundle(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                5,
                 "PublishRepoMapBundle",
                 payload,
             ),
@@ -1226,6 +2087,15 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
                 variant.newtype_variant()?,
             )),
             "PublishSemanticBatch" => Ok(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
+                variant.newtype_variant()?,
+            )),
+            "PublishHistoryBatch" => Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
+                variant.newtype_variant()?,
+            )),
+            "PublishDirtyBatch" => Ok(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
+                variant.newtype_variant()?,
+            )),
+            "PublishStructuralBatch" => Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
                 variant.newtype_variant()?,
             )),
             "PublishRepoMapBundle" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(
@@ -1257,6 +2127,9 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 pub enum SearchPlaneIngestIpcResponse {
     LexicalReceipt(BatchPublishReceipt),
     SemanticReceipt(BatchPublishReceipt),
+    HistoryReceipt(BatchPublishReceipt),
+    DirtyReceipt(BatchPublishReceipt),
+    StructuralReceipt(BatchPublishReceipt),
     RepoMapReceipt(RepoMapMutationAck),
     Error(SearchPlaneIpcError),
 }
@@ -1264,6 +2137,9 @@ pub enum SearchPlaneIngestIpcResponse {
 const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "LexicalReceipt",
     "SemanticReceipt",
+    "HistoryReceipt",
+    "DirtyReceipt",
+    "StructuralReceipt",
     "RepoMapReceipt",
     "Error",
 ];
@@ -1286,15 +2162,33 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "SemanticReceipt",
                 payload,
             ),
-            Self::RepoMapReceipt(payload) => serializer.serialize_newtype_variant(
+            Self::HistoryReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 2,
+                "HistoryReceipt",
+                payload,
+            ),
+            Self::DirtyReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                3,
+                "DirtyReceipt",
+                payload,
+            ),
+            Self::StructuralReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                4,
+                "StructuralReceipt",
+                payload,
+            ),
+            Self::RepoMapReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                5,
                 "RepoMapReceipt",
                 payload,
             ),
             Self::Error(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                3,
+                6,
                 "Error",
                 payload,
             ),
@@ -1321,6 +2215,15 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
                 variant.newtype_variant()?,
             )),
             "SemanticReceipt" => Ok(SearchPlaneIngestIpcResponse::SemanticReceipt(
+                variant.newtype_variant()?,
+            )),
+            "HistoryReceipt" => Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(
+                variant.newtype_variant()?,
+            )),
+            "DirtyReceipt" => Ok(SearchPlaneIngestIpcResponse::DirtyReceipt(
+                variant.newtype_variant()?,
+            )),
+            "StructuralReceipt" => Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(
                 variant.newtype_variant()?,
             )),
             "RepoMapReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMapReceipt(
@@ -1622,7 +2525,10 @@ impl<'de> Deserialize<'de> for ByteBuf {
 )]
 mod tests {
     use super::*;
-    use crate::lex::LangId;
+    use crate::lex::{
+        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
+        ParseTreeRecord,
+    };
     use crate::{ChunkRecord, EmbeddingRecord, RepoRelativePath};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -1684,6 +2590,69 @@ mod tests {
         }
     }
 
+    fn fixture_commit_sha() -> CommitSha {
+        CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567")
+            .expect("fixture sha must be valid")
+    }
+
+    fn fixture_commit_record() -> CommitRecord {
+        CommitRecord {
+            wire_version: 1,
+            sha: fixture_commit_sha(),
+            parents: Vec::new(),
+            author_time_ms: 11,
+            committer_time_ms: 12,
+            applied_at_ms: 13,
+            author: "alice".to_string().into_boxed_str(),
+            committer: "alice".to_string().into_boxed_str(),
+            message: "fix: sample".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: vec!["v1.0.0".to_string().into_boxed_str()],
+        }
+    }
+
+    fn fixture_diff_record() -> DiffHunkRecord {
+        DiffHunkRecord {
+            wire_version: 1,
+            hunk_header: "@@ -1,1 +1,2 @@".to_string().into_boxed_str(),
+            side: crate::DiffHunkSide::After,
+            added_text: "todo!".to_string().into_boxed_str(),
+            removed_text: "".to_string().into_boxed_str(),
+            touched_text: "todo!".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 5,
+        }
+    }
+
+    fn fixture_dirty_record() -> DirtyRecord {
+        DirtyRecord {
+            wire_version: 1,
+            doc_id: fixture_chunk_id(),
+            applied_at_ms: 55,
+            payload_hash: [7; 32],
+        }
+    }
+
+    fn fixture_parse_tree_record() -> ParseTreeRecord {
+        ParseTreeRecord {
+            wire_version: 1,
+            lang: LangId::Rust,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+            source_hash: [9; 32],
+            role_tag_schema_version: 1,
+            role_tags: vec![ParseRoleTag {
+                role: "expr".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 4,
+            }],
+        }
+    }
+
     fn fixture_lexical_batch() -> LexicalIngestBatch {
         LexicalIngestBatch {
             repo_id: fixture_repo_id(),
@@ -1722,6 +2691,59 @@ mod tests {
                 }),
             ],
             seal: false,
+        }
+    }
+
+    fn fixture_history_batch() -> HistoryIngestBatch {
+        HistoryIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            commits: vec![fixture_commit_record()],
+            refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "refs/heads/main".to_string().into_boxed_str(),
+                sha: fixture_commit_sha(),
+            })],
+            tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "v1.0.0".to_string().into_boxed_str(),
+                sha: fixture_commit_sha(),
+            })],
+            diff_hunks: vec![HistoryDiffHunkUpsert {
+                commit_sha: fixture_commit_sha(),
+                file_path: "src/lib.rs".to_string().into_boxed_str(),
+                record: fixture_diff_record(),
+            }],
+        }
+    }
+
+    fn fixture_dirty_batch() -> DirtyIngestBatch {
+        DirtyIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            entries: vec![
+                DirtyMutation::Upsert(fixture_dirty_record()),
+                DirtyMutation::Delete(DirtyDelete {
+                    doc_id: ChunkId::new("chunk-evict"),
+                }),
+            ],
+        }
+    }
+
+    fn fixture_structural_batch() -> StructuralIngestBatch {
+        StructuralIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            trees: vec![
+                ParseTreeMutation::Upsert(ParseTreeUpsert {
+                    chunk_id: fixture_chunk_id(),
+                    record: fixture_parse_tree_record(),
+                }),
+                ParseTreeMutation::Delete(ParseTreeDelete {
+                    chunk_id: ChunkId::new("chunk-drop"),
+                }),
+            ],
         }
     }
 
@@ -1785,6 +2807,33 @@ mod tests {
     }
 
     #[test]
+    fn history_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_history_batch();
+        let bytes = encode(&batch)?;
+        let decoded: HistoryIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_dirty_batch();
+        let bytes = encode(&batch)?;
+        let decoded: DirtyIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
+    fn structural_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_structural_batch();
+        let bytes = encode(&batch)?;
+        let decoded: StructuralIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
     fn batch_publish_receipt_round_trip() -> TestRes {
         let receipt = BatchPublishReceipt {
             first_seq: Some(ChannelSeq::new(1)),
@@ -1822,6 +2871,44 @@ mod tests {
     }
 
     #[test]
+    fn search_plane_ingest_request_envelope_round_trip_history() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 3,
+            payload: SearchPlaneIngestIpcRequest::PublishHistoryBatch(fixture_history_batch()),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_dirty() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 4,
+            payload: SearchPlaneIngestIpcRequest::PublishDirtyBatch(fixture_dirty_batch()),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_structural() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 5,
+            payload: SearchPlaneIngestIpcRequest::PublishStructuralBatch(
+                fixture_structural_batch(),
+            ),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
     fn search_plane_ingest_response_envelope_round_trip_receipt() -> TestRes {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 3,
@@ -1844,6 +2931,54 @@ mod tests {
             payload: SearchPlaneIngestIpcResponse::Error(SearchPlaneIpcError {
                 code: "lexical_publish_failed".to_string(),
                 message: "channel write rejected".to_string(),
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_history_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 5,
+            payload: SearchPlaneIngestIpcResponse::HistoryReceipt(BatchPublishReceipt {
+                first_seq: Some(ChannelSeq::new(2)),
+                last_seq: Some(ChannelSeq::new(7)),
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_dirty_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 6,
+            payload: SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
+                first_seq: Some(ChannelSeq::new(1)),
+                last_seq: Some(ChannelSeq::new(2)),
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_structural_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 7,
+            payload: SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
+                first_seq: Some(ChannelSeq::new(3)),
+                last_seq: Some(ChannelSeq::new(4)),
+                sealed: false,
             }),
         };
         let bytes = encode(&envelope)?;

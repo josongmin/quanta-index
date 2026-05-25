@@ -122,16 +122,33 @@ impl<'a> LexicalNamespace<'a> {
         Self { client }
     }
 
+    /// Sugar for `client.ns::<LexicalNs>().query()`. See QI-NS-01.
     #[must_use]
     pub fn query(&self) -> LexicalQueryBuilder<'a> {
-        LexicalQueryBuilder::new(self.client)
+        <LexicalNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// QI-SDK-01: publish a lexical batch through the typed ingest IPC.
-    /// The SDK no longer opens a channel publisher directly; searchd owns
-    /// the channel and returns the inclusive sequence range in the
-    /// response.
+    /// Sugar for `client.ns::<LexicalNs>().publish(batch)`. See QI-NS-01.
     pub fn publish(&self, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
+        <LexicalNs as crate::NamespaceIngest>::publish(self.client, batch)
+    }
+}
+
+/// QI-NS-01: marker type for the built-in lexical namespace. The
+/// `client.lexical()` sugar delegates here through
+/// [`crate::NamespaceIngest`] / [`crate::NamespaceQuery`]; downstream
+/// callers that want explicit type-level routing can use
+/// `client.ns::<LexicalNs>()` directly.
+pub struct LexicalNs;
+
+impl crate::NamespaceIngest for LexicalNs {
+    type Batch = LexicalBatch;
+    type Receipt = BatchReceipt;
+
+    fn publish(
+        client: &QuantaIndex,
+        batch: &LexicalBatch,
+    ) -> Result<BatchReceipt, SdkError> {
         let wire_batch = LexicalIngestBatch {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -142,18 +159,29 @@ impl<'a> LexicalNamespace<'a> {
             symbols: batch.symbols.iter().map(map_symbol).collect(),
             seal: batch.seal,
         };
-        let response = self
-            .client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch))?;
+        let response = client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected lexical receipt, got {}",
                 QuantaIndex::ingest_response_kind(&other)
             ))),
         }
+    }
+}
+
+impl crate::NamespaceQuery for LexicalNs {
+    type QueryBuilder<'a> = LexicalQueryBuilder<'a>;
+
+    fn query<'a>(client: &'a QuantaIndex) -> LexicalQueryBuilder<'a> {
+        LexicalQueryBuilder::new(client)
     }
 }
 
@@ -276,7 +304,9 @@ impl<'a> LexicalQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
+
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected text query response, got {}",
                     QuantaIndex::query_response_kind(&other)

@@ -15,8 +15,9 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelDispatcher, Ledger, SearchPlaneControlDispatcher,
-    SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    ActivationCatalog, ChannelDispatcher, HistoryIngestPort, Ledger,
+    RuntimeMetadataIngestPort, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 
 use crate::app::config::SearchdConfig;
@@ -43,6 +44,12 @@ pub struct SearchdRuntimeParts {
     pub lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync>,
     /// QI-RT-01: typed semantic ingest path.
     pub sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync>,
+    /// SDK-first source-authority history ingest.
+    pub history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync>,
+    /// SDK-first runtime dirty ingest.
+    pub runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
+    /// SDK-first structural parse-tree ingest.
+    pub structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync>,
     pub activation_catalog: Arc<ActivationCatalog>,
 }
 
@@ -77,6 +84,9 @@ impl SearchdRuntime {
             repo_map_generation_activate_port,
             lex_ingest_port,
             sem_ingest_port,
+            history_ingest_port,
+            runtime_ingest_port,
+            structural_ingest_port,
             activation_catalog,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
@@ -102,6 +112,9 @@ impl SearchdRuntime {
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             lex_ingest_port,
             sem_ingest_port,
+            history_ingest_port,
+            runtime_ingest_port,
+            structural_ingest_port,
             repo_map_bundle_ingest_port,
         ));
         let query_adapter: Arc<

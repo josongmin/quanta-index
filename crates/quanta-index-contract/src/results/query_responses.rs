@@ -336,6 +336,74 @@ impl<'de> Deserialize<'de> for SearchPlaneHistoryQueryResponse {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct SearchPlaneRuntimeMetadataQueryResponse {
+    pub generation: GenerationPin,
+    pub results: Vec<LexicalCandidate>,
+}
+
+const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
+
+impl Serialize for SearchPlaneRuntimeMetadataQueryResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state =
+            serializer.serialize_struct("SearchPlaneRuntimeMetadataQueryResponse", 2)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("results", &self.results)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneRuntimeMetadataQueryResponseVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneRuntimeMetadataQueryResponseVisitor {
+    type Value = SearchPlaneRuntimeMetadataQueryResponse;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneRuntimeMetadataQueryResponse map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut generation: Option<GenerationPin> = None;
+        let mut results: Option<Vec<LexicalCandidate>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "generation" => generation = Some(map.next_value()?),
+                "results" => results = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneRuntimeMetadataQueryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneRuntimeMetadataQueryResponse",
+            SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
+            SearchPlaneRuntimeMetadataQueryResponseVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneStructuralQueryResponse {
     pub generation: GenerationPin,
     pub results: Vec<StructuralCandidate>,

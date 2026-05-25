@@ -124,6 +124,9 @@ fn prop_commit_record() -> impl Strategy<Value = CommitRecord> {
         any::<u32>(),
         prop_commit_sha(),
         prop_vec(prop_commit_sha(), 0..4),
+        // QI-LXB-01: triple of author / committer / applied timestamps.
+        any::<u64>(),
+        any::<u64>(),
         any::<u64>(),
         ".{0,32}",
         ".{0,32}",
@@ -136,6 +139,8 @@ fn prop_commit_record() -> impl Strategy<Value = CommitRecord> {
                 wire_version,
                 sha,
                 parents,
+                author_time_ms,
+                committer_time_ms,
                 applied_at_ms,
                 author,
                 committer,
@@ -146,6 +151,8 @@ fn prop_commit_record() -> impl Strategy<Value = CommitRecord> {
                 wire_version,
                 sha,
                 parents,
+                author_time_ms,
+                committer_time_ms,
                 applied_at_ms,
                 author: author.into_boxed_str(),
                 committer: committer.into_boxed_str(),
@@ -203,6 +210,11 @@ fn prop_parse_tree_record() -> impl Strategy<Value = ParseTreeRecord> {
             lang,
             root,
             source_hash,
+            // QI-LXB-01: structural role-tag schema landed alongside
+            // ParseTreeRecord. Property tests pass empty tags — separate
+            // role-tag-specific tests cover the populated case.
+            role_tag_schema_version: 0,
+            role_tags: Vec::new(),
         })
 }
 

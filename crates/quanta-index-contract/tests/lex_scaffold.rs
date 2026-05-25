@@ -379,6 +379,9 @@ fn commit_record_cbor_roundtrip() -> TestRes {
         wire_version: 1,
         sha,
         parents: vec![parent],
+        // QI-LXB-01: triple of author / committer / applied timestamps.
+        author_time_ms: 1_699_999_900_000,
+        committer_time_ms: 1_699_999_999_000,
         applied_at_ms: 1_700_000_000_000,
         author: Box::from("Alice <a@example.com>"),
         committer: Box::from("Bob <b@example.com>"),
@@ -475,6 +478,10 @@ fn parse_tree_record_cbor_roundtrip_flat() -> TestRes {
             children: Vec::new(),
         },
         source_hash: [7u8; 32],
+        // QI-LXB-01: structural role-tag schema is keyed on the parse tree;
+        // empty tags for the flat roundtrip case.
+        role_tag_schema_version: 0,
+        role_tags: Vec::new(),
     };
     roundtrip_eq(&record)
 }
@@ -509,6 +516,9 @@ fn parse_tree_record_cbor_roundtrip_nested() -> TestRes {
             children: vec![branch],
         },
         source_hash: [0xaa; 32],
+        // QI-LXB-01: empty role tags for the nested-tree roundtrip case.
+        role_tag_schema_version: 0,
+        role_tags: Vec::new(),
     };
     roundtrip_eq(&record)
 }

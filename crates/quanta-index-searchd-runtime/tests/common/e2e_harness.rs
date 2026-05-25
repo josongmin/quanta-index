@@ -304,7 +304,8 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
-                    | SearchPlaneQueryIpcResponse::Sourcegraph(_) => true,
+                    | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
                 },
                 Err(_transport_error) => false,
             }
@@ -350,6 +351,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::Sourcegraph(_) => unexpected_response("Sourcegraph"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_response("RuntimeMetadata")
+            }
         }
     }
 

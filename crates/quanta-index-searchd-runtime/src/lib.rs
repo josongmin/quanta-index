@@ -25,7 +25,9 @@ use quanta_index_core::{
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelLexicalIngestAdapter, ChannelSemanticIngestAdapter,
+    ActivationCatalog, ChannelHistoryIngestAdapter, ChannelLexicalIngestAdapter,
+    ChannelRuntimeMetadataIngestAdapter, ChannelSemanticIngestAdapter,
+    ChannelStructuralIngestAdapter,
 };
 use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
@@ -55,11 +57,18 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync> = lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter;
     let lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
-        Arc::new(ChannelLexicalIngestAdapter::new(lex_publisher));
+        Arc::new(ChannelLexicalIngestAdapter::new(Arc::clone(&lex_publisher)));
     let sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
         Arc::new(ChannelSemanticIngestAdapter::new(sem_publisher));
+    let history_ingest_port = Arc::new(ChannelHistoryIngestAdapter::new(Arc::clone(
+        &lex_publisher,
+    )));
+    let runtime_ingest_port = Arc::new(ChannelRuntimeMetadataIngestAdapter::new(Arc::clone(
+        &lex_publisher,
+    )));
+    let structural_ingest_port = Arc::new(ChannelStructuralIngestAdapter::new(lex_publisher));
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
@@ -77,6 +86,9 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             sem_build_port,
             sem_open_port,
             sem_ingest_port,
+            history_ingest_port,
+            runtime_ingest_port,
+            structural_ingest_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,

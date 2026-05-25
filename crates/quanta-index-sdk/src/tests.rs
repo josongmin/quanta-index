@@ -2,23 +2,27 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::lex::{
-    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
+    ParseTreeRecord, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
     BatchPublishReceipt, ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord,
+    DiffHunkSide,
     GenerationSelector, HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry,
     RepoId, RepoMapMutationAck, RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneSourcegraphQueryResponse, SemanticQueryResponse, SymbolId, TextQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryResponse, SymbolId, TextQueryResponse,
 };
 
 use crate::{
-    ConnectOptions, ControlTransport, IngestTransport, LexicalBatch, QuantaIndex, QueryTransport,
-    SemanticBatch, Track,
+    ConnectOptions, ControlTransport, DirtyBatch, HistoryBatch, IngestTransport, LexicalBatch,
+    QuantaIndex, QueryTransport, SemanticBatch, StructuralBatch, Track,
 };
 
 macro_rules! ok_or_fail {
@@ -203,6 +207,71 @@ fn sample_symbol() -> SymbolRecord {
         parent: None,
         container_name: None,
         relationship: SymbolRelationship::Def,
+    }
+}
+
+fn sample_commit_sha() -> CommitSha {
+    match CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567") {
+        Ok(sha) => sha,
+        Err(err) => panic!("unexpected sha parse failure: {err}"),
+    }
+}
+
+fn sample_commit_record() -> CommitRecord {
+    CommitRecord {
+        wire_version: 1,
+        sha: sample_commit_sha(),
+        parents: vec![],
+        author_time_ms: 11,
+        committer_time_ms: 12,
+        applied_at_ms: 13,
+        author: "alice".into(),
+        committer: "alice".into(),
+        message: "fix: sample".into(),
+        is_merge: false,
+        tags: vec!["v1.0.0".into()],
+    }
+}
+
+fn sample_diff_record() -> DiffHunkRecord {
+    DiffHunkRecord {
+        wire_version: 1,
+        hunk_header: "@@ -1,1 +1,2 @@".into(),
+        side: DiffHunkSide::After,
+        added_text: "todo!".into(),
+        removed_text: "".into(),
+        touched_text: "todo!".into(),
+        byte_start: 0,
+        byte_end: 5,
+    }
+}
+
+fn sample_dirty_record() -> DirtyRecord {
+    DirtyRecord {
+        wire_version: 1,
+        doc_id: ChunkId::new("chunk-dirty"),
+        applied_at_ms: 55,
+        payload_hash: [7; 32],
+    }
+}
+
+fn sample_parse_tree_record() -> ParseTreeRecord {
+    ParseTreeRecord {
+        wire_version: 1,
+        lang: LangId::Rust,
+        root: ParseNode {
+            kind: "function_item".into(),
+            byte_start: 0,
+            byte_end: 10,
+            children: vec![],
+        },
+        source_hash: [9; 32],
+        role_tag_schema_version: 1,
+        role_tags: vec![ParseRoleTag {
+            role: "expr".into(),
+            byte_start: 0,
+            byte_end: 4,
+        }],
     }
 }
 
@@ -516,6 +585,77 @@ fn semantic_publish_routes_through_ingest_transport_and_carries_typed_embeddings
 }
 
 #[test]
+fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_records() {
+    let receipt = BatchPublishReceipt {
+        first_seq: Some(ChannelSeq::new(2)),
+        last_seq: Some(ChannelSeq::new(7)),
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::HistoryReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = HistoryBatch::new(repo_id(), revision_id(), ManifestGeneration::new(3))
+        .commit(sample_commit_record())
+        .ref_upsert("refs/heads/main", sample_commit_sha())
+        .tag_upsert("v1.0.0", sample_commit_sha())
+        .diff_hunk(sample_commit_sha(), "src/lib.rs", sample_diff_record());
+    let observed = ok_or_fail!(client.history().publish(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire) = &captured.payload else {
+        assert!(false, "expected PublishHistoryBatch, got {:?}", captured.payload);
+        return;
+    };
+    assert_eq!(wire.commits.len(), 1);
+    assert_eq!(wire.refs.len(), 1);
+    assert_eq!(wire.tags.len(), 1);
+    assert_eq!(wire.diff_hunks.len(), 1);
+    assert_eq!(wire.commits[0].author_time_ms, 11);
+    assert_eq!(wire.diff_hunks[0].record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
+}
+
+#[test]
+fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = DirtyBatch::new(repo_id(), revision_id(), ManifestGeneration::new(4))
+        .upsert(sample_dirty_record())
+        .delete(ChunkId::new("chunk-evict"));
+    let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire) = &captured.payload else {
+        assert!(false, "expected PublishDirtyBatch, got {:?}", captured.payload);
+        return;
+    };
+    assert_eq!(wire.entries.len(), 2);
+}
+
+#[test]
+fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = StructuralBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
+        .upsert(ChunkId::new("chunk-tree"), sample_parse_tree_record())
+        .delete(ChunkId::new("chunk-drop"));
+    let _receipt = ok_or_fail!(client.structural().publish(&batch));
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire) = &captured.payload else {
+        assert!(
+            false,
+            "expected PublishStructuralBatch, got {:?}",
+            captured.payload
+        );
+        return;
+    };
+    assert_eq!(wire.trees.len(), 2);
+}
+
+#[test]
 fn repomap_publish_routes_through_ingest_transport() {
     let ack = RepoMapMutationAck {
         repo_id: repo_id(),
@@ -549,6 +689,89 @@ fn repomap_publish_routes_through_ingest_transport() {
         captured.payload,
         SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
     ));
+}
+
+#[test]
+fn history_query_routes_through_typed_query_variant() {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::History(
+        SearchPlaneHistoryQueryResponse {
+            generation: sample_generation_pin(),
+            commits: vec![],
+            diffs: vec![],
+        },
+    )));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = ok_or_fail!(client
+        .history()
+        .query()
+        .native("type:commit author:alice")
+        .pinned(sample_generation_pin())
+        .top_k(5)
+        .execute());
+    assert_eq!(response.generation, sample_generation_pin());
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
+        assert!(false, "expected History request, got {:?}", captured.payload);
+        return;
+    };
+    assert_eq!(req.text_query.query_text, "type:commit author:alice");
+}
+
+#[test]
+fn runtime_query_routes_through_typed_query_variant() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![sample_hit()],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = ok_or_fail!(client
+        .runtime()
+        .query()
+        .sourcegraph("dirty:yes")
+        .pinned(sample_generation_pin())
+        .top_k(3)
+        .execute());
+    assert_eq!(response.results.len(), 1);
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) =
+        &captured.payload
+    else {
+        assert!(
+            false,
+            "expected RuntimeMetadata request, got {:?}",
+            captured.payload
+        );
+        return;
+    };
+    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
+}
+
+#[test]
+fn structural_query_routes_through_typed_query_variant() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = ok_or_fail!(client
+        .structural()
+        .query()
+        .native("match { :[x] }")
+        .pinned(sample_generation_pin())
+        .top_k(2)
+        .execute());
+    assert_eq!(response.generation, sample_generation_pin());
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
+    else {
+        assert!(false, "expected Structural request, got {:?}", captured.payload);
+        return;
+    };
+    assert_eq!(req.text_query.query_text, "match { :[x] }");
 }
 
 #[test]

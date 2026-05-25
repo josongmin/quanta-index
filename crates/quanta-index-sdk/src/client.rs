@@ -11,9 +11,10 @@ use quanta_index_contract::{
 };
 
 use crate::{
-    ConnectOptions, GenerationNamespace, LexicalNamespace, QueryTransport, RepoMapNamespace,
-    SdkError, SearchNamespace, SemanticNamespace, SourcegraphNamespace, SymbolNamespace,
-    UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
+    ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace, QueryTransport,
+    RepoMapNamespace, RuntimeNamespace, SdkError, SearchNamespace, SemanticNamespace,
+    SourcegraphNamespace, StructuralNamespace, SymbolNamespace, UdsControlTransport,
+    UdsIngestTransport, UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -60,6 +61,21 @@ impl QuantaIndex {
     }
 
     #[must_use]
+    pub fn history(&self) -> HistoryNamespace<'_> {
+        HistoryNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn runtime(&self) -> RuntimeNamespace<'_> {
+        RuntimeNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn structural(&self) -> StructuralNamespace<'_> {
+        StructuralNamespace::new(self)
+    }
+
+    #[must_use]
     pub fn sourcegraph(&self) -> SourcegraphNamespace<'_> {
         SourcegraphNamespace::new(self)
     }
@@ -72,6 +88,20 @@ impl QuantaIndex {
     #[must_use]
     pub fn generations(&self) -> GenerationNamespace<'_> {
         GenerationNamespace::new(self)
+    }
+
+    /// QI-NS-01: generic namespace entry point. Returns a
+    /// [`NamespaceHandle`] bound to this client. Used both by the
+    /// built-in sugar methods ([`Self::lexical`], [`Self::semantic`],
+    /// [`Self::repomap`]) and by downstream consumers that need to
+    /// register their own namespace marker — see the
+    /// [`crate::namespace`] module docs.
+    #[must_use]
+    pub fn ns<N>(&self) -> crate::NamespaceHandle<'_, N>
+    where
+        N: ?Sized,
+    {
+        crate::NamespaceHandle::new(self)
     }
 
     pub(super) fn dispatch_query(
@@ -104,7 +134,8 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Ok(payload),
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
         }
     }
 
@@ -162,7 +193,10 @@ impl QuantaIndex {
             }),
             payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)) => Ok(payload),
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)) => Ok(payload),
         }
     }
 
@@ -190,6 +224,7 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
             SearchPlaneQueryIpcResponse::Error(_) => "error",
             SearchPlaneQueryIpcResponse::Sourcegraph(_) => "sourcegraph",
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "runtime_metadata",
         }
     }
 
@@ -214,6 +249,9 @@ impl QuantaIndex {
             SearchPlaneIngestIpcResponse::LexicalReceipt(_) => "lexical_receipt",
             SearchPlaneIngestIpcResponse::SemanticReceipt(_) => "semantic_receipt",
             SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
+            SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
+            SearchPlaneIngestIpcResponse::DirtyReceipt(_) => "dirty_receipt",
+            SearchPlaneIngestIpcResponse::StructuralReceipt(_) => "structural_receipt",
             SearchPlaneIngestIpcResponse::Error(_) => "error",
         }
     }

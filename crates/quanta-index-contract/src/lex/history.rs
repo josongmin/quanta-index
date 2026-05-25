@@ -217,6 +217,8 @@ pub struct CommitRecord {
     pub wire_version: u32,
     pub sha: CommitSha,
     pub parents: Vec<CommitSha>,
+    pub author_time_ms: u64,
+    pub committer_time_ms: u64,
     pub applied_at_ms: u64,
     pub author: Box<str>,
     pub committer: Box<str>,
@@ -229,6 +231,8 @@ const COMMIT_RECORD_FIELDS: &[&str] = &[
     "wire_version",
     "sha",
     "parents",
+    "author_time_ms",
+    "committer_time_ms",
     "applied_at_ms",
     "author",
     "committer",
@@ -260,10 +264,12 @@ impl Serialize for CommitRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CommitRecord", 9)?;
+        let mut state = serializer.serialize_struct("CommitRecord", 11)?;
         state.serialize_field("wire_version", &self.wire_version)?;
         state.serialize_field("sha", &self.sha)?;
         state.serialize_field("parents", &self.parents)?;
+        state.serialize_field("author_time_ms", &self.author_time_ms)?;
+        state.serialize_field("committer_time_ms", &self.committer_time_ms)?;
         state.serialize_field("applied_at_ms", &self.applied_at_ms)?;
         state.serialize_field("author", self.author.as_ref())?;
         state.serialize_field("committer", self.committer.as_ref())?;
@@ -290,6 +296,8 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
         let mut wire_version: Option<u32> = None;
         let mut sha: Option<CommitSha> = None;
         let mut parents: Option<Vec<CommitSha>> = None;
+        let mut author_time_ms: Option<u64> = None;
+        let mut committer_time_ms: Option<u64> = None;
         let mut applied_at_ms: Option<u64> = None;
         let mut author: Option<String> = None;
         let mut committer: Option<String> = None;
@@ -315,6 +323,18 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                         return Err(de::Error::duplicate_field("parents"));
                     }
                     parents = Some(map.next_value()?);
+                }
+                "author_time_ms" => {
+                    if author_time_ms.is_some() {
+                        return Err(de::Error::duplicate_field("author_time_ms"));
+                    }
+                    author_time_ms = Some(map.next_value()?);
+                }
+                "committer_time_ms" => {
+                    if committer_time_ms.is_some() {
+                        return Err(de::Error::duplicate_field("committer_time_ms"));
+                    }
+                    committer_time_ms = Some(map.next_value()?);
                 }
                 "applied_at_ms" => {
                     if applied_at_ms.is_some() {
@@ -358,6 +378,10 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
         let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
         let sha = sha.ok_or_else(|| de::Error::missing_field("sha"))?;
         let parents = parents.ok_or_else(|| de::Error::missing_field("parents"))?;
+        let author_time_ms =
+            author_time_ms.ok_or_else(|| de::Error::missing_field("author_time_ms"))?;
+        let committer_time_ms =
+            committer_time_ms.ok_or_else(|| de::Error::missing_field("committer_time_ms"))?;
         let applied_at_ms =
             applied_at_ms.ok_or_else(|| de::Error::missing_field("applied_at_ms"))?;
         let author = author.ok_or_else(|| de::Error::missing_field("author"))?;
@@ -369,6 +393,8 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
             wire_version,
             sha,
             parents,
+            author_time_ms,
+            committer_time_ms,
             applied_at_ms,
             author: author.into_boxed_str(),
             committer: committer.into_boxed_str(),
