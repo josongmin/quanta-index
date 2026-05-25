@@ -36,6 +36,7 @@ FORBIDDEN_VENDOR_DEPS = frozenset({"rusqlite", "tantivy", "lancedb", "lance"})
 _ADAPTER_CRATE_DEPS = frozenset({"quanta-index-contract", "quanta-index-core"})
 
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
+    "quanta-index-contract-base": frozenset(),
     "quanta-index-contract": frozenset({"quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     "quanta-index-channel": frozenset({"quanta-index-contract"}),
@@ -91,6 +92,20 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-ipc",
             "quanta-index-repomap",
             "quanta-index-search-plane",
+        }
+    ),
+    "quanta-index-searchd-runtime": frozenset(
+        {
+            "quanta-index-channel",
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-ipc",
+            "quanta-index-lexical",
+            "quanta-index-lq-bridge",
+            "quanta-index-repomap",
+            "quanta-index-search-plane",
+            "quanta-index-searchd",
+            "quanta-index-semantic",
         }
     ),
     "quanta-index-searchctl": frozenset({"quanta-index-contract", "quanta-index-ipc"}),

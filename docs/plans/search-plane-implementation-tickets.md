@@ -425,10 +425,10 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
   - frame format: `[u32 LE length][CBOR-encoded envelope bytes]`
   - max frame size: 16 MiB (constant; fail-closed if length header exceeds)
   - public API:
-    - `encode_request(envelope: &SearchPlaneIpcRequestEnvelope) -> Result<Vec<u8>, IpcError>`
-    - `encode_response(envelope: &SearchPlaneIpcResponseEnvelope) -> Result<Vec<u8>, IpcError>`
-    - `decode_request(reader: &mut impl io::Read) -> Result<SearchPlaneIpcRequestEnvelope, IpcError>`
-    - `decode_response(reader: &mut impl io::Read) -> Result<SearchPlaneIpcResponseEnvelope, IpcError>`
+    - `encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError>`
+    - `encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError>`
+    - `decode_request<T: serde::de::DeserializeOwned>(reader: &mut impl io::Read) -> Result<T, IpcError>`
+    - `decode_response<T: serde::de::DeserializeOwned>(reader: &mut impl io::Read) -> Result<T, IpcError>`
   - `IpcError` enum: `Truncated`, `Oversized`, `Decode(String)`, `Encode(String)`, `EmptyFrame`, `Io(io::Error)`
 - **Open design decision D12 (accepted):** wire format = CBOR via `ciborium` (compact, schemaful, well-supported)
 - **TDD test list:**
@@ -453,7 +453,7 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
   - opens `tokio::net::UnixListener` at `config.socket_path` (current-thread runtime)
   - per-connection task loop:
     1. read frame via T4.3 decoder
-    2. decode error → write `SearchPlaneIpcResponse::Error{code: "ipc.decode", message: ...}`; keep connection alive (H-SP3)
+    2. decode error → close the connection fail-closed; do not emit a response frame (H-SP3)
     3. dispatch to `DomainQueryEngine`
     4. engine `Result::Ok(response)` → encode + write
     5. engine `Result::Err(CoreError::X)` → map to `SearchPlaneIpcError{code: "X", message: ...}` envelope; write Error response

@@ -53,6 +53,30 @@ rust-timings-all-targets:
     {{cargo}} build --workspace --all-targets --all-features --locked --timings
     source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"
 
+# Compile-regression gate (BLD-06). Builds the relevant lane, summarizes the timing
+# artifact, then diffs the in-repo crate aggregates against the committed baseline
+# under tools/ci/timing/baselines/. Fails on regressions over 15% AND 0.10s.
+rust-timings-fast-check:
+    cargo clean --quiet
+    source scripts/quanta-index-env.sh && {{cargo}} build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > /tmp/quanta-index-fast-current.json
+    python3 tools/ci/timing/compare_cargo_timings.py tools/ci/timing/baselines/fast-lane.json /tmp/quanta-index-fast-current.json
+
+rust-timings-daemon-check:
+    cargo clean --quiet
+    source scripts/quanta-index-env.sh && {{cargo}} build -p quanta-index-searchd-runtime --all-features --locked --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > /tmp/quanta-index-daemon-current.json
+    python3 tools/ci/timing/compare_cargo_timings.py tools/ci/timing/baselines/daemon-lane.json /tmp/quanta-index-daemon-current.json
+
+rust-timings-update-baselines:
+    cargo clean --quiet
+    source scripts/quanta-index-env.sh && {{cargo}} build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > tools/ci/timing/baselines/fast-lane.json
+    cargo clean --quiet
+    source scripts/quanta-index-env.sh && {{cargo}} build -p quanta-index-searchd-runtime --all-features --locked --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html" --json --top-crates 25 > tools/ci/timing/baselines/daemon-lane.json
+    @echo "Baselines updated. Commit tools/ci/timing/baselines/."
+
 rust-clippy:
     {{cargo}} clippy --workspace --all-targets --all-features --locked -- -D warnings
 

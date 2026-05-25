@@ -1,6 +1,6 @@
 use quanta_index_contract::{
     BridgeCandidatePacket, BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate,
-    SearchPlaneLexicalTextQueryRequestV2, SearchQuerySyntaxV1,
+    TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::TRANSLATOR_VERSION;
@@ -10,10 +10,10 @@ pub fn export_bridge_candidate_packet(
     target: BridgeTarget,
     scope: BridgeScope,
     generation: &GenerationPin,
-    request: &SearchPlaneLexicalTextQueryRequestV2,
+    request: &TextQueryRequest,
     candidates: Vec<LexicalCandidate>,
 ) -> BridgeCandidatePacket {
-    let sourcegraph = matches!(request.syntax, SearchQuerySyntaxV1::Sourcegraph);
+    let sourcegraph = matches!(request.syntax, TextQuerySyntax::Sourcegraph);
     BridgeCandidatePacket {
         target,
         scope,
@@ -30,7 +30,7 @@ pub fn export_bridge_candidate_packet(
 mod tests {
     use quanta_index_contract::{
         BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate, ManifestGeneration, RepoId,
-        RepoRelativePath, RevisionId, SearchPlaneLexicalTextQueryRequestV2, SearchQuerySyntaxV1,
+        RepoRelativePath, RevisionId, TextQueryRequest, TextQuerySyntax,
     };
 
     use super::export_bridge_candidate_packet;
@@ -59,8 +59,8 @@ mod tests {
 
     #[test]
     fn sourcegraph_request_exports_metadata() {
-        let request = SearchPlaneLexicalTextQueryRequestV2 {
-            syntax: SearchQuerySyntaxV1::Sourcegraph,
+        let request = TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
             query_text: "repo:acme/foo needle".to_string(),
             generation: Some(pin()),
             generation_selector: None,
@@ -85,8 +85,8 @@ mod tests {
 
     #[test]
     fn lq_request_omits_sourcegraph_metadata() {
-        let request = SearchPlaneLexicalTextQueryRequestV2 {
-            syntax: SearchQuerySyntaxV1::Lq,
+        let request = TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
             query_text: "needle".to_string(),
             generation: Some(pin()),
             generation_selector: None,

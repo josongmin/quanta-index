@@ -1,7 +1,7 @@
 mod control;
-mod envelopes;
+mod error;
 mod split;
 
 pub use control::*;
-pub use envelopes::*;
+pub use error::*;
 pub use split::*;

@@ -12,6 +12,7 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+quanta-index-contract-base = { version = "0.1.0", path = "../quanta-index-contract-base" }
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 serde = { workspace = true }
 

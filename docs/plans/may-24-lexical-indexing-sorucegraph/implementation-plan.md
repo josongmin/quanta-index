@@ -7,7 +7,7 @@
 > Predecessor: [search-plane-implementation-tickets.md](../search-plane-implementation-tickets.md) (E1–E5 scaffold; this plan SUPERSEDES for LQ-family work)
 > **Last verified**: All 17 tickets verified shipped + green per `cargo test` / `cargo clippy --all-targets -- -D warnings` / `semgrep` rails as of 2026-05-25. Per-crate test counts in §5. Aggregate: 17 crates / 1072 tests / clippy 0 warnings / semgrep 0 findings.
 >
-> **2026-05-25 closeout note (current worktree truth):** treat the `all shipped` overlay below as the historical crate-level proof snapshot that was later taken through repo-level closeout. In the current worktree the active query-contract cutover, `searchd` / IPC intake wiring, lexical authority rebasing, semantic / hybrid lexical scoping, and workspace proof rails are green. Remaining live blockers are producer-side history / dirty / parse-tree cutover, real-engine conformance CI, and deployment-side observability / bridge sink wiring; see [closeout-plan.md](closeout-plan.md).
+> **2026-05-25 closeout note (current worktree truth):** treat the `all shipped` overlay below as the historical crate-level proof snapshot that was later taken through repo-level closeout. In the current worktree the active query-contract cutover, [`quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) / IPC intake wiring (served via `searchd`), lexical authority rebasing, semantic / hybrid lexical scoping, and workspace proof rails are green. Hard DSL scenario coverage now includes [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs). Remaining live blockers are producer-side history / dirty / parse-tree cutover, real-engine conformance CI, and deployment-side observability / bridge sink wiring; see [closeout-plan.md](closeout-plan.md).
 
 ---
 
@@ -56,7 +56,7 @@ Anything short of all five surfaces as `blocked` per [CLAUDE.md § Verification]
 
 > **2026-05-25 closeout prioritization rule:** when this section's historical `shipped` overlay conflicts with the live worktree's final closeout state, follow [closeout-plan.md](closeout-plan.md). That packet now serves as the execution record for repo-internal closeout and the boundary marker for remaining external / deployment work.
 
-> **2026-05-25 status overlay (authoritative)**: All 17 tickets are SHIPPED. The per-surface tables below are retained as historical baseline (the state-of-the-world at planning time); the per-ticket State column has been updated to `shipped` where it was previously `absent` / `partial` / `placeholder`. Aggregate: 17 crates / 1072 tests / clippy `-D warnings` 0 / semgrep 0. See §5 for per-ticket DoD evidence.
+> **2026-05-25 status overlay (authoritative)**: all 17 LQ ticket crates reached crate-local shipped proof. Live runtime closeout is narrower: [`quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) owns the active query path, the hard DSL scenario pack sits in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs), and `history` / `structural` requests still fail closed until producer commit/diff / parse-tree ops arrive. The table below is therefore a crate inventory snapshot, not an unconditional runtime-green claim. Aggregate crate-local proof remains 17 crates / 1072 tests / clippy `-D warnings` 0 / semgrep 0. See §5 for per-ticket DoD evidence.
 >
 > | Ticket | Crate | Tests | State |
 > |---|---|---|---|
@@ -70,8 +70,8 @@ Anything short of all five surfaces as `blocked` per [CLAUDE.md § Verification]
 > | LEX-04 | `quanta-index-lq-regex` | 81 | shipped (AST-level precise classifier) |
 > | LEX-05 | `quanta-index-lq-symbol` | 51 | shipped (architecture-corrected; tree-sitter dropped — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
 > | LEX-06 | `quanta-index-lq-ranker` | 65 | shipped (6-comp tiebreak tuple) |
-> | LEX-07 | `quanta-index-lq-history` | 76 | shipped (architecture-corrected; `UpsertCommit`/`Ref`/`Tag` input — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
-> | STR-01 | `quanta-index-lq-structural` | 71 | shipped (architecture-corrected; Option A/B pending — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
+> | LEX-07 | `quanta-index-lq-history` | 76 | crate-local shipped; active runtime still returns `HISTORY_PRODUCER_UNAVAILABLE` until producer ops land |
+> | STR-01 | `quanta-index-lq-structural` | 71 | crate-local shipped; active runtime still returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer ops land |
 > | RT-01 | `quanta-index-lq-runtime` | 32 | shipped (architecture-corrected; `UpsertDirty`/`EvictDirty` input — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
 > | SEM-01 | `quanta-index-lq-semantic` | 112 | shipped (HNSW + RFC3339) |
 > | BRIDGE-01 | `quanta-index-lq-bridge` | 70 | shipped |
@@ -91,7 +91,7 @@ State of the world at planning time, ticket-by-ticket (retained as baseline). **
 | `LqOptionSet` | implemented | [query/options.rs](../../../crates/quanta-index-contract/src/query/options.rs) | covers only `timeout_ms`; missing `count`, `case`, `patterntype`, `boost`, `index` |
 | `LexicalCandidate` | implemented | [results/candidates.rs:11](../../../crates/quanta-index-contract/src/results/candidates.rs#L11) | **GAP-01/02/03**: no `symbol_kind`, no `CommitCandidate`, no `DiffCandidate`, no `structural_bindings`; flagged in [usecase.md §3](usecase.md) |
 | `SearchExplanation` | placeholder | [results/explanation.rs](../../../crates/quanta-index-contract/src/results/explanation.rs) | **GAP-05**: schema is `{ summary: String }` only; no planner trace |
-| IPC envelopes | implemented | [ipc/envelopes.rs](../../../crates/quanta-index-contract/src/ipc/envelopes.rs), [ipc/requests.rs](../../../crates/quanta-index-contract/src/ipc/requests.rs), [ipc/responses.rs](../../../crates/quanta-index-contract/src/ipc/responses.rs) | error envelope code is free-string per [predecessor doc T5.2 status](../search-plane-implementation-tickets.md). **GAP-06**: no `LexicalErrorCode` enum; RFC § Non-Negotiable Invariant 8 requires typed code |
+| Split IPC envelopes | implemented | [ipc/split.rs](../../../crates/quanta-index-contract/src/ipc/split.rs), [ipc/error.rs](../../../crates/quanta-index-contract/src/ipc/error.rs), [query/requests.rs](../../../crates/quanta-index-contract/src/query/requests.rs), [results/query_responses.rs](../../../crates/quanta-index-contract/src/results/query_responses.rs) | error envelope code is free-string per [predecessor doc T5.2 status](../search-plane-implementation-tickets.md). **GAP-06**: no `LexicalErrorCode` enum; RFC § Non-Negotiable Invariant 8 requires typed code |
 | `BridgeCandidatePacket` | absent | n/a | **GAP-04**: no contract for bridge envelope |
 
 **Net contract status**: shape exists; ≈30% of LQ-required surface is missing. Every LQ-family ticket has a `Touches contract?` value of `yes` until PRE-CONTRACT-EXT lands.
@@ -161,12 +161,12 @@ Today = Tantivy 0.22 chunk index, schema in [schema.rs](../../../crates/quanta-i
 
 Lance 6.0.1 adapter. Build path is functional; query path returns `NotImplemented` per predecessor T4.1 + D21. This entire crate is downstream of Wave-6 SEM-01.
 
-### 2.6 IPC + searchd — [crates/quanta-index-ipc/](../../../crates/quanta-index-ipc/), [crates/quanta-index-searchd/](../../../crates/quanta-index-searchd/)
+### 2.6 IPC + active runtime path — [crates/quanta-index-search-plane/](../../../crates/quanta-index-search-plane/), [crates/quanta-index-ipc/](../../../crates/quanta-index-ipc/), [crates/quanta-index-searchd/](../../../crates/quanta-index-searchd/)
 
 | Surface | State |
 |---|---|
-| UDS listener + CBOR codec | implemented (T4.3 + T4.4) |
-| Composition root (`DomainQueryEngine` + `UdsListener`) | implemented (T4.4) |
+| UDS listener + CBOR codec | implemented (transport shell under `quanta-index-ipc` / `quanta-index-searchd`) |
+| Composition root (`SearchPlaneDispatcher` + IPC server) | implemented; active query ownership sits in [`quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) |
 | Materialize orchestrator | implemented (T3.5) |
 | OpenTelemetry spans per RFC § Observability Requirements | absent |
 | SLO budget enforcement per RFC § Capacity and SLO Targets | absent |
@@ -176,7 +176,12 @@ Lance 6.0.1 adapter. Build path is functional; query path returns `NotImplemente
 
 ### 2.7 Structural / History / Runtime / Bridge
 
-All four are **absent** (0% code). Each ticket is green-field across contract, core, adapter, and conformance.
+The live query path no longer matches the original "all absent" planning baseline:
+
+- `bridge`: active on the repo-first runtime path.
+- `runtime metadata`: crate-local work exists, but producer-side dirty/runtime cutover residue remains.
+- `history`: the active dispatcher in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `HISTORY_PRODUCER_UNAVAILABLE` until producer commit/diff ops are wired.
+- `structural`: the active dispatcher in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer parse-tree ops are wired.
 
 ### 2.8 Test rails
 
@@ -829,7 +834,9 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **Size**: L.
 - **Open questions**: ADR-010 (BM25 parameters `k1`, `b`) — CLOSED via shipped values in `quanta-index-lq-ranker`.
 
-### 5.11 LEX-07 — history + diff engine — ✓ shipped (76 tests in `quanta-index-lq-history`; architecture-corrected — `UpsertCommit`/`Ref`/`Tag` input; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+### 5.11 LEX-07 — history + diff engine — crate-local shipped, runtime producer-gated (76 tests in `quanta-index-lq-history`; architecture-corrected — `UpsertCommit`/`Ref`/`Tag` input; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+
+> **Live runtime note:** this section records crate-local history-engine proof plus producer-contract scaffolding. The active query handler in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) still returns `HISTORY_PRODUCER_UNAVAILABLE` until producer commit/diff ops are actually wired onto the repo-first runtime path.
 
 - **Title**: Commit metadata + diff hunk indexes; planner routing for `type:commit` / `type:diff`; channel-subscriber callbacks consuming producer-authored history ops.
 - **Owner crate(s)**: [`quanta-index-lq-history`](../../../crates/quanta-index-lq-history/) (shipped on disk; `CommitGraph.add_commit/ref/tag` already scaffolded); `quanta-index-core` (channel dispatcher wiring), `quanta-index-contract` (`CommitCandidate` + `DiffCandidate` via PRE-CONTRACT-EXT GAP-02; new history ops land in `channel/ops.rs`).
@@ -852,7 +859,9 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **Size**: XL.
 - **Open questions**: AMB-PROD-4 (Option Y vs X for diff hunks) — CLOSED via ADR-025 (Option Y shipped); `since:` disambiguation — DEFERRED to RFC LEX-07 scope amendment; `parent:` / `merge:` / `tag:` / `revisions:` scope — DEFERRED to RFC LEX-07 scope amendment.
 
-### 5.12 STR-01 — structural pattern engine — ✓ shipped (71 tests in `quanta-index-lq-structural`; architecture-corrected; Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+### 5.12 STR-01 — structural pattern engine — crate-local shipped, runtime producer-gated (71 tests in `quanta-index-lq-structural`; architecture-corrected; Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+
+> **Live runtime note:** this section records crate-local structural-engine proof plus parse-tree wire scaffolding. The active query handler in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`; that fail-closed path remains the live behaviour until producer parse-tree ops arrive.
 
 - **Title**: Structural matcher over producer-supplied parse trees; no source parsing on the search side.
 - **Owner crate(s)**: [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) (shipped on disk); `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`StructuralCandidate` via PRE-CONTRACT-EXT GAP-03; `UpsertParseTree` / `DeleteParseTree` channel ops under Option A).

@@ -297,10 +297,11 @@ Rules:
 
 ### IPC (`ipc/`)
 
-- `SearchPlaneIpcRequestEnvelope { request_id, payload }`
-- `SearchPlaneIpcRequest`: `Lexical` | `Semantic` | `Hybrid` | `Explain`
-- `SearchPlaneIpcResponseEnvelope { request_id, payload }`
-- `SearchPlaneIpcResponse`: typed success variants | `Error(SearchPlaneIpcError { code, message })`
+- `SearchPlaneQueryIpcRequestEnvelope { request_id, payload }`
+- `SearchPlaneQueryIpcRequest`: `Text` | `Symbol` | `Semantic` | `Hybrid` | `History` | `Structural` | `Bridge` | `RepoMapQuery` | `Explain` | `Sourcegraph`
+- `SearchPlaneQueryIpcResponseEnvelope { request_id, payload }`
+- `SearchPlaneQueryIpcResponse`: typed success variants | `Error(SearchPlaneIpcError { code, message })`
+- `SearchPlaneControlIpcRequestEnvelope` / `SearchPlaneControlIpcResponseEnvelope`
 
 Producer/query client는 위 타입만 import한다. `quanta-index-core` port trait는 **repo 내부**이며 외부에 노출하지 않는다.
 
@@ -396,7 +397,7 @@ Transport split (decided):
 ### 3. query ← fluent engine UDS client
 
 - producer seam: `search_*_hits_v1`
-- **external**: `SearchPlaneIpcRequestEnvelope` / `SearchPlaneIpcResponseEnvelope` (payload types frozen)
+- **external**: split query/control IPC envelopes (payload types frozen per socket)
 - **internal**: UDS byte codec adapter + `domains::query` inbound handlers
 - reference: `semantica-codegraph-v2/.../codegraph_shared/infra/fluent_engine.py`
 
@@ -583,7 +584,7 @@ Transport is AF_UNIX stream socket. Payload types remain the frozen `contract::i
 ### Frame format
 
 1. 4-byte little-endian unsigned length prefix
-2. UTF-8 JSON body containing exactly one `SearchPlaneIpcRequestEnvelope` or `SearchPlaneIpcResponseEnvelope`
+2. CBOR body containing exactly one split query/control IPC envelope, depending on socket
 3. maximum frame size: 8 MiB request, 8 MiB response
 
 ### Connection model

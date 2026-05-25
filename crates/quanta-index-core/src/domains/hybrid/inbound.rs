@@ -1,15 +1,12 @@
 use quanta_index_contract::{
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest,
-    SearchPlaneHybridQueryResponse,
+    HybridQueryRequest, HybridQueryResponse, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse,
 };
 
 use crate::error::CoreError;
 
 pub trait HybridQueryPort: Send + Sync {
-    fn hybrid_query(
-        &self,
-        request: SearchPlaneHybridQueryRequest,
-    ) -> Result<SearchPlaneHybridQueryResponse, CoreError>;
+    fn hybrid_query(&self, request: HybridQueryRequest) -> Result<HybridQueryResponse, CoreError>;
 }
 
 pub trait ExplainQueryPort: Send + Sync {

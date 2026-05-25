@@ -5,13 +5,12 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide, GenerationPin,
-    LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneBridgeQueryRequest, SearchPlaneBridgeQueryResponse, SearchPlaneHybridQueryRequest,
-    SearchPlaneHybridQueryResponse, SearchPlaneIpcRequest, SearchPlaneIpcResponse,
-    SearchPlaneLexicalTextQueryRequestV2, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneSemanticQueryRequest,
-    SearchPlaneSemanticQueryResponse, SearchQuerySyntaxV1, SemanticVectorRef,
+    BridgeCandidatePacket, BridgeQueryRequest, BridgeScope, BridgeTarget, DiffCandidate,
+    DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
+    LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SemanticCandidateScope, SemanticQueryRequest,
+    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -86,7 +85,7 @@ fn duplicate_text_field(
 }
 
 fn mutate_ipc_request_wire<F>(
-    request: &SearchPlaneIpcRequest,
+    request: &SearchPlaneQueryIpcRequest,
     mutate: F,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>>
 where
@@ -98,7 +97,7 @@ where
 }
 
 fn mutate_ipc_response_wire<F>(
-    response: &SearchPlaneIpcResponse,
+    response: &SearchPlaneQueryIpcResponse,
     mutate: F,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>>
 where
@@ -137,9 +136,18 @@ fn generation_pin() -> GenerationPin {
     )
 }
 
-fn lexical_request() -> SearchPlaneLexicalTextQueryRequestV2 {
-    SearchPlaneLexicalTextQueryRequestV2 {
-        syntax: SearchQuerySyntaxV1::Sourcegraph,
+fn lexical_request() -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
+        generation: Some(generation_pin()),
+        generation_selector: None,
+    }
+}
+
+fn semantic_scope() -> SemanticCandidateScope {
+    SemanticCandidateScope {
+        syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
@@ -160,21 +168,21 @@ fn lexical_candidate() -> LexicalCandidate {
     }
 }
 
-fn semantic_request() -> SearchPlaneSemanticQueryRequest {
-    SearchPlaneSemanticQueryRequest {
+fn semantic_request() -> SemanticQueryRequest {
+    SemanticQueryRequest {
         query_text: "1.0 0.0".to_owned(),
         query_vector: None,
         query_vector_ref: None,
         generation: Some(generation_pin()),
         generation_selector: None,
-        lexical_scope: Some(lexical_request()),
+        scope: Some(semantic_scope()),
         top_k: 25,
     }
 }
 
-fn hybrid_request() -> SearchPlaneHybridQueryRequest {
-    SearchPlaneHybridQueryRequest {
-        lexical: lexical_request(),
+fn hybrid_request() -> HybridQueryRequest {
+    HybridQueryRequest {
+        text_query: lexical_request(),
         semantic_query_text: "0.0 1.0".to_owned(),
         semantic_vector: None,
         semantic_vector_ref: None,
@@ -184,23 +192,21 @@ fn hybrid_request() -> SearchPlaneHybridQueryRequest {
     }
 }
 
-fn semantic_request_with_vector_ref(
-    vector_ref: SemanticVectorRef,
-) -> SearchPlaneSemanticQueryRequest {
-    SearchPlaneSemanticQueryRequest {
+fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQueryRequest {
+    SemanticQueryRequest {
         query_text: "semantic-explicit-vector".to_owned(),
         query_vector: None,
         query_vector_ref: Some(vector_ref),
         generation: Some(generation_pin()),
         generation_selector: None,
-        lexical_scope: Some(lexical_request()),
+        scope: Some(semantic_scope()),
         top_k: 25,
     }
 }
 
-fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SearchPlaneHybridQueryRequest {
-    SearchPlaneHybridQueryRequest {
-        lexical: lexical_request(),
+fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> HybridQueryRequest {
+    HybridQueryRequest {
+        text_query: lexical_request(),
         semantic_query_text: "hybrid-explicit-vector".to_owned(),
         semantic_vector: None,
         semantic_vector_ref: Some(vector_ref),
@@ -306,19 +312,19 @@ fn lq_query_cbor_decode_rejects_unknown_lq_version() -> TestRes {
 
 #[test]
 fn search_plane_ipc_request_v2_bridge_roundtrips_sourcegraph_syntax() -> TestRes {
-    let request = SearchPlaneIpcRequest::Bridge(SearchPlaneBridgeQueryRequest {
-        lexical: lexical_request(),
+    let request = SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+        text_query: lexical_request(),
         target: BridgeTarget::CodeQl,
     });
 
     roundtrip_eq(&request)?;
 
-    let decoded: SearchPlaneIpcRequest = decode(&encode(&request)?)?;
-    if let SearchPlaneIpcRequest::Bridge(inner) = decoded {
-        if inner.lexical.syntax != SearchQuerySyntaxV1::Sourcegraph {
+    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
+    if let SearchPlaneQueryIpcRequest::Bridge(inner) = decoded {
+        if inner.text_query.syntax != TextQuerySyntax::Sourcegraph {
             return Err(format!(
                 "expected sourcegraph syntax, got {:?}",
-                inner.lexical.syntax
+                inner.text_query.syntax
             )
             .into());
         }
@@ -333,18 +339,16 @@ fn search_plane_ipc_request_v2_bridge_roundtrips_sourcegraph_syntax() -> TestRes
 
 #[test]
 fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> TestRes {
-    let request = SearchPlaneIpcRequest::Semantic(semantic_request_with_vector_ref(
+    let request = SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_vector_ref(
         SemanticVectorRef::Inline(vec![1.0, 0.0, -1.0]),
     ));
 
     roundtrip_eq(&request)?;
 
-    let decoded: SearchPlaneIpcRequest = decode(&encode(&request)?)?;
-    if let SearchPlaneIpcRequest::Semantic(inner) = decoded {
-        let lexical_scope = inner
-            .lexical_scope
-            .ok_or_else(|| "expected lexical_scope".to_string())?;
-        if lexical_scope.syntax != SearchQuerySyntaxV1::Sourcegraph {
+    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
+    if let SearchPlaneQueryIpcRequest::Semantic(inner) = decoded {
+        let lexical_scope = inner.scope.ok_or_else(|| "expected scope".to_string())?;
+        if lexical_scope.syntax != TextQuerySyntax::Sourcegraph {
             return Err(format!(
                 "expected sourcegraph syntax, got {:?}",
                 lexical_scope.syntax
@@ -369,18 +373,18 @@ fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> Tes
 
 #[test]
 fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
-    let request = SearchPlaneIpcRequest::Hybrid(hybrid_request_with_vector_ref(
+    let request = SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_vector_ref(
         SemanticVectorRef::Handle("vec-handle-1".into()),
     ));
 
     roundtrip_eq(&request)?;
 
-    let decoded: SearchPlaneIpcRequest = decode(&encode(&request)?)?;
-    if let SearchPlaneIpcRequest::Hybrid(inner) = decoded {
-        if inner.lexical.syntax != SearchQuerySyntaxV1::Sourcegraph {
+    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
+    if let SearchPlaneQueryIpcRequest::Hybrid(inner) = decoded {
+        if inner.text_query.syntax != TextQuerySyntax::Sourcegraph {
             return Err(format!(
                 "expected sourcegraph syntax, got {:?}",
-                inner.lexical.syntax
+                inner.text_query.syntax
             )
             .into());
         }
@@ -455,38 +459,40 @@ fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_handle_vector_ref()
 #[test]
 fn search_plane_ipc_request_v2_semantic_rejects_duplicate_nested_lexical_syntax() -> TestRes {
     let bytes = mutate_ipc_request_wire(
-        &SearchPlaneIpcRequest::Semantic(semantic_request()),
+        &SearchPlaneQueryIpcRequest::Semantic(semantic_request()),
         |wire| {
             let request_fields = map_fields_mut(wire)?;
             let payload = field_value_mut(request_fields, "payload")?;
             let payload_fields = map_fields_mut(payload)?;
-            let lexical_scope = field_value_mut(payload_fields, "lexical_scope")?;
+            let lexical_scope = field_value_mut(payload_fields, "scope")?;
             let lexical_scope_fields = map_fields_mut(lexical_scope)?;
             duplicate_text_field(lexical_scope_fields, "syntax")?;
             Ok(())
         },
     )?;
 
-    expect_decode_error_contains::<SearchPlaneIpcRequest>(&bytes, "syntax")
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "syntax")
 }
 
 #[test]
 fn search_plane_ipc_request_v2_hybrid_rejects_duplicate_top_k() -> TestRes {
-    let bytes =
-        mutate_ipc_request_wire(&SearchPlaneIpcRequest::Hybrid(hybrid_request()), |wire| {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()),
+        |wire| {
             let request_fields = map_fields_mut(wire)?;
             let payload = field_value_mut(request_fields, "payload")?;
             let payload_fields = map_fields_mut(payload)?;
             duplicate_text_field(payload_fields, "top_k")?;
             Ok(())
-        })?;
+        },
+    )?;
 
-    expect_decode_error_contains::<SearchPlaneIpcRequest>(&bytes, "top_k")
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "top_k")
 }
 
 #[test]
 fn search_plane_ipc_response_v2_bridge_roundtrips_nested_payload() -> TestRes {
-    let response = SearchPlaneIpcResponse::Bridge(SearchPlaneBridgeQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::Bridge(SearchPlaneBridgeQueryResponse {
         generation: generation_pin(),
         packet: BridgeCandidatePacket {
             target: BridgeTarget::CodeQl,
@@ -502,8 +508,8 @@ fn search_plane_ipc_response_v2_bridge_roundtrips_nested_payload() -> TestRes {
 
     roundtrip_eq(&response)?;
 
-    let decoded: SearchPlaneIpcResponse = decode(&encode(&response)?)?;
-    if let SearchPlaneIpcResponse::Bridge(inner) = decoded {
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    if let SearchPlaneQueryIpcResponse::Bridge(inner) = decoded {
         if inner.packet.scope != BridgeScope::Hybrid {
             return Err(
                 format!("expected hybrid bridge scope, got {:?}", inner.packet.scope).into(),
@@ -524,7 +530,7 @@ fn search_plane_ipc_response_v2_bridge_roundtrips_nested_payload() -> TestRes {
 
 #[test]
 fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
-    let response = SearchPlaneIpcResponse::Semantic(SearchPlaneSemanticQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         explanation: explanation_v2(),
@@ -532,8 +538,8 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
 
     roundtrip_eq(&response)?;
 
-    let decoded: SearchPlaneIpcResponse = decode(&encode(&response)?)?;
-    if let SearchPlaneIpcResponse::Semantic(inner) = decoded {
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    if let SearchPlaneQueryIpcResponse::Semantic(inner) = decoded {
         if inner.explanation.strategy != "hybrid-v2" {
             return Err(format!(
                 "unexpected semantic explanation strategy: {}",
@@ -549,7 +555,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
 
 #[test]
 fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
-    let response = SearchPlaneIpcResponse::Hybrid(SearchPlaneHybridQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         explanation: explanation_v2(),
@@ -557,8 +563,8 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
 
     roundtrip_eq(&response)?;
 
-    let decoded: SearchPlaneIpcResponse = decode(&encode(&response)?)?;
-    if let SearchPlaneIpcResponse::Hybrid(inner) = decoded {
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    if let SearchPlaneQueryIpcResponse::Hybrid(inner) = decoded {
         if inner.explanation.planner_trace.len() != 2 {
             return Err(format!(
                 "expected 2 planner_trace entries, got {}",
@@ -596,8 +602,8 @@ fn results_search_explanation_v2_roundtrips_trace_engines_and_summary() -> TestR
 
 #[test]
 fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
-    let response =
-        SearchPlaneIpcResponse::History(quanta_index_contract::SearchPlaneHistoryQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::History(
+        quanta_index_contract::SearchPlaneHistoryQueryResponse {
             generation: generation_pin(),
             commits: vec![quanta_index_contract::CommitCandidate {
                 sha: CommitSha::from_bytes([1u8; 20]),
@@ -617,18 +623,18 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
                 line_end: 16,
                 snippet: "+ bridge_search(query);".to_owned(),
             }],
-        });
+        },
+    );
 
     roundtrip_eq(&response)
 }
 
 #[test]
 fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
-    let response =
-        SearchPlaneIpcResponse::Lexical(quanta_index_contract::SearchPlaneLexicalQueryResponse {
-            generation: generation_pin(),
-            results: vec![lexical_candidate()],
-        });
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        generation: generation_pin(),
+        results: vec![lexical_candidate()],
+    });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
         let payload = field_value_mut(response_fields, "payload")?;
@@ -637,12 +643,12 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
         Ok(())
     })?;
 
-    expect_decode_error_contains::<SearchPlaneIpcResponse>(&bytes, "results")
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "results")
 }
 
 #[test]
 fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestRes {
-    let response = SearchPlaneIpcResponse::Semantic(SearchPlaneSemanticQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         explanation: explanation_v2(),
@@ -655,12 +661,12 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
         Ok(())
     })?;
 
-    expect_decode_error_contains::<SearchPlaneIpcResponse>(&bytes, "generation")
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "generation")
 }
 
 #[test]
 fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRes {
-    let response = SearchPlaneIpcResponse::Hybrid(SearchPlaneHybridQueryResponse {
+    let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         explanation: explanation_v2(),
@@ -673,5 +679,5 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
         Ok(())
     })?;
 
-    expect_decode_error_contains::<SearchPlaneIpcResponse>(&bytes, "explanation")
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "explanation")
 }

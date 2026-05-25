@@ -26,14 +26,13 @@ use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
 };
 use quanta_index_contract::{
-    BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId, GenerationPin, LexicalChannelOp,
-    LexicalFullBundle, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneBridgeQueryRequest, SearchPlaneHybridQueryRequest,
-    SearchPlaneLexicalTextQueryRequestV2, SearchPlaneQueryIpcRequest,
+    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
+    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle, ManifestGeneration,
+    RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSemanticQueryRequest,
-    SearchPlaneStructuralQueryRequest, SearchQuerySyntaxV1, SemanticChannelOp, SemanticFullBundle,
-    SemanticVectorRef, UpsertChunk, UpsertEmbedding,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticChannelOp,
+    SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest,
+    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -189,7 +188,7 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
         let probe = lex_query("hello");
         match send_query_request(&socket, &probe) {
             Ok(resp) => match resp.payload {
-                SearchPlaneQueryIpcResponse::Lexical(lex) => {
+                SearchPlaneQueryIpcResponse::Text(lex) => {
                     if lex.results.len() == 2 {
                         ready_candidates = Some(lex.results);
                         true
@@ -281,9 +280,9 @@ fn hybrid_query_requires_joint_seal() -> TestResult {
     // Hybrid query should fail NOT_READY because semantic side is unsealed.
     let hybrid_req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 1,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "only".to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
@@ -389,9 +388,9 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     if !wait_until(READINESS_TIMEOUT, || {
         let req = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 0,
-            payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "sphinx".to_string(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
@@ -418,9 +417,9 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     // [1,0]).
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 99,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "sphinx".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
@@ -531,9 +530,9 @@ fn hybrid_query_with_explicit_semantic_vector_ignores_query_text() -> TestResult
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 98,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "sphinx".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
@@ -607,9 +606,9 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 40,
-            payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "needle".to_string(),
                     generation: Some(GenerationPin::new(
                         repo(),
@@ -709,9 +708,9 @@ fn hybrid_query_surfaces_lexical_lowering_typed_error() -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "visibility:public needle".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
@@ -787,13 +786,13 @@ fn semantic_only_query_requires_semantic_seal() -> TestResult {
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "1.0".to_string(),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
-            lexical_scope: None,
+            scope: None,
             top_k: 3,
         }),
     };
@@ -868,13 +867,13 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            lexical_scope: None,
+            scope: None,
             top_k: 1,
         }),
     };
@@ -971,13 +970,13 @@ fn semantic_query_with_explicit_query_vector_ignores_query_text() -> TestResult 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 97,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "not numeric".to_string(),
             query_vector: None,
             query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0_f32, 0.0_f32])),
             generation: Some(pin),
             generation_selector: None,
-            lexical_scope: None,
+            scope: None,
             top_k: 1,
         }),
     };
@@ -1067,13 +1066,13 @@ fn semantic_query_with_handle_ref_resolves_active_generation_vector() -> TestRes
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 96,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "still not numeric".to_string(),
             query_vector: None,
             query_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
             generation: Some(pin),
             generation_selector: None,
-            lexical_scope: None,
+            scope: None,
             top_k: 1,
         }),
     };
@@ -1138,14 +1137,14 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
-            payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+            payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
                 query_vector: None,
                 query_vector_ref: None,
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
-                lexical_scope: Some(SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+                scope: Some(SemanticCandidateScope {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
                     generation: Some(GenerationPin::new(
                         repo(),
@@ -1173,7 +1172,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
     }
     if !err
         .message
-        .contains("semantic: lexical scope generation does not match semantic request generation")
+        .contains("semantic: scope generation does not match semantic request generation")
     {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -1229,14 +1228,14 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            lexical_scope: Some(SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+            scope: Some(SemanticCandidateScope {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "index:no scoped".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
@@ -1366,14 +1365,14 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            lexical_scope: Some(SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+            scope: Some(SemanticCandidateScope {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope needle".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
@@ -1499,14 +1498,14 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            lexical_scope: Some(SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+            scope: Some(SemanticCandidateScope {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
@@ -1585,13 +1584,13 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 43,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: "NaN".to_string(),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
-            lexical_scope: None,
+            scope: None,
             top_k: 3,
         }),
     };
@@ -1655,9 +1654,9 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 44,
-            payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "needle".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
@@ -1773,9 +1772,9 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 45,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
@@ -1854,9 +1853,9 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 42,
-            payload: SearchPlaneQueryIpcRequest::Structural(SearchPlaneStructuralQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "match { foo($X) }".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
@@ -1959,9 +1958,9 @@ fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> Tes
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
-            payload: SearchPlaneQueryIpcRequest::Bridge(SearchPlaneBridgeQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: query_text.clone(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
@@ -2033,8 +2032,8 @@ fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> Tes
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
-        payload: SearchPlaneQueryIpcRequest::Lexical(SearchPlaneLexicalTextQueryRequestV2 {
-            syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
             query_text: needle.to_string(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,

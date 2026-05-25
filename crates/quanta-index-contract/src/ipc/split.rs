@@ -4,11 +4,12 @@ use crate::{
     BridgeQueryRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
     RepoMapActivateGenerationRequestV1, RepoMapMutationAckV1, RepoMapQueryRequestV1,
     RepoMapQueryResponseV1, RepoMapSourceBundleV1, SearchPlaneActivateGenerationRequest,
-    SearchPlaneActivationAck, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneSourcegraphQueryRequest,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryRequest, SemanticQueryResponse, SourcegraphQueryRequest, StructuralQueryRequest,
-    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    SearchPlaneActivationAck, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    SearchPlaneSourcegraphQueryRequest, SearchPlaneSourcegraphQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
+    StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
+    TextQueryResponse,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

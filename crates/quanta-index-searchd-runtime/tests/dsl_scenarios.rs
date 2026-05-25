@@ -18,13 +18,13 @@ use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
 };
 use quanta_index_contract::{
-    BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId, EngineTouched, GenerationPin,
-    LexicalCandidate, LexicalChannelOp, LexicalFullBundle, ManifestGeneration, PlannerStage,
-    RepoId, RepoRelativePath, RevisionId, SearchPlaneBridgeQueryRequest,
-    SearchPlaneHybridQueryRequest, SearchPlaneLexicalTextQueryRequestV2,
+    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
+    EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalChannelOp,
+    LexicalFullBundle, ManifestGeneration, PlannerStage, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSemanticQueryRequest, SearchQuerySyntaxV1,
-    SemanticChannelOp, SemanticFullBundle, UpsertChunk, UpsertEmbedding,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticChannelOp,
+    SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
+    UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -153,12 +153,12 @@ fn pin() -> GenerationPin {
 
 fn lexical_request(
     request_id: u64,
-    syntax: SearchQuerySyntaxV1,
+    syntax: TextQuerySyntax,
     query_text: &str,
 ) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id,
-        payload: SearchPlaneQueryIpcRequest::Lexical(SearchPlaneLexicalTextQueryRequestV2 {
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
             syntax,
             query_text: query_text.to_string(),
             generation: Some(pin()),
@@ -226,7 +226,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
     }
 
     let query_text = "(sphinx OR beta) needle NOT forbidden";
-    let request = lexical_request(1, SearchQuerySyntaxV1::Sourcegraph, query_text);
+    let request = lexical_request(1, TextQuerySyntax::Sourcegraph, query_text);
     if !wait_for_non_error(&socket, &request) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -237,7 +237,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
     for _ in 0..10_u8 {
         let response = send_query_request(&socket, &request)?;
         let ids = match response.payload {
-            SearchPlaneQueryIpcResponse::Lexical(lexical) => lexical_ids(&lexical.results),
+            SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
             other @ (SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -309,7 +309,7 @@ fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
 
     let phrase_request = lexical_request(
         2,
-        SearchQuerySyntaxV1::Lq,
+        TextQuerySyntax::Native,
         "\"sphinx of quartz\" OR riddle42",
     );
     if !wait_for_non_error(&socket, &phrase_request) {
@@ -320,7 +320,7 @@ fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
 
     let response = send_query_request(&socket, &phrase_request)?;
     let ids = match response.payload {
-        SearchPlaneQueryIpcResponse::Lexical(lexical) => lexical_ids(&lexical.results),
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
         other @ (SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -342,10 +342,10 @@ fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
         return Err(format!("unexpected LQ phrase ids: {ids:?}").into());
     }
 
-    let regex_request = lexical_request(3, SearchQuerySyntaxV1::Lq, "/riddle[0-9]+/");
+    let regex_request = lexical_request(3, TextQuerySyntax::Native, "/riddle[0-9]+/");
     let regex_err = match send_query_request(&socket, &regex_request)?.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
-        other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -426,14 +426,14 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 3,
-        payload: SearchPlaneQueryIpcRequest::Semantic(SearchPlaneSemanticQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
             query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin()),
             generation_selector: None,
-            lexical_scope: Some(SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+            scope: Some(SemanticCandidateScope {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
                 generation: Some(pin()),
                 generation_selector: None,
@@ -452,7 +452,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         SearchPlaneQueryIpcResponse::Semantic(semantic) => {
             (lexical_ids(&semantic.results), semantic.explanation)
         }
-        other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -490,7 +490,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         )
         .into());
     }
-    if !explanation.summary.contains("lexical scope of 2") {
+    if !explanation.summary.contains("text scope of 2") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
@@ -505,7 +505,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         .any(|entry| entry.stage == PlannerStage::Plan && entry.detail == "semantic.scope=true");
     let has_scope_exec = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::ExecFanout
-            && entry.detail == "semantic.scope.lexical_candidates=2"
+            && entry.detail == "semantic.scope.text_candidates=2"
     });
     if !has_scope_plan || !has_scope_exec {
         shutdown.store(true, Ordering::Release);
@@ -577,9 +577,9 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 4,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(SearchPlaneHybridQueryRequest {
-            lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
                 generation: Some(pin()),
                 generation_selector: None,
@@ -603,7 +603,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
             (lexical_ids(&hybrid.results), hybrid.explanation)
         }
-        other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -711,7 +711,7 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
     }
 
     let query_text = "(sphinx OR beta) needle NOT forbidden";
-    let lexical_probe = lexical_request(5, SearchQuerySyntaxV1::Sourcegraph, query_text);
+    let lexical_probe = lexical_request(5, TextQuerySyntax::Sourcegraph, query_text);
     if !wait_for_non_error(&socket, &lexical_probe) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -722,9 +722,9 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 6,
-            payload: SearchPlaneQueryIpcRequest::Bridge(SearchPlaneBridgeQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+            payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: query_text.to_string(),
                     generation: Some(pin()),
                     generation_selector: None,
@@ -735,7 +735,7 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
     )?;
     let bridge = match response.payload {
         SearchPlaneQueryIpcResponse::Bridge(bridge) => bridge,
-        other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)

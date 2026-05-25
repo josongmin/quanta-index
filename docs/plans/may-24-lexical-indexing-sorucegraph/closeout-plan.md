@@ -17,8 +17,9 @@ Current truth:
 - parser / normalizer / canonical hash are on the active path through [`quanta-index-lq-norm`](../../../crates/quanta-index-lq-norm/)
 - Sourcegraph parser / translator are on the active path through [`quanta-index-lq-bridge`](../../../crates/quanta-index-lq-bridge/)
 - the active query contract is versioned / typed, and the legacy `Custom` escape hatches are removed from the live wire
-- `searchd` routes lexical / semantic / hybrid requests through the closed repo-first intake path, and the workspace proof rails are green
-- structural / history live success remains producer-gated; current repo behaviour is explicit fail-closed / unavailable until producer ops arrive
+- [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) routes lexical / semantic / hybrid requests through the closed repo-first intake path; `searchd` is the transport/runtime shell around that path, and the workspace proof rails are green
+- hard DSL scenario coverage lives in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs)
+- structural / history live success remains producer-gated; current repo behaviour is explicit fail-closed / unavailable until producer commit/diff / parse-tree ops arrive
 - real-engine conformance CI, deployment-side observability, and the bridge downstream sink remain open integration tasks
 
 The remaining value of this packet is the dependency history and the boundary between landed repo work and external cutover work.
@@ -31,7 +32,7 @@ The remaining value of this packet is the dependency history and the boundary be
 
 1. active request intake accepts either LQ text or Sourcegraph text and lowers both through one canonical pipeline
 2. active wire contract is versioned, typed, and has no legacy `Custom` escape hatch
-3. `searchd` lexical queries route through one lexical planner, not a single-engine direct call
+3. the active `search-plane` lexical query path routes through one lexical planner, not a single-engine direct call
 4. semantic / hybrid queries are rebased onto the lexical filter universe
 5. bridge means one thing: `CodeQL candidate export`, not "Sourcegraph syntax translator"
 6. producer-authored channel ops needed by history / runtime / structural are either fully wired or explicitly fail closed with the chosen Option A/B contract
@@ -145,7 +146,7 @@ Goal: make the active wire model structurally compatible with the claimed DSL bo
 - Write scope:
   - `crates/quanta-index-contract/src/query/{expression,filters,directives,options,mod}.rs`
   - `crates/quanta-index-contract/src/ipc/{requests,envelopes}.rs`
-  - `crates/quanta-index-searchd/tests/{end_to_end,explain}.rs`
+  - `crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`
 - First PR shape:
   - add `lq_version`
   - replace stringly `filter` / `option` / `directive` carriers with typed variants needed by the closeout scope
@@ -258,7 +259,7 @@ Goal: replace direct single-engine lexical search with planner-selected shard ex
 - Write scope:
   - `crates/quanta-index-core/src/domains/lexical/{inbound,outbound,service}.rs`
   - `crates/quanta-index-lexical/src/`
-  - `crates/quanta-index-searchd/src/app/query.rs`
+  - `crates/quanta-index-search-plane/src/query_dispatcher.rs`
 - First PR shape:
   - planner chooses content / regex / trigram / phrase / symbol / path rails
   - active lexical query path no longer calls one undifferentiated `search(&LqQuery, top_k)`
@@ -295,8 +296,8 @@ Goal: close the two large remaining roll-up gaps honestly.
 - Owner label: `워커K sem-on-lex`
 - Depends on: `W3-A`
 - Write scope:
-  - `crates/quanta-index-contract/src/ipc/requests.rs`
-  - `crates/quanta-index-searchd/src/app/query.rs`
+  - `crates/quanta-index-contract/src/query/requests.rs`
+  - `crates/quanta-index-search-plane/src/query_dispatcher.rs`
   - `crates/quanta-index-core/src/domains/semantic/*.rs`
   - `crates/quanta-index-semantic/src/`
 - First PR shape:

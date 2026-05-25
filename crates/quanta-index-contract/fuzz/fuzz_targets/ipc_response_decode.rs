@@ -6,13 +6,13 @@
 use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
-    SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryResponse,
-    SearchPlaneLexicalQueryResponse, SearchPlaneSemanticQueryResponse,
+    SearchPlaneExplainQueryResponse, HybridQueryResponse,
+    TextQueryResponse, SemanticQueryResponse,
 };
 
 fuzz_target!(|data: &[u8]| {
-    let _ = ciborium::de::from_reader::<SearchPlaneLexicalQueryResponse, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneSemanticQueryResponse, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneHybridQueryResponse, _>(data);
+    let _ = ciborium::de::from_reader::<TextQueryResponse, _>(data);
+    let _ = ciborium::de::from_reader::<SemanticQueryResponse, _>(data);
+    let _ = ciborium::de::from_reader::<HybridQueryResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryResponse, _>(data);
 });

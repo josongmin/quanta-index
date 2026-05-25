@@ -12,17 +12,17 @@
 use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
-    SearchPlaneBridgeQueryRequest, SearchPlaneExplainQueryRequest, SearchPlaneHistoryQueryRequest,
-    SearchPlaneHybridQueryRequest, SearchPlaneLexicalTextQueryRequestV2,
-    SearchPlaneSemanticQueryRequest, SearchPlaneStructuralQueryRequest,
+    BridgeQueryRequest, SearchPlaneExplainQueryRequest, HistoryQueryRequest,
+    HybridQueryRequest, TextQueryRequest,
+    SemanticQueryRequest, StructuralQueryRequest,
 };
 
 fuzz_target!(|data: &[u8]| {
-    let _ = ciborium::de::from_reader::<SearchPlaneLexicalTextQueryRequestV2, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneSemanticQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneHybridQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneHistoryQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneStructuralQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneBridgeQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<TextQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<SemanticQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<HybridQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<HistoryQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<StructuralQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<BridgeQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryRequest, _>(data);
 });

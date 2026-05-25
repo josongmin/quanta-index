@@ -1,9 +1,10 @@
 # LQ Family Search Plane — Wave 0–8 Shipped
 
-> Authoritative "where we landed" summary for the May-24 Sourcegraph-class Lexical Kernel program.
+> Historical crate-local "where we landed" summary for the May-24 Sourcegraph-class Lexical Kernel program.
 > Companion doc to [implementation-plan.md](implementation-plan.md) (per-wave gates), [tickets/INDEX.md](tickets/INDEX.md) (RFC reconciliation), [rfc.md](rfc.md) (amended), [feature-scope.md](feature-scope.md), [usecase.md](usecase.md), [dsl.md](dsl.md).
 > Parent SSOTs: [../../ssot/channel-architecture.md](../../ssot/channel-architecture.md), [../../ssot/producer-handoff.md](../../ssot/producer-handoff.md).
 > Posture: terse program-completion record. Findings, not narrative.
+> Live runtime owner today is [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/); [`quanta-index-searchd`](../../../crates/quanta-index-searchd/) is the IPC daemon shell, and the hard DSL scenario pack currently lives in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs).
 
 ---
 
@@ -13,6 +14,9 @@
 |---|---|
 | Program | LQ family search plane — Wave 0–8 |
 | Ship date | 2026-05-25 |
+| Active runtime path | [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) owns readiness, lowering, and query orchestration; [`crates/quanta-index-searchd`](../../../crates/quanta-index-searchd/) binds transport/runtime shells around it |
+| Hard DSL scenario coverage | [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs) exercises the live repo-first runtime path end to end |
+| Live fail-closed surfaces | `history` and `structural` stay unavailable on the active runtime path until producer commit/diff / parse-tree ops arrive |
 | Crates shipped | 17 (Wave-0 prerequisites + Wave 1–8 ticket crates) |
 | Tests passing | 1,072 across the 17 crates |
 | Tests failed | 0 |
@@ -24,7 +28,7 @@
 | RFC ticket roll-up parity | 14 / 14 active spec-sheet ticket scopes shipped; 5 RFC-only roll-up specs deferred (RFC-LEX-02, RFC-LEX-03, RFC-LEX-05, RFC-SEM-02-original, RFC-BRIDGE-01-CodeQL) — see [§3.3](#33-rfc-roll-up-specs-deferred) |
 | Spec amendments | 4 spec sheets architecture-corrected (LEX-05 / LEX-07 / STR-01 / RT-01); RFC §Execution Model + §Error Code Taxonomy amended; SSOT updated; new [producer-handoff.md](../../ssot/producer-handoff.md) authored |
 | Channel ops proposed | 9 (`UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, `UpsertDirty`, `EvictDirty`, `UpsertParseTree`, `DeleteParseTree`) pending producer agreement per [producer-handoff.md §8](../../ssot/producer-handoff.md) |
-| Outstanding integration roadmap items | producer / deployment cutover only (see [§7](#7-integration-roadmap-next)) |
+| Outstanding integration roadmap items | producer cutover for history / structural (+ dirty/runtime handshake residue) and deployment / bridge sink wiring only (see [§7](#7-integration-roadmap-next)) |
 
 Cross-links: [channel-architecture.md](../../ssot/channel-architecture.md) (parent SSOT, updated 2026-05-25), [producer-handoff.md](../../ssot/producer-handoff.md) (new 2026-05-25), [tickets/INDEX.md](tickets/INDEX.md) (reconciliation), [implementation-plan.md](implementation-plan.md) (per-wave gates).
 
@@ -100,13 +104,13 @@ The following RFC `§Ticket Pack` roll-up scopes were not authored as spec sheet
 
 | RFC ticket | Status | Reason / next step |
 |---|---|---|
-| `RFC-LEX-02` "global front door and surface contract cutover" | deferred | searchd-level cutover; baseline-side work (channel-arch P4–P6) |
+| `RFC-LEX-02` "global front door and surface contract cutover" | deferred | search-plane runtime cutover (exposed through `searchd` IPC); baseline-side work (channel-arch P4–P6) |
 | `RFC-LEX-03` "lexical authority unification" | deferred | functionally implemented across LEX-02 / LEX-03 / LEX-05 sibling shards; needs roll-up author |
 | `RFC-LEX-05` "parallel executor and deterministic merge" | deferred | functionally satisfied by LEX-04 + LEX-06 (6/8-comp tiebreak); needs roll-up author |
 | `RFC-SEM-02-original` "incremental semantic derivatives" | deferred | original RFC scope; spec retargeted to hybrid fusion ([§5.5](#55-rfc-roll-up-scope-reframings)); incremental-derivative rail lives in `quanta-index-lq-hybrid::SemanticDerivative::apply_delta` |
 | `RFC-BRIDGE-01-CodeQL` "CodeQL bridge and candidate export" | deferred | spec retargeted to Sourcegraph→LQ bridge ([§5.5](#55-rfc-roll-up-scope-reframings)); CodeQL invocation builder is contract-only |
 
-These are documentation-only deferrals; the shipped code paths exercise the underlying behaviour through the routed spec sheets above.
+These are documentation-only deferrals; the active runtime path exercises lexical / semantic / hybrid / bridge behaviour through the routed spec sheets above, while `history` / `structural` remain explicit fail-closed paths until producer ops arrive.
 
 ---
 
@@ -343,7 +347,7 @@ Semgrep rail anchored at [tools/ci/semgrep/rules.yml](../../../tools/ci/semgrep/
 | `cargo test --workspace` | **green** | none |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **green** | none |
 | `cargo fmt --all -- --check` | **green** | none |
-| `cargo test -p quanta-index-searchd` | **green** | none; validates the harsh local UDS end-to-end pack (`end_to_end`, `explain`, `repo_map_end_to_end`) |
+| `cargo test -p quanta-index-searchd-runtime` | **green** | none; validates the hard local UDS end-to-end pack, including [`dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs) |
 | `just verify-rust-heavy` (Miri / careful / TSan / ASan / mutants / udeps) | **deferred** | intentionally out of the closeout rail; not required for the repo-first claim boundary |
 | Conformance corpus runner against real engine | **deferred** | gated on baseline + producer cutover; see [§7](#7-integration-roadmap-next) item 5 |
 

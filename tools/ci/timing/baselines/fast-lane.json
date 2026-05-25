@@ -1,0 +1,202 @@
+{
+  "summary": {
+    "targets": "quanta-index-lq-hybrid 0.1.0 (lib) quanta-index-lq-runtime 0.1.0 (lib) quanta-index-lq-semantic 0.1.0 (lib) quanta-index-contract 0.1.0 (lib) quanta-index-lq-text-norm 0.1.0 (lib) quanta-index-repomap 0.1.0 (lib) quanta-index-lq-ranker 0.1.0 (lib) quanta-index-lq-bridge 0.1.0 (lib) quanta-index-lq-structural 0.1.0 (lib) quanta-index-contract-base 0.1.0 (lib) quanta-index-lq-norm 0.1.0 (lib) quanta-index-lq-positions 0.1.0 (lib) quanta-index-lq-regex 0.1.0 (lib) quanta-index-conformance 0.1.0 (lib, bin \"conformance\") quanta-index-lq-history 0.1.0 (lib) quanta-index-lq-obs 0.1.0 (lib) quanta-index-lq-trigram 0.1.0 (lib) quanta-index-channel 0.1.0 (lib) quanta-index-lexical 0.1.0 (lib) quanta-index-lq-scorer 0.1.0 (lib) quanta-index-search-plane 0.1.0 (lib) quanta-index-core 0.1.0 (lib) quanta-index-searchctl 0.1.0 (lib, bin \"quanta-index-searchctl\") quanta-index-semantic 0.1.0 (lib) quanta-index-ipc 0.1.0 (lib) quanta-index-lq-symbol 0.1.0 (lib) quanta-index-searchd 0.1.0 (lib)",
+    "profile": "dev",
+    "fresh_units": "0",
+    "dirty_units": "216",
+    "total_units": "216",
+    "max_concurrency": "16 (jobs=16 ncpu=16)",
+    "build_start": "2026-05-25T11:11:02.902304Z",
+    "total_time": "15.3s",
+    "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08) Host: aarch64-apple-darwin Target: aarch64-apple-darwin"
+  },
+  "top_units": [
+    {
+      "name": "tantivy",
+      "target": "",
+      "start": 11.22,
+      "duration": 4.03
+    },
+    {
+      "name": "syn",
+      "target": "",
+      "start": 1.44,
+      "duration": 4.0
+    },
+    {
+      "name": "regex-automata",
+      "target": "",
+      "start": 2.58,
+      "duration": 3.92
+    },
+    {
+      "name": "zstd-sys",
+      "target": " build script (run)",
+      "start": 4.04,
+      "duration": 3.81
+    },
+    {
+      "name": "rayon",
+      "target": "",
+      "start": 4.11,
+      "duration": 2.97
+    },
+    {
+      "name": "winnow",
+      "target": "",
+      "start": 2.84,
+      "duration": 2.94
+    },
+    {
+      "name": "tokio",
+      "target": "",
+      "start": 6.36,
+      "duration": 2.53
+    },
+    {
+      "name": "time",
+      "target": "",
+      "start": 4.66,
+      "duration": 2.49
+    },
+    {
+      "name": "regex-syntax",
+      "target": "",
+      "start": 0.15,
+      "duration": 2.35
+    },
+    {
+      "name": "zerocopy",
+      "target": "",
+      "start": 7.21,
+      "duration": 2.3
+    }
+  ],
+  "top_repo_crates": [
+    {
+      "name": "quanta-index-lq-norm",
+      "duration": 1.1,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-history",
+      "duration": 1.08,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-semantic",
+      "duration": 1.06,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-searchctl",
+      "duration": 1.0,
+      "units": 2
+    },
+    {
+      "name": "quanta-index-contract",
+      "duration": 0.96,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-trigram",
+      "duration": 0.9,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-scorer",
+      "duration": 0.85,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-positions",
+      "duration": 0.85,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-structural",
+      "duration": 0.84,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-hybrid",
+      "duration": 0.83,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-ranker",
+      "duration": 0.81,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-symbol",
+      "duration": 0.81,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-repomap",
+      "duration": 0.71,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lexical",
+      "duration": 0.69,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-runtime",
+      "duration": 0.68,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-text-norm",
+      "duration": 0.66,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-search-plane",
+      "duration": 0.65,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-channel",
+      "duration": 0.62,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-obs",
+      "duration": 0.56,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-semantic",
+      "duration": 0.55,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-searchd",
+      "duration": 0.55,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-lq-regex",
+      "duration": 0.54,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-conformance",
+      "duration": 0.45,
+      "units": 2
+    },
+    {
+      "name": "quanta-index-lq-bridge",
+      "duration": 0.45,
+      "units": 1
+    },
+    {
+      "name": "quanta-index-core",
+      "duration": 0.42,
+      "units": 1
+    }
+  ]
+}

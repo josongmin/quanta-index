@@ -26,9 +26,8 @@ use quanta_index_channel::{BundleChannelPublisher, open_lexical_publisher};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
     RepoId, RepoRelativePath, RevisionId, SearchPlaneExplainQueryRequest,
-    SearchPlaneLexicalTextQueryRequestV2, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchQuerySyntaxV1, UpsertChunk,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, UpsertChunk,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SearchdConfig;
@@ -110,8 +109,8 @@ where
 fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id: 1,
-        payload: SearchPlaneQueryIpcRequest::Lexical(SearchPlaneLexicalTextQueryRequestV2 {
-            syntax: SearchQuerySyntaxV1::Sourcegraph,
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
             query_text: needle.to_string(),
             generation: Some(pin),
             generation_selector: None,
@@ -176,7 +175,7 @@ fn explain_reports_present_candidate() -> TestResult {
 
     let lex_resp = send_query_request(&socket, &lex_query("quick", pin.clone()))?;
     let candidate = match lex_resp.payload {
-        SearchPlaneQueryIpcResponse::Lexical(lex) => lex
+        SearchPlaneQueryIpcResponse::Text(lex) => lex
             .results
             .into_iter()
             .next()

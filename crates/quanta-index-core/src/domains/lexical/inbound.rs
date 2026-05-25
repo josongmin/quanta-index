@@ -1,13 +1,8 @@
-use quanta_index_contract::{
-    SearchPlaneLexicalQueryResponse, SearchPlaneLexicalTextQueryRequestV2,
-};
+use quanta_index_contract::{TextQueryRequest, TextQueryResponse};
 
 use crate::error::CoreError;
 
 /// Driving port exposed by the lexical module to the UDS query path.
 pub trait LexicalQueryPort: Send + Sync {
-    fn lexical_query(
-        &self,
-        request: SearchPlaneLexicalTextQueryRequestV2,
-    ) -> Result<SearchPlaneLexicalQueryResponse, CoreError>;
+    fn lexical_query(&self, request: TextQueryRequest) -> Result<TextQueryResponse, CoreError>;
 }

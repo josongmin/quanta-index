@@ -94,10 +94,7 @@ impl<'de> Visitor<'de> for TextQueryRequestVisitor {
                     generation_selector = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        TEXT_QUERY_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, TEXT_QUERY_REQUEST_FIELDS));
                 }
             }
         }
@@ -529,10 +526,7 @@ impl<'de> Visitor<'de> for HybridQueryRequestVisitor {
                     top_k = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        HYBRID_QUERY_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, HYBRID_QUERY_REQUEST_FIELDS));
                 }
             }
         }
@@ -646,10 +640,7 @@ impl<'de> Visitor<'de> for SymbolQueryRequestVisitor {
                     generation_selector = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SYMBOL_QUERY_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, SYMBOL_QUERY_REQUEST_FIELDS));
                 }
             }
         }
@@ -839,10 +830,7 @@ impl<'de> Visitor<'de> for BridgeQueryRequestVisitor {
                 "text_query" => text_query = Some(map.next_value()?),
                 "target" => target = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        BRIDGE_QUERY_REQUEST_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, BRIDGE_QUERY_REQUEST_FIELDS));
                 }
             }
         }
@@ -951,8 +939,8 @@ impl<'de> Deserialize<'de> for SearchPlaneExplainQueryRequest {
 /// The search-plane is responsible for parsing `source_syntax` against the
 /// Sourcegraph DSL pinned to `sg_version`; producers may carry a
 /// `GenerationPin` to fence the query against a specific manifest
-/// generation. Wire-compat preserved by appending to the existing
-/// seven-variant `SearchPlaneIpcRequest` enum.
+/// generation. Wire-compat is preserved by appending to the split
+/// query-plane IPC request enum.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPlaneSourcegraphQueryRequest {
     pub source_syntax: Box<str>,

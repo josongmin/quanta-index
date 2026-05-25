@@ -8,9 +8,9 @@ use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, GenerationPin, LexicalCandidate, ManifestGeneration, PlannerStage,
     PlannerTraceEntry, RepoId, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneLexicalQueryResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, TextQueryResponse,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
@@ -21,14 +21,14 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for StubDispatcher {
     fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
         match request {
-            SearchPlaneQueryIpcRequest::Lexical(payload) => {
+            SearchPlaneQueryIpcRequest::Text(payload) => {
                 let Some(generation) = payload.generation else {
                     return error_response(
                         "TEST_MISSING_GENERATION",
                         "lexical request must carry generation",
                     );
                 };
-                SearchPlaneQueryIpcResponse::Lexical(SearchPlaneLexicalQueryResponse {
+                SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
                     generation: generation.clone(),
                     results: vec![stub_candidate(generation)],
                 })
@@ -89,7 +89,7 @@ fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
         .arg("--manifest-generation")
         .arg("11")
         .arg("--syntax")
-        .arg("lq")
+        .arg("native")
         .arg("--query-text")
         .arg("fn main")
         .output()?;
@@ -98,8 +98,8 @@ fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
     }
     let stdout = String::from_utf8(output.stdout)?;
-    if !stdout.contains("\"kind\": \"Lexical\"") {
-        return Err(format!("missing lexical response kind in stdout: {stdout}").into());
+    if !stdout.contains("\"kind\": \"Text\"") {
+        return Err(format!("missing text response kind in stdout: {stdout}").into());
     }
     if !stdout.contains("\"candidate_id\": \"cand-1\"") {
         return Err(format!("missing lexical candidate in stdout: {stdout}").into());

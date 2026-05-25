@@ -65,10 +65,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                     results = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        TEXT_QUERY_RESPONSE_FIELDS,
-                    ));
+                    return Err(de::Error::unknown_field(other, TEXT_QUERY_RESPONSE_FIELDS));
                 }
             }
         }
@@ -99,8 +96,7 @@ pub struct SemanticQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] =
-    &["generation", "results", "explanation"];
+const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "explanation"];
 
 impl Serialize for SemanticQueryResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -187,8 +183,7 @@ pub struct HybridQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] =
-    &["generation", "results", "explanation"];
+const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "explanation"];
 
 impl Serialize for HybridQueryResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

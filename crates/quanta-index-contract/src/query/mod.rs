@@ -2,14 +2,11 @@ mod directives;
 mod expression;
 mod filters;
 mod options;
-mod pin;
 mod requests;
-mod syntax;
 
 pub use directives::*;
 pub use expression::*;
 pub use filters::*;
 pub use options::*;
-pub use pin::*;
+pub use quanta_index_contract_base::query::{GenerationPin, GenerationSelector, TextQuerySyntax};
 pub use requests::*;
-pub use syntax::*;

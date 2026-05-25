@@ -20,9 +20,7 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneIpcRequest, SearchPlaneIpcRequestEnvelope, SearchPlaneIpcResponse,
-    SearchPlaneIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
 
 use crate::codec::{IpcError, decode_request, decode_response, encode_request, encode_response};
@@ -30,8 +28,8 @@ use crate::codec::{IpcError, decode_request, decode_response, encode_request, en
 /// Dispatch hook supplied by the composition root.
 ///
 /// Receives a fully-parsed request payload and returns a fully-typed response
-/// payload. Domain errors (e.g. `NOT_READY`) MUST be surfaced as
-/// [`SearchPlaneIpcResponse::Error`] — never panic.
+/// payload. Domain errors MUST be surfaced through the response type rather
+/// than panicking.
 pub trait IpcDispatcher<Request, Response>: Send + Sync {
     fn dispatch(&self, request: Request) -> Response;
 }
@@ -42,21 +40,6 @@ pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 
 
 pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
     fn from_parts(request_id: u64, payload: Response) -> Self;
-}
-
-impl RequestEnvelope<SearchPlaneIpcRequest> for SearchPlaneIpcRequestEnvelope {
-    fn into_parts(self) -> (u64, SearchPlaneIpcRequest) {
-        (self.request_id, self.payload)
-    }
-}
-
-impl ResponseEnvelope<SearchPlaneIpcResponse> for SearchPlaneIpcResponseEnvelope {
-    fn from_parts(request_id: u64, payload: SearchPlaneIpcResponse) -> Self {
-        Self {
-            request_id,
-            payload,
-        }
-    }
 }
 
 impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>

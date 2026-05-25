@@ -1,7 +1,6 @@
 use quanta_index_contract::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqQuery, LqSelect, LqSpan, LqType, SearchPlaneLexicalTextQueryRequestV2,
-    SearchQuerySyntaxV1,
+    LqPatternType, LqQuery, LqSelect, LqSpan, LqType, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, LqDirective as BridgeDirective, SourcegraphVersionTag,
@@ -13,12 +12,10 @@ use quanta_index_lq_norm::{
 
 use quanta_index_core::CoreError;
 
-pub fn lower_lexical_text_query(
-    request: &SearchPlaneLexicalTextQueryRequestV2,
-) -> Result<LqQuery, CoreError> {
+pub fn lower_lexical_text_query(request: &TextQueryRequest) -> Result<LqQuery, CoreError> {
     match request.syntax {
-        SearchQuerySyntaxV1::Lq => lower_lq_query_text(&request.query_text),
-        SearchQuerySyntaxV1::Sourcegraph => lower_sourcegraph_query_text(&request.query_text),
+        TextQuerySyntax::Native => lower_lq_query_text(&request.query_text),
+        TextQuerySyntax::Sourcegraph => lower_sourcegraph_query_text(&request.query_text),
     }
 }
 

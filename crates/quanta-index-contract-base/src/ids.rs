@@ -1,4 +1,4 @@
-//! Public ID newtypes shared between the producer and the search-plane.
+//! Core ID newtypes shared between the producer and the search-plane.
 //!
 //! Each newtype below collapses to a one-line macro invocation. The
 //! `string_newtype!` and `u64_newtype!` macros (see `src/macros.rs`) expand

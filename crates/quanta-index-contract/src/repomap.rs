@@ -18,7 +18,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::ids::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapSymbolRecordDtoV1 {

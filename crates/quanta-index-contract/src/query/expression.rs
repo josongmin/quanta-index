@@ -16,7 +16,8 @@ pub use quanta_index_lq_norm::{
     LqStructuralNode, SemanticVectorRef,
 };
 
-pub type LqQuery = quanta_index_lq_norm::LqNormalizedQuery;
+pub type TextQueryAst = quanta_index_lq_norm::LqNormalizedQuery;
+pub type LqQuery = TextQueryAst;
 
 #[cfg(test)]
 mod tests {

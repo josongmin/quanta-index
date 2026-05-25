@@ -10,12 +10,16 @@
 //! * Query path (`query`, `results`, `ipc` envelopes/split) — UDS frame payloads sent by query clients.
 //! * Channel path (`channel`) — typed transport ops produced by producer and consumed
 //!   by `searchd` modules.
+//!
+//! Core identifiers, generation pinning, and text-query syntax live in the
+//! sibling `quanta-index-contract-base` crate. They are re-exported here so
+//! existing imports keep working while downstream crates that only need the
+//! core surface can migrate to depend on `quanta-index-contract-base` directly.
 
 #[macro_use]
 mod macros;
 
 pub mod channel;
-pub mod ids;
 pub mod ipc;
 pub mod query;
 pub mod repomap;
@@ -28,8 +32,10 @@ pub use channel::{
     UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree,
     UpsertRef, UpsertSymbol, UpsertTag,
 };
-pub use ids::*;
 pub use ipc::*;
+pub use quanta_index_contract_base::{
+    FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+};
 pub use query::*;
 pub use repomap::*;
 pub use results::*;

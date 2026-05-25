@@ -56,14 +56,14 @@ Channel ops (read at composition-root setup time, not in the request path):
 
 | Constituent | Crate | What it ships |
 |---|---|---|
-| PRE-CONTRACT-EXT | `quanta-index-contract::lex::*` | `SearchPlaneIpcRequest` enum, `SearchPlaneIpcResponse` enum, `SearchPlaneIpcRequestEnvelope`, `LexicalErrorCode` v1 (29 variants), `tenant_id` / `user_id` carrier, hand-rolled serde impls (per D18) |
+| PRE-CONTRACT-EXT | `quanta-index-contract::lex::*` | split query/control IPC enums + envelopes, `SearchPlaneIpcError`, `LexicalErrorCode` v1 (29 variants), `tenant_id` / `user_id` carrier, hand-rolled serde impls (per D18) |
 | PRE-NORM | `quanta-index-contract::lex::query` + `quanta-index-lq-norm` | `LqQueryV1` AST, parser, `LqCanonicalHashV1` (CBOR+SHA-256), bounded inputs |
 | BRIDGE-01 | `quanta-index-lq-bridge` | `Bridge` variant payload + `BridgeCandidatePacket` |
 | IPC envelope codec | `quanta-index-ipc` ([codec.rs](../../../../crates/quanta-index-ipc/src/codec.rs), [server.rs](../../../../crates/quanta-index-ipc/src/server.rs)) | Length-prefixed CBOR codec; `SearchPlaneIpcServer::dispatch` trait stub |
 
 ### 4.2 IPC request variant set (locked v1)
 
-Per [envelopes.rs](../../../../crates/quanta-index-contract/src/ipc/envelopes.rs) `SearchPlaneIpcRequest`:
+Per [split.rs](../../../../crates/quanta-index-contract/src/ipc/split.rs) `SearchPlaneQueryIpcRequest`:
 
 1. `Lexical` — text-query path (LEX-00..06 backed).
 2. `Semantic` — semantic-vector path (SEM-01 backed).
@@ -80,7 +80,7 @@ Total: **10 variants** (not the "7" placeholder in earlier drafts; the dispatch 
 
 | Gap | Where it lives | Disposition |
 |---|---|---|
-| Composition-root dispatcher wiring | [`crates/quanta-index-searchd/src/app/ipc_dispatcher.rs`](../../../../crates/quanta-index-searchd/src/app/ipc_dispatcher.rs), [`crates/quanta-index-searchd/src/app/dispatcher.rs`](../../../../crates/quanta-index-searchd/src/app/dispatcher.rs) | `cargo check --workspace` passes; live-wire spec for routing each `SearchPlaneIpcRequest` variant to its engine track is the integration item. Tracked as the only remaining work for this roll-up. |
+| Composition-root dispatcher wiring | [`crates/quanta-index-searchd/src/app/ipc_dispatcher.rs`](../../../../crates/quanta-index-searchd/src/app/ipc_dispatcher.rs), [`crates/quanta-index-searchd/src/app/runtime.rs`](../../../../crates/quanta-index-searchd/src/app/runtime.rs), [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../../crates/quanta-index-search-plane/src/query_dispatcher.rs), [`crates/quanta-index-search-plane/src/control_dispatcher.rs`](../../../../crates/quanta-index-search-plane/src/control_dispatcher.rs) | implemented; query/control dispatch is split by socket and type surface |
 | `Sourcegraph` IPC variant | proposed; not landed | Open question — see [§12](#12-open-questions). |
 
 ---
@@ -111,7 +111,7 @@ Constituent test coverage (already green):
 | `quanta-index-lq-norm/tests/parser_canonical_hash.rs` | PRE-NORM | AST canonicalization + `LqCanonicalHashV1` stability |
 | `quanta-index-lq-bridge/tests/sg_subset_table.rs` | BRIDGE-01 | Adopted/normalized/refused buckets |
 
-Residual e2e gap: **per-variant front-door integration test in `quanta-index-searchd`**, one row per `SearchPlaneIpcRequest` variant. Owned by composition-root wiring (above).
+Residual e2e gap: closed in `quanta-index-searchd-runtime` integration tests; front-door coverage now exercises the split query/control sockets.
 
 ---
 
@@ -207,4 +207,4 @@ This roll-up is `done` when the four 🔜 rows flip to ✓.
 - [channel-architecture.md §3.1](../../../ssot/channel-architecture.md) — op catalogue (write-side does NOT flow through IPC)
 - Constituent specs: [PRE-CONTRACT-EXT](PRE-CONTRACT-EXT.md) · [PRE-NORM](PRE-NORM.md) · [BRIDGE-01](BRIDGE-01.md)
 - [OBS-01](OBS-01.md) §4.1 — front-door spans + metrics
-- Code: [`crates/quanta-index-contract/src/ipc/envelopes.rs`](../../../../crates/quanta-index-contract/src/ipc/envelopes.rs) · [`crates/quanta-index-ipc/src/`](../../../../crates/quanta-index-ipc/src) · [`crates/quanta-index-searchd/src/app/`](../../../../crates/quanta-index-searchd/src/app)
+- Code: [`crates/quanta-index-contract/src/ipc/split.rs`](../../../../crates/quanta-index-contract/src/ipc/split.rs) · [`crates/quanta-index-contract/src/ipc/error.rs`](../../../../crates/quanta-index-contract/src/ipc/error.rs) · [`crates/quanta-index-ipc/src/`](../../../../crates/quanta-index-ipc/src) · [`crates/quanta-index-search-plane/src/`](../../../../crates/quanta-index-search-plane/src) · [`crates/quanta-index-searchd/src/app/`](../../../../crates/quanta-index-searchd/src/app)

@@ -319,10 +319,10 @@ loop {
 
 On `Seal`: module triggers build/open of that generation. On build success: ledger marks `materialized=true`.
 
-### 5.4 Query path (unchanged surface)
+### 5.4 Query path (split surface)
 
-- UDS socket `{state_root}/search-plane/searchd.sock`
-- Frame: `[u32 LE length][CBOR body]` carrying `SearchPlaneIpcRequestEnvelope` / `SearchPlaneIpcResponseEnvelope`
+- UDS socket `{state_root}/search-plane/query.sock`
+- Frame: `[u32 LE length][CBOR body]` carrying `SearchPlaneQueryIpcRequestEnvelope` / `SearchPlaneQueryIpcResponseEnvelope`
 - Hybrid query rejects when only one of lex/sem is `materialized` for the requested generation → `NOT_READY`
 
 ## 6. Crate Layout

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/quanta-index-contract",
+    "crates/quanta-index-contract-base",
     "crates/quanta-index-core",
     "crates/quanta-index-channel",
     "crates/quanta-index-lexical",
@@ -11,6 +12,7 @@ members = [
     "crates/quanta-index-searchd",
     "crates/quanta-index-searchd-runtime",
     "crates/quanta-index-searchctl",
+    "crates/quanta-index-sdk",
     "crates/quanta-index-lq-text-norm",
     "crates/quanta-index-lq-scorer",
     "crates/quanta-index-lq-norm",
@@ -110,7 +112,7 @@ proptest = "1.6.0"
 regex = "=1.10.6"
 regex-syntax = "=0.8.5"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 sha2 = "0.10"
 tantivy = "0.22"

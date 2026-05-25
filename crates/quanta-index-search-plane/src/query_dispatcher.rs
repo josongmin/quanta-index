@@ -6,17 +6,16 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    BridgeScope, EngineTouched, GenerationPin, GenerationSelector, LQ_VERSION_TAG, LqExpr, LqLeaf,
+    BridgeQueryRequest, BridgeScope, EngineTouched, GenerationPin, GenerationSelector,
+    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, LQ_VERSION_TAG, LqExpr, LqLeaf,
     LqOptions, LqQuery, LqSpan, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
     RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId, SearchExplanation,
-    SearchPlaneBridgeQueryRequest, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryRequest,
-    SearchPlaneHistoryQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
-    SearchPlaneIpcError, SearchPlaneLexicalQueryResponse, SearchPlaneLexicalTextQueryRequestV2,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSemanticQueryRequest,
-    SearchPlaneSemanticQueryResponse, SearchPlaneStructuralQueryRequest,
-    SearchPlaneStructuralQueryResponse, SearchPlaneSymbolQueryRequest,
-    SearchPlaneSymbolQueryResponse, SearchPlaneTrackKind, SemanticVectorRef,
+    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SemanticCandidateScope, SemanticQueryRequest, SemanticQueryResponse,
+    SemanticVectorRef, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse,
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
@@ -62,10 +61,7 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn lexical(
-        &self,
-        request: &SearchPlaneLexicalTextQueryRequestV2,
-    ) -> Result<SearchPlaneLexicalQueryResponse, CoreError> {
+    fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
         LexicalPolicy::validate_query(&lowered)?;
         let pin = resolve_lexical_request_pin(
@@ -80,16 +76,13 @@ impl SearchPlaneDispatcher {
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let results = searcher.search(&lowered, default_top_k())?;
-        Ok(SearchPlaneLexicalQueryResponse {
+        Ok(TextQueryResponse {
             generation: pin,
             results,
         })
     }
 
-    fn symbol(
-        &self,
-        request: SearchPlaneSymbolQueryRequest,
-    ) -> Result<SearchPlaneSymbolQueryResponse, CoreError> {
+    fn symbol(&self, request: SymbolQueryRequest) -> Result<SymbolQueryResponse, CoreError> {
         let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
             request.generation.clone(),
@@ -100,7 +93,7 @@ impl SearchPlaneDispatcher {
         .ok_or_else(|| {
             CoreError::InvalidContract("symbol: generation selector required".to_string())
         })?;
-        let lexical_request = SearchPlaneLexicalTextQueryRequestV2 {
+        let lexical_request = TextQueryRequest {
             syntax: request.syntax,
             query_text: request.query_text,
             generation: Some(pin.clone()),
@@ -114,22 +107,19 @@ impl SearchPlaneDispatcher {
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
         let results = searcher.search_symbols(&lowered, default_top_k())?;
-        Ok(SearchPlaneSymbolQueryResponse {
+        Ok(SymbolQueryResponse {
             generation: pin,
             results,
         })
     }
 
-    fn semantic(
-        &self,
-        request: &SearchPlaneSemanticQueryRequest,
-    ) -> Result<SearchPlaneSemanticQueryResponse, CoreError> {
+    fn semantic(&self, request: &SemanticQueryRequest) -> Result<SemanticQueryResponse, CoreError> {
         SemanticPolicy::validate_top_k(request.top_k)?;
         let pin = resolve_semantic_request_pin(self.activation_catalog.as_ref(), request)?;
         let materialized = self.snapshot_sem_seal()?;
         SemanticPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let lexical_scope_ids = if let Some(scope) = request.lexical_scope.as_ref() {
-            let lowered_scope = lower_lexical_text_query(scope)?;
+        let scope_candidate_ids = if let Some(scope) = request.scope.as_ref() {
+            let lowered_scope = lower_lexical_text_query(&scope_to_text_query(scope))?;
             LexicalPolicy::validate_query(&lowered_scope)?;
             let lex_materialized = self.snapshot_lex_seal()?;
             LexicalPolicy::validate_query_against_readiness(
@@ -161,27 +151,24 @@ impl SearchPlaneDispatcher {
             "query_vector",
             searcher.as_ref(),
         )?;
-        let results = if let Some(scope_ids) = lexical_scope_ids.as_ref() {
+        let results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
             searcher.search_scoped(&query_vector, scope_ids, request.top_k)?
         } else {
             searcher.search(&query_vector, request.top_k)?
         };
         let explanation = build_semantic_response_explanation(
-            lexical_scope_ids.as_ref().map_or(0, BTreeSet::len),
-            lexical_scope_ids.is_some(),
+            scope_candidate_ids.as_ref().map_or(0, BTreeSet::len),
+            scope_candidate_ids.is_some(),
             results.len(),
         );
-        Ok(SearchPlaneSemanticQueryResponse {
+        Ok(SemanticQueryResponse {
             generation: pin,
             results,
             explanation,
         })
     }
 
-    fn hybrid(
-        &self,
-        request: &SearchPlaneHybridQueryRequest,
-    ) -> Result<SearchPlaneHybridQueryResponse, CoreError> {
+    fn hybrid(&self, request: &HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let pin = resolve_hybrid_request_pin(self.activation_catalog.as_ref(), request)?;
         let lex_seal = self.snapshot_lex_seal()?;
@@ -198,7 +185,7 @@ impl SearchPlaneDispatcher {
         let sem_searcher =
             self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let lexical_query = lower_lexical_text_query(&request.lexical)?;
+        let lexical_query = lower_lexical_text_query(&request.text_query)?;
         LexicalPolicy::validate_query(&lexical_query)?;
         let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
         let lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
@@ -225,7 +212,7 @@ impl SearchPlaneDispatcher {
             fused.len(),
             internal_top_k,
         );
-        Ok(SearchPlaneHybridQueryResponse {
+        Ok(HybridQueryResponse {
             generation: pin,
             results: fused,
             explanation,
@@ -234,7 +221,7 @@ impl SearchPlaneDispatcher {
 
     fn history(
         &self,
-        _request: SearchPlaneHistoryQueryRequest,
+        _request: HistoryQueryRequest,
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
         Err(CoreError::Typed {
             code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
@@ -246,7 +233,7 @@ impl SearchPlaneDispatcher {
 
     fn structural(
         &self,
-        _request: SearchPlaneStructuralQueryRequest,
+        _request: StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
         Err(CoreError::Typed {
             code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
@@ -258,17 +245,17 @@ impl SearchPlaneDispatcher {
 
     fn bridge(
         &self,
-        request: &SearchPlaneBridgeQueryRequest,
+        request: &BridgeQueryRequest,
     ) -> Result<SearchPlaneBridgeQueryResponse, CoreError> {
         let pin = resolve_lexical_request_pin(
             self.activation_catalog.as_ref(),
-            &request.lexical,
+            &request.text_query,
             SearchPlaneTrackKind::Lexical,
             "bridge",
         )?;
         let materialized = self.snapshot_lex_seal()?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let lowered = lower_lexical_text_query(&request.lexical)?;
+        let lowered = lower_lexical_text_query(&request.text_query)?;
         LexicalPolicy::validate_query(&lowered)?;
         let searcher =
             self.lex_opener
@@ -278,7 +265,7 @@ impl SearchPlaneDispatcher {
             request.target,
             BridgeScope::Lexical,
             &pin,
-            &request.lexical,
+            &request.text_query,
             candidates,
         );
         Ok(SearchPlaneBridgeQueryResponse {
@@ -372,8 +359,8 @@ impl SearchPlaneDispatcher {
     #[must_use]
     pub fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
         match request {
-            SearchPlaneQueryIpcRequest::Lexical(req) => match self.lexical_query(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Lexical(resp),
+            SearchPlaneQueryIpcRequest::Text(req) => match self.lexical_query(req) {
+                Ok(resp) => SearchPlaneQueryIpcResponse::Text(resp),
                 Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
             },
             SearchPlaneQueryIpcRequest::Symbol(req) => match self.symbol(req) {
@@ -437,10 +424,7 @@ impl SearchPlaneDispatcher {
 }
 
 impl LexicalQueryPort for SearchPlaneDispatcher {
-    fn lexical_query(
-        &self,
-        request: SearchPlaneLexicalTextQueryRequestV2,
-    ) -> Result<SearchPlaneLexicalQueryResponse, CoreError> {
+    fn lexical_query(&self, request: TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
         self.lexical(&request)
     }
 }
@@ -448,17 +432,14 @@ impl LexicalQueryPort for SearchPlaneDispatcher {
 impl SemanticQueryPort for SearchPlaneDispatcher {
     fn semantic_query(
         &self,
-        request: SearchPlaneSemanticQueryRequest,
-    ) -> Result<SearchPlaneSemanticQueryResponse, CoreError> {
+        request: SemanticQueryRequest,
+    ) -> Result<SemanticQueryResponse, CoreError> {
         self.semantic(&request)
     }
 }
 
 impl HybridQueryPort for SearchPlaneDispatcher {
-    fn hybrid_query(
-        &self,
-        request: SearchPlaneHybridQueryRequest,
-    ) -> Result<SearchPlaneHybridQueryResponse, CoreError> {
+    fn hybrid_query(&self, request: HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
         self.hybrid(&request)
     }
 }
@@ -541,7 +522,7 @@ fn resolve_optional_selection(
 
 fn resolve_lexical_request_pin(
     activation_catalog: &ActivationCatalog,
-    request: &SearchPlaneLexicalTextQueryRequestV2,
+    request: &TextQueryRequest,
     track: SearchPlaneTrackKind,
     plane: &str,
 ) -> Result<GenerationPin, CoreError> {
@@ -557,7 +538,7 @@ fn resolve_lexical_request_pin(
 
 fn resolve_semantic_request_pin(
     activation_catalog: &ActivationCatalog,
-    request: &SearchPlaneSemanticQueryRequest,
+    request: &SemanticQueryRequest,
 ) -> Result<GenerationPin, CoreError> {
     let outer_pin = resolve_optional_selection(
         activation_catalog,
@@ -566,19 +547,18 @@ fn resolve_semantic_request_pin(
         SearchPlaneTrackKind::Semantic,
         "semantic",
     )?;
-    let scope_pin = match request.lexical_scope.as_ref() {
+    let scope_pin = match request.scope.as_ref() {
         Some(scope) => Some(resolve_lexical_request_pin(
             activation_catalog,
-            scope,
+            &scope_to_text_query(scope),
             SearchPlaneTrackKind::Lexical,
-            "semantic lexical_scope",
+            "semantic scope",
         )?),
         None => None,
     };
     match (outer_pin, scope_pin) {
         (Some(pin), Some(scope_pin)) if pin != scope_pin => Err(CoreError::InvalidContract(
-            "semantic: lexical scope generation does not match semantic request generation"
-                .to_string(),
+            "semantic: scope generation does not match semantic request generation".to_string(),
         )),
         (Some(pin), _) | (None, Some(pin)) => Ok(pin),
         (None, None) => Err(CoreError::InvalidContract(
@@ -589,13 +569,13 @@ fn resolve_semantic_request_pin(
 
 fn resolve_hybrid_request_pin(
     activation_catalog: &ActivationCatalog,
-    request: &SearchPlaneHybridQueryRequest,
+    request: &HybridQueryRequest,
 ) -> Result<GenerationPin, CoreError> {
     let lexical_pin = resolve_lexical_request_pin(
         activation_catalog,
-        &request.lexical,
+        &request.text_query,
         SearchPlaneTrackKind::Lexical,
-        "hybrid lexical",
+        "hybrid text_query",
     )?;
     let semantic_pin = resolve_optional_selection(
         activation_catalog,
@@ -613,6 +593,15 @@ fn resolve_hybrid_request_pin(
     }
 }
 
+fn scope_to_text_query(scope: &SemanticCandidateScope) -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: scope.syntax,
+        query_text: scope.query_text.clone(),
+        generation: scope.generation.clone(),
+        generation_selector: scope.generation_selector.clone(),
+    }
+}
+
 fn build_probe_query(probe_text: &str) -> LqQuery {
     LqQuery {
         lq_version: LQ_VERSION_TAG,
@@ -625,7 +614,7 @@ fn build_probe_query(probe_text: &str) -> LqQuery {
 }
 
 fn build_semantic_response_explanation(
-    lexical_scope_size: usize,
+    scope_candidate_count: usize,
     scoped: bool,
     result_count: usize,
 ) -> SearchExplanation {
@@ -636,7 +625,7 @@ fn build_semantic_response_explanation(
     if scoped {
         planner_trace.push(PlannerTraceEntry {
             stage: PlannerStage::ExecFanout,
-            detail: format!("semantic.scope.lexical_candidates={lexical_scope_size}"),
+            detail: format!("semantic.scope.text_candidates={scope_candidate_count}"),
         });
     }
     planner_trace.push(PlannerTraceEntry {
@@ -650,7 +639,7 @@ fn build_semantic_response_explanation(
     };
     let summary = if scoped {
         format!(
-            "semantic scoped query returned {result_count} candidates from lexical scope of {lexical_scope_size}"
+            "semantic scoped query returned {result_count} candidates from text scope of {scope_candidate_count}"
         )
     } else {
         format!("semantic query returned {result_count} candidates")
@@ -786,11 +775,10 @@ mod tests {
     use super::{SearchPlaneDispatcher, make_pin};
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::{
-        GenerationPin, LexicalCandidate, ManifestGeneration, RepoId, RepoMapEntryDtoV1,
-        RepoMapQueryRequestV1, RepoMapQueryResponseV1, RepoMapSnapshotMetaV1, RepoRelativePath,
-        RevisionId, SearchPlaneHybridQueryRequest, SearchPlaneLexicalTextQueryRequestV2,
-        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSemanticQueryRequest,
-        SearchQuerySyntaxV1, SemanticVectorRef,
+        GenerationPin, HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
+        RepoMapEntryDtoV1, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RepoMapSnapshotMetaV1,
+        RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+        SemanticQueryRequest, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -897,7 +885,7 @@ mod tests {
     ) -> Result<RepoMapQueryResponseV1, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneQueryIpcResponse::RepoMapQuery(response) => Ok(response),
-            other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -1109,24 +1097,22 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        match dispatcher.dispatch(SearchPlaneQueryIpcRequest::Lexical(
-            SearchPlaneLexicalTextQueryRequestV2 {
-                syntax: SearchQuerySyntaxV1::Lq,
-                query_text: "needle".to_string(),
-                generation: Some(make_pin(
-                    RepoId::new("repo-map-ipc"),
-                    RevisionId::new("rev-map-ipc"),
-                    ManifestGeneration::new(9),
-                )),
-                generation_selector: None,
-            },
-        )) {
+        match dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            generation: Some(make_pin(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: None,
+        })) {
             SearchPlaneQueryIpcResponse::Error(err) => {
                 if err.code != "NOT_READY" {
                     return Err(format!("unexpected error code: {}", err.code).into());
                 }
             }
-            other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
@@ -1155,8 +1141,8 @@ mod tests {
             test_activation_catalog()?,
         );
 
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(
-            SearchPlaneSemanticQueryRequest {
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 query_text: "definitely not a float vector".to_string(),
                 query_vector: None,
                 query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0, 0.0, 2.0])),
@@ -1166,10 +1152,9 @@ mod tests {
                     ManifestGeneration::new(9),
                 )),
                 generation_selector: None,
-                lexical_scope: None,
+                scope: None,
                 top_k: 3,
-            },
-        ));
+            }));
 
         match response {
             SearchPlaneQueryIpcResponse::Semantic(semantic) => {
@@ -1181,7 +1166,7 @@ mod tests {
                     .into());
                 }
             }
-            other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
@@ -1230,10 +1215,10 @@ mod tests {
             RevisionId::new("rev-map-ipc"),
             ManifestGeneration::new(9),
         );
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(
-            SearchPlaneHybridQueryRequest {
-                lexical: SearchPlaneLexicalTextQueryRequestV2 {
-                    syntax: SearchQuerySyntaxV1::Sourcegraph,
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
@@ -1244,8 +1229,7 @@ mod tests {
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 2,
-            },
-        ));
+            }));
 
         match response {
             SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
@@ -1253,7 +1237,7 @@ mod tests {
                     return Err("expected non-empty hybrid results".into());
                 }
             }
-            other @ (SearchPlaneQueryIpcResponse::Lexical(_)
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::History(_)

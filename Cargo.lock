@@ -869,9 +869,18 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "proptest",
+ "quanta-index-contract-base",
  "quanta-index-lq-norm",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "quanta-index-contract-base"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "serde",
 ]
 
 [[package]]
@@ -1060,6 +1069,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "quanta-index-sdk"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "quanta-index-channel",
+ "quanta-index-contract",
+ "quanta-index-ipc",
+ "serde",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

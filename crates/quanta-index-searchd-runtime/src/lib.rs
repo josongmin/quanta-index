@@ -21,8 +21,8 @@ use quanta_index_core::{
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::ActivationCatalog;
-use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
+use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {

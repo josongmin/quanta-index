@@ -11,13 +11,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, LexicalCandidate, ManifestGeneration,
-    PlannerTraceEntry, RepoId, RepoMapFocusSubjectDtoV1, RepoMapQueryRequestV1, RevisionId,
-    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneHybridQueryRequest,
-    SearchPlaneLexicalQueryResponse, SearchPlaneLexicalTextQueryRequestV2,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSemanticQueryRequest, SearchQuerySyntaxV1,
-    SemanticVectorRef,
+    EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
+    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDtoV1, RepoMapQueryRequestV1,
+    RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticQueryRequest,
+    SemanticVectorRef, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 
@@ -232,7 +231,7 @@ fn parse_lexical(
     let mut repo_id: Option<String> = None;
     let mut revision_id: Option<String> = None;
     let mut manifest_generation: Option<u64> = None;
-    let mut syntax: Option<SearchQuerySyntaxV1> = None;
+    let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
@@ -253,14 +252,12 @@ fn parse_lexical(
     let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
-    Ok(SearchPlaneQueryIpcRequest::Lexical(
-        SearchPlaneLexicalTextQueryRequestV2 {
-            syntax,
-            query_text,
-            generation: Some(generation),
-            generation_selector: None,
-        },
-    ))
+    Ok(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+        syntax,
+        query_text,
+        generation: Some(generation),
+        generation_selector: None,
+    }))
 }
 
 fn parse_semantic(
@@ -275,7 +272,7 @@ fn parse_semantic(
     let mut query_vector_handle: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut scope_query_text: Option<String> = None;
-    let mut scope_syntax: Option<SearchQuerySyntaxV1> = None;
+    let mut scope_syntax: Option<TextQuerySyntax> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -300,9 +297,9 @@ fn parse_semantic(
         }
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
-    let lexical_scope = match (scope_query_text, scope_syntax) {
+    let scope = match (scope_query_text, scope_syntax) {
         (None, None) => None,
-        (Some(query), Some(syntax)) => Some(SearchPlaneLexicalTextQueryRequestV2 {
+        (Some(query), Some(syntax)) => Some(SemanticCandidateScope {
             syntax,
             query_text: query,
             generation: Some(generation.clone()),
@@ -310,12 +307,12 @@ fn parse_semantic(
         }),
         (Some(_), None) => {
             return Err(CliError::usage(
-                "semantic lexical scope requires --scope-syntax".to_string(),
+                "semantic scope requires --scope-syntax".to_string(),
             ));
         }
         (None, Some(_)) => {
             return Err(CliError::usage(
-                "semantic lexical scope requires --scope-query".to_string(),
+                "semantic scope requires --scope-query".to_string(),
             ));
         }
     };
@@ -327,17 +324,15 @@ fn parse_semantic(
         "--query-vector",
         "--query-vector-handle",
     )?;
-    Ok(SearchPlaneQueryIpcRequest::Semantic(
-        SearchPlaneSemanticQueryRequest {
-            query_text,
-            query_vector: None,
-            query_vector_ref,
-            generation: Some(generation),
-            generation_selector: None,
-            lexical_scope,
-            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-        },
-    ))
+    Ok(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+        query_text,
+        query_vector: None,
+        query_vector_ref,
+        generation: Some(generation),
+        generation_selector: None,
+        scope,
+        top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
+    }))
 }
 
 fn parse_hybrid(
@@ -348,7 +343,7 @@ fn parse_hybrid(
     let mut revision_id: Option<String> = None;
     let mut manifest_generation: Option<u64> = None;
     let mut lexical_query_text: Option<String> = None;
-    let mut lexical_syntax: Option<SearchQuerySyntaxV1> = None;
+    let mut lexical_syntax: Option<TextQuerySyntax> = None;
     let mut semantic_query_text: Option<String> = None;
     let mut semantic_vector: Option<Vec<f32>> = None;
     let mut semantic_vector_handle: Option<String> = None;
@@ -379,7 +374,7 @@ fn parse_hybrid(
         }
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
-    let lexical = SearchPlaneLexicalTextQueryRequestV2 {
+    let text_query = TextQueryRequest {
         syntax: lexical_syntax
             .ok_or_else(|| CliError::usage("missing --lexical-syntax".to_string()))?,
         query_text: lexical_query_text
@@ -395,17 +390,15 @@ fn parse_hybrid(
         "--semantic-vector",
         "--semantic-vector-handle",
     )?;
-    Ok(SearchPlaneQueryIpcRequest::Hybrid(
-        SearchPlaneHybridQueryRequest {
-            lexical,
-            semantic_query_text,
-            semantic_vector: None,
-            semantic_vector_ref,
-            generation: Some(generation),
-            generation_selector: None,
-            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-        },
-    ))
+    Ok(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+        text_query,
+        semantic_query_text,
+        semantic_vector: None,
+        semantic_vector_ref,
+        generation: Some(generation),
+        generation_selector: None,
+        top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
+    }))
 }
 
 fn parse_explain(
@@ -633,10 +626,10 @@ fn encode_query_vector_text(vector: &[f32]) -> String {
         .join(" ")
 }
 
-fn parse_syntax(value: &str) -> CliResult<SearchQuerySyntaxV1> {
-    SearchQuerySyntaxV1::from_str_value(value).ok_or_else(|| {
+fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
+    TextQuerySyntax::from_str_value(value).ok_or_else(|| {
         CliError::usage(format!(
-            "unsupported syntax `{value}`; expected `lq` or `sourcegraph`"
+            "unsupported syntax `{value}`; expected `native` or `sourcegraph`"
         ))
     })
 }
@@ -688,7 +681,7 @@ fn validate_response_kind(
             "{}: {}",
             error.code, error.message
         ))),
-        (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Lexical(_))
+        (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
@@ -733,7 +726,7 @@ fn render_pretty(
 ) -> CliResult<()> {
     fmt_ok(writeln!(rendered, "request_id: {}", response.request_id))?;
     match &response.payload {
-        SearchPlaneQueryIpcResponse::Lexical(payload) => {
+        SearchPlaneQueryIpcResponse::Text(payload) => {
             render_lexical_payload("lexical", payload, None, rendered)
         }
         SearchPlaneQueryIpcResponse::Symbol(_payload) => Err(CliError::protocol(
@@ -741,7 +734,7 @@ fn render_pretty(
         )),
         SearchPlaneQueryIpcResponse::Semantic(payload) => render_lexical_payload(
             "semantic",
-            &SearchPlaneLexicalQueryResponse {
+            &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
             },
@@ -750,7 +743,7 @@ fn render_pretty(
         ),
         SearchPlaneQueryIpcResponse::Hybrid(payload) => render_lexical_payload(
             "hybrid",
-            &SearchPlaneLexicalQueryResponse {
+            &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
             },
@@ -839,7 +832,7 @@ fn render_pretty(
 
 fn render_lexical_payload(
     kind: &str,
-    payload: &SearchPlaneLexicalQueryResponse,
+    payload: &TextQueryResponse,
     explanation: Option<&SearchExplanation>,
     rendered: &mut String,
 ) -> CliResult<()> {
@@ -931,7 +924,7 @@ fn render_explanation(explanation: &SearchExplanation, rendered: &mut String) ->
 
 fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
     match response {
-        SearchPlaneQueryIpcResponse::Lexical(_) => "Lexical",
+        SearchPlaneQueryIpcResponse::Text(_) => "Text",
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
@@ -1014,9 +1007,9 @@ Global flags:
   --output pretty|json
 
 Read-only subcommands:
-  lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax lq|sourcegraph --query-text TEXT
-  semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax lq|sourcegraph]
-  hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax lq|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
+  lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
+  semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph]
+  hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
   explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
   repomap  --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
 "
@@ -1151,7 +1144,7 @@ mod tests {
             "--lexical-query",
             "needle",
             "--lexical-syntax",
-            "lq",
+            "native",
             "--semantic-vector",
             "[1.0, 0.0, 2.5]",
             "--top-k",
@@ -1249,7 +1242,7 @@ mod tests {
             "--lexical-query",
             "needle",
             "--lexical-syntax",
-            "lq",
+            "native",
             "--semantic-vector-handle",
             "emb-456",
             "--top-k",
