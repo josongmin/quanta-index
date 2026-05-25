@@ -228,17 +228,6 @@
 [2m│   │   ├── [0m[38;5;68menum[0m LexicalErrorCode[2m:[0m [38;5;107mpub[0m
 [2m│   │   └── [0m[38;5;68mstruct[0m LexicalErrorCodeVisitor[2m:[0m [38;5;167mpub(self)[0m
 [2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
-[2m│   ├── [0m[38;5;68mmod[0m explanation[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m ExplanationRow[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m ExplanationRowVisitor[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m PlannerTraceNode[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m PlannerTraceNodeVisitor[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m SearchExplanation[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mstruct[0m SearchExplanationBuilder[2m:[0m [38;5;107mpub[0m
-[2m│   │   └── [0m[38;5;68mstruct[0m SearchExplanationVisitor[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
 [2m│   ├── [0m[38;5;68mmod[0m history[2m:[0m [38;5;107mpub[0m
 [2m│   │   ├── [0m[38;5;68mstruct[0m CommitRecord[2m:[0m [38;5;107mpub[0m
 [2m│   │   ├── [0m[38;5;68mstruct[0m CommitRecordVisitor[2m:[0m [38;5;167mpub(self)[0m
@@ -360,6 +349,9 @@
 [2m    │   ├── [0m[38;5;68menum[0m EngineTouched[2m:[0m [38;5;107mpub[0m
 [2m    │   ├── [0m[38;5;68mstruct[0m EngineTouchedVisitor[2m:[0m [38;5;167mpub(self)[0m
 [2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m ExplanationRow[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m ExplanationRowVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
 [2m    │   ├── [0m[38;5;68menum[0m PlannerStage[2m:[0m [38;5;107mpub[0m
 [2m    │   ├── [0m[38;5;68mstruct[0m PlannerStageVisitor[2m:[0m [38;5;167mpub(self)[0m
 [2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
@@ -367,8 +359,10 @@
 [2m    │   ├── [0m[38;5;68mstruct[0m PlannerTraceEntryVisitor[2m:[0m [38;5;167mpub(self)[0m
 [2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
 [2m    │   ├── [0m[38;5;68mstruct[0m SearchExplanation[2m:[0m [38;5;107mpub[0m
-[2m    │   └── [0m[38;5;68mstruct[0m SearchExplanationVisitor[2m:[0m [38;5;167mpub(self)[0m
-[2m    │       └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m SearchExplanationBuilder[2m:[0m [38;5;107mpub[0m
+[2m    │   ├── [0m[38;5;68mstruct[0m SearchExplanationVisitor[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   │   └── [0m[38;5;68mtype[0m Value[2m:[0m [38;5;167mpub(self)[0m
+[2m    │   └── [0m[38;5;68mstruct[0m WeightsHashError[2m:[0m [38;5;107mpub[0m
 [2m    └── [0m[38;5;68mmod[0m query_responses[2m:[0m [38;5;167mpub(self)[0m
 [2m        ├── [0m[38;5;68mstruct[0m HybridQueryResponse[2m:[0m [38;5;107mpub[0m
 [2m        ├── [0m[38;5;68mstruct[0m HybridQueryResponseVisitor[2m:[0m [38;5;167mpub(self)[0m

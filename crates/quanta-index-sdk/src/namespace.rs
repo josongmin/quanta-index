@@ -112,7 +112,7 @@ where
     }
 }
 
-impl<'a, N> NamespaceHandle<'a, N>
+impl<N> NamespaceHandle<'_, N>
 where
     N: NamespaceIngest + ?Sized,
 {
@@ -146,6 +146,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "namespace tests use direct panic-style assertions for transport capture"
+    )]
+    #![expect(
+        clippy::significant_drop_tightening,
+        reason = "mutex guard lifetime in namespace tests is intentionally local and harmless"
+    )]
+
     //! Custom-namespace round-trip. Verifies that a downstream marker
     //! can be defined entirely outside the SDK core, route through
     //! `client.ns::<MyNs>()`, and that the SDK core / dispatcher need no

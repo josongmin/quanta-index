@@ -2021,106 +2021,6 @@ impl core::marker::Unpin for quanta_index_contract::lex::error_code::LexicalErro
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::error_code::LexicalErrorCode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::error_code::LexicalErrorCode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::error_code::LexicalErrorCode
-pub mod quanta_index_contract::lex::explanation
-pub struct quanta_index_contract::lex::explanation::ExplanationRow
-pub quanta_index_contract::lex::explanation::ExplanationRow::contribution: f32
-pub quanta_index_contract::lex::explanation::ExplanationRow::signal_name: alloc::boxed::Box<str>
-pub quanta_index_contract::lex::explanation::ExplanationRow::signal_value: f32
-pub quanta_index_contract::lex::explanation::ExplanationRow::weight: f32
-impl core::clone::Clone for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::clone(&self) -> quanta_index_contract::lex::explanation::ExplanationRow
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::eq(&self, other: &quanta_index_contract::lex::explanation::ExplanationRow) -> bool
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::ExplanationRow
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Send for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Sync for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::ExplanationRow
-pub struct quanta_index_contract::lex::explanation::PlannerTraceNode
-pub quanta_index_contract::lex::explanation::PlannerTraceNode::detail: alloc::boxed::Box<str>
-pub quanta_index_contract::lex::explanation::PlannerTraceNode::node_kind: alloc::boxed::Box<str>
-impl core::clone::Clone for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::clone(&self) -> quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::cmp::Eq for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::eq(&self, other: &quanta_index_contract::lex::explanation::PlannerTraceNode) -> bool
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Send for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Sync for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub struct quanta_index_contract::lex::explanation::SearchExplanation
-pub quanta_index_contract::lex::explanation::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>
-pub quanta_index_contract::lex::explanation::SearchExplanation::early_stop_reason: core::option::Option<alloc::boxed::Box<str>>
-pub quanta_index_contract::lex::explanation::SearchExplanation::engines_touched: alloc::vec::Vec<alloc::boxed::Box<str>>
-pub quanta_index_contract::lex::explanation::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::lex::explanation::PlannerTraceNode>
-pub quanta_index_contract::lex::explanation::SearchExplanation::ranker_weights_hash: [u8; 32]
-pub quanta_index_contract::lex::explanation::SearchExplanation::strategy: alloc::boxed::Box<str>
-pub quanta_index_contract::lex::explanation::SearchExplanation::summary: core::option::Option<alloc::boxed::Box<str>>
-impl quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::empty() -> Self
-impl core::clone::Clone for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::clone(&self) -> quanta_index_contract::lex::explanation::SearchExplanation
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::eq(&self, other: &quanta_index_contract::lex::explanation::SearchExplanation) -> bool
-impl core::default::Default for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::default() -> Self
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::SearchExplanation
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Send for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Sync for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::SearchExplanation
-pub struct quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::build(self) -> quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::contributions(self, rows: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<alloc::boxed::Box<str>>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::new() -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::push_engine(self, engine: alloc::boxed::Box<str>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::push_trace(self, node: quanta_index_contract::lex::explanation::PlannerTraceNode) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::ranker_weights_hash(self, hash: [u8; 32]) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::strategy(self, strategy: alloc::boxed::Box<str>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::summary(self, summary: core::option::Option<alloc::boxed::Box<str>>) -> Self
-impl core::clone::Clone for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::clone(&self) -> quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::default::Default for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::default() -> quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Send for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Sync for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::SearchExplanationBuilder
 pub mod quanta_index_contract::lex::history
 pub enum quanta_index_contract::lex::history::CommitShaParseError
 pub quanta_index_contract::lex::history::CommitShaParseError::BadLength
@@ -2523,6 +2423,60 @@ impl core::marker::Unpin for quanta_index_contract::lex::history::CommitShaParse
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::history::CommitShaParseError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::history::CommitShaParseError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::history::CommitShaParseError
+pub enum quanta_index_contract::lex::EarlyStopReason
+pub quanta_index_contract::lex::EarlyStopReason::CountReached
+pub quanta_index_contract::lex::EarlyStopReason::NotReady
+pub quanta_index_contract::lex::EarlyStopReason::Unsupported
+impl quanta_index_contract::EarlyStopReason
+pub const fn quanta_index_contract::EarlyStopReason::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::EarlyStopReason
+pub fn quanta_index_contract::EarlyStopReason::clone(&self) -> quanta_index_contract::EarlyStopReason
+impl core::cmp::Eq for quanta_index_contract::EarlyStopReason
+impl core::cmp::PartialEq for quanta_index_contract::EarlyStopReason
+pub fn quanta_index_contract::EarlyStopReason::eq(&self, other: &quanta_index_contract::EarlyStopReason) -> bool
+impl core::fmt::Debug for quanta_index_contract::EarlyStopReason
+pub fn quanta_index_contract::EarlyStopReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::EarlyStopReason
+impl core::marker::StructuralPartialEq for quanta_index_contract::EarlyStopReason
+impl serde_core::ser::Serialize for quanta_index_contract::EarlyStopReason
+pub fn quanta_index_contract::EarlyStopReason::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::EarlyStopReason
+pub fn quanta_index_contract::EarlyStopReason::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::EarlyStopReason
+impl core::marker::Send for quanta_index_contract::EarlyStopReason
+impl core::marker::Sync for quanta_index_contract::EarlyStopReason
+impl core::marker::Unpin for quanta_index_contract::EarlyStopReason
+impl core::marker::UnsafeUnpin for quanta_index_contract::EarlyStopReason
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EarlyStopReason
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EarlyStopReason
+pub enum quanta_index_contract::lex::EngineTouched
+pub quanta_index_contract::lex::EngineTouched::Bridge
+pub quanta_index_contract::lex::EngineTouched::History
+pub quanta_index_contract::lex::EngineTouched::Lexical
+pub quanta_index_contract::lex::EngineTouched::Semantic
+pub quanta_index_contract::lex::EngineTouched::Structural
+impl quanta_index_contract::EngineTouched
+pub const fn quanta_index_contract::EngineTouched::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::EngineTouched
+pub fn quanta_index_contract::EngineTouched::clone(&self) -> quanta_index_contract::EngineTouched
+impl core::cmp::Eq for quanta_index_contract::EngineTouched
+impl core::cmp::PartialEq for quanta_index_contract::EngineTouched
+pub fn quanta_index_contract::EngineTouched::eq(&self, other: &quanta_index_contract::EngineTouched) -> bool
+impl core::fmt::Debug for quanta_index_contract::EngineTouched
+pub fn quanta_index_contract::EngineTouched::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::EngineTouched
+impl core::marker::StructuralPartialEq for quanta_index_contract::EngineTouched
+impl serde_core::ser::Serialize for quanta_index_contract::EngineTouched
+pub fn quanta_index_contract::EngineTouched::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::EngineTouched
+pub fn quanta_index_contract::EngineTouched::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::EngineTouched
+impl core::marker::Send for quanta_index_contract::EngineTouched
+impl core::marker::Sync for quanta_index_contract::EngineTouched
+impl core::marker::Unpin for quanta_index_contract::EngineTouched
+impl core::marker::UnsafeUnpin for quanta_index_contract::EngineTouched
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EngineTouched
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EngineTouched
 pub enum quanta_index_contract::lex::LangId
 pub quanta_index_contract::lex::LangId::Go
 pub quanta_index_contract::lex::LangId::JavaScript
@@ -2678,6 +2632,39 @@ impl core::marker::Unpin for quanta_index_contract::lex::error_code::LexicalErro
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::error_code::LexicalErrorCode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::error_code::LexicalErrorCode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::error_code::LexicalErrorCode
+pub enum quanta_index_contract::lex::PlannerStage
+pub quanta_index_contract::lex::PlannerStage::Bridge
+pub quanta_index_contract::lex::PlannerStage::ExecFanout
+pub quanta_index_contract::lex::PlannerStage::Filter
+pub quanta_index_contract::lex::PlannerStage::LeafPhrase
+pub quanta_index_contract::lex::PlannerStage::LeafRegex
+pub quanta_index_contract::lex::PlannerStage::Merge
+pub quanta_index_contract::lex::PlannerStage::Normalize
+pub quanta_index_contract::lex::PlannerStage::Parse
+pub quanta_index_contract::lex::PlannerStage::Plan
+pub quanta_index_contract::lex::PlannerStage::Rerank
+impl quanta_index_contract::PlannerStage
+pub const fn quanta_index_contract::PlannerStage::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_contract::PlannerStage
+pub fn quanta_index_contract::PlannerStage::clone(&self) -> quanta_index_contract::PlannerStage
+impl core::cmp::Eq for quanta_index_contract::PlannerStage
+impl core::cmp::PartialEq for quanta_index_contract::PlannerStage
+pub fn quanta_index_contract::PlannerStage::eq(&self, other: &quanta_index_contract::PlannerStage) -> bool
+impl core::fmt::Debug for quanta_index_contract::PlannerStage
+pub fn quanta_index_contract::PlannerStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::PlannerStage
+impl core::marker::StructuralPartialEq for quanta_index_contract::PlannerStage
+impl serde_core::ser::Serialize for quanta_index_contract::PlannerStage
+pub fn quanta_index_contract::PlannerStage::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::PlannerStage
+pub fn quanta_index_contract::PlannerStage::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::PlannerStage
+impl core::marker::Send for quanta_index_contract::PlannerStage
+impl core::marker::Sync for quanta_index_contract::PlannerStage
+impl core::marker::Unpin for quanta_index_contract::PlannerStage
+impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
 pub enum quanta_index_contract::lex::SymbolKind
 pub quanta_index_contract::lex::SymbolKind::Class
 pub quanta_index_contract::lex::SymbolKind::Constant
@@ -2899,24 +2886,24 @@ pub quanta_index_contract::lex::ExplanationRow::contribution: f32
 pub quanta_index_contract::lex::ExplanationRow::signal_name: alloc::boxed::Box<str>
 pub quanta_index_contract::lex::ExplanationRow::signal_value: f32
 pub quanta_index_contract::lex::ExplanationRow::weight: f32
-impl core::clone::Clone for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::clone(&self) -> quanta_index_contract::lex::explanation::ExplanationRow
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::eq(&self, other: &quanta_index_contract::lex::explanation::ExplanationRow) -> bool
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::ExplanationRow
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::ExplanationRow
-pub fn quanta_index_contract::lex::explanation::ExplanationRow::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Send for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Sync for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::ExplanationRow
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::ExplanationRow
+impl core::clone::Clone for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::clone(&self) -> quanta_index_contract::ExplanationRow
+impl core::cmp::PartialEq for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::eq(&self, other: &quanta_index_contract::ExplanationRow) -> bool
+impl core::fmt::Debug for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplanationRow
+impl serde_core::ser::Serialize for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ExplanationRow
+impl core::marker::Send for quanta_index_contract::ExplanationRow
+impl core::marker::Sync for quanta_index_contract::ExplanationRow
+impl core::marker::Unpin for quanta_index_contract::ExplanationRow
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplanationRow
 pub struct quanta_index_contract::lex::ParseNode
 pub quanta_index_contract::lex::ParseNode::byte_end: u32
 pub quanta_index_contract::lex::ParseNode::byte_start: u32
@@ -3008,82 +2995,82 @@ impl core::marker::Unpin for quanta_index_contract::lex::parse_tree::ParseTreeRe
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::parse_tree::ParseTreeRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::parse_tree::ParseTreeRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::parse_tree::ParseTreeRecord
-pub struct quanta_index_contract::lex::PlannerTraceNode
-pub quanta_index_contract::lex::PlannerTraceNode::detail: alloc::boxed::Box<str>
-pub quanta_index_contract::lex::PlannerTraceNode::node_kind: alloc::boxed::Box<str>
-impl core::clone::Clone for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::clone(&self) -> quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::cmp::Eq for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::eq(&self, other: &quanta_index_contract::lex::explanation::PlannerTraceNode) -> bool
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::PlannerTraceNode
-pub fn quanta_index_contract::lex::explanation::PlannerTraceNode::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Send for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Sync for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::PlannerTraceNode
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::PlannerTraceNode
+pub struct quanta_index_contract::lex::PlannerTraceEntry
+pub quanta_index_contract::lex::PlannerTraceEntry::detail: alloc::string::String
+pub quanta_index_contract::lex::PlannerTraceEntry::stage: quanta_index_contract::PlannerStage
+impl core::clone::Clone for quanta_index_contract::PlannerTraceEntry
+pub fn quanta_index_contract::PlannerTraceEntry::clone(&self) -> quanta_index_contract::PlannerTraceEntry
+impl core::cmp::Eq for quanta_index_contract::PlannerTraceEntry
+impl core::cmp::PartialEq for quanta_index_contract::PlannerTraceEntry
+pub fn quanta_index_contract::PlannerTraceEntry::eq(&self, other: &quanta_index_contract::PlannerTraceEntry) -> bool
+impl core::fmt::Debug for quanta_index_contract::PlannerTraceEntry
+pub fn quanta_index_contract::PlannerTraceEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::PlannerTraceEntry
+impl serde_core::ser::Serialize for quanta_index_contract::PlannerTraceEntry
+pub fn quanta_index_contract::PlannerTraceEntry::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::PlannerTraceEntry
+pub fn quanta_index_contract::PlannerTraceEntry::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::PlannerTraceEntry
+impl core::marker::Send for quanta_index_contract::PlannerTraceEntry
+impl core::marker::Sync for quanta_index_contract::PlannerTraceEntry
+impl core::marker::Unpin for quanta_index_contract::PlannerTraceEntry
+impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
 pub struct quanta_index_contract::lex::SearchExplanation
-pub quanta_index_contract::lex::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>
-pub quanta_index_contract::lex::SearchExplanation::early_stop_reason: core::option::Option<alloc::boxed::Box<str>>
-pub quanta_index_contract::lex::SearchExplanation::engines_touched: alloc::vec::Vec<alloc::boxed::Box<str>>
-pub quanta_index_contract::lex::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::lex::explanation::PlannerTraceNode>
+pub quanta_index_contract::lex::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
+pub quanta_index_contract::lex::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
+pub quanta_index_contract::lex::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
+pub quanta_index_contract::lex::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::lex::SearchExplanation::ranker_weights_hash: [u8; 32]
-pub quanta_index_contract::lex::SearchExplanation::strategy: alloc::boxed::Box<str>
-pub quanta_index_contract::lex::SearchExplanation::summary: core::option::Option<alloc::boxed::Box<str>>
-impl quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::empty() -> Self
-impl core::clone::Clone for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::clone(&self) -> quanta_index_contract::lex::explanation::SearchExplanation
-impl core::cmp::PartialEq for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::eq(&self, other: &quanta_index_contract::lex::explanation::SearchExplanation) -> bool
-impl core::default::Default for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::default() -> Self
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::lex::explanation::SearchExplanation
-impl serde_core::ser::Serialize for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanation::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Send for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Sync for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::SearchExplanation
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::SearchExplanation
+pub quanta_index_contract::lex::SearchExplanation::strategy: alloc::string::String
+pub quanta_index_contract::lex::SearchExplanation::summary: alloc::string::String
+impl quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::empty() -> Self
+impl core::clone::Clone for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::clone(&self) -> quanta_index_contract::SearchExplanation
+impl core::cmp::PartialEq for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::eq(&self, other: &quanta_index_contract::SearchExplanation) -> bool
+impl core::default::Default for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::default() -> Self
+impl core::fmt::Debug for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchExplanation
+impl serde_core::ser::Serialize for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchExplanation
+impl core::marker::Send for quanta_index_contract::SearchExplanation
+impl core::marker::Sync for quanta_index_contract::SearchExplanation
+impl core::marker::Unpin for quanta_index_contract::SearchExplanation
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanation
 pub struct quanta_index_contract::lex::SearchExplanationBuilder
-impl quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::build(self) -> quanta_index_contract::lex::explanation::SearchExplanation
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::contributions(self, rows: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<alloc::boxed::Box<str>>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::new() -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::push_engine(self, engine: alloc::boxed::Box<str>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::push_trace(self, node: quanta_index_contract::lex::explanation::PlannerTraceNode) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::ranker_weights_hash(self, hash: [u8; 32]) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::strategy(self, strategy: alloc::boxed::Box<str>) -> Self
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::summary(self, summary: core::option::Option<alloc::boxed::Box<str>>) -> Self
-impl core::clone::Clone for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::clone(&self) -> quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::default::Default for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::default() -> quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::fmt::Debug for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-pub fn quanta_index_contract::lex::explanation::SearchExplanationBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Send for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Sync for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::Unpin for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::marker::UnsafeUnpin for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::explanation::SearchExplanationBuilder
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::explanation::SearchExplanationBuilder
+impl quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::build(self) -> quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows: alloc::vec::Vec<quanta_index_contract::ExplanationRow>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
+impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::clone(&self) -> quanta_index_contract::SearchExplanationBuilder
+impl core::default::Default for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::default() -> quanta_index_contract::SearchExplanationBuilder
+impl core::fmt::Debug for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Send for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Sync for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Unpin for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanationBuilder
 pub struct quanta_index_contract::lex::SymbolRecord
 pub quanta_index_contract::lex::SymbolRecord::container_name: core::option::Option<alloc::boxed::Box<str>>
 pub quanta_index_contract::lex::SymbolRecord::kind: quanta_index_contract::lex::symbol::SymbolKind
@@ -3153,6 +3140,28 @@ impl core::marker::Unpin for quanta_index_contract::lex::symbol::SymbolSpan
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::symbol::SymbolSpan
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::symbol::SymbolSpan
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::symbol::SymbolSpan
+pub struct quanta_index_contract::lex::WeightsHashError
+impl quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::message(&self) -> &str
+pub fn quanta_index_contract::WeightsHashError::new(message: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::clone(&self) -> quanta_index_contract::WeightsHashError
+impl core::cmp::Eq for quanta_index_contract::WeightsHashError
+impl core::cmp::PartialEq for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::eq(&self, other: &quanta_index_contract::WeightsHashError) -> bool
+impl core::error::Error for quanta_index_contract::WeightsHashError
+impl core::fmt::Debug for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::WeightsHashError
+impl core::marker::Freeze for quanta_index_contract::WeightsHashError
+impl core::marker::Send for quanta_index_contract::WeightsHashError
+impl core::marker::Sync for quanta_index_contract::WeightsHashError
+impl core::marker::Unpin for quanta_index_contract::WeightsHashError
+impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub mod quanta_index_contract::query
 pub use quanta_index_contract::query::GenerationPin
 pub use quanta_index_contract::query::GenerationSelector
@@ -3781,6 +3790,9 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EngineTouch
 pub enum quanta_index_contract::results::PlannerStage
 pub quanta_index_contract::results::PlannerStage::Bridge
 pub quanta_index_contract::results::PlannerStage::ExecFanout
+pub quanta_index_contract::results::PlannerStage::Filter
+pub quanta_index_contract::results::PlannerStage::LeafPhrase
+pub quanta_index_contract::results::PlannerStage::LeafRegex
 pub quanta_index_contract::results::PlannerStage::Merge
 pub quanta_index_contract::results::PlannerStage::Normalize
 pub quanta_index_contract::results::PlannerStage::Parse
@@ -3836,6 +3848,29 @@ impl core::marker::Unpin for quanta_index_contract::CommitCandidate
 impl core::marker::UnsafeUnpin for quanta_index_contract::CommitCandidate
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::CommitCandidate
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::CommitCandidate
+pub struct quanta_index_contract::results::ExplanationRow
+pub quanta_index_contract::results::ExplanationRow::contribution: f32
+pub quanta_index_contract::results::ExplanationRow::signal_name: alloc::boxed::Box<str>
+pub quanta_index_contract::results::ExplanationRow::signal_value: f32
+pub quanta_index_contract::results::ExplanationRow::weight: f32
+impl core::clone::Clone for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::clone(&self) -> quanta_index_contract::ExplanationRow
+impl core::cmp::PartialEq for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::eq(&self, other: &quanta_index_contract::ExplanationRow) -> bool
+impl core::fmt::Debug for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplanationRow
+impl serde_core::ser::Serialize for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ExplanationRow
+impl core::marker::Send for quanta_index_contract::ExplanationRow
+impl core::marker::Sync for quanta_index_contract::ExplanationRow
+impl core::marker::Unpin for quanta_index_contract::ExplanationRow
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplanationRow
 pub struct quanta_index_contract::results::HybridQueryResponse
 pub quanta_index_contract::results::HybridQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
@@ -3881,17 +3916,21 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
 pub struct quanta_index_contract::results::SearchExplanation
-pub quanta_index_contract::results::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>
+pub quanta_index_contract::results::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::results::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
 pub quanta_index_contract::results::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::results::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::results::SearchExplanation::ranker_weights_hash: [u8; 32]
 pub quanta_index_contract::results::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::results::SearchExplanation::summary: alloc::string::String
+impl quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::empty() -> Self
 impl core::clone::Clone for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::clone(&self) -> quanta_index_contract::SearchExplanation
 impl core::cmp::PartialEq for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::eq(&self, other: &quanta_index_contract::SearchExplanation) -> bool
+impl core::default::Default for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::default() -> Self
 impl core::fmt::Debug for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::SearchExplanation
@@ -3906,6 +3945,30 @@ impl core::marker::Unpin for quanta_index_contract::SearchExplanation
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanation
+pub struct quanta_index_contract::results::SearchExplanationBuilder
+impl quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::build(self) -> quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows: alloc::vec::Vec<quanta_index_contract::ExplanationRow>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
+impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::clone(&self) -> quanta_index_contract::SearchExplanationBuilder
+impl core::default::Default for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::default() -> quanta_index_contract::SearchExplanationBuilder
+impl core::fmt::Debug for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Send for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Sync for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Unpin for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanationBuilder
 pub struct quanta_index_contract::results::SearchPlaneBridgeQueryResponse
 pub quanta_index_contract::results::SearchPlaneBridgeQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::SearchPlaneBridgeQueryResponse::packet: quanta_index_contract_base::results::bridge::BridgeCandidatePacket
@@ -4076,6 +4139,28 @@ impl core::marker::Unpin for quanta_index_contract::TextQueryResponse
 impl core::marker::UnsafeUnpin for quanta_index_contract::TextQueryResponse
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TextQueryResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TextQueryResponse
+pub struct quanta_index_contract::results::WeightsHashError
+impl quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::message(&self) -> &str
+pub fn quanta_index_contract::WeightsHashError::new(message: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::clone(&self) -> quanta_index_contract::WeightsHashError
+impl core::cmp::Eq for quanta_index_contract::WeightsHashError
+impl core::cmp::PartialEq for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::eq(&self, other: &quanta_index_contract::WeightsHashError) -> bool
+impl core::error::Error for quanta_index_contract::WeightsHashError
+impl core::fmt::Debug for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::WeightsHashError
+impl core::marker::Freeze for quanta_index_contract::WeightsHashError
+impl core::marker::Send for quanta_index_contract::WeightsHashError
+impl core::marker::Sync for quanta_index_contract::WeightsHashError
+impl core::marker::Unpin for quanta_index_contract::WeightsHashError
+impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub type quanta_index_contract::results::SymbolQueryResponse = quanta_index_contract::TextQueryResponse
 pub enum quanta_index_contract::BatchIngestMode
 pub quanta_index_contract::BatchIngestMode::Delta
@@ -4306,6 +4391,9 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ParseTreeMu
 pub enum quanta_index_contract::PlannerStage
 pub quanta_index_contract::PlannerStage::Bridge
 pub quanta_index_contract::PlannerStage::ExecFanout
+pub quanta_index_contract::PlannerStage::Filter
+pub quanta_index_contract::PlannerStage::LeafPhrase
+pub quanta_index_contract::PlannerStage::LeafRegex
 pub quanta_index_contract::PlannerStage::Merge
 pub quanta_index_contract::PlannerStage::Normalize
 pub quanta_index_contract::PlannerStage::Parse
@@ -5017,6 +5105,29 @@ impl core::marker::Unpin for quanta_index_contract::EvictDirty
 impl core::marker::UnsafeUnpin for quanta_index_contract::EvictDirty
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::EvictDirty
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::EvictDirty
+pub struct quanta_index_contract::ExplanationRow
+pub quanta_index_contract::ExplanationRow::contribution: f32
+pub quanta_index_contract::ExplanationRow::signal_name: alloc::boxed::Box<str>
+pub quanta_index_contract::ExplanationRow::signal_value: f32
+pub quanta_index_contract::ExplanationRow::weight: f32
+impl core::clone::Clone for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::clone(&self) -> quanta_index_contract::ExplanationRow
+impl core::cmp::PartialEq for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::eq(&self, other: &quanta_index_contract::ExplanationRow) -> bool
+impl core::fmt::Debug for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::ExplanationRow
+impl serde_core::ser::Serialize for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ExplanationRow
+pub fn quanta_index_contract::ExplanationRow::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::ExplanationRow
+impl core::marker::Send for quanta_index_contract::ExplanationRow
+impl core::marker::Sync for quanta_index_contract::ExplanationRow
+impl core::marker::Unpin for quanta_index_contract::ExplanationRow
+impl core::marker::UnsafeUnpin for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ExplanationRow
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ExplanationRow
 pub struct quanta_index_contract::GenerationSnapshot
 pub quanta_index_contract::GenerationSnapshot::manifest_digest: alloc::string::String
 pub quanta_index_contract::GenerationSnapshot::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -5840,17 +5951,21 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeMetadataQueryRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
 pub struct quanta_index_contract::SearchExplanation
-pub quanta_index_contract::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::lex::explanation::ExplanationRow>
+pub quanta_index_contract::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>
 pub quanta_index_contract::SearchExplanation::engines_touched: alloc::vec::Vec<quanta_index_contract::EngineTouched>
 pub quanta_index_contract::SearchExplanation::planner_trace: alloc::vec::Vec<quanta_index_contract::PlannerTraceEntry>
 pub quanta_index_contract::SearchExplanation::ranker_weights_hash: [u8; 32]
 pub quanta_index_contract::SearchExplanation::strategy: alloc::string::String
 pub quanta_index_contract::SearchExplanation::summary: alloc::string::String
+impl quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::empty() -> Self
 impl core::clone::Clone for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::clone(&self) -> quanta_index_contract::SearchExplanation
 impl core::cmp::PartialEq for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::eq(&self, other: &quanta_index_contract::SearchExplanation) -> bool
+impl core::default::Default for quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanation::default() -> Self
 impl core::fmt::Debug for quanta_index_contract::SearchExplanation
 pub fn quanta_index_contract::SearchExplanation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::SearchExplanation
@@ -5865,6 +5980,30 @@ impl core::marker::Unpin for quanta_index_contract::SearchExplanation
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanation
+pub struct quanta_index_contract::SearchExplanationBuilder
+impl quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::build(self) -> quanta_index_contract::SearchExplanation
+pub fn quanta_index_contract::SearchExplanationBuilder::contributions(self, rows: alloc::vec::Vec<quanta_index_contract::ExplanationRow>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::early_stop_reason(self, reason: core::option::Option<quanta_index_contract::EarlyStopReason>) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::new() -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_engine(self, engine: quanta_index_contract::EngineTouched) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::push_trace(self, entry: quanta_index_contract::PlannerTraceEntry) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::ranker_weights_hash(self, hash: core::result::Result<[u8; 32], quanta_index_contract::WeightsHashError>) -> core::result::Result<Self, quanta_index_contract::WeightsHashError>
+pub fn quanta_index_contract::SearchExplanationBuilder::strategy(self, strategy: alloc::string::String) -> Self
+pub fn quanta_index_contract::SearchExplanationBuilder::summary(self, summary: alloc::string::String) -> Self
+impl core::clone::Clone for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::clone(&self) -> quanta_index_contract::SearchExplanationBuilder
+impl core::default::Default for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::default() -> quanta_index_contract::SearchExplanationBuilder
+impl core::fmt::Debug for quanta_index_contract::SearchExplanationBuilder
+pub fn quanta_index_contract::SearchExplanationBuilder::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Send for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Sync for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::Unpin for quanta_index_contract::SearchExplanationBuilder
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanationBuilder
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanationBuilder
 pub struct quanta_index_contract::SearchPlaneActivateGenerationRequest
 pub quanta_index_contract::SearchPlaneActivateGenerationRequest::manifest_digest: alloc::string::String
 pub quanta_index_contract::SearchPlaneActivateGenerationRequest::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -6748,6 +6887,28 @@ impl core::marker::Unpin for quanta_index_contract::UpsertTag
 impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertTag
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertTag
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertTag
+pub struct quanta_index_contract::WeightsHashError
+impl quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::message(&self) -> &str
+pub fn quanta_index_contract::WeightsHashError::new(message: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::clone(&self) -> quanta_index_contract::WeightsHashError
+impl core::cmp::Eq for quanta_index_contract::WeightsHashError
+impl core::cmp::PartialEq for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::eq(&self, other: &quanta_index_contract::WeightsHashError) -> bool
+impl core::error::Error for quanta_index_contract::WeightsHashError
+impl core::fmt::Debug for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_contract::WeightsHashError
+pub fn quanta_index_contract::WeightsHashError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::WeightsHashError
+impl core::marker::Freeze for quanta_index_contract::WeightsHashError
+impl core::marker::Send for quanta_index_contract::WeightsHashError
+impl core::marker::Sync for quanta_index_contract::WeightsHashError
+impl core::marker::Unpin for quanta_index_contract::WeightsHashError
+impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub type quanta_index_contract::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
 pub type quanta_index_contract::HistoryTagMutation = quanta_index_contract::HistoryRefMutation
 pub type quanta_index_contract::HistoryTagUpsert = quanta_index_contract::HistoryRefUpsert

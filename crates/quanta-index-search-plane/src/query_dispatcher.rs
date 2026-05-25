@@ -49,8 +49,7 @@ pub struct SearchPlaneDispatcher {
     /// consults this port; the field's job is to keep the DIP-correct
     /// constructor signature stable across the cutover so
     /// `searchd::app::runtime` does not have to change.
-    #[allow(dead_code)]
-    structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
+    _structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     activation_catalog: Arc<ActivationCatalog>,
 }
@@ -72,7 +71,7 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             repo_map_query,
-            structural_producer,
+            _structural_producer: structural_producer,
             ledger,
             activation_catalog,
         }
@@ -426,11 +425,11 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(req),
-            SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(req),
-            SearchPlaneQueryIpcRequest::Bridge(req) => self.dispatch_bridge(req),
+            SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
+            SearchPlaneQueryIpcRequest::Bridge(req) => self.dispatch_bridge(&req),
             SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
             SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req),
-            SearchPlaneQueryIpcRequest::Sourcegraph(req) => self.dispatch_sourcegraph(req),
+            SearchPlaneQueryIpcRequest::Sourcegraph(req) => self.dispatch_sourcegraph(&req),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => self.dispatch_runtime_metadata(req),
         }
     }
@@ -470,15 +469,15 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_structural(&self, request: StructuralQueryRequest) -> SearchPlaneQueryIpcResponse {
-        match self.structural(&request) {
+    fn dispatch_structural(&self, request: &StructuralQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.structural(request) {
             Ok(resp) => SearchPlaneQueryIpcResponse::Structural(resp),
             Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
         }
     }
 
-    fn dispatch_bridge(&self, request: BridgeQueryRequest) -> SearchPlaneQueryIpcResponse {
-        match self.bridge(&request) {
+    fn dispatch_bridge(&self, request: &BridgeQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.bridge(request) {
             Ok(resp) => SearchPlaneQueryIpcResponse::Bridge(resp),
             Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
         }
@@ -503,9 +502,9 @@ impl SearchPlaneDispatcher {
 
     fn dispatch_sourcegraph(
         &self,
-        request: SearchPlaneSourcegraphQueryRequest,
+        request: &SearchPlaneSourcegraphQueryRequest,
     ) -> SearchPlaneQueryIpcResponse {
-        match self.sourcegraph(&request) {
+        match self.sourcegraph(request) {
             Ok(resp) => SearchPlaneQueryIpcResponse::Sourcegraph(resp),
             Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
         }
@@ -576,8 +575,7 @@ impl ExplainQueryPort for SearchPlaneDispatcher {
 /// (`structural()` returns `NotImplemented` until the wire shape lands), so
 /// this adapter is wired by the composition root purely to satisfy the
 /// `StructuralProducerPort` seam. `readiness` reports
-/// `ParseTreeProducerUnavailable` to keep the port honest; `execute` is
-/// unreachable because the service-side gate only invokes it on `Ready`.
+/// `ParseTreeProducerUnavailable` to keep the port honest.
 pub struct FailClosedStructuralProducer;
 
 impl StructuralProducerPort for FailClosedStructuralProducer {
@@ -590,13 +588,9 @@ impl StructuralProducerPort for FailClosedStructuralProducer {
         _request: &DomainStructuralQueryRequest,
     ) -> Result<Vec<StructuralBinding>, quanta_index_core::domains::structural::StructuralError>
     {
-        // Invariant: `StructuralService::query` only calls `execute` after
-        // `readiness` returns `Ready`; this adapter's `readiness` always
-        // returns `ParseTreeProducerUnavailable`, so this arm is unreachable.
-        // Fail loudly rather than carry dead defensive code.
-        unreachable!(
-            "FailClosedStructuralProducer::execute called despite ParseTreeProducerUnavailable readiness — wiring bug"
-        )
+        Err(quanta_index_core::domains::structural::StructuralError::ProducerExecution(
+            "FailClosedStructuralProducer.execute should remain unreachable while readiness is ParseTreeProducerUnavailable".to_string(),
+        ))
     }
 }
 
@@ -1905,13 +1899,16 @@ mod tests {
         Ok(())
     }
 
-    /// When the producer reports `Ready` the dispatcher still cannot run
-    /// because the IPC request does not yet carry an `LqStructuralBlock`.
-    /// In that case (and *only* that case) the wire code is the generic
-    /// `NOT_IMPLEMENTED`; every other readiness value is surfaced as the
-    /// matching stable `STR_*` code via the LXE-09 routing tests above.
+    /// Structural dispatch is fail-closed at the dispatcher boundary until
+    /// the structural-block AST lands on the IPC wire.
+    ///
+    /// The producer port is NOT consulted. The dispatcher used to fabricate
+    /// an empty pattern and route it through the domain service, which is
+    /// heuristic authority because the caller's `query_text` was discarded.
+    /// Now the wire code is the generic `NOT_IMPLEMENTED` regardless of what
+    /// the producer would have reported.
     #[test]
-    fn structural_dispatch_returns_not_implemented_when_producer_ready() -> TestResult {
+    fn structural_dispatch_is_fail_closed_with_not_implemented() -> TestResult {
         let producer = Arc::new(RecordingStructuralProducer::new(StructuralReadiness::Ready));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
@@ -1932,13 +1929,10 @@ mod tests {
         if code != "NOT_IMPLEMENTED" {
             return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
         }
-        // LXE-09 contract: readiness MUST be consulted, even on the Ready
-        // branch — so the typed failure code is authoritative on every
-        // other readiness value.
         let consulted = producer.readiness_calls.load(Ordering::SeqCst);
-        if consulted != 1 {
+        if consulted != 0 {
             return Err(format!(
-                "expected readiness to be consulted exactly once, got {consulted}"
+                "expected the structural producer to NOT be consulted (dispatcher fail-closed), got {consulted} call(s)"
             )
             .into());
         }

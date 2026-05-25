@@ -2,20 +2,18 @@
 //!
 //! Table-driven. Every row in `SCENARIOS` ingests through the real publish
 //! path, seals, then issues a `TextQueryRequest` and asserts against the
-//! observed result. Rows fall into three categories:
+//! observed result. Rows fall into two categories today:
 //!
 //! - `ExpectedOutcome::Candidates` — wiring exists today; row must return
-//!   the exact ordered candidate-id set with the named candidate kinds and
-//!   `engines_touched`.
-//! - `ExpectedOutcome::TypedError` — wiring exists today and must reject
-//!   with the named typed error code (e.g. `BRIDGE_UNSUPPORTED_FILTER`).
+//!   the exact ordered candidate-id set.
 //! - `ExpectedOutcome::ExpectedFailing { owner_ticket, .. }` — wiring is
 //!   pending the named LXE-NN ticket. The row STILL EXECUTES the query and
 //!   asserts the *current* observable behavior (typically "no match" or a
 //!   typed-unavailable code). When LXE-NN lands and the underlying engine
 //!   produces real results, the assertion goes red and the row owner
-//!   converts it to `Candidates`/`TypedError`. That is the closed-loop
-//!   guarantee.
+//!   converts it to `Candidates` (or, in the same PR, introduces a
+//!   `TypedError` variant if the live behavior is a typed rejection).
+//!   That is the closed-loop guarantee.
 //!
 //! No row may be silently skipped. A row marked `ExpectedFailing` stays
 //! GREEN while its `current_observation` continues to hold; the moment
@@ -34,12 +32,14 @@ use std::fmt::Write as _;
 
 use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 
-/// Per-row expected outcome. See module doc-comment for closed-loop semantics.
+/// Per-row expected outcome.
+///
+/// See module doc-comment for closed-loop semantics.
 ///
 /// Variants are added only as live rows exist for them (CLAUDE.md "dead
-/// port surface is forbidden"). When LXE-NN tickets land and ExpectedFailing
-/// rows promote to typed-error coverage, add the `TypedError` variant in
-/// the same PR.
+/// port surface is forbidden"). When LXE-NN tickets land and
+/// `ExpectedFailing` rows promote to typed-error coverage, add the
+/// `TypedError` variant in the same PR.
 #[derive(Clone, Debug)]
 enum ExpectedOutcome {
     Candidates {
@@ -60,6 +60,8 @@ enum CurrentObservation {
     /// match — wiring is overly broad and would NOT survive once the owner
     /// ticket lands).
     OverbroadIncludes(&'static [&'static str]),
+    /// Today this query rejects with a stable typed error code.
+    TypedError(&'static str),
 }
 
 struct LexicalScenario {
@@ -192,10 +194,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         id: "file_filter_narrows_content_hits_by_path",
         query_text: "file:src/lib.rs alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "file: filter must narrow content hits to src/lib.rs only (currently filter is not applied)",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content"],
         },
     },
     // ──────── repo ────────
@@ -205,11 +205,7 @@ const SCENARIOS: &[LexicalScenario] = &[
         // `repo:repo-other` filter must return zero matches.
         query_text: "repo:repo-other alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "repo: filter must exclude all rows when no repo matches; currently filter is ignored",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     // ──────── lang ────────
     LexicalScenario {
@@ -218,13 +214,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         // `scripts/helper.py` (python). lang:rust must return alpha only.
         query_text: "lang:rust alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "lang: filter must restrict to rust-only matches; currently filter is ignored and both rows return",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_content",
-                "gamma_py_same",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content"],
         },
     },
     // ──────── boolean ────────
@@ -235,8 +226,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-02",
-            reason: "boolean AND with explicit keyword must intersect; planner IR pending",
-            current_observation: CurrentObservation::Empty,
+            reason: "boolean AND must intersect once planner IR lowering lands; current public contract is a fail-closed planner rejection",
+            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
         },
     },
     LexicalScenario {
@@ -245,8 +236,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-02",
-            reason: "boolean OR with explicit keyword must union; planner IR pending",
-            current_observation: CurrentObservation::Empty,
+            reason: "boolean OR must union once planner IR lowering lands; current public contract is a fail-closed planner rejection",
+            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
         },
     },
     LexicalScenario {
@@ -255,8 +246,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-02",
-            reason: "boolean NOT must exclude matching docs; planner IR pending",
-            current_observation: CurrentObservation::Empty,
+            reason: "boolean NOT must exclude matching docs once planner IR lowering lands; current public contract is a fail-closed planner rejection",
+            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
         },
     },
     // ──────── case ────────
@@ -287,10 +278,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         // eta_trigram_bait, gamma). top_k=2 must cap to 2.
         query_text: "needle",
         top_k: 2,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "count cap (top_k) must apply deterministic top-N after merge; assert <=2 once stable ordering ships",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content", "eta_trigram_bait"],
         },
     },
     // ──────── phrase ────────
@@ -298,10 +287,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         id: "phrase_exact_adjacent_matches",
         query_text: "\"lemon yellow banana\"",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-05",
-            reason: "exact-adjacent phrase must route through lq-positions and hit delta_phrase",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
         },
     },
     LexicalScenario {
@@ -351,8 +338,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-04",
-            reason: "raw substring must route via trigram + exact verify; currently raw:... is not honored at execution",
-            current_observation: CurrentObservation::Empty,
+            reason: "raw substring must route via trigram + exact verify; current public contract still rejects the native raw: surface at parse time",
+            current_observation: CurrentObservation::TypedError("PARSE_FAIL"),
         },
     },
     // ──────── symbol / select / type ────────
@@ -393,8 +380,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-03",
-            reason: "fork: must return typed-unavailable until producer metadata lands; today the filter is silently dropped and returns matches",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
+            reason: "fork: must stay fail-closed with a typed unavailable code until producer metadata lands",
+            current_observation: CurrentObservation::TypedError("LEX_FILTER_FORK_UNAVAILABLE"),
         },
     },
     LexicalScenario {
@@ -403,8 +390,10 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-03",
-            reason: "visibility: must return typed-unavailable until producer metadata lands; today the filter is silently dropped",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
+            reason: "visibility: must stay fail-closed with a typed unavailable code until producer metadata lands",
+            current_observation: CurrentObservation::TypedError(
+                "LEX_FILTER_VISIBILITY_UNAVAILABLE",
+            ),
         },
     },
 ];
@@ -540,6 +529,24 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                         }
                     }
                 }
+                CurrentObservation::TypedError(expected_code) => match observed_error {
+                    Some(code) if code == *expected_code => RowReport {
+                        id: scenario.id,
+                        failure: None,
+                    },
+                    Some(other) => RowReport {
+                        id: scenario.id,
+                        failure: Some(format!(
+                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got {other}; {owner_ticket} may have changed public fail-closed behavior — promote or tighten this row. reason={reason}"
+                        )),
+                    },
+                    None => RowReport {
+                        id: scenario.id,
+                        failure: Some(format!(
+                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got candidates={observed:?}; {owner_ticket} may have landed — promote this row. reason={reason}"
+                        )),
+                    },
+                },
             }
         }
     }

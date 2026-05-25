@@ -229,10 +229,20 @@ fn search_explanation_round_trips_all_seven_fields() -> TestRes {
     if decoded.planner_trace.len() != 2 {
         return Err("planner_trace dropped on roundtrip".into());
     }
-    if decoded.planner_trace[0].stage != PlannerStage::Filter {
+    let first_stage = decoded
+        .planner_trace
+        .first()
+        .map(|entry| entry.stage)
+        .ok_or("planner_trace[0] missing")?;
+    if first_stage != PlannerStage::Filter {
         return Err("planner_trace[0].stage not preserved as typed enum".into());
     }
-    if decoded.planner_trace[1].stage != PlannerStage::LeafRegex {
+    let second_stage = decoded
+        .planner_trace
+        .get(1)
+        .map(|entry| entry.stage)
+        .ok_or("planner_trace[1] missing")?;
+    if second_stage != PlannerStage::LeafRegex {
         return Err("planner_trace[1].stage not preserved as typed enum".into());
     }
     if decoded.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic] {
@@ -295,7 +305,12 @@ fn search_explanation_builder_pushes_typed_fields() -> TestRes {
     if built.planner_trace.len() != 1 {
         return Err("builder.push_trace did not append".into());
     }
-    if built.planner_trace[0].stage != PlannerStage::LeafPhrase {
+    let built_stage = built
+        .planner_trace
+        .first()
+        .map(|entry| entry.stage)
+        .ok_or("builder.push_trace did not append a typed entry")?;
+    if built_stage != PlannerStage::LeafPhrase {
         return Err("builder.push_trace stage not preserved".into());
     }
     if built.strategy != "lexical-only" {

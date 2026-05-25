@@ -2281,6 +2281,86 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
     }
 }
 
+/// Composition-wiring assertion (MINOR 6).
+///
+/// The structural producer wired in `searchd::app::runtime` must route
+/// through the domain port and emit a typed error response — never a
+/// panic, never a transport error, never a candidate list. The exact
+/// error code is *loosely* asserted here so this gate survives Track 2's
+/// planned migration from `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` to a
+/// `NotImplemented`-shaped code (or any other typed structural error).
+/// The strict-code assertion lives in
+/// `structural_query_returns_typed_parse_tree_unavailable_error` above
+/// and will flip red the moment Track 2 lands, forcing an honest update.
+#[test]
+fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-wiring-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 43,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: "match { foo($X) }".to_string(),
+                    generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+            }),
+        },
+    )?;
+
+    let result: Result<(), String> = match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => {
+            // Loose typed-code surface assertion: the dispatcher must
+            // surface SOME structural-shaped typed error. Acceptable
+            // shapes today: STR_PRODUCER_PARSE_TREE_UNAVAILABLE (current
+            // fail-closed wiring) or NOT_IMPLEMENTED (Track 2 migration
+            // target). Anything else is a genuine wiring regression.
+            let code = err.code.as_str();
+            if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" || code == "NOT_IMPLEMENTED" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "structural composition wiring: expected typed structural error \
+                     (STR_PRODUCER_PARSE_TREE_UNAVAILABLE or NOT_IMPLEMENTED), got code={code} \
+                     message={}",
+                    err.message
+                ))
+            }
+        }
+        SearchPlaneQueryIpcResponse::Structural(_) => Err(
+            "structural composition wiring: expected Error, got Structural \
+                 (no real parse-tree adapter is wired today)"
+                .to_string(),
+        ),
+        other => Err(format!(
+            "structural composition wiring: expected Error response, got {other:?}"
+        )),
+    };
+
+    shutdown.store(true, Ordering::Release);
+    drop(join.join());
+    result.map_err(Into::into)
+}
+
 #[test]
 fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> TestResult {
     let dir = tempfile::tempdir()?;

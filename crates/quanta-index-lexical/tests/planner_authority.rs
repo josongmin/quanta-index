@@ -120,6 +120,23 @@ fn assert_typed_error(
     }
 }
 
+fn assert_not_implemented(
+    outcome: Result<impl std::fmt::Debug, CoreError>,
+    expected_fragment: &str,
+) -> Result<(), Box<dyn Error>> {
+    match outcome {
+        Err(CoreError::NotImplemented(msg)) if msg.contains(expected_fragment) => Ok(()),
+        Err(CoreError::NotImplemented(msg)) => Err(format!(
+            "expected NotImplemented containing `{expected_fragment}`, got `{msg}`"
+        )
+        .into()),
+        other => Err(format!(
+            "expected NotImplemented containing `{expected_fragment}`, got {other:?}"
+        )
+        .into()),
+    }
+}
+
 /// 1. `fork:only` → `LEX_FILTER_FORK_UNAVAILABLE` when no repo metadata is loaded.
 #[test]
 fn fork_only_without_metadata_returns_typed_fork_unavailable() -> TestResult {
@@ -155,9 +172,15 @@ fn archived_only_without_metadata_returns_typed_archived_unavailable() -> TestRe
     Ok(())
 }
 
-/// 3. `rev:abc123` → `LEX_FILTER_REV_UNAVAILABLE`.
+/// 3. `rev:abc123` → core-policy `NotImplemented`.
+///
+/// Validation ordering is `LexicalPolicy::validate_query` BEFORE
+/// `planner_preflight` (single-authority per stage). The core policy gate
+/// rejects `rev:` filters with its own `NotImplemented` before the
+/// planner's `LEX_FILTER_REV_UNAVAILABLE` typed code is reached. Both
+/// shapes mean "no history producer is wired" but only one error fires.
 #[test]
-fn rev_filter_returns_typed_rev_unavailable() -> TestResult {
+fn rev_filter_returns_not_implemented() -> TestResult {
     let searcher = fresh_searcher_with_corpus(&[("c1", "fox jumps")])?;
     let q = make_query_with_filters(
         LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())),
@@ -166,13 +189,18 @@ fn rev_filter_returns_typed_rev_unavailable() -> TestResult {
         }],
     );
     let outcome = searcher.search(&q, 10);
-    assert_typed_error(outcome, "LEX_FILTER_REV_UNAVAILABLE")?;
+    assert_not_implemented(outcome, "lexical: rev filter")?;
     Ok(())
 }
 
-/// 4. `type:commit` → `HISTORY_PRODUCER_UNAVAILABLE`.
+/// 4. `type:commit` → core-policy `NotImplemented`.
+///
+/// Same ordering invariant as `rev_filter_returns_not_implemented`: the
+/// core policy gate rejects `type:commit` first because no commit producer
+/// is wired in the current adapter set. The planner's
+/// `HISTORY_PRODUCER_UNAVAILABLE` typed code would otherwise apply.
 #[test]
-fn type_commit_returns_typed_history_producer_unavailable() -> TestResult {
+fn type_commit_returns_not_implemented() -> TestResult {
     let searcher = fresh_searcher_with_corpus(&[("c1", "fox jumps")])?;
     let q = make_query_with_filters(
         LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())),
@@ -181,7 +209,7 @@ fn type_commit_returns_typed_history_producer_unavailable() -> TestResult {
         }],
     );
     let outcome = searcher.search(&q, 10);
-    assert_typed_error(outcome, "HISTORY_PRODUCER_UNAVAILABLE")?;
+    assert_not_implemented(outcome, "lexical: type filter `commit`")?;
     Ok(())
 }
 

@@ -32,6 +32,8 @@ use std::fmt::Write as _;
 
 use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 
+/// Per-row expected outcome.
+///
 /// Variants are added only as live rows exist for them (CLAUDE.md "dead
 /// port surface is forbidden"). When a parity row graduates to fully-green
 /// candidates or a row currently fails with a typed error, add the

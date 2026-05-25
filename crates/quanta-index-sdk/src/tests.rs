@@ -1,3 +1,12 @@
+#![expect(
+    clippy::expect_used,
+    reason = "SDK unit tests use explicit transport-capture assertions"
+)]
+#![expect(
+    clippy::panic,
+    reason = "SDK unit tests use direct assertion panics to surface wire mismatches"
+)]
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -23,14 +32,14 @@ use crate::{
     QuantaIndex, QueryTransport, SemanticBatch, StructuralBatch, Track,
 };
 
+/// QI-SDK-01: small helper to unwrap a `Result` inside a `#[test]` with
+/// a clear panic message. Replaces an earlier `assert!(false, ...)` +
+/// `return;` macro that tripped `clippy::assertions_on_constants`.
 macro_rules! ok_or_fail {
     ($expr:expr $(,)?) => {
         match $expr {
             Ok(value) => value,
-            Err(err) => {
-                assert!(false, "unexpected error: {err}");
-                return;
-            }
+            Err(err) => panic!("unexpected error: {err}"),
         }
     };
 }
@@ -381,12 +390,10 @@ fn semantic_query_builder_emits_active_selector_and_inline_vector_ref() {
     let _response = ok_or_fail!(response);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(req) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected semantic request, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(req.top_k, 5);
     assert!(req.query_vector_ref.is_some());
@@ -416,12 +423,10 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected text request, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(
         req.top_k, 42,
@@ -451,12 +456,10 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(req) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected hybrid request, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(req.top_k, 7);
     assert_eq!(req.text_query.top_k, 7);
@@ -485,12 +488,10 @@ fn sourcegraph_query_builder_dispatches_dedicated_sourcegraph_request() {
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Sourcegraph(req) = &captured.payload
     else {
-        assert!(
-            false,
+        panic!(
             "expected sourcegraph request, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(req.source_syntax.as_ref(), "repo:repo-1 lang:rust sample");
     assert_eq!(req.sg_version.as_ref(), "sg-5.5.0");
@@ -524,24 +525,21 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected PublishLexicalBatch, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(wire.repo_id, repo_id());
     assert_eq!(wire.chunks.len(), 1);
     assert_eq!(wire.symbols.len(), 1);
     assert!(wire.seal);
-    let Some(first_chunk) = wire.chunks.first() else {
-        assert!(false, "expected one lexical chunk mutation");
-        return;
-    };
+    let first_chunk = wire
+        .chunks
+        .first()
+        .expect("expected one lexical chunk mutation");
     let quanta_index_contract::LexicalChunkMutation::Upsert(upsert) = first_chunk else {
-        assert!(false, "expected upsert mutation, got {first_chunk:?}");
-        return;
+        panic!("expected upsert mutation, got {first_chunk:?}");
     };
     assert_eq!(upsert.record, chunk);
 }
@@ -571,12 +569,10 @@ fn semantic_publish_routes_through_ingest_transport_and_carries_typed_embeddings
     let _receipt = ok_or_fail!(client.semantic().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishSemanticBatch(wire) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected PublishSemanticBatch, got {payload:?}",
             payload = captured.payload
         );
-        return;
     };
     assert_eq!(wire.embeddings.len(), 1);
     assert!(wire.seal);
@@ -602,26 +598,18 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire) = &captured.payload else {
-        assert!(
-            false,
-            "expected PublishHistoryBatch, got {:?}",
-            captured.payload
-        );
-        return;
+        panic!("expected PublishHistoryBatch, got {:?}", captured.payload);
     };
     assert_eq!(wire.commits.len(), 1);
     assert_eq!(wire.refs.len(), 1);
     assert_eq!(wire.tags.len(), 1);
     assert_eq!(wire.diff_hunks.len(), 1);
-    let Some(first_commit) = wire.commits.first() else {
-        assert!(false, "expected one history commit");
-        return;
-    };
+    let first_commit = wire.commits.first().expect("expected one history commit");
     assert_eq!(first_commit.author_time_ms, 11);
-    let Some(first_diff) = wire.diff_hunks.first() else {
-        assert!(false, "expected one history diff hunk");
-        return;
-    };
+    let first_diff = wire
+        .diff_hunks
+        .first()
+        .expect("expected one history diff hunk");
     assert_eq!(first_diff.record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
 }
 
@@ -637,12 +625,7 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
     let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire) = &captured.payload else {
-        assert!(
-            false,
-            "expected PublishDirtyBatch, got {:?}",
-            captured.payload
-        );
-        return;
+        panic!("expected PublishDirtyBatch, got {:?}", captured.payload);
     };
     assert_eq!(wire.entries.len(), 2);
 }
@@ -659,12 +642,10 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
     let _receipt = ok_or_fail!(client.structural().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire) = &captured.payload else {
-        assert!(
-            false,
+        panic!(
             "expected PublishStructuralBatch, got {:?}",
             captured.payload
         );
-        return;
     };
     assert_eq!(wire.trees.len(), 2);
 }
@@ -727,12 +708,7 @@ fn history_query_routes_through_typed_query_variant() {
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
-        assert!(
-            false,
-            "expected History request, got {:?}",
-            captured.payload
-        );
-        return;
+        panic!("expected History request, got {:?}", captured.payload);
     };
     assert_eq!(req.text_query.query_text, "type:commit author:alice");
 }
@@ -759,12 +735,10 @@ fn runtime_query_routes_through_typed_query_variant() {
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) = &captured.payload
     else {
-        assert!(
-            false,
+        panic!(
             "expected RuntimeMetadata request, got {:?}",
             captured.payload
         );
-        return;
     };
     assert_eq!(
         req.text_query.syntax,
@@ -794,12 +768,7 @@ fn structural_query_routes_through_typed_query_variant() {
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
     else {
-        assert!(
-            false,
-            "expected Structural request, got {:?}",
-            captured.payload
-        );
-        return;
+        panic!("expected Structural request, got {:?}", captured.payload);
     };
     assert_eq!(req.text_query.query_text, "match { :[x] }");
 }
@@ -817,8 +786,7 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         LexicalBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1));
     let err = client.lexical().publish(&batch).err();
     let Some(crate::SdkError::Remote { code, message }) = err else {
-        assert!(false, "expected Remote error, got {err:?}");
-        return;
+        panic!("expected Remote error, got {err:?}");
     };
     assert_eq!(code, "INVALID_REQUEST");
     assert!(message.contains("channel rejected"));
@@ -845,13 +813,12 @@ fn generations_current_returns_snapshot_from_control_response() {
         Track::Lexical,
     ));
     assert_eq!(observed, snapshot);
-    let captured = match control.requests.lock() {
-        Ok(captured) => captured.first().cloned(),
-        Err(err) => {
-            assert!(false, "unexpected poisoned control requests: {err}");
-            return;
-        }
-    };
+    let captured = control
+        .requests
+        .lock()
+        .expect("control requests must not be poisoned")
+        .first()
+        .cloned();
     assert!(matches!(
         captured.map(|request| request.payload),
         Some(quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(_))
@@ -874,8 +841,7 @@ fn generations_current_propagates_not_ready_as_typed_remote() {
         .current(repo_id(), revision_id(), Track::Lexical)
         .err();
     let Some(crate::SdkError::Remote { code, .. }) = err else {
-        assert!(false, "expected Remote error, got {err:?}");
-        return;
+        panic!("expected Remote error, got {err:?}");
     };
     assert_eq!(code, "NOT_READY");
 }
