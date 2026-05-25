@@ -38,13 +38,11 @@ mod tests {
 
     #[test]
     fn regression_below_last_rejected_kills_le_to_gt_mutation() {
-        let err = ChannelDispatchPolicy::validate_monotonic_seq(seq(5), seq(10))
-            .err()
-            .expect("regression below last must be rejected");
-        let CoreError::InvalidContract(msg) = err else {
-            panic!("expected InvalidContract");
-        };
-        assert!(msg.contains("regression"), "msg={msg}");
+        let result = ChannelDispatchPolicy::validate_monotonic_seq(seq(5), seq(10));
+        assert!(
+            matches!(result, Err(CoreError::InvalidContract(ref msg)) if msg.contains("regression")),
+            "unexpected result: {result:?}"
+        );
     }
 
     #[test]

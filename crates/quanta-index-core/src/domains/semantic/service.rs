@@ -82,3 +82,77 @@ fn invalid_vector(message: String) -> CoreError {
         message,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Coverage gaps surfaced by `cargo mutants` (84 mutants on
+    //! `quanta-index-core`, 21 missed). The tests below kill the specific
+    //! mutations:
+    //!
+    //! - `validate_query_vector`: `*` → `+` mutation on line 50 (`norm_sq +=
+    //!   component * component`). With the multiplication, `[3.0, 4.0]`
+    //!   gives `norm_sq = 25.0`; with the buggy addition it would give
+    //!   `norm_sq = 14.0`. We can't observe `norm_sq` directly, but the
+    //!   only behavioural exit it controls is the zero-norm rejection at
+    //!   line 52. A vector like `[1.0, -1.0]` has `norm = sqrt(2)` under
+    //!   multiplication (passes) but `norm = 0.0` under addition (fails) —
+    //!   exercising both arms catches the swap.
+    //! - `validate_top_k`: `>` → `>=` mutation on line 26.
+    //!   `top_k = MAX_TOP_K` must be accepted (boundary kept by `>`),
+    //!   `top_k = MAX_TOP_K + 1` must be rejected.
+    //! - `validate_query_against_readiness`: `>=` → `<` mutation on line 66.
+    //!   At equality `active == target` the request must succeed under
+    //!   `>=`; under `<` (mutant) it would fail. Exact equality test
+    //!   catches both swaps simultaneously.
+
+    use super::*;
+
+    #[test]
+    fn validate_query_vector_kills_norm_sq_mul_to_add_mutation() {
+        // Under `+`, `1 + (-1) = 0` → norm_sq is 0 → reject.
+        // Under `*`, `1*1 + (-1)*(-1) = 2` → norm_sq is 2 → accept.
+        // Test that the implementation accepts this vector — kills the
+        // `*` → `+` mutant which would reject it.
+        assert!(SemanticPolicy::validate_query_vector(&[1.0, -1.0]).is_ok());
+        // Counter-check: pure-zero vector must still be rejected
+        // regardless of the mutation.
+        assert!(SemanticPolicy::validate_query_vector(&[0.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn validate_top_k_kills_boundary_gt_to_ge_mutation() {
+        // Boundary: top_k == MAX_TOP_K must be accepted under `>`.
+        // Under `>=` (mutant), it would be rejected.
+        assert!(SemanticPolicy::validate_top_k(MAX_TOP_K).is_ok());
+        // Above the ceiling must still be rejected.
+        assert!(SemanticPolicy::validate_top_k(MAX_TOP_K + 1).is_err());
+        // Zero must still be rejected (covers the `== 0` arm).
+        assert!(SemanticPolicy::validate_top_k(0).is_err());
+    }
+
+    #[test]
+    fn validate_query_against_readiness_kills_ge_to_lt_mutation_at_equality() {
+        // At exact equality `active == target` the readiness check must
+        // succeed under `>=`. Under `<` (mutant), it would fail.
+        let pin = ManifestGeneration::new(7);
+        assert!(SemanticPolicy::validate_query_against_readiness(pin, Some(pin)).is_ok());
+        // Strictly newer materialized generation: still OK.
+        assert!(
+            SemanticPolicy::validate_query_against_readiness(
+                ManifestGeneration::new(7),
+                Some(ManifestGeneration::new(8)),
+            )
+            .is_ok()
+        );
+        // Older materialized: must fail-closed.
+        assert!(
+            SemanticPolicy::validate_query_against_readiness(
+                ManifestGeneration::new(8),
+                Some(ManifestGeneration::new(7)),
+            )
+            .is_err()
+        );
+        // None: must fail-closed.
+        assert!(SemanticPolicy::validate_query_against_readiness(pin, None).is_err());
+    }
+}

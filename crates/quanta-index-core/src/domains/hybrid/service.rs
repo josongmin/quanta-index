@@ -102,20 +102,38 @@ struct FuseAccumulator {
     candidate: LexicalCandidate,
 }
 
+fn accumulate(
+    accs: &mut BTreeMap<String, FuseAccumulator>,
+    ranked: &[LexicalCandidate],
+    is_lex: bool,
+) {
+    for (rank, c) in ranked.iter().enumerate() {
+        let rank_plus_one = rank.saturating_add(1);
+        // Saturating: rank index past u32::MAX collapses to the same RRF
+        // tail score. `map_or` keeps the clippy + workspace lints happy.
+        let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
+        let rank_f = f64::from(rank_u32);
+        let key = c.candidate_id.clone();
+        let entry = accs.entry(key).or_insert_with(|| FuseAccumulator {
+            score: 0.0,
+            in_lex: false,
+            candidate: c.clone(),
+        });
+        entry.score += 1.0 / (RRF_K + rank_f);
+        if is_lex {
+            entry.in_lex = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    //! Kills `cargo mutants` survivors on lines 19 and 122. Lines 30 and 35
-    //! (`<`→`<=` and `>`→`>=` inside `over_fetch_top_k`) are documented as
-    //! equivalent mutations: the boundary values collapse — at `top_k = 100`
-    //! both branches return 100, at `top_k = max_top_k` both branches return
-    //! `max_top_k`. No observable behavior differs.
+    //! Mutation-kill coverage for `HybridOrchestratorPolicy`.
     //!
-    //! Coverage notes:
-    //! - `validate_top_k(max_top_k)` must be `Ok`. Mutation `>`→`>=` would
-    //!   reject the equality case and turn this `Ok` into `Err`.
-    //! - `fuse_rrf` with two contributions at high ranks must outrank a
-    //!   single contribution at rank 1 (because `1/(K+r)` shrinks slowly
-    //!   while `1/(K*r)` collapses fast). Mutation `+`→`*` flips top-1.
+    //! Equivalent mutations in `over_fetch_top_k` are documented but not
+    //! assertable here because the boundary values collapse to the same
+    //! observable result.
+
     use super::*;
     use crate::domains::semantic::SemanticPolicy;
     use quanta_index_contract::{
@@ -148,35 +166,13 @@ mod tests {
         // A appears at rank 5 in both lists; B appears only at rank 1 in lex.
         // Under `+` (original): A=2/65≈0.0308 > B=1/61≈0.0164 → top-1 = A.
         // Under `*` (mutation): A=2/300≈0.0067 < B=1/60≈0.0167 → top-1 = B.
-        // Asserting top-1 = "A" kills the mutation.
         let lexical = vec![cand("B"), cand("X1"), cand("X2"), cand("X3"), cand("A")];
         let semantic = vec![cand("Y1"), cand("Y2"), cand("Y3"), cand("Y4"), cand("A")];
         let fused = HybridOrchestratorPolicy::fuse_rrf(&lexical, &semantic, 1);
         assert_eq!(fused.len(), 1);
-        assert_eq!(fused[0].candidate_id.as_str(), "A");
-    }
-}
-
-fn accumulate(
-    accs: &mut BTreeMap<String, FuseAccumulator>,
-    ranked: &[LexicalCandidate],
-    is_lex: bool,
-) {
-    for (rank, c) in ranked.iter().enumerate() {
-        let rank_plus_one = rank.saturating_add(1);
-        // Saturating: rank index past u32::MAX collapses to the same RRF
-        // tail score. `map_or` keeps the clippy + workspace lints happy.
-        let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
-        let rank_f = f64::from(rank_u32);
-        let key = c.candidate_id.clone();
-        let entry = accs.entry(key).or_insert_with(|| FuseAccumulator {
-            score: 0.0,
-            in_lex: false,
-            candidate: c.clone(),
-        });
-        entry.score += 1.0 / (RRF_K + rank_f);
-        if is_lex {
-            entry.in_lex = true;
-        }
+        let top = fused
+            .first()
+            .map(|candidate| candidate.candidate_id.as_str());
+        assert_eq!(top, Some("A"));
     }
 }

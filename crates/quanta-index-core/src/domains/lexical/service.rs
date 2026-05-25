@@ -231,12 +231,15 @@ mod tests {
             Vec::new(),
             opts,
         );
-        let err =
-            LexicalPolicy::validate_query(&q).expect_err("structural pattern must fail-closed");
-        let CoreError::Typed { code, .. } = err else {
-            panic!("expected Typed error");
-        };
-        assert_eq!(code, "STR_PRODUCER_PARSE_TREE_UNAVAILABLE");
+        let result = LexicalPolicy::validate_query(&q);
+        assert!(
+            matches!(
+                result,
+                Err(CoreError::Typed { ref code, .. })
+                    if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE"
+            ),
+            "unexpected result: {result:?}"
+        );
     }
 
     #[test]
@@ -254,12 +257,15 @@ mod tests {
             }],
             LqOptions::defaults(),
         );
-        let err =
-            LexicalPolicy::validate_query(&q).expect_err("structural filter must fail-closed");
-        let CoreError::Typed { code, .. } = err else {
-            panic!("expected Typed error");
-        };
-        assert_eq!(code, "STR_PRODUCER_PARSE_TREE_UNAVAILABLE");
+        let result = LexicalPolicy::validate_query(&q);
+        assert!(
+            matches!(
+                result,
+                Err(CoreError::Typed { ref code, .. })
+                    if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE"
+            ),
+            "unexpected result: {result:?}"
+        );
     }
 
     #[test]
