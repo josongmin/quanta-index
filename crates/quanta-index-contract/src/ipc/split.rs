@@ -10,14 +10,13 @@ use crate::{
     BridgeQueryRequest, CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
     GenerationStatusRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
     RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
-    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    RepoMapQueryResponse, RuntimeMetadataQueryRequest, SearchPlaneActivateGenerationRequest,
+    SearchPlaneActivationAck, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryRequest,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
-    RuntimeMetadataQueryRequest, SemanticQueryRequest, SemanticQueryResponse,
-    StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
-    TextQueryResponse,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SemanticQueryRequest,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse,
 };
 
 const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];

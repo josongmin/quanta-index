@@ -13,13 +13,13 @@ use std::sync::Arc;
 
 use quanta_index_channel::BundleChannelPublisher;
 use quanta_index_contract::{
-    BatchIngestMode, BatchPublishReceipt, DeleteChunk, DeleteEmbedding, DeleteSymbol,
-    DeleteParseTree, DeleteRef, DeleteTag, DirtyIngestBatch, HistoryIngestBatch, LexicalChannelOp,
+    BatchIngestMode, BatchPublishReceipt, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef,
+    DeleteSymbol, DeleteTag, DirtyIngestBatch, EvictDirty, HistoryIngestBatch, LexicalChannelOp,
     LexicalChunkMutation, LexicalFullBundle, LexicalIngestBatch, LexicalSymbolMutation,
     RepoMapMutationAck, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneIpcError, SemanticChannelOp, SemanticEmbeddingMutation, SemanticFullBundle,
     SemanticIngestBatch, StructuralIngestBatch, UpsertChunk, UpsertCommit, UpsertDiffHunk,
-    UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag, EvictDirty,
+    UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
 use quanta_index_core::{
     CoreError, LexicalIngestPort, RepoMapBundleIngestPort, SemanticIngestPort,
@@ -537,10 +537,9 @@ impl SearchPlaneIngestDispatcher {
                     }),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
-            }
-            // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
-            // dirty / structural batches now have first-class arms above.
-            // No fallback arm needed.
+            } // QI-LXB-01 / QI-HIST-01 / QI-RT-02 / QI-STR-02: history /
+              // dirty / structural batches now have first-class arms above.
+              // No fallback arm needed.
         }
     }
 }
@@ -587,11 +586,16 @@ mod tests {
 
     use super::*;
     use quanta_index_channel::ChannelError;
-    use quanta_index_contract::lex::LangId;
+    use quanta_index_contract::lex::{
+        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
+        ParseTreeRecord,
+    };
     use quanta_index_contract::{
-        ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, LexicalChunkDelete,
-        LexicalChunkUpsert, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-        SemanticEmbeddingDelete, SemanticEmbeddingUpsert,
+        ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingId, EmbeddingRecord,
+        HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert,
+        LexicalChunkDelete, LexicalChunkUpsert, ManifestGeneration, ParseTreeDelete,
+        ParseTreeMutation, ParseTreeUpsert, RepoId, RepoRelativePath, RevisionId,
+        SemanticEmbeddingDelete, SemanticEmbeddingUpsert, StructuralIngestBatch,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -764,6 +768,69 @@ mod tests {
         }
     }
 
+    fn fixture_commit_sha() -> CommitSha {
+        CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567")
+            .expect("fixture sha must be valid")
+    }
+
+    fn fixture_commit_record() -> CommitRecord {
+        CommitRecord {
+            wire_version: 1,
+            sha: fixture_commit_sha(),
+            parents: Vec::new(),
+            author_time_ms: 11,
+            committer_time_ms: 12,
+            applied_at_ms: 13,
+            author: "alice".to_string().into_boxed_str(),
+            committer: "alice".to_string().into_boxed_str(),
+            message: "fix: sample".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: vec!["v1.0.0".to_string().into_boxed_str()],
+        }
+    }
+
+    fn fixture_diff_record() -> DiffHunkRecord {
+        DiffHunkRecord {
+            wire_version: 1,
+            hunk_header: "@@ -1,1 +1,2 @@".to_string().into_boxed_str(),
+            side: DiffHunkSide::After,
+            added_text: "todo!".to_string().into_boxed_str(),
+            removed_text: "".to_string().into_boxed_str(),
+            touched_text: "todo!".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 5,
+        }
+    }
+
+    fn fixture_dirty_record() -> DirtyRecord {
+        DirtyRecord {
+            wire_version: 1,
+            doc_id: ChunkId::new("chunk-dirty"),
+            applied_at_ms: 55,
+            payload_hash: [7; 32],
+        }
+    }
+
+    fn fixture_parse_tree_record() -> ParseTreeRecord {
+        ParseTreeRecord {
+            wire_version: 1,
+            lang: LangId::Rust,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+            source_hash: [9; 32],
+            role_tag_schema_version: 1,
+            role_tags: vec![ParseRoleTag {
+                role: "expr".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 4,
+            }],
+        }
+    }
+
     #[test]
     fn lexical_adapter_fans_out_replace_generation_with_chunks_and_seal() -> TestRes {
         let publisher = Arc::new(FakeLexicalPublisher::new());
@@ -883,6 +950,160 @@ mod tests {
             "unexpected semantic op sequence for replace-generation batch",
         )?;
         ensure(receipt.sealed, "expected semantic receipt to be sealed")?;
+        Ok(())
+    }
+
+    #[test]
+    fn history_adapter_fans_out_commit_ref_tag_and_diff_hunk_ops() -> TestRes {
+        let publisher = Arc::new(FakeLexicalPublisher::new());
+        let adapter = ChannelHistoryIngestAdapter::new(publisher.clone());
+
+        let batch = HistoryIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            commits: vec![fixture_commit_record()],
+            refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "refs/heads/main".to_string().into_boxed_str(),
+                sha: fixture_commit_sha(),
+            })],
+            tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "v1.0.0".to_string().into_boxed_str(),
+                sha: fixture_commit_sha(),
+            })],
+            diff_hunks: vec![HistoryDiffHunkUpsert {
+                commit_sha: fixture_commit_sha(),
+                file_path: "src/lib.rs".to_string().into_boxed_str(),
+                record: fixture_diff_record(),
+            }],
+        };
+        let receipt = adapter.publish_batch(&batch)?;
+        let ops = publisher.take()?;
+        ensure(
+            matches!(
+                ops.as_slice(),
+                [
+                    LexicalChannelOp::UpsertCommit(_),
+                    LexicalChannelOp::UpsertRef(_),
+                    LexicalChannelOp::UpsertTag(_),
+                    LexicalChannelOp::UpsertDiffHunk(_),
+                ]
+            ),
+            "unexpected history op sequence",
+        )?;
+        let LexicalChannelOp::UpsertCommit(commit) = &ops[0] else {
+            return Err(test_failure("expected UpsertCommit"));
+        };
+        let decoded_commit: CommitRecord = ciborium::from_reader(commit.payload.as_slice())?;
+        ensure(
+            decoded_commit.author_time_ms == 11,
+            "history commit payload lost author_time_ms",
+        )?;
+        let LexicalChannelOp::UpsertDiffHunk(diff) = &ops[3] else {
+            return Err(test_failure("expected UpsertDiffHunk"));
+        };
+        let decoded_diff: DiffHunkRecord = ciborium::from_reader(diff.payload.as_slice())?;
+        ensure(
+            decoded_diff.hunk_header.as_ref() == "@@ -1,1 +1,2 @@",
+            "history diff payload lost hunk header",
+        )?;
+        ensure(
+            receipt.first_seq == Some(ChannelSeq::new(0))
+                && receipt.last_seq == Some(ChannelSeq::new(3)),
+            "unexpected history receipt sequence range",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_adapter_fans_out_dirty_upsert_and_evict_ops() -> TestRes {
+        let publisher = Arc::new(FakeLexicalPublisher::new());
+        let adapter = ChannelRuntimeMetadataIngestAdapter::new(publisher.clone());
+
+        let batch = DirtyIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            entries: vec![
+                quanta_index_contract::DirtyMutation::Upsert(fixture_dirty_record()),
+                quanta_index_contract::DirtyMutation::Delete(quanta_index_contract::DirtyDelete {
+                    doc_id: ChunkId::new("chunk-evict"),
+                }),
+            ],
+        };
+        let receipt = adapter.publish_batch(&batch)?;
+        let ops = publisher.take()?;
+        ensure(
+            matches!(
+                ops.as_slice(),
+                [
+                    LexicalChannelOp::UpsertDirty(_),
+                    LexicalChannelOp::EvictDirty(_),
+                ]
+            ),
+            "unexpected dirty op sequence",
+        )?;
+        let LexicalChannelOp::UpsertDirty(entry) = &ops[0] else {
+            return Err(test_failure("expected UpsertDirty"));
+        };
+        ensure(
+            entry.doc_id == ChunkId::new("chunk-dirty")
+                && entry.applied_at_ms == 55
+                && entry.payload_hash == [7; 32],
+            "dirty upsert op lost inline authority fields",
+        )?;
+        ensure(
+            receipt.first_seq == Some(ChannelSeq::new(0))
+                && receipt.last_seq == Some(ChannelSeq::new(1)),
+            "unexpected dirty receipt sequence range",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn structural_adapter_fans_out_parse_tree_upsert_and_delete_ops() -> TestRes {
+        let publisher = Arc::new(FakeLexicalPublisher::new());
+        let adapter = ChannelStructuralIngestAdapter::new(publisher.clone());
+
+        let batch = StructuralIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            trees: vec![
+                ParseTreeMutation::Upsert(ParseTreeUpsert {
+                    chunk_id: ChunkId::new("chunk-tree"),
+                    record: fixture_parse_tree_record(),
+                }),
+                ParseTreeMutation::Delete(ParseTreeDelete {
+                    chunk_id: ChunkId::new("chunk-drop"),
+                }),
+            ],
+        };
+        let receipt = adapter.publish_batch(&batch)?;
+        let ops = publisher.take()?;
+        ensure(
+            matches!(
+                ops.as_slice(),
+                [
+                    LexicalChannelOp::UpsertParseTree(_),
+                    LexicalChannelOp::DeleteParseTree(_),
+                ]
+            ),
+            "unexpected structural op sequence",
+        )?;
+        let LexicalChannelOp::UpsertParseTree(tree) = &ops[0] else {
+            return Err(test_failure("expected UpsertParseTree"));
+        };
+        let decoded_tree: ParseTreeRecord = ciborium::from_reader(tree.payload.as_slice())?;
+        ensure(
+            decoded_tree.role_tags.len() == 1 && decoded_tree.role_tags[0].role.as_ref() == "expr",
+            "structural payload lost role tags",
+        )?;
+        ensure(
+            receipt.first_seq == Some(ChannelSeq::new(0))
+                && receipt.last_seq == Some(ChannelSeq::new(1)),
+            "unexpected structural receipt sequence range",
+        )?;
         Ok(())
     }
 }

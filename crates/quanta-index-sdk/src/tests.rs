@@ -6,18 +6,16 @@ use quanta_index_contract::lex::{
     ParseTreeRecord, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchPublishReceipt, ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord,
-    DiffHunkSide,
-    GenerationSelector, HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry,
-    RepoId, RepoMapMutationAck, RepoRelativePath, RevisionId, SearchExplanation,
+    BatchPublishReceipt, ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingId,
+    EmbeddingRecord, GenerationSelector, HybridQueryResponse, ManifestGeneration, PlannerStage,
+    PlannerTraceEntry, RepoId, RepoMapMutationAck, RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
-    SemanticQueryResponse, SymbolId, TextQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryResponse, SymbolId, TextQueryResponse,
 };
 
 use crate::{
@@ -604,7 +602,11 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire) = &captured.payload else {
-        assert!(false, "expected PublishHistoryBatch, got {:?}", captured.payload);
+        assert!(
+            false,
+            "expected PublishHistoryBatch, got {:?}",
+            captured.payload
+        );
         return;
     };
     assert_eq!(wire.commits.len(), 1);
@@ -612,7 +614,10 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(wire.tags.len(), 1);
     assert_eq!(wire.diff_hunks.len(), 1);
     assert_eq!(wire.commits[0].author_time_ms, 11);
-    assert_eq!(wire.diff_hunks[0].record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
+    assert_eq!(
+        wire.diff_hunks[0].record.hunk_header.as_ref(),
+        "@@ -1,1 +1,2 @@"
+    );
 }
 
 #[test]
@@ -627,7 +632,11 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
     let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire) = &captured.payload else {
-        assert!(false, "expected PublishDirtyBatch, got {:?}", captured.payload);
+        assert!(
+            false,
+            "expected PublishDirtyBatch, got {:?}",
+            captured.payload
+        );
         return;
     };
     assert_eq!(wire.entries.len(), 2);
@@ -693,25 +702,31 @@ fn repomap_publish_routes_through_ingest_transport() {
 
 #[test]
 fn history_query_routes_through_typed_query_variant() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::History(
-        SearchPlaneHistoryQueryResponse {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
             generation: sample_generation_pin(),
             commits: vec![],
             diffs: vec![],
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    let response = ok_or_fail!(client
-        .history()
-        .query()
-        .native("type:commit author:alice")
-        .pinned(sample_generation_pin())
-        .top_k(5)
-        .execute());
+    let response = ok_or_fail!(
+        client
+            .history()
+            .query()
+            .native("type:commit author:alice")
+            .pinned(sample_generation_pin())
+            .top_k(5)
+            .execute()
+    );
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
-        assert!(false, "expected History request, got {:?}", captured.payload);
+        assert!(
+            false,
+            "expected History request, got {:?}",
+            captured.payload
+        );
         return;
     };
     assert_eq!(req.text_query.query_text, "type:commit author:alice");
@@ -726,17 +741,18 @@ fn runtime_query_routes_through_typed_query_variant() {
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    let response = ok_or_fail!(client
-        .runtime()
-        .query()
-        .sourcegraph("dirty:yes")
-        .pinned(sample_generation_pin())
-        .top_k(3)
-        .execute());
+    let response = ok_or_fail!(
+        client
+            .runtime()
+            .query()
+            .sourcegraph("dirty:yes")
+            .pinned(sample_generation_pin())
+            .top_k(3)
+            .execute()
+    );
     assert_eq!(response.results.len(), 1);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
-    let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) =
-        &captured.payload
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) = &captured.payload
     else {
         assert!(
             false,
@@ -745,7 +761,10 @@ fn runtime_query_routes_through_typed_query_variant() {
         );
         return;
     };
-    assert_eq!(req.text_query.syntax, quanta_index_contract::TextQuerySyntax::Sourcegraph);
+    assert_eq!(
+        req.text_query.syntax,
+        quanta_index_contract::TextQuerySyntax::Sourcegraph
+    );
 }
 
 #[test]
@@ -757,18 +776,24 @@ fn structural_query_routes_through_typed_query_variant() {
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    let response = ok_or_fail!(client
-        .structural()
-        .query()
-        .native("match { :[x] }")
-        .pinned(sample_generation_pin())
-        .top_k(2)
-        .execute());
+    let response = ok_or_fail!(
+        client
+            .structural()
+            .query()
+            .native("match { :[x] }")
+            .pinned(sample_generation_pin())
+            .top_k(2)
+            .execute()
+    );
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
     else {
-        assert!(false, "expected Structural request, got {:?}", captured.payload);
+        assert!(
+            false,
+            "expected Structural request, got {:?}",
+            captured.payload
+        );
         return;
     };
     assert_eq!(req.text_query.query_text, "match { :[x] }");

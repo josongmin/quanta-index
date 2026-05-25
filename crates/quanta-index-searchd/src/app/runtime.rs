@@ -15,9 +15,9 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelDispatcher, HistoryIngestPort, Ledger,
-    RuntimeMetadataIngestPort, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    ActivationCatalog, ChannelDispatcher, HistoryIngestPort, Ledger, RuntimeMetadataIngestPort,
+    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+    StructuralIngestPort,
 };
 
 use crate::app::config::SearchdConfig;

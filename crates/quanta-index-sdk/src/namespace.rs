@@ -52,10 +52,7 @@ pub trait NamespaceIngest {
     type Receipt;
 
     /// Publish a batch through the SDK's ingest transport.
-    fn publish(
-        client: &QuantaIndex,
-        batch: &Self::Batch,
-    ) -> Result<Self::Receipt, SdkError>;
+    fn publish(client: &QuantaIndex, batch: &Self::Batch) -> Result<Self::Receipt, SdkError>;
 }
 
 /// Marker capability: a namespace exposes a typed query builder.
@@ -152,9 +149,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport,
-    };
+    use crate::{BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport};
 
     /// Downstream marker. Demonstrates that wiring is decoupled from the
     /// SDK core: this struct exists only in the test module, but it
@@ -166,10 +161,7 @@ mod tests {
         type Batch = LexicalBatch;
         type Receipt = BatchReceipt;
 
-        fn publish(
-            client: &QuantaIndex,
-            batch: &LexicalBatch,
-        ) -> Result<BatchReceipt, SdkError> {
+        fn publish(client: &QuantaIndex, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
             // Reuse the LexicalNs implementation so the wire path is
             // exercised exactly once. A real downstream namespace would
             // construct its own typed ingest variant.
@@ -189,7 +181,10 @@ mod tests {
             &self,
             request: SearchPlaneIngestIpcRequestEnvelope,
         ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
-            self.requests.lock().expect("ingest mutex").push(request.clone());
+            self.requests
+                .lock()
+                .expect("ingest mutex")
+                .push(request.clone());
             let payload = self
                 .response
                 .lock()
@@ -221,7 +216,9 @@ mod tests {
             &self,
             _request: SearchPlaneControlIpcRequestEnvelope,
         ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
-            Err(SdkError::Protocol("control transport unused in test".into()))
+            Err(SdkError::Protocol(
+                "control transport unused in test".into(),
+            ))
         }
     }
 
@@ -330,6 +327,10 @@ mod tests {
             requests: Mutex::new(Vec::new()),
             response: Mutex::new(None),
         }));
-        let _builder = client.ns::<crate::LexicalNs>().query().native("anchor").top_k(1);
+        let _builder = client
+            .ns::<crate::LexicalNs>()
+            .query()
+            .native("anchor")
+            .top_k(1);
     }
 }

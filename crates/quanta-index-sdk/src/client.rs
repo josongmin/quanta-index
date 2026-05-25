@@ -196,7 +196,9 @@ impl QuantaIndex {
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)) => Ok(payload),
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(
+                _,
+            )) => Ok(payload),
         }
     }
 

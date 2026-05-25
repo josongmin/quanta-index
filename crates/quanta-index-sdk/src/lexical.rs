@@ -145,10 +145,7 @@ impl crate::NamespaceIngest for LexicalNs {
     type Batch = LexicalBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(
-        client: &QuantaIndex,
-        batch: &LexicalBatch,
-    ) -> Result<BatchReceipt, SdkError> {
+    fn publish(client: &QuantaIndex, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
         let wire_batch = LexicalIngestBatch {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -159,9 +156,8 @@ impl crate::NamespaceIngest for LexicalNs {
             symbols: batch.symbols.iter().map(map_symbol).collect(),
             seal: batch.seal,
         };
-        let response = client.dispatch_ingest(
-            SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch),
-        )?;
+        let response =
+            client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch))?;
         match response {
             SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::SemanticReceipt(_)
@@ -305,7 +301,6 @@ impl<'a> LexicalQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected text query response, got {}",

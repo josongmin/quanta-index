@@ -1201,18 +1201,12 @@ impl Serialize for HistoryRefMutation {
         S: Serializer,
     {
         match self {
-            Self::Upsert(payload) => serializer.serialize_newtype_variant(
-                "HistoryRefMutation",
-                0,
-                "Upsert",
-                payload,
-            ),
-            Self::Delete(payload) => serializer.serialize_newtype_variant(
-                "HistoryRefMutation",
-                1,
-                "Delete",
-                payload,
-            ),
+            Self::Upsert(payload) => {
+                serializer.serialize_newtype_variant("HistoryRefMutation", 0, "Upsert", payload)
+            }
+            Self::Delete(payload) => {
+                serializer.serialize_newtype_variant("HistoryRefMutation", 1, "Delete", payload)
+            }
         }
     }
 }
@@ -1234,7 +1228,10 @@ impl<'de> Visitor<'de> for HistoryRefMutationVisitor {
         match tag.as_str() {
             "Upsert" => Ok(HistoryRefMutation::Upsert(variant.newtype_variant()?)),
             "Delete" => Ok(HistoryRefMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(other, HISTORY_REF_MUTATION_VARIANTS)),
+            other => Err(de::Error::unknown_variant(
+                other,
+                HISTORY_REF_MUTATION_VARIANTS,
+            )),
         }
     }
 }
@@ -1548,7 +1545,11 @@ impl<'de> Deserialize<'de> for DirtyMutation {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_enum("DirtyMutation", DIRTY_MUTATION_VARIANTS, DirtyMutationVisitor)
+        deserializer.deserialize_enum(
+            "DirtyMutation",
+            DIRTY_MUTATION_VARIANTS,
+            DirtyMutationVisitor,
+        )
     }
 }
 
@@ -1788,7 +1789,10 @@ impl<'de> Visitor<'de> for ParseTreeMutationVisitor {
         match tag.as_str() {
             "Upsert" => Ok(ParseTreeMutation::Upsert(variant.newtype_variant()?)),
             "Delete" => Ok(ParseTreeMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(other, PARSE_TREE_MUTATION_VARIANTS)),
+            other => Err(de::Error::unknown_variant(
+                other,
+                PARSE_TREE_MUTATION_VARIANTS,
+            )),
         }
     }
 }
@@ -1854,7 +1858,10 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
                 "generation" => generation = Some(map.next_value()?),
                 "trees" => trees = Some(map.next_value()?),
                 other => {
-                    return Err(de::Error::unknown_field(other, STRUCTURAL_INGEST_BATCH_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        STRUCTURAL_INGEST_BATCH_FIELDS,
+                    ));
                 }
             }
         }
@@ -2898,9 +2905,7 @@ mod tests {
     fn search_plane_ingest_request_envelope_round_trip_structural() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 5,
-            payload: SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-                fixture_structural_batch(),
-            ),
+            payload: SearchPlaneIngestIpcRequest::PublishStructuralBatch(fixture_structural_batch()),
         };
         let bytes = encode(&envelope)?;
         let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;

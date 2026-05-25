@@ -173,19 +173,19 @@ impl<'a> RuntimeQueryBuilder<'a> {
             .top_k
             .ok_or_else(|| SdkError::Usage("runtime top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-        let response =
-            self.client
-                .dispatch_query(SearchPlaneQueryIpcRequest::RuntimeMetadata(
-                    RuntimeMetadataQueryRequest {
-                        text_query: TextQueryRequest {
-                            syntax: self.syntax,
-                            query_text,
-                            generation,
-                            generation_selector,
-                            top_k,
-                        },
+        let response = self
+            .client
+            .dispatch_query(SearchPlaneQueryIpcRequest::RuntimeMetadata(
+                RuntimeMetadataQueryRequest {
+                    text_query: TextQueryRequest {
+                        syntax: self.syntax,
+                        query_text,
+                        generation,
+                        generation_selector,
+                        top_k,
                     },
-                ))?;
+                },
+            ))?;
         match response {
             SearchPlaneQueryIpcResponse::RuntimeMetadata(results) => Ok(results),
             other => Err(SdkError::Protocol(format!(

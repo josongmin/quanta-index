@@ -11,8 +11,13 @@ use crate::{BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuralBatchMutation {
-    Upsert { chunk_id: ChunkId, record: ParseTreeRecord },
-    Delete { chunk_id: ChunkId },
+    Upsert {
+        chunk_id: ChunkId,
+        record: ParseTreeRecord,
+    },
+    Delete {
+        chunk_id: ChunkId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,13 +41,15 @@ impl StructuralBatch {
 
     #[must_use]
     pub fn upsert(mut self, chunk_id: ChunkId, record: ParseTreeRecord) -> Self {
-        self.trees.push(StructuralBatchMutation::Upsert { chunk_id, record });
+        self.trees
+            .push(StructuralBatchMutation::Upsert { chunk_id, record });
         self
     }
 
     #[must_use]
     pub fn delete(mut self, chunk_id: ChunkId) -> Self {
-        self.trees.push(StructuralBatchMutation::Delete { chunk_id });
+        self.trees
+            .push(StructuralBatchMutation::Delete { chunk_id });
         self
     }
 }
@@ -180,17 +187,19 @@ impl<'a> StructuralQueryBuilder<'a> {
             .top_k
             .ok_or_else(|| SdkError::Usage("structural top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-        let response = self.client.dispatch_query(SearchPlaneQueryIpcRequest::Structural(
-            StructuralQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: self.syntax,
-                    query_text,
-                    generation,
-                    generation_selector,
-                    top_k,
+        let response = self
+            .client
+            .dispatch_query(SearchPlaneQueryIpcRequest::Structural(
+                StructuralQueryRequest {
+                    text_query: TextQueryRequest {
+                        syntax: self.syntax,
+                        query_text,
+                        generation,
+                        generation_selector,
+                        top_k,
+                    },
                 },
-            },
-        ))?;
+            ))?;
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
             other => Err(SdkError::Protocol(format!(

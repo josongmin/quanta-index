@@ -146,10 +146,7 @@ impl crate::NamespaceIngest for SemanticNs {
     type Batch = SemanticBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(
-        client: &QuantaIndex,
-        batch: &SemanticBatch,
-    ) -> Result<BatchReceipt, SdkError> {
+    fn publish(client: &QuantaIndex, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
         let wire_batch = SemanticIngestBatch {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -315,7 +312,6 @@ impl<'a> SemanticQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected semantic query response, got {}",

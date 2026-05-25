@@ -952,7 +952,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(format!("expected repo-map query response, got {other:?}").into())
             }
@@ -1254,7 +1253,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
@@ -1382,7 +1380,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Bridge response, got {other:?}").into());
             }
@@ -1450,7 +1447,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Semantic response, got {other:?}").into());
             }
@@ -1524,7 +1520,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 return Err(format!("expected Hybrid response, got {other:?}").into());
             }

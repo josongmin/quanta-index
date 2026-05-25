@@ -33,7 +33,9 @@ pub use lexical::{
 };
 pub use namespace::{NamespaceHandle, NamespaceIngest, NamespaceQuery};
 pub use repomap::{RepoMapNamespace, RepoMapNs};
-pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeNs, RuntimeQueryBuilder};
+pub use runtime::{
+    DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeNs, RuntimeQueryBuilder,
+};
 pub use search::{HybridQueryBuilder, SearchNamespace};
 pub use semantic::{
     EmbeddingMutation, SemanticBatch, SemanticNamespace, SemanticNs, SemanticQueryBuilder,

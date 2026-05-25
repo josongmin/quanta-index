@@ -305,7 +305,9 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
                 },
                 Err(_transport_error) => false,
             }

@@ -142,9 +142,8 @@ impl crate::NamespaceIngest for HistoryNs {
                 })
                 .collect(),
         };
-        let response = client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
-            wire,
-        ))?;
+        let response =
+            client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
             other => Err(SdkError::Protocol(format!(
@@ -244,8 +243,9 @@ impl<'a> HistoryQueryBuilder<'a> {
             .top_k
             .ok_or_else(|| SdkError::Usage("history top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-        let response = self.client.dispatch_query(SearchPlaneQueryIpcRequest::History(
-            HistoryQueryRequest {
+        let response = self
+            .client
+            .dispatch_query(SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: self.syntax,
                     query_text,
@@ -253,8 +253,7 @@ impl<'a> HistoryQueryBuilder<'a> {
                     generation_selector,
                     top_k,
                 },
-            },
-        ))?;
+            }))?;
         match response {
             SearchPlaneQueryIpcResponse::History(results) => Ok(results),
             other => Err(SdkError::Protocol(format!(

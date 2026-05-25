@@ -19,10 +19,9 @@ mod readiness;
 pub use channel_dispatcher::ChannelDispatcher;
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
-    ChannelHistoryIngestAdapter, ChannelLexicalIngestAdapter,
-    ChannelRuntimeMetadataIngestAdapter, ChannelSemanticIngestAdapter,
-    ChannelStructuralIngestAdapter, HistoryIngestPort, RuntimeMetadataIngestPort,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    ChannelHistoryIngestAdapter, ChannelLexicalIngestAdapter, ChannelRuntimeMetadataIngestAdapter,
+    ChannelSemanticIngestAdapter, ChannelStructuralIngestAdapter, HistoryIngestPort,
+    RuntimeMetadataIngestPort, SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use query_dispatcher::{

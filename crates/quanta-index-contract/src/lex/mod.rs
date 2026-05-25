@@ -15,8 +15,8 @@
 //! Per `CLAUDE.md` D18, every type below carries a manual `impl Serialize` /
 //! `impl<'de> Deserialize<'de>`. No proc-macro derives.
 
-pub mod dirty;
 pub mod diff;
+pub mod dirty;
 pub mod error_code;
 pub mod explanation;
 pub mod history;
@@ -24,8 +24,8 @@ pub mod lang;
 pub mod parse_tree;
 pub mod symbol;
 
-pub use dirty::DirtyRecord;
 pub use diff::DiffHunkRecord;
+pub use dirty::DirtyRecord;
 pub use error_code::LexicalErrorCode;
 pub use explanation::{ExplanationRow, SearchExplanation};
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};

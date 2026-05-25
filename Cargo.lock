@@ -1109,6 +1109,7 @@ dependencies = [
  "quanta-index-lexical",
  "quanta-index-lq-bridge",
  "quanta-index-repomap",
+ "quanta-index-sdk",
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-semantic",

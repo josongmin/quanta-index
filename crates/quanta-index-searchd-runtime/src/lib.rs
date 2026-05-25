@@ -62,9 +62,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
         Arc::new(ChannelSemanticIngestAdapter::new(sem_publisher));
-    let history_ingest_port = Arc::new(ChannelHistoryIngestAdapter::new(Arc::clone(
-        &lex_publisher,
-    )));
+    let history_ingest_port =
+        Arc::new(ChannelHistoryIngestAdapter::new(Arc::clone(&lex_publisher)));
     let runtime_ingest_port = Arc::new(ChannelRuntimeMetadataIngestAdapter::new(Arc::clone(
         &lex_publisher,
     )));

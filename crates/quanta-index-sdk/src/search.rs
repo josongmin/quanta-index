@@ -45,7 +45,6 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected explain response, got {}",
@@ -170,7 +169,6 @@ impl<'a> HybridQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected hybrid query response, got {}",
