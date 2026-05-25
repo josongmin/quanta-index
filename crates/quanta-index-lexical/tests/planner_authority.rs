@@ -16,8 +16,8 @@ use std::error::Error;
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LqCountBound, LqExpr, LqFilter, LqLeaf,
-    LqOptions, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, UpsertChunk,
+    LqOptions, LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, UpsertChunk,
 };
 use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher};
 use quanta_index_lexical::LexicalAdapter;
@@ -227,7 +227,7 @@ fn count_zero_returns_typed_invalid_count() -> TestResult {
 
 /// 6. Regex leaf executes through the planner pipeline.
 ///
-/// On a small corpus (well under `REGEX_TRIGRAM_INDEX_MISSING_THRESHOLD`),
+/// On a small corpus (well under `RegexPolicy::trigram_missing_doc_threshold`),
 /// the regex leaf compiles via `plan_regex` (dialect filter + literal
 /// extraction) and the executor runs the Tantivy `RegexQuery` per-token
 /// path. The planner enforces the LXE-04 dialect (lookbehind / possessive
@@ -269,5 +269,25 @@ fn regex_leaf_small_corpus_returns_hits_via_planner() -> TestResult {
     if first.candidate_id != "c2" {
         return Err(format!("expected c2 for regex `foo.*r`, got {}", first.candidate_id).into());
     }
+    Ok(())
+}
+
+/// 7. `LqLeaf::Keyword` + `LqOptions::pattern_type = Regexp` routes through
+///    the same planner-gated pipeline as `LqLeaf::Regex`.
+///
+/// Regression guard for B3: previously this AST shape short-circuited around
+/// `compile_regex_content_leaf`, which let dialect-forbidden patterns
+/// (lookbehind, possessive, backref) reach Tantivy's `RegexQuery` directly
+/// and bypass the LXE-04 typed `LEX_REGEX_*` codes. After B3, both shapes
+/// route through `compile_regex_content_leaf` and surface the same typed
+/// `LEX_REGEX_DIALECT_UNSUPPORTED` rejection.
+#[test]
+fn keyword_with_regexp_pattern_type_routes_through_planner_dialect_filter() -> TestResult {
+    let searcher = fresh_searcher_with_corpus(&[("c1", "fox jumps")])?;
+    let mut opts = LqOptions::defaults();
+    opts.pattern_type = LqPatternType::Regexp;
+    let q = make_query_with_options(LqExpr::Leaf(LqLeaf::Keyword("(?<=x)y".to_string())), opts);
+    let outcome = searcher.search(&q, 10);
+    assert_typed_error(outcome, "LEX_REGEX_DIALECT_UNSUPPORTED")?;
     Ok(())
 }

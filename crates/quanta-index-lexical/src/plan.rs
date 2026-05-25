@@ -61,6 +61,11 @@ pub enum PlanLeaf {
     Content { term: String },
     /// Path / file-name predicate (LXE-03).
     Path { pattern: String },
+    /// Executable predicate that still routes through the Tantivy adapter.
+    ///
+    /// The planner validates the predicate shape up-front; execution stays on
+    /// the adapter's predicate-preparation path (`prepare_predicate_plan`).
+    Predicate { name: String },
     /// Symbol-name predicate (LXE-06).
     ///
     /// `name` is preserved for diagnostics; `plan` carries the typed
@@ -105,9 +110,10 @@ impl PlanLeaf {
             // the Tantivy reader (content/path as schema fields, semantic via
             // a Tantivy-side stored handle). A future split lands when the
             // semantic adapter takes over its own route.
-            Self::Content { .. } | Self::Path { .. } | Self::SemanticVectorRef { .. } => {
-                EngineKind::Tantivy
-            }
+            Self::Content { .. }
+            | Self::Path { .. }
+            | Self::Predicate { .. }
+            | Self::SemanticVectorRef { .. } => EngineKind::Tantivy,
         }
     }
 }

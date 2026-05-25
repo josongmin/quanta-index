@@ -31,10 +31,10 @@ use crate::{QuantaIndex, SdkError};
 /// Marker capability: a namespace exposes a typed publish path.
 ///
 /// The marker `Self` is a zero-sized type used purely for type-level
-/// dispatch (e.g. [`LexicalNs`]). `publish` consumes a reference to the
+/// dispatch (e.g. [`crate::LexicalNs`]). `publish` consumes a reference to the
 /// SDK-side batch DTO and returns the namespace's receipt shape.
 ///
-/// Implementations route through [`QuantaIndex::dispatch_ingest`] and are
+/// Implementations route through `QuantaIndex::dispatch_ingest` and are
 /// responsible for:
 ///
 /// - mapping the SDK batch into the namespace's ingest IPC request variant,
@@ -65,7 +65,7 @@ pub trait NamespaceIngest {
 pub trait NamespaceQuery {
     /// Per-namespace builder type. Each namespace defines its own; there
     /// is no fat shared trait (ISP). The builder is responsible for
-    /// dispatching through [`QuantaIndex::dispatch_query`] when its
+    /// dispatching through `QuantaIndex::dispatch_query` when its
     /// `execute()` method is called.
     type QueryBuilder<'a>
     where
@@ -135,7 +135,7 @@ where
     ///
     /// The returned builder is bound to the client lifetime `'a` (the
     /// lifetime carried by the handle), not to `&self`. Sibling sugar
-    /// methods on [`LexicalNamespace<'a>`] / [`SemanticNamespace<'a>`] /
+    /// methods on [`crate::LexicalNamespace`] / [`crate::SemanticNamespace`] /
     /// etc. already return `QueryBuilder<'a>`; this method matches them so
     /// callers can hold the builder past the handle scope.
     #[must_use]

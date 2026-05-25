@@ -1110,6 +1110,16 @@ impl TantivySearcher {
         })
     }
 
+    fn planner_view_query(&self, query: &LqQuery) -> Result<Option<LqQuery>, CoreError> {
+        let prepared = self.prepare_predicate_plan(query)?;
+        if prepared.force_empty {
+            return Ok(None);
+        }
+        let mut planner_query = query.clone();
+        planner_query.expr = prepared.expr;
+        Ok(Some(planner_query))
+    }
+
     fn repo_filter_matches(&self, filter: &LqFilter) -> Result<Option<bool>, CoreError> {
         match filter {
             LqFilter::Fork { mode } => {
@@ -1737,7 +1747,10 @@ impl LexicalSearcher for TantivySearcher {
         // authority for typed-unavailable surfacing on filters/IR shapes
         // that pass the core policy — overlapping responsibility is gone.
         LexicalPolicy::validate_query(query)?;
-        planner_preflight(query, self.repo_metadata.is_some())?;
+        let Some(planner_query) = self.planner_view_query(query)? else {
+            return Ok(Vec::new());
+        };
+        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
@@ -1769,7 +1782,10 @@ impl LexicalSearcher for TantivySearcher {
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         LexicalPolicy::validate_query(query)?;
-        planner_preflight(query, self.repo_metadata.is_some())?;
+        let Some(planner_query) = self.planner_view_query(query)? else {
+            return Ok(Vec::new());
+        };
+        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
@@ -1797,7 +1813,10 @@ impl LexicalSearcher for TantivySearcher {
 
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
         LexicalPolicy::validate_query(query)?;
-        planner_preflight(query, self.repo_metadata.is_some())?;
+        let Some(planner_query) = self.planner_view_query(query)? else {
+            return Ok(Vec::new());
+        };
+        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }

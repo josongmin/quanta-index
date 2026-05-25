@@ -6,6 +6,7 @@
 //! never inspects raw AST behind the planner.
 
 use core::fmt;
+use std::collections::BTreeSet;
 
 use quanta_index_contract::{LqExpr, LqLeaf, LqPredicateArg, LqQuery};
 
@@ -15,6 +16,9 @@ use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, Pla
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
 use crate::trigram_plan::{TrigramPlannerError, TrigramPolicy, plan_raw_substring};
+
+type PlannedExpr = (PlanNode, PlanTraceNode, BTreeSet<EngineKind>);
+type PlannedChildren = (Vec<PlanNode>, Vec<PlanTraceNode>, BTreeSet<EngineKind>);
 
 /// Typed planner errors.
 ///
@@ -94,26 +98,56 @@ impl LexicalPlanner {
         // path.
         let filter_plan = plan_filters(&query.filters, &query.options)
             .map_err(LexicalPlannerError::FilterPlan)?;
-        match &query.expr {
-            LqExpr::Empty => Ok(LexicalPlan::empty(
-                query.options.clone(),
-                query.directives.clone(),
-                filter_plan,
-                query.filters.clone(),
-            )),
-            LqExpr::Leaf(leaf) => Self::plan_leaf(query, leaf, filter_plan),
-            LqExpr::Not(_) => Err(LexicalPlannerError::Unimplemented {
-                node: "not",
-                owner_ticket: "LXE-03",
-            }),
-            LqExpr::All(_) => Err(LexicalPlannerError::Unimplemented {
-                node: "all",
-                owner_ticket: "LXE-03",
-            }),
-            LqExpr::Any(_) => Err(LexicalPlannerError::Unimplemented {
-                node: "any",
-                owner_ticket: "LXE-03",
-            }),
+        let (root, trace, engines) = Self::plan_expr(query, &query.expr)?;
+        Ok(LexicalPlan {
+            root,
+            filters: filter_plan,
+            raw_filters: query.filters.clone(),
+            engines,
+            plan_cap: None,
+            checkpoints: Vec::new(),
+            trace,
+            options: query.options.clone(),
+            directives: query.directives.clone(),
+        })
+    }
+
+    fn plan_expr(query: &LqQuery, expr: &LqExpr) -> Result<PlannedExpr, LexicalPlannerError> {
+        match expr {
+            LqExpr::Empty => Ok((PlanNode::Empty, PlanTraceNode::Empty, BTreeSet::new())),
+            LqExpr::Leaf(leaf) => {
+                let planned_leaf = Self::plan_leaf(query, leaf)?;
+                let engine = planned_leaf.engine();
+                let mut engines = BTreeSet::new();
+                let _newly_inserted = engines.insert(engine);
+                Ok((
+                    PlanNode::Leaf {
+                        leaf: planned_leaf.clone(),
+                        cap: default_leaf_cap(engine),
+                    },
+                    PlanTraceNode::Leaf {
+                        engine,
+                        summary: describe_leaf(&planned_leaf),
+                    },
+                    engines,
+                ))
+            }
+            LqExpr::Not(inner) => {
+                let (child, trace, engines) = Self::plan_expr(query, inner)?;
+                Ok((
+                    PlanNode::Not(Box::new(child)),
+                    PlanTraceNode::Not(Box::new(trace)),
+                    engines,
+                ))
+            }
+            LqExpr::All(children) => {
+                let (nodes, traces, engines) = Self::plan_children(query, children)?;
+                Ok((PlanNode::All(nodes), PlanTraceNode::All(traces), engines))
+            }
+            LqExpr::Any(children) => {
+                let (nodes, traces, engines) = Self::plan_children(query, children)?;
+                Ok((PlanNode::Any(nodes), PlanTraceNode::Any(traces), engines))
+            }
             LqExpr::SemanticVector { .. } => Err(LexicalPlannerError::Unimplemented {
                 node: "semantic_vector",
                 owner_ticket: "LXE-07",
@@ -121,16 +155,28 @@ impl LexicalPlanner {
         }
     }
 
+    fn plan_children(
+        query: &LqQuery,
+        children: &[LqExpr],
+    ) -> Result<PlannedChildren, LexicalPlannerError> {
+        let mut nodes: Vec<PlanNode> = Vec::with_capacity(children.len());
+        let mut traces: Vec<PlanTraceNode> = Vec::with_capacity(children.len());
+        let mut engines: BTreeSet<EngineKind> = BTreeSet::new();
+        for child in children {
+            let (node, trace, child_engines) = Self::plan_expr(query, child)?;
+            nodes.push(node);
+            traces.push(trace);
+            engines.extend(child_engines);
+        }
+        Ok((nodes, traces, engines))
+    }
+
     /// Plan a single leaf at the root.
     ///
     /// Split out so the LXE-03 work (boolean composition) can call this from
     /// inside `All` / `Any` / `Not` walkers without duplicating the leaf
     /// dispatch table.
-    fn plan_leaf(
-        query: &LqQuery,
-        leaf: &LqLeaf,
-        filter_plan: crate::filters::FilterPlan,
-    ) -> Result<LexicalPlan, LexicalPlannerError> {
+    fn plan_leaf(query: &LqQuery, leaf: &LqLeaf) -> Result<PlanLeaf, LexicalPlannerError> {
         let plan_leaf = match leaf {
             LqLeaf::Keyword(term) => PlanLeaf::Content {
                 term: term.to_owned(),
@@ -172,28 +218,7 @@ impl LexicalPlanner {
             }
             LqLeaf::Predicate { name, args } => Self::plan_predicate_leaf(name, args)?,
         };
-        let engine = plan_leaf.engine();
-        let trace_summary = describe_leaf(&plan_leaf);
-        let root = PlanNode::Leaf {
-            leaf: plan_leaf,
-            cap: default_leaf_cap(engine),
-        };
-        let mut engines = std::collections::BTreeSet::new();
-        let _newly_inserted = engines.insert(engine);
-        Ok(LexicalPlan {
-            root,
-            filters: filter_plan,
-            raw_filters: query.filters.clone(),
-            engines,
-            plan_cap: None,
-            checkpoints: Vec::new(),
-            trace: PlanTraceNode::Leaf {
-                engine,
-                summary: trace_summary,
-            },
-            options: query.options.clone(),
-            directives: query.directives.clone(),
-        })
+        Ok(plan_leaf)
     }
 
     /// Plan a predicate leaf (`<scope>:<head>.<tail>(...)`).
@@ -212,6 +237,18 @@ impl LexicalPlanner {
                 let plan = plan_symbol(&needle, None, &SymbolPolicy::defaults())
                     .map_err(LexicalPlannerError::SymbolPlan)?;
                 Ok(PlanLeaf::Symbol { name: needle, plan })
+            }
+            "repo.has.file" => {
+                validate_repo_has_file_args(name, args)?;
+                Ok(PlanLeaf::Predicate {
+                    name: name.to_owned(),
+                })
+            }
+            "file.contains" | "file.has.content" => {
+                let _needle = single_string_arg(name, args)?;
+                Ok(PlanLeaf::Predicate {
+                    name: name.to_owned(),
+                })
             }
             _ => Err(LexicalPlannerError::Unimplemented {
                 node: "predicate_leaf",
@@ -260,8 +297,42 @@ fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, Lexi
 fn predicate_arity_label(name: &str) -> &'static str {
     if name == "symbol.has.name" {
         "predicate_symbol_has_name_arity"
+    } else if name == "repo.has.file" {
+        "predicate_repo_has_file_arity"
     } else {
         "predicate_leaf_arity"
+    }
+}
+
+fn validate_repo_has_file_args(
+    name: &str,
+    args: &[LqPredicateArg],
+) -> Result<(), LexicalPlannerError> {
+    let mut saw_matcher = false;
+    for arg in args {
+        match arg {
+            LqPredicateArg::Filter { name, .. } if name == "path" || name == "name" => {
+                saw_matcher = true;
+            }
+            LqPredicateArg::Keyword(_)
+            | LqPredicateArg::Phrase(_)
+            | LqPredicateArg::RawString(_)
+            | LqPredicateArg::Number(_)
+            | LqPredicateArg::Filter { .. } => {
+                return Err(LexicalPlannerError::Unimplemented {
+                    node: predicate_arity_label(name),
+                    owner_ticket: "LXE-03-predicate-extensions",
+                });
+            }
+        }
+    }
+    if saw_matcher {
+        Ok(())
+    } else {
+        Err(LexicalPlannerError::Unimplemented {
+            node: predicate_arity_label(name),
+            owner_ticket: "LXE-03-predicate-extensions",
+        })
     }
 }
 
@@ -279,6 +350,7 @@ fn describe_leaf(leaf: &PlanLeaf) -> String {
     match leaf {
         PlanLeaf::Content { term } => format!("content:{term}"),
         PlanLeaf::Path { pattern } => format!("path:{pattern}"),
+        PlanLeaf::Predicate { name } => format!("predicate:{name}"),
         PlanLeaf::Symbol { name, .. } => format!("symbol:{name}"),
         PlanLeaf::Regex { source, .. } => format!("regex:{source}"),
         PlanLeaf::RawSubstring { needle, .. } => format!("raw:{needle}"),
@@ -469,6 +541,33 @@ mod tests {
                 plan.root
             );
             assert!(plan.engines.contains(&EngineKind::Symbol));
+        }
+    }
+
+    #[test]
+    fn predicate_repo_has_file_plans_through_tantivy_route() {
+        use quanta_index_contract::LqPredicateArg;
+        let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_owned(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_owned(),
+                value: "src/lib.rs".to_owned(),
+            }],
+        }));
+        let outcome = LexicalPlanner::plan(&q);
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let Ok(plan) = outcome {
+            let matched_leaf = matches!(
+                &plan.root,
+                PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
+                    if name == "repo.has.file"
+            );
+            assert!(
+                matched_leaf,
+                "expected predicate leaf for repo.has.file, got {:?}",
+                plan.root
+            );
+            assert!(plan.engines.contains(&EngineKind::Tantivy));
         }
     }
 

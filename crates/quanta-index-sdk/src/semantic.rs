@@ -270,7 +270,7 @@ impl<'a> SemanticQueryBuilder<'a> {
 
     /// QI-QRY-01: explicit lexical-scope candidate cap. When the
     /// builder's lexical scope (`scope_native` / `scope_sourcegraph`) is
-    /// set, this MUST also be set; [`execute`] returns
+    /// set, this MUST also be set; [`Self::execute`] returns
     /// [`SdkError::Usage`] otherwise. The two values are semantically
     /// distinct: outer `top_k` is the final semantic recall cap, while
     /// `scope_top_k` is the lexical candidate cap fed into the hybrid

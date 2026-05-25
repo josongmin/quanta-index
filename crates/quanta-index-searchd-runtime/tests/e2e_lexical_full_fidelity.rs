@@ -224,30 +224,24 @@ const SCENARIOS: &[LexicalScenario] = &[
         // Both tokens are in `alpha_content` content only.
         query_text: "alpha_content_needle AND fn",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-02",
-            reason: "boolean AND must intersect once planner IR lowering lands; current public contract is a fail-closed planner rejection",
-            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content"],
         },
     },
     LexicalScenario {
         id: "boolean_or_union",
         query_text: "alpha_content_needle OR ripens",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-02",
-            reason: "boolean OR must union once planner IR lowering lands; current public contract is a fail-closed planner rejection",
-            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content", "delta_phrase", "gamma_py_same"],
         },
     },
     LexicalScenario {
         id: "boolean_not_exclusion",
         query_text: "alpha_content_needle NOT lib",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-02",
-            reason: "boolean NOT must exclude matching docs once planner IR lowering lands; current public contract is a fail-closed planner rejection",
-            current_observation: CurrentObservation::TypedError("NOT_IMPLEMENTED"),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content", "gamma_py_same"],
         },
     },
     // ──────── case ────────

@@ -91,11 +91,11 @@ impl QuantaIndex {
     }
 
     /// QI-NS-01: generic namespace entry point. Returns a
-    /// [`NamespaceHandle`] bound to this client. Used both by the
+    /// [`crate::NamespaceHandle`] bound to this client. Used both by the
     /// built-in sugar methods ([`Self::lexical`], [`Self::semantic`],
     /// [`Self::repomap`]) and by downstream consumers that need to
     /// register their own namespace marker — see the
-    /// [`crate::namespace`] module docs.
+    /// `namespace` module docs.
     #[must_use]
     pub fn ns<N>(&self) -> crate::NamespaceHandle<'_, N>
     where

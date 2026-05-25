@@ -15,7 +15,7 @@
 //! The ranker-explanation surface (`ExplanationRow`, `SearchExplanation`,
 //! `SearchExplanationBuilder`, `PlannerTraceEntry`, `PlannerStage`,
 //! `EngineTouched`, `EarlyStopReason`, `WeightsHashError`) lives in
-//! [`crate::results::explanation`]; the names below are convenience
+//! [`crate::results`]; the names below are convenience
 //! re-exports so callers that imported them from `lex::` keep compiling.
 //! New code should prefer `crate::results::*` directly.
 

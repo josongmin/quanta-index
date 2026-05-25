@@ -287,20 +287,20 @@ impl SearchPlaneDispatcher {
 
     /// Structural query dispatch.
     ///
-    /// The IPC `StructuralQueryRequest` carries only a wrapped text query
-    /// today; the structural-block AST is not yet on the wire. Until the
-    /// owner ticket lands the wire shape, this path is fail-closed with
-    /// `NotImplemented` — the dispatcher must not fabricate an empty
-    /// `LqStructuralBlock` and route it through the producer (that would be
-    /// heuristic authority where the caller's `query_text` is discarded).
+    /// The source-authority boundary is still closed: no producer parse-tree
+    /// materialization is wired on this route. The dispatcher therefore
+    /// fail-closes with the stable structural availability code rather than
+    /// fabricating a pattern or consulting the producer heuristically.
     fn structural(
         &self,
         _request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
-        Err(CoreError::NotImplemented(
-            "structural: query pattern is not yet on the IPC wire — pending owner ticket"
-                .to_string(),
-        ))
+        Err(CoreError::Typed {
+            code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+            message:
+                "structural: parse-tree source authority is not materialized on this route; fail-closed"
+                    .to_string(),
+        })
     }
 
     fn bridge(
@@ -571,9 +571,8 @@ impl ExplainQueryPort for SearchPlaneDispatcher {
 
 /// Production stand-in for the structural producer port.
 ///
-/// The structural dispatch path is fail-closed inside the dispatcher today
-/// (`structural()` returns `NotImplemented` until the wire shape lands), so
-/// this adapter is wired by the composition root purely to satisfy the
+/// The structural dispatch path is fail-closed inside the dispatcher today,
+/// so this adapter is wired by the composition root purely to satisfy the
 /// `StructuralProducerPort` seam. `readiness` reports
 /// `ParseTreeProducerUnavailable` to keep the port honest.
 pub struct FailClosedStructuralProducer;
@@ -1900,15 +1899,14 @@ mod tests {
     }
 
     /// Structural dispatch is fail-closed at the dispatcher boundary until
-    /// the structural-block AST lands on the IPC wire.
+    /// parse-tree source authority is materialized on the route.
     ///
     /// The producer port is NOT consulted. The dispatcher used to fabricate
     /// an empty pattern and route it through the domain service, which is
     /// heuristic authority because the caller's `query_text` was discarded.
-    /// Now the wire code is the generic `NOT_IMPLEMENTED` regardless of what
-    /// the producer would have reported.
+    /// Now the wire code is the stable structural availability error.
     #[test]
-    fn structural_dispatch_is_fail_closed_with_not_implemented() -> TestResult {
+    fn structural_dispatch_is_fail_closed_with_parse_tree_unavailable() -> TestResult {
         let producer = Arc::new(RecordingStructuralProducer::new(StructuralReadiness::Ready));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
@@ -1926,8 +1924,8 @@ mod tests {
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "NOT_IMPLEMENTED" {
-            return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
+        if code != "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" {
+            return Err(format!("expected STR_PRODUCER_PARSE_TREE_UNAVAILABLE, got {code}").into());
         }
         let consulted = producer.readiness_calls.load(Ordering::SeqCst);
         if consulted != 0 {
