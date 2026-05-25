@@ -1,6 +1,6 @@
 # Tickets — Index and Reconciliation
 
-> Master index for the 17 ticket spec sheets under [`tickets/`](.) authored against the May-23 Sourcegraph-class Lexical Kernel RFC.
+> Master index for the 18 ticket docs under [`tickets/`](.) authored against the May-23 Sourcegraph-class Lexical Kernel RFC and the later SDK/source-authority closeout follow-on.
 
 Parent docs: [rfc.md](../rfc.md) · [feature-scope.md](../feature-scope.md) · [usecase.md](../usecase.md) · [dsl.md](../dsl.md) · [implementation-plan.md](../implementation-plan.md)
 
@@ -21,6 +21,7 @@ This is an honest-gap call (filed as `RFC-GAP-TICKET-IDS`). The spec sheets are 
 | [PRE-CONTRACT-EXT.md](PRE-CONTRACT-EXT.md) | Contract crate extension (GAP-01..06, `ErrorCode`, authz carrier) | — | Wave-0 prerequisite — not in RFC ticket pack | new |
 | [PRE-NORM.md](PRE-NORM.md) | DSL parser + canonical normalizer + CBOR/SHA-256 hash | `LEX-01` | "canonical query AST and parser" | yes |
 | [PRE-CONF.md](PRE-CONF.md) | Conformance corpus runner consuming usecase.md 100 rows | — | Wave-0 prerequisite — not in RFC ticket pack | new |
+| [SDK-ENTRY-01.md](SDK-ENTRY-01.md) | SDK-only external entry + source-authority ingest cutover | — | Post-closeout cross-cut prerequisite — not in RFC ticket pack | new |
 | [LEX-00.md](LEX-00.md) | Lexical text normalization layer (tokenize/fold/lang routing) | `LEX-00` | "baseline and invariants freeze" | yes |
 | [LEX-01.md](LEX-01.md) | IDF / scoring foundation (per-generation BM25 stats) | `LEX-06` partial | "ranking, explain, and lexical semantics" — scorer half | **shifted** |
 | [LEX-02.md](LEX-02.md) | Trigram / N-gram index | `LEX-04` partial | "incremental lexical indexing kernel" — trigram shard | **shifted** |
@@ -45,6 +46,10 @@ The following RFC ticket scopes are **not** covered by any spec sheet authored i
 - `RFC-LEX-05` — "parallel executor and deterministic merge" (fanout + merge planner)
 - `RFC-SEM-02` — "incremental semantic derivatives" (per-gen ANN re-build incrementality)
 - `RFC-BRIDGE-01` — "CodeQL bridge and candidate export" (we authored a Sourcegraph bridge instead)
+
+Cross-cut work that is now covered, but is **not** an RFC roll-up, lives in:
+
+- [SDK-ENTRY-01.md](SDK-ENTRY-01.md) — external SDK-only entry + producer source-authority ingest cutover
 
 **Action required (must precede ticket execution):** either rename current files to `SPEC-*` and author the five missing RFC-ticket roll-ups, or amend the RFC ticket pack to match the spec-sheet decomposition. Tracked in [§5 of this INDEX](#5-action-items).
 
@@ -109,7 +114,7 @@ The following RFC ticket scopes are **not** covered by any spec sheet authored i
 | [BRIDGE-01.md](BRIDGE-01.md) | 367 | **One-way** Sourcegraph→LQ; subset table buckets (adopted/normalized/refused); FS-GAP-2 closed by error taxonomy lock; `BridgeCandidate` carries `source_syntax` + `translator_version`; p99 ≤ 1ms |
 | [OBS-01.md](OBS-01.md) | 503 | OTel SDK + Prometheus exporter (sidecar-mode, ADR-009); root span `lq.query` + 14 child spans enumerated; cardinality guard 4-layer defense; `OBS_CARDINALITY_GUARD` typed event; closes RFC-GAP-3 + RFC-GAP-4 |
 
-**Total: 8,410 lines across 17 spec sheets.**
+**Total: 18 ticket docs = 17 historical subsystem spec sheets + 1 SDK/source-authority follow-on ticket.**
 
 ---
 

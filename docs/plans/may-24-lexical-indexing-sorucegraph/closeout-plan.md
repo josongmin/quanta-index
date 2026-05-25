@@ -20,6 +20,7 @@ Current truth:
 - [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) routes lexical / semantic / hybrid requests through the closed repo-first intake path; `searchd` is the transport/runtime shell around that path, and the workspace proof rails are green
 - hard DSL scenario coverage lives in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs)
 - structural / history live success remains producer-gated; current repo behaviour is explicit fail-closed / unavailable until producer commit/diff / parse-tree ops arrive
+- external producer / caller entry is not yet fully frozen to SDK-only for the remaining history / runtime / structural cutover; follow-on is tracked in [tickets/SDK-ENTRY-01.md](tickets/SDK-ENTRY-01.md)
 - real-engine conformance CI, deployment-side observability, and the bridge downstream sink remain open integration tasks
 
 The remaining value of this packet is the dependency history and the boundary between landed repo work and external cutover work.
@@ -85,8 +86,15 @@ Anything short of that stays `partial`, even if many individual crates are green
 - finalize proposed channel ops and wire-shape ownership
 - resolve STR-01 Option A/B
 - close history / dirty / parse-tree handshake residue
+- route the remaining producer authority families through `quanta-index-sdk` only; no raw external channel / socket path survives the cutover
 
-### 4.6 Claim / corpus / doc closeout
+### 4.6 SDK-only entry closeout
+
+- external query / control / ingest entry must terminate at [`quanta-index-sdk`](../../../crates/quanta-index-sdk/)
+- query side keeps text-first entry (`lexical().query()` / `sourcegraph().query()`); history / runtime / structural expand under that front door
+- producer side extends `LexicalBatch` for commit / diff / dirty / parse-tree authority instead of adding ad hoc ingress surfaces
+
+### 4.7 Claim / corpus / doc closeout
 
 - add missing UC-HYB / UC-INC / catalog-miss rows
 - reconcile RFC / feature-scope / DSL mismatches

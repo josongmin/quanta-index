@@ -6,6 +6,10 @@ Each ticket carries: Owner files / Acceptance / Blockers / Proof.
 
 Cross-repo proof for semantica is tracked separately as `SM-VRF-01` in the semantica repo. This document only records the quanta-index side.
 
+Follow-on packet:
+- [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sorucegraph/tickets/SDK-ENTRY-01.md)
+- purpose: after the baseline SDK / ingest IPC cutover below, force the remaining history / runtime / structural source-authority entry through `quanta-index-sdk` only. That follow-on extends `LexicalBatch`; it does not introduce a second public ingest front door.
+
 ## Live residue (entry condition)
 
 1. SDK publish opens channel backend directly — [crates/quanta-index-sdk/src/lexical.rs:130](../../crates/quanta-index-sdk/src/lexical.rs#L130), [crates/quanta-index-sdk/src/semantic.rs:135](../../crates/quanta-index-sdk/src/semantic.rs#L135)
@@ -133,6 +137,7 @@ Add `IngestTransport`. `lexical().publish()` / `semantic().publish()` / `repomap
 - `publish()` maps batches to `PublishLexicalBatch` / `SemanticBatch` / `RepoMapBatch` and calls `IngestTransport::send()`
 - `BatchReceipt` comes from the server response, never synthesized from local channel sequences
 - An in-memory `IngestTransport` exists for unit tests. SDK tests must not produce filesystem channel side-effects
+- future lexical-track authority families (commit / diff / dirty / parse-tree) extend `LexicalBatch` instead of bypassing the SDK or creating a new public ingest namespace
 
 **Blockers** QI-ING-01, QI-RT-01
 
