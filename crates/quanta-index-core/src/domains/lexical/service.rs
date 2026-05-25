@@ -168,3 +168,118 @@ fn expr_contains_predicate(expr: &LqExpr) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! `cargo mutants` killed gaps:
+    //! - line 16 `&& !has_content_filter` → `&& has_content_filter` (delete `!`)
+    //! - line 23 first `||` → `&&` in the structural-rejection clause
+    //! - line 24 second `||` → `&&` in the structural-rejection clause
+    //! - line 44 `>=` → `<` in `validate_query_against_readiness`
+    //!
+    //! Each test below exercises an input where the original and mutated
+    //! conditions disagree, so the observable `Ok`/`Err` outcome flips.
+
+    use super::*;
+    use quanta_index_contract::{
+        LQ_VERSION_TAG, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
+    };
+
+    fn make_query(expr: LqExpr, filters: Vec<LqFilter>, options: LqOptions) -> LqQuery {
+        LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr,
+            filters,
+            directives: Vec::new(),
+            options,
+            source_span: LqSpan::eof(0),
+        }
+    }
+
+    fn empty_query() -> LqQuery {
+        make_query(LqExpr::Empty, Vec::new(), LqOptions::defaults())
+    }
+
+    #[test]
+    fn empty_expr_without_content_filter_rejected_kills_bang_delete_mutation() {
+        // Original: `Empty && !has_content_filter` = true && !false = true → Err.
+        // Mutation (delete `!`): true && false = false → Ok. Asserting Err kills it.
+        assert!(LexicalPolicy::validate_query(&empty_query()).is_err());
+    }
+
+    #[test]
+    fn empty_expr_with_content_filter_accepted_kills_bang_delete_mutation_other_side() {
+        // Original: true && !true = false → no early return → Ok.
+        // Mutation (delete `!`): true && true = true → Err. Asserting Ok kills it.
+        let mut q = empty_query();
+        q.filters.push(LqFilter::Content {
+            leaf: LqLeaf::Keyword("needle".to_string()),
+        });
+        assert!(LexicalPolicy::validate_query(&q).is_ok());
+    }
+
+    #[test]
+    fn structural_pattern_only_rejected_kills_first_or_to_and_mutation() {
+        // Inputs: A=true (pattern_type==Structural), B=false (non-structural
+        // expr), C=false (no structural filter).
+        // Original: A || B || C = true → Err.
+        // Mutation (first `||` → `&&`): (A && B) || C = (true && false) || false = false → Ok.
+        let mut opts = LqOptions::defaults();
+        opts.pattern_type = LqPatternType::Structural;
+        let q = make_query(
+            LqExpr::Leaf(LqLeaf::Keyword("anything".to_string())),
+            Vec::new(),
+            opts,
+        );
+        let err =
+            LexicalPolicy::validate_query(&q).expect_err("structural pattern must fail-closed");
+        let CoreError::Typed { code, .. } = err else {
+            panic!("expected Typed error");
+        };
+        assert_eq!(code, "STR_PRODUCER_PARSE_TREE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn structural_filter_only_rejected_kills_second_or_to_and_mutation() {
+        // Inputs: A=false, B=false, C=true (structural leaf in a Content filter).
+        // Original: false || false || true = true → Err.
+        // Mutation (second `||` → `&&`): (A || B) && C = (false || false) && true = false → Ok.
+        let q = make_query(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            vec![LqFilter::Content {
+                leaf: LqLeaf::StructuralBlock(LqStructuralBlock {
+                    lang: None,
+                    nodes: Vec::new(),
+                }),
+            }],
+            LqOptions::defaults(),
+        );
+        let err =
+            LexicalPolicy::validate_query(&q).expect_err("structural filter must fail-closed");
+        let CoreError::Typed { code, .. } = err else {
+            panic!("expected Typed error");
+        };
+        assert_eq!(code, "STR_PRODUCER_PARSE_TREE_UNAVAILABLE");
+    }
+
+    #[test]
+    fn readiness_kills_ge_to_lt_mutation_at_equality() {
+        let pin = ManifestGeneration::new(11);
+        assert!(LexicalPolicy::validate_query_against_readiness(pin, Some(pin)).is_ok());
+        assert!(
+            LexicalPolicy::validate_query_against_readiness(
+                ManifestGeneration::new(11),
+                Some(ManifestGeneration::new(12)),
+            )
+            .is_ok()
+        );
+        assert!(
+            LexicalPolicy::validate_query_against_readiness(
+                ManifestGeneration::new(12),
+                Some(ManifestGeneration::new(11)),
+            )
+            .is_err()
+        );
+        assert!(LexicalPolicy::validate_query_against_readiness(pin, None).is_err());
+    }
+}

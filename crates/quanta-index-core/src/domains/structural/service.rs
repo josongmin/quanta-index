@@ -177,6 +177,23 @@ mod tests {
     }
 
     #[test]
+    fn policy_returns_configured_value_kills_default_replacement_mutation() {
+        // `cargo mutants` line 42: replace `self.policy` return with
+        // `Default::default()`. Default = (256, true). Using `with_policy`
+        // to install a distinguishable policy and asserting equality kills
+        // the mutation.
+        use super::super::policy::StructuralPolicy;
+        let custom = StructuralPolicy {
+            max_bindings_per_match: 7,
+            default_readiness_check: false,
+        };
+        let producer = Arc::new(FakeProducer::ready_with(Vec::new()));
+        let service = StructuralService::with_policy(producer, custom);
+        assert_eq!(service.policy(), custom);
+        assert_ne!(service.policy(), StructuralPolicy::default());
+    }
+
+    #[test]
     fn ready_returns_bindings() {
         let expected = vec![StructuralBinding {
             metavariable: "$X".to_string(),

@@ -102,6 +102,61 @@ struct FuseAccumulator {
     candidate: LexicalCandidate,
 }
 
+#[cfg(test)]
+mod tests {
+    //! Kills `cargo mutants` survivors on lines 19 and 122. Lines 30 and 35
+    //! (`<`→`<=` and `>`→`>=` inside `over_fetch_top_k`) are documented as
+    //! equivalent mutations: the boundary values collapse — at `top_k = 100`
+    //! both branches return 100, at `top_k = max_top_k` both branches return
+    //! `max_top_k`. No observable behavior differs.
+    //!
+    //! Coverage notes:
+    //! - `validate_top_k(max_top_k)` must be `Ok`. Mutation `>`→`>=` would
+    //!   reject the equality case and turn this `Ok` into `Err`.
+    //! - `fuse_rrf` with two contributions at high ranks must outrank a
+    //!   single contribution at rank 1 (because `1/(K+r)` shrinks slowly
+    //!   while `1/(K*r)` collapses fast). Mutation `+`→`*` flips top-1.
+    use super::*;
+    use crate::domains::semantic::SemanticPolicy;
+    use quanta_index_contract::{
+        LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    };
+
+    #[test]
+    fn validate_top_k_boundary_kills_gt_to_ge_mutation() {
+        let max = SemanticPolicy::max_top_k();
+        assert!(HybridOrchestratorPolicy::validate_top_k(max).is_ok());
+        assert!(HybridOrchestratorPolicy::validate_top_k(max + 1).is_err());
+    }
+
+    fn cand(id: &str) -> LexicalCandidate {
+        LexicalCandidate {
+            candidate_id: id.to_string(),
+            repo_id: RepoId::new("repo-hybrid"),
+            revision_id: RevisionId::new("rev-hybrid"),
+            manifest_generation: ManifestGeneration::new(1),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            start_line: 0,
+            end_line: 0,
+            score: 0.0,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn fuse_rrf_kills_add_to_mul_mutation_in_accumulate() {
+        // A appears at rank 5 in both lists; B appears only at rank 1 in lex.
+        // Under `+` (original): A=2/65≈0.0308 > B=1/61≈0.0164 → top-1 = A.
+        // Under `*` (mutation): A=2/300≈0.0067 < B=1/60≈0.0167 → top-1 = B.
+        // Asserting top-1 = "A" kills the mutation.
+        let lexical = vec![cand("B"), cand("X1"), cand("X2"), cand("X3"), cand("A")];
+        let semantic = vec![cand("Y1"), cand("Y2"), cand("Y3"), cand("Y4"), cand("A")];
+        let fused = HybridOrchestratorPolicy::fuse_rrf(&lexical, &semantic, 1);
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].candidate_id.as_str(), "A");
+    }
+}
+
 fn accumulate(
     accs: &mut BTreeMap<String, FuseAccumulator>,
     ranked: &[LexicalCandidate],
