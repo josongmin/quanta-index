@@ -1,7 +1,7 @@
 //! Typed errors for the LEX-02 trigram index.
 //!
 //! Every failure path through [`crate::builder`], [`crate::index`],
-//! [`crate::query`], and [`crate::regex_prefilter`] maps to exactly one
+//! [`crate::query`], and [`mod@crate::regex_prefilter`] maps to exactly one
 //! [`TrigramErrorCode`] variant. Production code paths never panic, never
 //! silently default, and never widen a cap to mask a missing authoritative
 //! result.

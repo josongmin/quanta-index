@@ -2,25 +2,30 @@
 //!
 //! [`TrigramIndexBuilder`] supports three build patterns:
 //!
-//! 1. **Scratch / append**: construct via [`Self::new`], call
-//!    [`Self::add_doc`] for each document, then [`Self::finish`]. This
+//! 1. **Scratch / append**: construct via `TrigramIndexBuilder::new`, call
+//!    `TrigramIndexBuilder::add_doc` for each document, then
+//!    `TrigramIndexBuilder::finish`. This
 //!    pattern is intentionally NOT replay-safe: re-issuing `add_doc` for
 //!    the same `doc_id` with different content is a no-op at the
 //!    `(trigram, doc_id)` membership level but does NOT replace prior
 //!    content. Callers driving a fresh full-build from an authoritative
 //!    snapshot use this pattern.
 //!
-//! 2. **Upsert-driven** (replay-safe): construct via [`Self::new`], call
-//!    [`Self::upsert_doc`] for each `(doc_id, content)` pair. Re-issuing
+//! 2. **Upsert-driven** (replay-safe): construct via
+//!    `TrigramIndexBuilder::new`, call `TrigramIndexBuilder::upsert_doc`
+//!    for each `(doc_id, content)` pair. Re-issuing
 //!    `upsert_doc(doc_id, content_b)` after `upsert_doc(doc_id, content_a)`
 //!    REPLACES the doc's prior trigram footprint. Channel subscribers
 //!    that may replay events after a crash MUST use this pattern.
-//!    [`Self::remove_doc`] is the matching `DeleteChunk` handler.
+//!    `TrigramIndexBuilder::remove_doc` is the matching `DeleteChunk`
+//!    handler.
 //!
-//! 3. **Cross-generation incremental**: construct via [`Self::from_prior`]
+//! 3. **Cross-generation incremental**: construct via
+//!    `TrigramIndexBuilder::from_prior`
 //!    with the previous generation's [`TrigramIndex`] and a bumped
 //!    generation id. Apply any `upsert_doc` / `remove_doc` deltas, then
-//!    [`Self::finish`]. Carries the prior generation's posting map forward
+//!    `TrigramIndexBuilder::finish`. Carries the prior generation's posting
+//!    map forward
 //!    so that gen N+1 inherits from gen N + new deltas, rather than
 //!    rebuilding from scratch.
 //!
@@ -29,7 +34,8 @@
 //! - The on-wire posting map is keyed by a `BTreeMap`, so trigram
 //!   iteration order is the lexical sort order of the 3-byte key.
 //! - Per-trigram posting lists are sets internally, so they are
-//!   automatically sorted and de-duplicated at [`Self::finish`] time.
+//!   automatically sorted and de-duplicated at
+//!   `TrigramIndexBuilder::finish` time.
 //!   Duplicate inserts of the same `(trigram, doc_id)` pair contribute
 //!   exactly one posting entry.
 //! - The same upsert/remove sequence applied to two builders of the same

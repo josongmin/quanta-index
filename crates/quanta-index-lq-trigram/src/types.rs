@@ -1,5 +1,5 @@
 //! Stable types shared between [`crate::builder`], [`crate::index`],
-//! [`crate::query`], and [`crate::regex_prefilter`].
+//! [`crate::query`], and [`mod@crate::regex_prefilter`].
 //!
 //! The [`DocId`] newtype is intentionally a thin wrapper around `u64`
 //! so sibling LEX-03 work (positions index) can re-use the same id

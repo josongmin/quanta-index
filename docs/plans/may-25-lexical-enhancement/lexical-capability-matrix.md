@@ -1,7 +1,16 @@
 # Lexical Capability Matrix
 
-Status: `proposed`
+Status: `phase-3-planner-landed`
 Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
+
+## Phase status summary
+
+- **Phase 0** — V1/V2 strip from ticket pack + matrix skeleton: DONE
+- **Phase 1** — LXE-02 planner IR scaffold + LXE-09 structural domain + E2E-00 harness skeleton: DONE (10 tests pass)
+- **Phase 2** — LXE-04 regex/trigram + LXE-05 phrase + LXE-06 symbol planner scaffolds: DONE (15 new tests pass)
+- **Phase 3** — LXE-03 filter execution + LXE-05/06 planner-arm integration: DONE (12 new tests, total 31 lexical lib tests pass)
+- **Phase 4 (next, blocked on user in-flight)** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()` + LXE-07 semantic/hybrid + LXE-01 contract closure + LXE-10 observability
+- **Phase 5 (E2E proof)** — E2E-01..07 after Phase 4 settles
 
 Source-backed truth table for the LQ DSL surface, Sourcegraph syntax, planner
 lowering, engine execution, response carriers, and proof coverage.
@@ -37,12 +46,12 @@ Defined at [lq-norm/src/ast.rs:196](../../../crates/quanta-index-lq-norm/src/ast
 
 | Leaf | Parser | Lowering | Planner | Engine | Result carrier | Unit test | E2E | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `Keyword(String)` | lq-norm/parser | search-plane/lowering | TODO planner | lexical/Tantivy term | `LexicalCandidate` | TODO | E2E-01 row | `pending[LXE-02]` |
-| `Phrase(String)` | lq-norm/parser | search-plane/lowering | TODO planner | lq-positions | `LexicalCandidate` | TODO | E2E-01 row | `pending[LXE-05]` |
-| `RawString(String)` | lq-norm/parser | search-plane/lowering | TODO planner | lq-trigram + verify | `LexicalCandidate` | TODO | E2E-01 row | `pending[LXE-04]` |
-| `Regex(String)` | lq-norm/parser + [regex_guard.rs](../../../crates/quanta-index-lq-norm/src/regex_guard.rs) | currently bypasses through Tantivy at [lexical/src/lib.rs:1151](../../../crates/quanta-index-lexical/src/lib.rs#L1151) | TODO planner | lq-regex verify + lq-trigram prefilter | `LexicalCandidate` | [lq-regex/src/](../../../crates/quanta-index-lq-regex/src/) | E2E-01 + E2E-07 rows | `expected-failing[LXE-04]` |
-| `StructuralBlock(LqStructuralBlock)` | lq-norm/parser | TODO | TODO planner | lq-structural | `StructuralBinding`/`StructuralCandidate` | [lq-structural](../../../crates/quanta-index-lq-structural/src/) | E2E-04 | `typed-rejected` → `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` at [search-plane/query_dispatcher.rs:235](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L235); `pending[LXE-09]` for fixture path |
-| `Predicate { name, args }` | lq-norm/parser | in-flight at search-plane/lowering + core/lexical/lowering (`lower_bridge_predicate`) | TODO planner | per-predicate route | varies | TODO | E2E-01 / E2E-02 rows | `pending[LXE-03]` (integrate with in-flight predicate lowering) |
+| `Keyword(String)` | lq-norm/parser | search-plane/lowering | [planner.rs::plan() `LqLeaf::Keyword` arm](../../../crates/quanta-index-lexical/src/planner.rs) → `PlanLeaf::Content` | lexical/Tantivy term | `LexicalCandidate` | `planner::tests::single_keyword_leaf_produces_content_plan` | E2E-01 row pending | `planner-scaffold` (execution body unchanged) |
+| `Phrase(String)` | lq-norm/parser | search-plane/lowering | [phrase.rs::plan_phrase](../../../crates/quanta-index-lexical/src/phrase.rs) → `PlanLeaf::Phrase { plan }` | lq-positions | `LexicalCandidate` | 7 phrase tests + planner integration test | E2E-01 row pending | `planner-scaffold[execution pending]` |
+| `RawString(String)` | lq-norm/parser | search-plane/lowering | [trigram_plan.rs::plan_raw_substring](../../../crates/quanta-index-lexical/src/trigram_plan.rs) → `PlanLeaf::RawSubstring { plan }` | lq-trigram + verify | `LexicalCandidate` | `planner::tests::raw_substring_plans_ok_on_minimum_needle` + `raw_substring_too_short_is_rejected_typed` | E2E-01 row pending | `planner-scaffold[execution pending]` |
+| `Regex(String)` | lq-norm/parser + [regex_guard.rs](../../../crates/quanta-index-lq-norm/src/regex_guard.rs) | currently still bypasses through Tantivy at [lexical/src/lib.rs:1151](../../../crates/quanta-index-lexical/src/lib.rs#L1151) (execution body unchanged) | [regex.rs::plan_regex](../../../crates/quanta-index-lexical/src/regex.rs) → `PlanLeaf::Regex { plan }` with `extract_required_literals` + `dialect_filter` | lq-regex verify + lq-trigram prefilter | `LexicalCandidate` | `planner::tests::regex_leaf_with_extractable_literal_plans_ok` + `regex_leaf_with_lookbehind_is_rejected_typed` | E2E-01 + E2E-07 rows pending | `planner-scaffold[execution pending — escape path at lib.rs:1151 still active]` |
+| `StructuralBlock(LqStructuralBlock)` | lq-norm/parser | TODO | TODO planner arm | lq-structural | `StructuralBinding`/`StructuralCandidate` | structural domain unit tests (4 pass) | E2E-04 pending | `typed-rejected` → `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` at [search-plane/query_dispatcher.rs:235](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L235); domain port + service landed via LXE-09 |
+| `Predicate { name, args }` | lq-norm/parser | committed predicate lowering (`lower_bridge_predicate` in search-plane + core/lexical) converts most predicate forms into filters before reaching the planner | `name == "symbol.has.name"` → `symbol::plan_symbol` → `PlanLeaf::Symbol { plan }`; other names → `LexicalPlannerError::Unimplemented { owner_ticket: "LXE-03-predicate-extensions" }` | per-predicate route | varies | `planner::tests::predicate_symbol_has_name_plans_through_symbol_route` | E2E-01 / E2E-02 rows pending | `planner-scaffold[symbol predicate only; others typed-rejected]` |
 
 ## 3. LQ boolean tree (`LqExpr`)
 

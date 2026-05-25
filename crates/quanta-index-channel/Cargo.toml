@@ -13,11 +13,9 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-quanta-index-contract = { path = "../quanta-index-contract" }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 crc32fast = { workspace = true }
 fs2 = { workspace = true }
-memmap2 = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
 tempfile = { workspace = true }

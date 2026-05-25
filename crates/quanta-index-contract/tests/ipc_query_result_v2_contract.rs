@@ -9,8 +9,9 @@ use quanta_index_contract::{
     DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SemanticCandidateScope, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryResponse, SemanticCandidateScope,
+    SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef, TextQueryRequest,
+    TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -217,6 +218,15 @@ fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> HybridQueryR
     }
 }
 
+fn sourcegraph_request() -> quanta_index_contract::SearchPlaneSourcegraphQueryRequest {
+    quanta_index_contract::SearchPlaneSourcegraphQueryRequest {
+        source_syntax: "repo:quanta-index lang:rust SearchPlane".into(),
+        sg_version: "sg-5.5.0".into(),
+        generation: Some(generation_pin()),
+        top_k: 25,
+    }
+}
+
 fn explanation_v2() -> SearchExplanation {
     SearchExplanation {
         planner_trace: vec![
@@ -406,6 +416,35 @@ fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
 }
 
 #[test]
+fn search_plane_ipc_request_v2_sourcegraph_roundtrips_dedicated_variant() -> TestRes {
+    let request = SearchPlaneQueryIpcRequest::Sourcegraph(sourcegraph_request());
+
+    roundtrip_eq(&request)?;
+
+    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
+    if let SearchPlaneQueryIpcRequest::Sourcegraph(inner) = decoded {
+        if inner.source_syntax.as_ref() != "repo:quanta-index lang:rust SearchPlane" {
+            return Err(format!(
+                "unexpected sourcegraph source_syntax: {:?}",
+                inner.source_syntax
+            )
+            .into());
+        }
+        if inner.sg_version.as_ref() != "sg-5.5.0" {
+            return Err(
+                format!("unexpected sourcegraph sg_version: {:?}", inner.sg_version).into(),
+            );
+        }
+        if inner.top_k != 25 {
+            return Err(format!("expected top_k=25, got {}", inner.top_k).into());
+        }
+        Ok(())
+    } else {
+        Err(format!("expected Sourcegraph request, got {decoded:?}").into())
+    }
+}
+
+#[test]
 fn search_plane_query_ipc_request_envelope_semantic_roundtrips_inline_vector_ref() -> TestRes {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
@@ -576,6 +615,35 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
         Ok(())
     } else {
         Err(format!("expected Hybrid response, got {decoded:?}").into())
+    }
+}
+
+#[test]
+fn search_plane_ipc_response_v2_sourcegraph_roundtrips_candidates() -> TestRes {
+    let response = SearchPlaneQueryIpcResponse::Sourcegraph(SearchPlaneSourcegraphQueryResponse {
+        generation: generation_pin(),
+        results: vec![lexical_candidate()],
+    });
+
+    roundtrip_eq(&response)?;
+
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    if let SearchPlaneQueryIpcResponse::Sourcegraph(inner) = decoded {
+        if inner.generation != generation_pin() {
+            return Err(
+                format!("unexpected sourcegraph generation: {:?}", inner.generation).into(),
+            );
+        }
+        if inner.results.len() != 1 {
+            return Err(format!(
+                "expected one sourcegraph candidate, got {}",
+                inner.results.len()
+            )
+            .into());
+        }
+        Ok(())
+    } else {
+        Err(format!("expected Sourcegraph response, got {decoded:?}").into())
     }
 }
 

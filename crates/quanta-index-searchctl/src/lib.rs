@@ -15,8 +15,9 @@ use quanta_index_contract::{
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDto, RepoMapQueryRequest,
     RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticQueryRequest,
-    SemanticVectorRef, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSourcegraphQueryRequest,
+    SemanticCandidateScope, SemanticQueryRequest, SemanticVectorRef, TextQueryRequest,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 
@@ -91,6 +92,7 @@ impl OutputMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandKind {
     Lexical,
+    Sourcegraph,
     Semantic,
     Hybrid,
     Explain,
@@ -191,6 +193,10 @@ impl ParsedCommand {
         };
         let (kind, payload) = match subcommand.as_str() {
             "lexical" => (CommandKind::Lexical, parse_lexical(&mut common, &mut rest)?),
+            "sourcegraph" => (
+                CommandKind::Sourcegraph,
+                parse_sourcegraph(&mut common, &mut rest)?,
+            ),
             "semantic" => (
                 CommandKind::Semantic,
                 parse_semantic(&mut common, &mut rest)?,
@@ -202,7 +208,7 @@ impl ParsedCommand {
             }
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|semantic|hybrid|explain|repomap"
+                    "unknown subcommand `{other}`; expected lexical|sourcegraph|semantic|hybrid|explain|repomap"
                 )));
             }
         };
@@ -337,6 +343,51 @@ fn parse_semantic(
         scope,
         top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
     }))
+}
+
+fn parse_sourcegraph(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<SearchPlaneQueryIpcRequest> {
+    let mut repo_id: Option<String> = None;
+    let mut revision_id: Option<String> = None;
+    let mut manifest_generation: Option<u64> = None;
+    let mut source_syntax: Option<String> = None;
+    let mut sg_version: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        match current.as_str() {
+            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
+            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
+            "--manifest-generation" => {
+                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
+            }
+            "--query-text" => source_syntax = Some(take_value(rest, "--query-text")?),
+            "--sg-version" => sg_version = Some(take_value(rest, "--sg-version")?),
+            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown sourcegraph flag `{other}`"
+                )));
+            }
+        }
+    }
+    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    Ok(SearchPlaneQueryIpcRequest::Sourcegraph(
+        SearchPlaneSourcegraphQueryRequest {
+            source_syntax: source_syntax
+                .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?
+                .into_boxed_str(),
+            sg_version: sg_version
+                .ok_or_else(|| CliError::usage("missing --sg-version".to_string()))?
+                .into_boxed_str(),
+            generation: Some(generation),
+            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
+        },
+    ))
 }
 
 fn parse_hybrid(
@@ -688,6 +739,7 @@ fn validate_response_kind(
             error.code, error.message
         ))),
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
+        | (CommandKind::Sourcegraph, SearchPlaneQueryIpcResponse::Sourcegraph(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
@@ -735,6 +787,15 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Text(payload) => {
             render_lexical_payload("lexical", payload, None, rendered)
         }
+        SearchPlaneQueryIpcResponse::Sourcegraph(payload) => render_lexical_payload(
+            "sourcegraph",
+            &TextQueryResponse {
+                generation: payload.generation.clone(),
+                results: payload.results.clone(),
+            },
+            None,
+            rendered,
+        ),
         SearchPlaneQueryIpcResponse::Symbol(_payload) => Err(CliError::protocol(
             "unsupported pretty renderer for response kind `Symbol`".to_string(),
         )),
@@ -828,8 +889,7 @@ fn render_pretty(
         ))),
         SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_) => Err(CliError::protocol(format!(
+        | SearchPlaneQueryIpcResponse::Bridge(_) => Err(CliError::protocol(format!(
             "unsupported pretty renderer for response kind `{}`",
             response_kind_name(&response.payload)
         ))),
@@ -947,6 +1007,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
 fn command_kind_name(kind: CommandKind) -> &'static str {
     match kind {
         CommandKind::Lexical => "lexical",
+        CommandKind::Sourcegraph => "sourcegraph",
         CommandKind::Semantic => "semantic",
         CommandKind::Hybrid => "hybrid",
         CommandKind::Explain => "explain",
@@ -1014,6 +1075,7 @@ Global flags:
 
 Read-only subcommands:
   lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
+  sourcegraph --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --sg-version SG-X.Y.Z --top-k N
   semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph]
   hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
   explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
@@ -1267,5 +1329,80 @@ mod tests {
             request.semantic_vector_ref,
             Some(SemanticVectorRef::Handle("emb-456".into()))
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test asserts payload variant shape; panic isolates failure to this single test"
+    )]
+    fn parses_sourcegraph_query_request() {
+        let parsed = ParsedCommand::parse([
+            "sourcegraph",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--query-text",
+            "repo:repo lang:rust needle",
+            "--sg-version",
+            "sg-5.5.0",
+            "--top-k",
+            "11",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let SearchPlaneQueryIpcRequest::Sourcegraph(request) = parsed.request.payload else {
+            panic!("expected sourcegraph payload");
+        };
+        assert_eq!(request.source_syntax.as_ref(), "repo:repo lang:rust needle");
+        assert_eq!(request.sg_version.as_ref(), "sg-5.5.0");
+        assert_eq!(request.top_k, 11);
+        assert_eq!(
+            request.generation.map(|pin| pin.manifest_generation.get()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn pretty_renderer_supports_sourcegraph_response() {
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::Sourcegraph(
+                quanta_index_contract::SearchPlaneSourcegraphQueryResponse {
+                    generation: GenerationPin::new(
+                        RepoId::new("repo"),
+                        RevisionId::new("rev"),
+                        ManifestGeneration::new(7),
+                    ),
+                    results: vec![LexicalCandidate {
+                        candidate_id: "cand-1".to_string(),
+                        repo_id: RepoId::new("repo"),
+                        revision_id: RevisionId::new("rev"),
+                        manifest_generation: ManifestGeneration::new(7),
+                        repo_relative_path: quanta_index_contract::RepoRelativePath::new(
+                            "src/lib.rs",
+                        ),
+                        start_line: 1,
+                        end_line: 3,
+                        score: 0.5,
+                        snippet: "fn sample() {}".to_string(),
+                    }],
+                },
+            ),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: sourcegraph"));
+            assert!(text.contains("results: 1"));
+        }
     }
 }

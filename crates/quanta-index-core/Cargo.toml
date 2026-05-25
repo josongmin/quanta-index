@@ -14,6 +14,3 @@ path = "src/lib.rs"
 [dependencies]
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 thiserror.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true

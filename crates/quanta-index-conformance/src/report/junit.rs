@@ -4,7 +4,7 @@
 //! [`Verdict::Fail`] / [`Verdict::UnexpectedError`] → `<failure>`;
 //! [`Verdict::Pending`] → `<skipped>`; [`Verdict::Pass`] /
 //! [`Verdict::ExpectedError`] → no children. All attribute values are
-//! XML-escaped via [`escape_attr`]; element text via [`escape_text`].
+//! XML-escaped via `escape_attr`; element text via `escape_text`.
 
 use std::io::{self, Write};
 

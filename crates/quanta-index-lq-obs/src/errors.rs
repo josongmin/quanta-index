@@ -92,7 +92,7 @@ impl<'de> serde::Deserialize<'de> for ObsErrorCode {
 pub struct ObsError {
     /// Typed failure code.
     pub code: ObsErrorCode,
-    /// Dimension name that overflowed (only set when [`code`] is
+    /// Dimension name that overflowed (only set when `code` is
     /// [`ObsErrorCode::ObsCardinalityGuard`]).
     pub dim_overflow: Option<Box<str>>,
     /// Free-form detail string for operator diagnostics. Not for control flow.

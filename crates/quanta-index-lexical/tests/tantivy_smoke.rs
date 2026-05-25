@@ -10,11 +10,14 @@
 
 use std::error::Error;
 
+use quanta_index_contract::lex::{
+    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LexicalFullBundle,
     LexicalRepoMetadataRecord, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
-    LqPredicateArg, LqQuery, LqSpan, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, UpsertChunk,
+    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
@@ -75,6 +78,35 @@ fn encode_repo_metadata_payload(
     Ok(payload)
 }
 
+fn encode_symbol_payload(
+    path: &str,
+    language: LangId,
+    name: &str,
+    line_start: u32,
+    line_end: u32,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let record = SymbolRecord {
+        wire_version: 1,
+        name: name.into(),
+        kind: SymbolKind::Function,
+        span: SymbolSpan {
+            path: path.into(),
+            byte_start: 0,
+            byte_end: 8,
+            line_start,
+            line_end,
+        },
+        lang: language,
+        parent: None,
+        container_name: None,
+        relationship: SymbolRelationship::Def,
+    };
+    let mut payload = Vec::new();
+    ciborium::into_writer(&record, &mut payload)
+        .map_err(|err| -> Box<dyn Error> { format!("encode symbol: {err}").into() })?;
+    Ok(payload)
+}
+
 fn upsert(chunk_id: &str, text: &str) -> Result<LexicalChannelOp, Box<dyn Error>> {
     upsert_with_metadata(chunk_id, "", "", 0, 0, text)
 }
@@ -99,6 +131,23 @@ fn upsert_with_metadata(
             end_line,
             text,
         )?,
+    }))
+}
+
+fn upsert_symbol(
+    symbol_id: &str,
+    path: &str,
+    language: LangId,
+    name: &str,
+    line_start: u32,
+    line_end: u32,
+) -> Result<LexicalChannelOp, Box<dyn Error>> {
+    Ok(LexicalChannelOp::UpsertSymbol(UpsertSymbol {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: generation(),
+        symbol_id: SymbolId::new(symbol_id),
+        payload: encode_symbol_payload(path, language, name, line_start, line_end)?,
     }))
 }
 
@@ -323,6 +372,93 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
     )?;
     if !repo_miss.is_empty() {
         return Err(format!("expected repo mismatch to return 0 hits, got {repo_miss:?}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_symbol(
+            "sym-alpha",
+            "src/lib.rs",
+            LangId::Rust,
+            "needle_symbol",
+            4,
+            4,
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let type_symbol_hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("needle_symbol".to_string())),
+            vec![LqFilter::Type {
+                kind: LqType::Symbol,
+            }],
+        ),
+        10,
+    )?;
+    if type_symbol_hits.len() != 1 {
+        return Err(format!("expected 1 type:symbol hit, got {}", type_symbol_hits.len()).into());
+    }
+    let first_type_symbol = type_symbol_hits
+        .first()
+        .ok_or("type:symbol hits empty after length check")?;
+    if first_type_symbol.candidate_id != "sym-alpha" {
+        return Err(format!(
+            "expected sym-alpha for type:symbol, got {}",
+            first_type_symbol.candidate_id
+        )
+        .into());
+    }
+
+    let select_symbol_hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("needle_symbol".to_string())),
+            vec![LqFilter::Select {
+                dim: LqSelect::Symbol,
+            }],
+        ),
+        10,
+    )?;
+    if select_symbol_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 select:symbol hit, got {}",
+            select_symbol_hits.len()
+        )
+        .into());
+    }
+    let first_select_symbol = select_symbol_hits
+        .first()
+        .ok_or("select:symbol hits empty after length check")?;
+    if first_select_symbol.candidate_id != "sym-alpha" {
+        return Err(format!(
+            "expected sym-alpha for select:symbol, got {}",
+            first_select_symbol.candidate_id
+        )
+        .into());
+    }
+
+    let text_hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            vec![LqFilter::Type { kind: LqType::File }],
+        ),
+        10,
+    )?;
+    let first_text_hit = text_hits
+        .first()
+        .ok_or("type:file hits empty after length check")?;
+    if text_hits.len() != 1 || first_text_hit.candidate_id != "alpha" {
+        return Err(format!("expected alpha for type:file, got {text_hits:?}").into());
     }
 
     Ok(())

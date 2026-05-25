@@ -10,3 +10,4 @@ pub mod hybrid;
 pub mod lexical;
 pub mod repomap;
 pub mod semantic;
+pub mod structural;

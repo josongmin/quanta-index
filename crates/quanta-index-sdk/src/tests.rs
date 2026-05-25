@@ -12,8 +12,8 @@ use quanta_index_contract::{
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
-    SymbolId, TextQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneSourcegraphQueryResponse, SemanticQueryResponse, SymbolId, TextQueryResponse,
 };
 
 use crate::{
@@ -394,6 +394,41 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
     assert_eq!(req.top_k, 7);
     assert_eq!(req.text_query.top_k, 7);
     assert!(req.semantic_vector_ref.is_some());
+}
+
+#[test]
+fn sourcegraph_query_builder_dispatches_dedicated_sourcegraph_request() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Sourcegraph(SearchPlaneSourcegraphQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![sample_hit()],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = client
+        .sourcegraph()
+        .query()
+        .source_syntax("repo:repo-1 lang:rust sample")
+        .sg_version("sg-5.5.0")
+        .pinned(sample_generation_pin())
+        .top_k(9)
+        .execute();
+    let response = ok_or_fail!(response);
+    assert_eq!(response.results.len(), 1);
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Sourcegraph(req) = &captured.payload
+    else {
+        assert!(
+            false,
+            "expected sourcegraph request, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(req.source_syntax.as_ref(), "repo:repo-1 lang:rust sample");
+    assert_eq!(req.sg_version.as_ref(), "sg-5.5.0");
+    assert_eq!(req.generation, Some(sample_generation_pin()));
+    assert_eq!(req.top_k, 9);
 }
 
 #[test]

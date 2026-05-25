@@ -30,12 +30,13 @@ use quanta_index_contract::{
     GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle,
     LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath,
     RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope,
-    SemanticChannelOp, SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef,
-    StructuralQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneSourcegraphQueryRequest, SemanticCandidateScope, SemanticChannelOp,
+    SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest,
+    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_lq_bridge::TRANSLATOR_VERSION;
+use quanta_index_lq_bridge::{SUPPORTED_SG_VERSION, TRANSLATOR_VERSION};
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
@@ -251,6 +252,113 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
     let ids: Vec<String> = candidates.iter().map(|c| c.candidate_id.clone()).collect();
     if !ids.iter().any(|i| i == "c1") || !ids.iter().any(|i| i == "c2") {
         return Err(format!("missing expected ids: {ids:?}").into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("c1"),
+            payload: chunk_payload("hello world")?,
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("c2"),
+            payload: chunk_payload("hello rust")?,
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("c3"),
+            payload: chunk_payload("goodbye")?,
+        }))?;
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+
+    let join = thread::Builder::new()
+        .name("searchd-sourcegraph-query-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &lex_query("hello"))
+            .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("dispatcher never sealed sourcegraph generation".into());
+    }
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 44,
+            payload: SearchPlaneQueryIpcRequest::Sourcegraph(SearchPlaneSourcegraphQueryRequest {
+                source_syntax: "hello".into(),
+                sg_version: SUPPORTED_SG_VERSION.into(),
+                generation: Some(pin.clone()),
+                top_k: 50,
+            }),
+        },
+    )?;
+    let sourcegraph = match response.payload {
+        SearchPlaneQueryIpcResponse::Sourcegraph(payload) => payload,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Sourcegraph, got {other:?}").into());
+        }
+    };
+    if sourcegraph.generation != pin {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph response generation did not echo request pin".into());
+    }
+    let ids: Vec<String> = sourcegraph
+        .results
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect();
+    if !ids.iter().any(|id| id == "c1") || !ids.iter().any(|id| id == "c2") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("missing expected sourcegraph ids: {ids:?}").into());
     }
 
     shutdown.store(true, Ordering::Release);

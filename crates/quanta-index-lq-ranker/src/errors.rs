@@ -1,7 +1,7 @@
 //! Typed errors for the LEX-06 composite ranker.
 //!
 //! Every failure path through [`crate::weights`], [`crate::signals`],
-//! [`crate::scorer`], [`crate::tiebreak`], and [`crate::explanation`] maps
+//! [`crate::scorer`], [`crate::tiebreak`], and the explanation surface maps
 //! to exactly one [`RankerErrorCode`] variant.
 //!
 //! D18 — every wire shape is hand-rolled serde; no proc-macro derives.

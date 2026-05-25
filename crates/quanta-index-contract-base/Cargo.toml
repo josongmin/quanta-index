@@ -13,6 +13,3 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
-
-[dev-dependencies]
-ciborium = { workspace = true }

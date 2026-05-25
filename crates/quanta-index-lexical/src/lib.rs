@@ -24,6 +24,14 @@
     reason = "tantivy 0.22 pulls multiple transitive versions (rustix, linux-raw-sys, windows-sys) we cannot collapse; scoped allowance in deny.toml [bans] skip-tree."
 )]
 
+pub mod filters;
+pub mod phrase;
+pub mod plan;
+pub mod planner;
+pub mod regex;
+pub mod symbol;
+pub mod trigram_plan;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -31,8 +39,8 @@ use std::sync::{Arc, Mutex};
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, LexicalCandidate, LexicalChannelOp, LexicalRepoMetadataRecord, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqVisibility,
-    LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    LqFileScope, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType,
+    LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
@@ -52,10 +60,25 @@ const TEXT_DOC_KIND: &str = "text";
 const SYMBOL_DOC_KIND: &str = "symbol";
 const REPO_METADATA_FILE_NAME: &str = "repo-metadata.cbor";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueryDocKind {
+    Text,
+    Symbol,
+}
+
+impl QueryDocKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => TEXT_DOC_KIND,
+            Self::Symbol => SYMBOL_DOC_KIND,
+        }
+    }
+}
+
 /// Maximum number of open `GenerationWriter` entries cached in memory at once.
 ///
 /// Each `GenerationWriter` holds a Tantivy `IndexWriter` (~15 MiB heap budget per
-/// [`WRITER_MEMORY_BUDGET_BYTES`]) plus an mmap-backed `Index` handle, so an
+/// `WRITER_MEMORY_BUDGET_BYTES`) plus an mmap-backed `Index` handle, so an
 /// unbounded cache would balloon to multi-GiB resident memory and exhaust the
 /// open-file table once the producer streams thousands of generations through
 /// the adapter. The bound here is a hard-coded const today; a future change can
@@ -1096,6 +1119,84 @@ impl TantivySearcher {
         Ok(true)
     }
 
+    fn doc_kind_for_type(kind: LqType) -> Result<QueryDocKind, CoreError> {
+        match kind {
+            LqType::File | LqType::Path => Ok(QueryDocKind::Text),
+            LqType::Symbol => Ok(QueryDocKind::Symbol),
+            LqType::Commit | LqType::Diff | LqType::Repo => {
+                Err(CoreError::NotImplemented(format!(
+                    "lexical: type filter `{}` is not executable on the current Tantivy adapter",
+                    kind.as_str()
+                )))
+            }
+        }
+    }
+
+    fn doc_kind_for_select(dim: LqSelect) -> Result<QueryDocKind, CoreError> {
+        match dim {
+            LqSelect::File | LqSelect::Path | LqSelect::Content | LqSelect::ContentMatch => {
+                Ok(QueryDocKind::Text)
+            }
+            LqSelect::Symbol => Ok(QueryDocKind::Symbol),
+            LqSelect::Repo => Err(CoreError::NotImplemented(
+                "lexical: select filter `repo` is not executable on the current Tantivy adapter"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn merge_doc_kind(
+        current: Option<QueryDocKind>,
+        next: QueryDocKind,
+        source: &str,
+    ) -> Result<Option<QueryDocKind>, CoreError> {
+        match current {
+            Some(existing) if existing != next => Err(CoreError::InvalidContract(format!(
+                "lexical: incompatible doc domain constraint from `{source}`"
+            ))),
+            Some(existing) => Ok(Some(existing)),
+            None => Ok(Some(next)),
+        }
+    }
+
+    fn prepare_query_for_doc_kind(
+        &self,
+        query: &LqQuery,
+        default_doc_kind: QueryDocKind,
+    ) -> Result<(LqQuery, QueryDocKind), CoreError> {
+        let mut doc_kind: Option<QueryDocKind> = None;
+        let mut filters: Vec<LqFilter> = Vec::with_capacity(query.filters.len());
+        for filter in &query.filters {
+            match filter {
+                LqFilter::Type { kind } => {
+                    let next = Self::doc_kind_for_type(*kind)?;
+                    doc_kind = Self::merge_doc_kind(doc_kind, next, "type")?;
+                }
+                LqFilter::Select { dim } => {
+                    let next = Self::doc_kind_for_select(*dim)?;
+                    doc_kind = Self::merge_doc_kind(doc_kind, next, "select")?;
+                }
+                LqFilter::Rev { .. } => {
+                    return Err(CoreError::NotImplemented(
+                        "lexical: rev filter is not executable on the current Tantivy adapter"
+                            .to_string(),
+                    ));
+                }
+                other @ (LqFilter::Repo { .. }
+                | LqFilter::File { .. }
+                | LqFilter::Lang { .. }
+                | LqFilter::Content { .. }
+                | LqFilter::Fork { .. }
+                | LqFilter::Archived { .. }
+                | LqFilter::Visibility { .. }
+                | LqFilter::Context { .. }) => filters.push(other.clone()),
+            }
+        }
+        let mut prepared = query.clone();
+        prepared.filters = filters;
+        Ok((prepared, doc_kind.unwrap_or(default_doc_kind)))
+    }
+
     fn compile_expr(
         &self,
         expr: &LqExpr,
@@ -1249,12 +1350,14 @@ impl TantivySearcher {
     fn compile_query_for_doc_kind(
         &self,
         query: &LqQuery,
-        doc_kind: &str,
+        default_doc_kind: QueryDocKind,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
-        let Some(base) = self.compile_query(query)? else {
+        let (prepared_query, doc_kind) =
+            self.prepare_query_for_doc_kind(query, default_doc_kind)?;
+        let Some(base) = self.compile_query(&prepared_query)? else {
             return Ok(None);
         };
-        Ok(Some(self.with_doc_kind(base, doc_kind)))
+        Ok(Some(self.with_doc_kind(base, doc_kind.as_str())))
     }
 
     fn document_to_candidate(
@@ -1304,10 +1407,18 @@ fn stored_u32(doc: &TantivyDocument, field: Field) -> Result<Option<u32>, CoreEr
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         LexicalPolicy::validate_query(query)?;
+        // LXE-02 planner pre-flight: build the planner IR alongside the
+        // existing executor so the planner surface is exercised on the live
+        // search path. The result is intentionally discarded here; LXE-03
+        // wires execution onto the plan and removes ad-hoc AST inspection.
+        match crate::planner::LexicalPlanner::plan(query) {
+            Ok(_plan) => {}
+            Err(_planner_err) => {}
+        }
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) = self.compile_query_for_doc_kind(query, TEXT_DOC_KIND)? else {
+        let Some(compiled) = self.compile_query_for_doc_kind(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
         };
         let limit = usize::try_from(top_k)
@@ -1338,7 +1449,7 @@ impl LexicalSearcher for TantivySearcher {
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) = self.compile_query_for_doc_kind(query, SYMBOL_DOC_KIND)? else {
+        let Some(compiled) = self.compile_query_for_doc_kind(query, QueryDocKind::Symbol)? else {
             return Ok(Vec::new());
         };
         let limit = usize::try_from(top_k)
@@ -1365,7 +1476,7 @@ impl LexicalSearcher for TantivySearcher {
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) = self.compile_query_for_doc_kind(query, TEXT_DOC_KIND)? else {
+        let Some(compiled) = self.compile_query_for_doc_kind(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
         };
         let searcher = self.reader.searcher();

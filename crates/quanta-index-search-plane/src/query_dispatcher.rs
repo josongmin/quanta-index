@@ -12,17 +12,20 @@ use quanta_index_contract::{
     RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, SearchExplanation,
     SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SemanticCandidateScope, SemanticQueryRequest, SemanticQueryResponse,
-    SemanticVectorRef, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind,
+    SemanticCandidateScope, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
+    StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
     LexicalPolicy, LexicalQueryPort, RepoMapPolicy, RepoMapQueryPort, SemanticIndexOpenPort,
     SemanticPolicy, SemanticQueryPort,
 };
-use quanta_index_lq_bridge::export_bridge_candidate_packet;
+use quanta_index_lq_bridge::{
+    BridgeErrorCode, SUPPORTED_SG_VERSION, SourcegraphVersionTag, export_bridge_candidate_packet,
+};
 
 use crate::{ActivationCatalog, Ledger, lower_lexical_text_query};
 
@@ -75,7 +78,7 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let results = searcher.search(&lowered, default_top_k())?;
+        let results = searcher.search(&lowered, request.top_k)?;
         Ok(TextQueryResponse {
             generation: pin,
             results,
@@ -107,10 +110,46 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let results = searcher.search_symbols(&lowered, default_top_k())?;
+        let results = searcher.search_symbols(&lowered, request.top_k)?;
         Ok(SymbolQueryResponse {
             generation: pin,
             results,
+        })
+    }
+
+    fn sourcegraph(
+        &self,
+        request: &SearchPlaneSourcegraphQueryRequest,
+    ) -> Result<SearchPlaneSourcegraphQueryResponse, CoreError> {
+        let version = SourcegraphVersionTag::new(request.sg_version.as_ref()).map_err(|err| {
+            CoreError::Typed {
+                code: BridgeErrorCode::BridgeVersionPin.as_code_str().to_string(),
+                message: format!("sourcegraph: {err}"),
+            }
+        })?;
+        if version.as_str() != SUPPORTED_SG_VERSION {
+            return Err(CoreError::Typed {
+                code: BridgeErrorCode::BridgeVersionPin.as_code_str().to_string(),
+                message: format!(
+                    "sourcegraph: unsupported sg_version `{}`; supported `{SUPPORTED_SG_VERSION}`",
+                    version.as_str()
+                ),
+            });
+        }
+        let generation = request.generation.clone().ok_or_else(|| {
+            CoreError::InvalidContract("sourcegraph: generation pin required".to_string())
+        })?;
+        let lexical_request = TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: request.source_syntax.to_string(),
+            generation: Some(generation),
+            generation_selector: None,
+            top_k: request.top_k,
+        };
+        let response = self.lexical(&lexical_request)?;
+        Ok(SearchPlaneSourcegraphQueryResponse {
+            generation: response.generation,
+            results: response.results,
         })
     }
 
@@ -261,7 +300,7 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let candidates = searcher.search(&lowered, default_top_k())?;
+        let candidates = searcher.search(&lowered, request.text_query.top_k)?;
         let packet = export_bridge_candidate_packet(
             request.target,
             BridgeScope::Lexical,
@@ -393,14 +432,10 @@ impl SearchPlaneDispatcher {
                 Ok(resp) => SearchPlaneQueryIpcResponse::Explain(resp),
                 Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
             },
-            // PRE-CONTRACT-EXT additive variant. No backend yet; return a
-            // typed `NotImplemented`-shape error per CLAUDE.md: do not
-            // synthesize a placeholder success result.
-            SearchPlaneQueryIpcRequest::Sourcegraph(_) => {
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(CoreError::InvalidContract(
-                    "sourcegraph: dispatcher path not implemented in this build".to_string(),
-                )))
-            }
+            SearchPlaneQueryIpcRequest::Sourcegraph(req) => match self.sourcegraph(&req) {
+                Ok(resp) => SearchPlaneQueryIpcResponse::Sourcegraph(resp),
+                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+            },
         }
     }
 
@@ -790,15 +825,17 @@ mod tests {
     use super::{SearchPlaneDispatcher, make_pin};
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::{
-        GenerationPin, HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
-        RepoMapEntryDto, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSnapshotMeta,
-        RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-        SemanticQueryRequest, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
+        BridgeQueryRequest, GenerationPin, HybridQueryRequest, LexicalCandidate,
+        ManifestGeneration, RepoId, RepoMapEntryDto, RepoMapQueryRequest, RepoMapQueryResponse,
+        RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest,
+        SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
         SemanticSearcher,
     };
+    use quanta_index_lq_bridge::SUPPORTED_SG_VERSION;
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1050,6 +1087,78 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingLexicalState {
+        search_top_ks: Vec<u32>,
+        symbol_top_ks: Vec<u32>,
+        search_all_calls: u32,
+    }
+
+    struct RecordingLexicalSearcher {
+        state: Arc<Mutex<RecordingLexicalState>>,
+        results: Vec<LexicalCandidate>,
+    }
+
+    impl LexicalSearcher for RecordingLexicalSearcher {
+        fn search(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            top_k: u32,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+                .search_top_ks
+                .push(top_k);
+            Ok(self.results.clone())
+        }
+
+        fn search_symbols(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+            top_k: u32,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+                .symbol_top_ks
+                .push(top_k);
+            Ok(self.results.clone())
+        }
+
+        fn search_all(
+            &self,
+            _query: &quanta_index_contract::LqQuery,
+        ) -> Result<Vec<LexicalCandidate>, CoreError> {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+            guard.search_all_calls = guard.search_all_calls.saturating_add(1);
+            drop(guard);
+            Ok(self.results.clone())
+        }
+    }
+
+    struct RecordingLexicalOpener {
+        state: Arc<Mutex<RecordingLexicalState>>,
+        results: Vec<LexicalCandidate>,
+    }
+
+    impl LexicalIndexOpenPort for RecordingLexicalOpener {
+        fn open(
+            &self,
+            _repo: &RepoId,
+            _revision: &RevisionId,
+            _generation: ManifestGeneration,
+        ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            Ok(Box::new(RecordingLexicalSearcher {
+                state: Arc::clone(&self.state),
+                results: self.results.clone(),
+            }))
+        }
+    }
+
     #[test]
     fn repo_map_dispatcher_branch_delegates_to_repo_map_query_port() -> TestResult {
         let dispatcher = SearchPlaneDispatcher::new(
@@ -1138,6 +1247,143 @@ mod tests {
                 return Err(format!("expected Error response, got {other:?}").into());
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_dispatch_returns_dedicated_sourcegraph_payload() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let pin = make_pin(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+        );
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Sourcegraph(
+            SearchPlaneSourcegraphQueryRequest {
+                source_syntax: "repo:repo-map-ipc alpha".into(),
+                sg_version: SUPPORTED_SG_VERSION.into(),
+                generation: Some(pin.clone()),
+                top_k: 2,
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Sourcegraph(sourcegraph) => {
+                if sourcegraph.generation != pin {
+                    return Err("sourcegraph response did not echo request pin".into());
+                }
+                if sourcegraph.results.len() != 2 {
+                    return Err(format!(
+                        "expected two sourcegraph results, got {}",
+                        sourcegraph.results.len()
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Sourcegraph response, got {other:?}").into());
+            }
+        }
+        let guard = state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.search_top_ks.as_slice() != [2] {
+            return Err(format!(
+                "expected sourcegraph route to forward top_k=2, got {:?}",
+                guard.search_top_ks
+            )
+            .into());
+        }
+        drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn bridge_dispatch_forwards_text_query_top_k() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let pin = make_pin(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+        );
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: "alpha".to_string(),
+                    generation: Some(pin),
+                    generation_selector: None,
+                    top_k: 7,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                if bridge.packet.candidates.len() != 2 {
+                    return Err(format!(
+                        "expected 2 bridge candidates, got {}",
+                        bridge.packet.candidates.len()
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                return Err(format!("expected Bridge response, got {other:?}").into());
+            }
+        }
+
+        let guard = state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.search_top_ks.as_slice() != [7] {
+            return Err(format!(
+                "expected bridge route to forward top_k=7, got {:?}",
+                guard.search_top_ks
+            )
+            .into());
+        }
+        drop(guard);
         Ok(())
     }
 

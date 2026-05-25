@@ -12,8 +12,8 @@ use quanta_index_contract::{
 
 use crate::{
     ConnectOptions, GenerationNamespace, LexicalNamespace, QueryTransport, RepoMapNamespace,
-    SdkError, SearchNamespace, SemanticNamespace, SymbolNamespace, UdsControlTransport,
-    UdsIngestTransport, UdsQueryTransport,
+    SdkError, SearchNamespace, SemanticNamespace, SourcegraphNamespace, SymbolNamespace,
+    UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -57,6 +57,11 @@ impl QuantaIndex {
     #[must_use]
     pub fn search(&self) -> SearchNamespace<'_> {
         SearchNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn sourcegraph(&self) -> SourcegraphNamespace<'_> {
+        SourcegraphNamespace::new(self)
     }
 
     #[must_use]

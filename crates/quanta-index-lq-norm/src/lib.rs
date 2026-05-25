@@ -17,7 +17,7 @@
 //!
 //! - Wire shapes use hand-rolled `impl serde::Serialize`/`Deserialize`
 //!   per D18 (no proc-macro derives, semgrep-enforced).
-//! - All public types carry [`LqSpan`](errors::LqSpan) source anchors so
+//! - All public types carry [`LqSpan`] source anchors so
 //!   diagnostics can render under the source string.
 
 pub mod ast;

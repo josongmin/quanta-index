@@ -925,7 +925,7 @@ impl HnswIndexBuilder {
 
     /// Finalise into an [`HnswIndex`]. The builder's `nodes` map is
     /// already in ascending [`DocId`] order; per-layer neighbour
-    /// lists are kept sorted by [`HnswIndexBuilder::link`] so the
+    /// lists are kept sorted by `HnswIndexBuilder::link` so the
     /// wire encoding is byte-stable across two identical builds.
     #[must_use]
     pub fn finish(self) -> HnswIndex {

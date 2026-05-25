@@ -2,7 +2,7 @@
 //!
 //! [`dirty_docs`] enforces generation pinning at read time: a query against a
 //! generation other than the buffer's currently-active one returns a typed
-//! [`RuntimeErrorCode::StateNotReady`] / [`StateNotReadyReason::SnapshotUnknown`]
+//! `RuntimeError::state_not_ready` with `StateNotReadyReason::SnapshotUnknown`
 //! instead of an empty `Ok` — no silent fallback.
 
 use crate::buffer::DirtyBuffer;

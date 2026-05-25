@@ -15,4 +15,3 @@ quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
-tokio.workspace = true

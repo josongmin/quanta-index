@@ -9,7 +9,7 @@
 //!
 //! Wire shape: producer-handoff §3.3.1.
 //!
-//! `ParseNode` is recursive (children: Vec<ParseNode>). Serialization /
+//! `ParseNode` is recursive (children: `Vec<ParseNode>`). Serialization /
 //! deserialization is therefore reentrant; we rely on serde's seed-driven
 //! tree walk (no explicit stack) which is fine for the producer-side depth
 //! caps (STR-01 §3 — 16-depth limit applies to the **pattern**, not the

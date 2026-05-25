@@ -17,7 +17,3 @@ ciborium = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 serde = { workspace = true }
-
-[dev-dependencies]
-proptest = { workspace = true }
-tempfile = { workspace = true }

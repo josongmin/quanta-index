@@ -13,11 +13,6 @@ workspace = true
 # paths go through `SearchPlaneIngestIpcRequest` via the typed ingest
 # transport. `quanta-index-channel` is intentionally absent from this
 # dependency surface.
-ciborium.workspace = true
-quanta-index-contract = { path = "../quanta-index-contract" }
-quanta-index-ipc = { path = "../quanta-index-ipc" }
-serde.workspace = true
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 thiserror.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

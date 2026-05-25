@@ -10,7 +10,7 @@
 //!
 //! The estimator is intentionally monotone — every recursive subtree adds
 //! at least one state, and bounded repetitions multiply through. The shape
-//! mirrors [`quanta-index-lq-regex::estimator::estimate_nfa_states`] but is
+//! mirrors `quanta-index-lq-regex::estimator::estimate_nfa_states` but is
 //! duplicated here on purpose: the contract-layer integration ticket will
 //! align the two crates. Importing it now would couple PRE-NORM to the
 //! regex plane.

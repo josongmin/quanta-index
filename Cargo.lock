@@ -119,12 +119,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
-name = "bytes"
-version = "1.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
-
-[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -647,9 +641,9 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "log"
-version = "0.4.29"
+version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "lru"
@@ -696,17 +690,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "mio"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
-dependencies = [
- "libc",
- "wasi",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "murmurhash32"
@@ -848,8 +831,6 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "fs2",
- "memmap2",
- "proptest",
  "quanta-index-contract",
  "tempfile",
 ]
@@ -858,7 +839,6 @@ dependencies = [
 name = "quanta-index-conformance"
 version = "0.1.0"
 dependencies = [
- "proptest",
  "tempfile",
  "toml",
 ]
@@ -879,7 +859,6 @@ dependencies = [
 name = "quanta-index-contract-base"
 version = "0.1.0"
 dependencies = [
- "ciborium",
  "serde",
 ]
 
@@ -887,7 +866,6 @@ dependencies = [
 name = "quanta-index-core"
 version = "0.1.0"
 dependencies = [
- "proptest",
  "quanta-index-contract",
  "thiserror",
 ]
@@ -897,11 +875,9 @@ name = "quanta-index-ipc"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "proptest",
  "quanta-index-contract",
  "quanta-index-core",
  "serde",
- "tempfile",
 ]
 
 [[package]]
@@ -911,6 +887,8 @@ dependencies = [
  "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-lq-regex",
+ "quanta-index-lq-trigram",
  "tantivy",
  "tempfile",
 ]
@@ -1075,11 +1053,8 @@ dependencies = [
 name = "quanta-index-sdk"
 version = "0.1.0"
 dependencies = [
- "ciborium",
  "quanta-index-contract",
  "quanta-index-ipc",
- "serde",
- "tempfile",
  "thiserror",
 ]
 
@@ -1119,7 +1094,6 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-ipc",
  "quanta-index-search-plane",
- "tokio",
 ]
 
 [[package]]
@@ -1148,7 +1122,6 @@ dependencies = [
  "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
- "tempfile",
 ]
 
 [[package]]
@@ -1450,16 +1423,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
 name = "sketches-ddsketch"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1479,16 +1442,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "socket2"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
-dependencies = [
- "libc",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "stable_deref_trait"
@@ -1736,33 +1689,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tokio"
-version = "1.52.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
-dependencies = [
- "bytes",
- "libc",
- "mio",
- "pin-project-lite",
- "signal-hook-registry",
- "socket2",
- "tokio-macros",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-macros"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "toml"

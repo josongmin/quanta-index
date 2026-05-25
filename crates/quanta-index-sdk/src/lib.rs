@@ -12,6 +12,7 @@ pub(crate) mod lexical;
 mod repomap;
 mod search;
 pub(crate) mod semantic;
+mod sourcegraph;
 mod symbol;
 mod transport;
 
@@ -28,6 +29,7 @@ pub use search::{HybridQueryBuilder, SearchNamespace};
 pub use semantic::{
     EmbeddingMutation, SemanticBatch, SemanticNamespace, SemanticQueryBuilder, SemanticVector,
 };
+pub use sourcegraph::{SourcegraphNamespace, SourcegraphQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
 pub use transport::{
     ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
@@ -43,8 +45,9 @@ pub use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
     RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
     RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivationAck,
-    SearchPlaneExplainQueryResponse, SearchPlaneTrackKind, SemanticQueryResponse, SymbolId,
-    SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    SearchPlaneExplainQueryResponse, SearchPlaneSourcegraphQueryResponse, SearchPlaneTrackKind,
+    SemanticQueryResponse, SymbolId, SymbolQueryResponse, TextQueryResponse, TextQuerySyntax,
+    TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;
