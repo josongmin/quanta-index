@@ -10,6 +10,7 @@
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+use quanta_index_lq_bridge::syntax::SgPatternKind;
 use quanta_index_lq_bridge::{
     BridgeErrorCode, LqDirective, SgFilter, SgQuery, SourcegraphVersionTag, translate,
 };
@@ -37,27 +38,36 @@ fn name_strategy() -> BoxedStrategy<String> {
 }
 
 fn sg_filter_strategy() -> impl Strategy<Value = SgFilter> {
-    (0u8..14u8, name_strategy()).prop_map(|(tag, v)| match tag {
+    (0u8..17u8, name_strategy()).prop_map(|(tag, v)| match tag {
         0 => SgFilter::Repo(v.into_boxed_str()),
         1 => SgFilter::File(v.into_boxed_str()),
-        2 => SgFilter::Lang(v.into_boxed_str()),
-        3 => SgFilter::Type(v.into_boxed_str()),
-        4 => SgFilter::Case(v.into_boxed_str()),
-        5 => SgFilter::Select(v.into_boxed_str()),
-        6 => SgFilter::Count(v.into_boxed_str()),
-        7 => SgFilter::Patterntype(v.into_boxed_str()),
-        8 => SgFilter::Fork(v.into_boxed_str()),
-        9 => SgFilter::Archived(v.into_boxed_str()),
-        10 => SgFilter::Content(v.into_boxed_str()),
-        11 => SgFilter::Visibility(v.into_boxed_str()),
-        12 => SgFilter::Context(v.into_boxed_str()),
-        // Anything else lands on Index; covers tag == 13.
-        _ => SgFilter::Index(v.into_boxed_str()),
+        2 => SgFilter::Path(v.into_boxed_str()),
+        3 => SgFilter::Lang(v.into_boxed_str()),
+        4 => SgFilter::Type(v.into_boxed_str()),
+        5 => SgFilter::Case(v.into_boxed_str()),
+        6 => SgFilter::Select(v.into_boxed_str()),
+        7 => SgFilter::Count(v.into_boxed_str()),
+        8 => SgFilter::Patterntype(v.into_boxed_str()),
+        9 => SgFilter::Fork(v.into_boxed_str()),
+        10 => SgFilter::Archived(v.into_boxed_str()),
+        11 => SgFilter::Content(v.into_boxed_str()),
+        12 => SgFilter::Visibility(v.into_boxed_str()),
+        13 => SgFilter::Context(v.into_boxed_str()),
+        14 => SgFilter::Index(v.into_boxed_str()),
+        15 => SgFilter::Boost(v.into_boxed_str()),
+        _ => SgFilter::Timeout(v.into_boxed_str()),
     })
 }
 
 fn sg_query_leaf_strategy() -> impl Strategy<Value = SgQuery> {
-    name_strategy().prop_map(|s| SgQuery::Pattern(s.into_boxed_str()))
+    (0u8..3u8, name_strategy()).prop_map(|(tag, s)| SgQuery::Pattern {
+        kind: match tag {
+            0 => SgPatternKind::Literal,
+            1 => SgPatternKind::Phrase,
+            _ => SgPatternKind::Regex,
+        },
+        body: s.into_boxed_str(),
+    })
 }
 
 fn sg_query_strategy() -> impl Strategy<Value = SgQuery> {
@@ -101,7 +111,9 @@ fn well_formed(d: &LqDirective) -> bool {
         }
         let next = depth.saturating_add(1);
         match d {
-            LqDirective::Pattern { .. } | LqDirective::Filter { .. } => true,
+            LqDirective::Pattern { .. }
+            | LqDirective::Filter { .. }
+            | LqDirective::Predicate { .. } => true,
             LqDirective::And(xs) | LqDirective::Or(xs) => xs.iter().all(|x| walk(x, next)),
             LqDirective::Not(inner) => walk(inner, next),
             LqDirective::Filtered { filters, body } => {

@@ -1,15 +1,15 @@
 use std::fs;
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV1, RepoMapChunkRecordDtoV1,
-    RepoMapFileIndexRecordV1, RepoMapFocusSubjectDtoV1, RepoMapGraphEdgeDtoV1,
-    RepoMapQueryRequestV1, RepoMapSourceBundleV1, RepoMapSymbolRecordDtoV1, RevisionId,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
+    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto, RepoMapQueryRequest,
+    RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
 
-fn sample_bundle() -> RepoMapSourceBundleV1 {
-    RepoMapSourceBundleV1 {
+fn sample_bundle() -> RepoMapSourceBundle {
+    RepoMapSourceBundle {
         repo_id: RepoId::new("repo-a"),
         revision_id: RevisionId::new("rev-a"),
         manifest_generation: ManifestGeneration::new(7),
@@ -21,20 +21,20 @@ fn sample_bundle() -> RepoMapSourceBundleV1 {
         exactness_summary: "exact-owner-bundle".to_string(),
         redaction_state: "Unredacted".to_string(),
         file_indices: vec![
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/lib.rs".to_string(),
                 file_path: "src/lib.rs".to_string(),
                 file_kind: "library".to_string(),
                 line_count: 140,
                 symbol_records: vec![
-                    RepoMapSymbolRecordDtoV1 {
+                    RepoMapSymbolRecordDto {
                         subject_identity: "src/lib.rs::OwnerAlpha".to_string(),
                         subject_doc_type: "Symbol".to_string(),
                         subject_kind: "service".to_string(),
                         symbol_name: "OwnerAlpha".to_string(),
                         owner_path: "src/lib.rs".to_string(),
                     },
-                    RepoMapSymbolRecordDtoV1 {
+                    RepoMapSymbolRecordDto {
                         subject_identity: "src/lib.rs::OwnerBeta".to_string(),
                         subject_doc_type: "Symbol".to_string(),
                         subject_kind: "struct".to_string(),
@@ -43,14 +43,14 @@ fn sample_bundle() -> RepoMapSourceBundleV1 {
                     },
                 ],
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/runtime/mod.rs".to_string(),
                 file_path: "src/runtime/mod.rs".to_string(),
                 file_kind: "runtime".to_string(),
                 line_count: 96,
                 symbol_records: Vec::new(),
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "tests/repomap.rs".to_string(),
                 file_path: "tests/repomap.rs".to_string(),
                 file_kind: "test".to_string(),
@@ -59,45 +59,45 @@ fn sample_bundle() -> RepoMapSourceBundleV1 {
             },
         ],
         call_edges: vec![
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs::OwnerAlpha".to_string(),
                 to_identity: "src/lib.rs::OwnerBeta".to_string(),
                 edge_kind: "call".to_string(),
             },
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs::OwnerAlpha".to_string(),
                 to_identity: "src/runtime/mod.rs".to_string(),
                 edge_kind: "call".to_string(),
             },
         ],
         import_edges: vec![
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/runtime/mod.rs".to_string(),
                 to_identity: "src/lib.rs".to_string(),
                 edge_kind: "import".to_string(),
             },
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "tests/repomap.rs".to_string(),
                 to_identity: "src/runtime/mod.rs".to_string(),
                 edge_kind: "import".to_string(),
             },
         ],
         chunk_records: vec![
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/lib.rs::OwnerAlpha".to_string(),
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 80,
                 preview_text: "OwnerAlpha coordinates repo map ownership".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/lib.rs::OwnerBeta".to_string(),
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 56,
                 preview_text: "OwnerBeta carries owner surface metadata".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/runtime/mod.rs".to_string(),
                 owner_path: "src/runtime/mod.rs".to_string(),
                 token_count: 40,
@@ -108,11 +108,8 @@ fn sample_bundle() -> RepoMapSourceBundleV1 {
     }
 }
 
-fn activate(
-    store: &RepoMapGenerationStore,
-    bundle: &RepoMapSourceBundleV1,
-) -> Result<(), CoreError> {
-    store.activate_generation(&RepoMapActivateGenerationRequestV1 {
+fn activate(store: &RepoMapGenerationStore, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+    store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
@@ -210,7 +207,7 @@ fn ingest_and_query_returns_ranked_entries() {
         "activate should succeed: {activation_result:?}"
     );
 
-    let response_result = store.read_query_snapshot(&RepoMapQueryRequestV1 {
+    let response_result = store.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
@@ -275,14 +272,14 @@ fn query_honors_focus_subjects() {
         "activate should succeed: {activation_result:?}"
     );
 
-    let response_result = store.read_query_snapshot(&RepoMapQueryRequestV1 {
+    let response_result = store.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
         query_text: "runtime activation".to_string(),
         top_k: 10,
         token_budget: 512,
-        focus_subjects: vec![RepoMapFocusSubjectDtoV1 {
+        focus_subjects: vec![RepoMapFocusSubjectDto {
             subject_identity: "src/runtime/mod.rs".to_string(),
             subject_doc_type: "File".to_string(),
         }],
@@ -323,7 +320,7 @@ fn query_before_activate_fails_closed() {
         "bundle ingest should succeed: {ingest_result:?}"
     );
 
-    let query_result = store.read_query_snapshot(&RepoMapQueryRequestV1 {
+    let query_result = store.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
@@ -345,7 +342,7 @@ fn query_before_activate_fails_closed() {
 #[test]
 fn missing_snapshot_fails_closed() {
     let store = RepoMapGenerationStore::default();
-    let query_result = store.read_query_snapshot(&RepoMapQueryRequestV1 {
+    let query_result = store.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: RepoId::new("repo-missing"),
         revision_id: RevisionId::new("rev-missing"),
         manifest_generation: ManifestGeneration::new(42),
@@ -396,7 +393,7 @@ fn activate_generation_rejects_empty_manifest_digest() {
         "bundle ingest should succeed: {ingest_result:?}"
     );
 
-    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequestV1 {
+    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,
@@ -415,7 +412,7 @@ fn activate_generation_rejects_empty_manifest_digest() {
 #[test]
 fn activate_generation_requires_materialized_snapshot() {
     let store = RepoMapGenerationStore::default();
-    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequestV1 {
+    let activation_result = store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: RepoId::new("repo-missing"),
         revision_id: RevisionId::new("rev-missing"),
         manifest_generation: ManifestGeneration::new(99),
@@ -470,7 +467,7 @@ fn persistent_store_reloads_snapshot_and_activation() {
         return;
     };
 
-    let response_result = reloaded.read_query_snapshot(&RepoMapQueryRequestV1 {
+    let response_result = reloaded.read_query_snapshot(&RepoMapQueryRequest {
         repo_id: bundle.repo_id.clone(),
         revision_id: bundle.revision_id.clone(),
         manifest_generation: bundle.manifest_generation,

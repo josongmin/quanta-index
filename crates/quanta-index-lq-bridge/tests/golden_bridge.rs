@@ -5,11 +5,13 @@
 //! subset-table outcome. Reading the rows in source order:
 //!
 //! 1. `repo:` filter — **adopted** (1:1 LQ `repo:`).
-//! 2. `fork:no` filter — **normalized** to LQ `visibility:exclude_forks`.
+//! 2. `fork:no` filter — **adopted** as LQ `fork:no`.
 //! 3. `content:hello` filter — **normalized** to LQ `Pattern{literal}`.
 //! 4. `index:no` directive — **refused** with `BRIDGE_UNSUPPORTED_DIRECTIVE`.
 //! 5. `colorscheme:dark` (post-pin Sourcegraph-future filter we have
 //!    not registered) — **refused** with `BRIDGE_UNSUPPORTED_FILTER`.
+//! 6. `repo:has.file(path:src/lib.rs)` predicate — **adopted** as active
+//!    LQ predicate placeholder.
 
 use quanta_index_lq_bridge::{
     BridgeCandidate, BridgeErrorCode, LqDirective, SourcegraphVersionTag, TRANSLATOR_VERSION,
@@ -67,7 +69,7 @@ fn row1_adopted_repo_filter() {
 }
 
 #[test]
-fn row2_normalized_fork_no_to_visibility() {
+fn row2_adopted_fork_no_filter() {
     let q = match parse_sourcegraph("fork:no needle") {
         Ok(q) => q,
         Err(e) => {
@@ -90,8 +92,8 @@ fn row2_normalized_fork_no_to_visibility() {
         assert!(false, "expected Filter");
         return;
     };
-    assert_eq!(&**name, "visibility");
-    assert_eq!(&**value, "exclude_forks");
+    assert_eq!(&**name, "fork");
+    assert_eq!(&**value, "no");
 }
 
 #[test]
@@ -172,4 +174,28 @@ fn candidate_envelope_stamps_translator_version() {
     let c = BridgeCandidate::new("lang:rust foo", lq);
     assert_eq!(c.translator_version.as_ref(), TRANSLATOR_VERSION);
     assert_eq!(c.source_syntax.as_ref(), "lang:rust foo");
+}
+
+#[test]
+fn row6_repo_predicate_lowers_to_predicate_placeholder() {
+    let q = match parse_sourcegraph("repo:has.file(path:src/lib.rs)") {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let lq = match translate(q, &ver()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let LqDirective::Predicate { name, args_raw } = lq else {
+        assert!(false, "expected Predicate");
+        return;
+    };
+    assert_eq!(&*name, "repo.has.file");
+    assert_eq!(&*args_raw, "path:src/lib.rs");
 }

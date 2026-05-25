@@ -92,6 +92,8 @@ fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
         .arg("native")
         .arg("--query-text")
         .arg("fn main")
+        .arg("--top-k")
+        .arg("5")
         .output()?;
     shutdown.trigger();
     if !output.status.success() {

@@ -9,7 +9,7 @@ use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, EngineTouched, GenerationPin, GenerationSelector,
     HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, LQ_VERSION_TAG, LqExpr, LqLeaf,
     LqOptions, LqQuery, LqSpan, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
-    RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId, SearchExplanation,
+    RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, SearchExplanation,
     SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse,
@@ -98,6 +98,7 @@ impl SearchPlaneDispatcher {
             query_text: request.query_text,
             generation: Some(pin.clone()),
             generation_selector: None,
+            top_k: request.top_k,
         };
         let lowered = lower_lexical_text_query(&lexical_request)?;
         LexicalPolicy::validate_query(&lowered)?;
@@ -145,7 +146,7 @@ impl SearchPlaneDispatcher {
         let query_vector = resolve_query_vector(
             request.query_vector_ref.as_ref(),
             request.query_vector.as_deref(),
-            &request.query_text,
+            request.query_text.as_deref(),
             "semantic",
             "query_vector_ref",
             "query_vector",
@@ -196,7 +197,7 @@ impl SearchPlaneDispatcher {
         let query_vector = resolve_query_vector(
             request.semantic_vector_ref.as_ref(),
             request.semantic_vector.as_deref(),
-            &request.semantic_query_text,
+            request.semantic_query_text.as_deref(),
             "hybrid",
             "semantic_vector_ref",
             "semantic_vector",
@@ -348,10 +349,7 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn repo_map(
-        &self,
-        request: RepoMapQueryRequestV1,
-    ) -> Result<RepoMapQueryResponseV1, CoreError> {
+    fn repo_map(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
         RepoMapPolicy::validate_query(&request)?;
         self.repo_map_query.query(request)
     }
@@ -599,6 +597,10 @@ fn scope_to_text_query(scope: &SemanticCandidateScope) -> TextQueryRequest {
         query_text: scope.query_text.clone(),
         generation: scope.generation.clone(),
         generation_selector: scope.generation_selector.clone(),
+        // Scope queries gate semantic candidates; the lexical retrieval cap is
+        // intentionally generous because final cardinality is governed by the
+        // semantic side.
+        top_k: default_top_k(),
     }
 }
 
@@ -697,7 +699,7 @@ fn build_hybrid_response_explanation(
 fn resolve_query_vector(
     explicit_ref: Option<&SemanticVectorRef>,
     explicit_legacy: Option<&[f32]>,
-    encoded: &str,
+    encoded: Option<&str>,
     plane: &str,
     ref_field: &str,
     legacy_field: &str,
@@ -719,17 +721,30 @@ fn resolve_query_vector(
                 SemanticPolicy::validate_query_vector(query_vector)?;
                 Ok(query_vector.to_vec())
             }
-            None => decode_query_text_as_vector(encoded).map_err(|err| match err {
-                CoreError::Typed { code, message } => CoreError::Typed {
-                    code,
-                    message: format!("{plane}: {message}"),
+            None => encoded.map_or_else(
+                || {
+                    // QI-QRY-01 phase 2: no text fallback available. Caller
+                    // must supply `{ref_field}`, `{legacy_field}`, or an
+                    // encoded text vector. Fail-closed per CLAUDE.md safety
+                    // rules.
+                    Err(CoreError::InvalidContract(format!(
+                        "{plane}: must supply `{ref_field}`, `{legacy_field}`, or text-encoded vector"
+                    )))
                 },
-                err @ (CoreError::InvalidContract(_)
-                | CoreError::NotReady(_)
-                | CoreError::NotImplemented(_)
-                | CoreError::NotFound(_)
-                | CoreError::Storage(_)) => err,
-            }),
+                |text| {
+                    decode_query_text_as_vector(text).map_err(|err| match err {
+                        CoreError::Typed { code, message } => CoreError::Typed {
+                            code,
+                            message: format!("{plane}: {message}"),
+                        },
+                        err @ (CoreError::InvalidContract(_)
+                        | CoreError::NotReady(_)
+                        | CoreError::NotImplemented(_)
+                        | CoreError::NotFound(_)
+                        | CoreError::Storage(_)) => err,
+                    })
+                },
+            ),
         },
     }
 }
@@ -776,7 +791,7 @@ mod tests {
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::{
         GenerationPin, HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
-        RepoMapEntryDtoV1, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RepoMapSnapshotMetaV1,
+        RepoMapEntryDto, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSnapshotMeta,
         RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
         SemanticQueryRequest, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
     };
@@ -821,15 +836,12 @@ mod tests {
     struct StubRepoMapQueryPort;
 
     impl RepoMapQueryPort for StubRepoMapQueryPort {
-        fn query(
-            &self,
-            request: RepoMapQueryRequestV1,
-        ) -> Result<RepoMapQueryResponseV1, CoreError> {
-            Ok(RepoMapQueryResponseV1 {
+        fn query(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
+            Ok(RepoMapQueryResponse {
                 repo_id: request.repo_id,
                 revision_id: request.revision_id,
                 manifest_generation: request.manifest_generation,
-                snapshot_meta: RepoMapSnapshotMetaV1 {
+                snapshot_meta: RepoMapSnapshotMeta {
                     snapshot_id: "dispatch-snapshot".to_string(),
                     projection_version: 1,
                     authority_digest: "dispatch-digest".to_string(),
@@ -837,7 +849,7 @@ mod tests {
                     graph_coverage_class: "full".to_string(),
                     exactness_summary: "exact".to_string(),
                 },
-                entries: vec![RepoMapEntryDtoV1 {
+                entries: vec![RepoMapEntryDto {
                     subject_identity: "src/lib.rs::Owner".to_string(),
                     subject_doc_type: "Symbol".to_string(),
                     subject_kind: "symbol".to_string(),
@@ -865,15 +877,15 @@ mod tests {
         }
     }
 
-    fn repo_map_request() -> RepoMapQueryRequestV1 {
-        RepoMapQueryRequestV1 {
+    fn repo_map_request() -> RepoMapQueryRequest {
+        RepoMapQueryRequest {
             repo_id: RepoId::new("repo-map-ipc"),
             revision_id: RevisionId::new("rev-map-ipc"),
             manifest_generation: ManifestGeneration::new(9),
             query_text: "dispatch owner".to_string(),
             top_k: 4,
             token_budget: 256,
-            focus_subjects: vec![quanta_index_contract::RepoMapFocusSubjectDtoV1 {
+            focus_subjects: vec![quanta_index_contract::RepoMapFocusSubjectDto {
                 subject_identity: "src/lib.rs::Owner".to_string(),
                 subject_doc_type: "Symbol".to_string(),
             }],
@@ -882,7 +894,7 @@ mod tests {
 
     fn into_repo_map_query_response(
         response: SearchPlaneQueryIpcResponse,
-    ) -> Result<RepoMapQueryResponseV1, Box<dyn std::error::Error>> {
+    ) -> Result<RepoMapQueryResponse, Box<dyn std::error::Error>> {
         match response {
             SearchPlaneQueryIpcResponse::RepoMapQuery(response) => Ok(response),
             other @ (SearchPlaneQueryIpcResponse::Text(_)
@@ -1106,6 +1118,7 @@ mod tests {
                 ManifestGeneration::new(9),
             )),
             generation_selector: None,
+            top_k: 50,
         })) {
             SearchPlaneQueryIpcResponse::Error(err) => {
                 if err.code != "NOT_READY" {
@@ -1143,7 +1156,7 @@ mod tests {
 
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: "definitely not a float vector".to_string(),
+                query_text: Some("definitely not a float vector".to_string()),
                 query_vector: None,
                 query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0, 0.0, 2.0])),
                 generation: Some(GenerationPin::new(
@@ -1222,8 +1235,9 @@ mod tests {
                     query_text: "scope".to_string(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
+                    top_k: 2,
                 },
-                semantic_query_text: "not numeric".to_string(),
+                semantic_query_text: Some("not numeric".to_string()),
                 semantic_vector: None,
                 semantic_vector_ref: Some(SemanticVectorRef::Inline(vec![0.25, 0.75])),
                 generation: Some(pin),

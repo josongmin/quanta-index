@@ -7,13 +7,9 @@ pub struct ConnectOptions {
     state_root: Option<PathBuf>,
     query_socket: Option<PathBuf>,
     control_socket: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedConnectOptions {
-    pub(crate) state_root: Option<PathBuf>,
-    pub(crate) query_socket: PathBuf,
-    pub(crate) control_socket: PathBuf,
+    /// QI-SDK-01: typed ingest socket override. Defaults to
+    /// `state_root/search-plane/ingest.sock`.
+    ingest_socket: Option<PathBuf>,
 }
 
 impl ConnectOptions {
@@ -23,6 +19,7 @@ impl ConnectOptions {
             state_root: Some(path.into()),
             query_socket: None,
             control_socket: None,
+            ingest_socket: None,
         }
     }
 
@@ -38,10 +35,16 @@ impl ConnectOptions {
         self
     }
 
-    pub(crate) fn resolve(&self) -> Result<ResolvedConnectOptions, SdkError> {
+    #[must_use]
+    pub fn with_ingest_socket(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ingest_socket = Some(path.into());
+        self
+    }
+
+    pub(crate) fn resolve(self) -> Result<(Option<PathBuf>, PathBuf, PathBuf, PathBuf), SdkError> {
         let state_root = self.resolve_state_root()?;
-        let query_socket = match (&self.query_socket, &state_root) {
-            (Some(path), _) => path.clone(),
+        let query_socket = match (self.query_socket, &state_root) {
+            (Some(path), _) => path,
             (None, Some(root)) => root.join("search-plane").join("query.sock"),
             (None, None) => {
                 return Err(SdkError::Usage(
@@ -49,8 +52,8 @@ impl ConnectOptions {
                 ));
             }
         };
-        let control_socket = match (&self.control_socket, &state_root) {
-            (Some(path), _) => path.clone(),
+        let control_socket = match (self.control_socket, &state_root) {
+            (Some(path), _) => path,
             (None, Some(root)) => root.join("search-plane").join("control.sock"),
             (None, None) => {
                 return Err(SdkError::Usage(
@@ -59,18 +62,27 @@ impl ConnectOptions {
                 ));
             }
         };
-        Ok(ResolvedConnectOptions {
-            state_root,
-            query_socket,
-            control_socket,
-        })
+        let ingest_socket = match (self.ingest_socket, &state_root) {
+            (Some(path), _) => path,
+            (None, Some(root)) => root.join("search-plane").join("ingest.sock"),
+            (None, None) => {
+                return Err(SdkError::Usage(
+                    "ingest socket unresolved: set state root or explicit ingest socket"
+                        .to_string(),
+                ));
+            }
+        };
+        Ok((state_root, query_socket, control_socket, ingest_socket))
     }
 
     fn resolve_state_root(&self) -> Result<Option<PathBuf>, SdkError> {
         if let Some(root) = &self.state_root {
             return Ok(Some(root.clone()));
         }
-        if self.query_socket.is_some() || self.control_socket.is_some() {
+        if self.query_socket.is_some()
+            || self.control_socket.is_some()
+            || self.ingest_socket.is_some()
+        {
             return Ok(None);
         }
         if let Ok(explicit) = std::env::var("QUANTA_INDEX_STATE_ROOT") {

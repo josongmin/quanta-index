@@ -20,18 +20,13 @@
 //!
 //! | Sourcegraph filter | Bucket | LQ lowering |
 //! |---|---|---|
-//! | `repo:` / `file:` / `lang:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
-//! | `fork:` (yes/no/only) | normalized | `LqFilter { name: "visibility", value: "include_forks"|"exclude_forks"|"only_forks" }` |
-//! | `archived:` (yes/no/only) | normalized | `LqFilter { name: "visibility", value: "include_archived"|"exclude_archived"|"only_archived" }` |
+//! | `repo:` / `file:` / `path:` / `lang:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
+//! | `fork:` / `archived:` / `visibility:` / `context:` | adopted | active LQ filter surface |
 //! | `content:` | normalized | `Pattern{kind: Literal, body: <value>}` |
-//! | `index:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
-//! | `context:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
+//! | `index:` / `boost:` / `timeout:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
+//! | `file:contains(...)` / `file:has.content(...)` | adopted | active LQ predicate leaf or executable pattern lowering downstream |
+//! | remaining `repo:` / `file:` predicates | adopted | active LQ predicate leaf lowering downstream |
 //! | unknown name | refused | `BRIDGE_UNSUPPORTED_FILTER` |
-//!
-//! Any combination producing more than one competing rewrite (e.g.
-//! both `fork:` and `archived:` and `visibility:` together) returns
-//! `BRIDGE_AMBIGUOUS_FILTER`. The fail-closed posture is preferred
-//! over silent acceptance per [CLAUDE.md § Agent change posture].
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
 
@@ -48,13 +43,9 @@ use crate::version::SourcegraphVersionTag;
 /// via a mechanical mapping without further translator changes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LqDirective {
-    /// A lexical pattern (literal / phrase). The `kind` field
-    /// distinguishes `literal` / `phrase` / `regex`; v1 emits
-    /// `literal` for bare patterns and translated `content:` values,
-    /// and `phrase` for quoted strings (already handled by the
-    /// parser at `SgQuery::Pattern` level — the translator treats both
-    /// uniformly as `literal` for now since the parser collapses
-    /// phrases to bare patterns).
+    /// A lexical pattern (literal / phrase / regex). The `kind` field
+    /// is preserved from the Sourcegraph parser, except translated
+    /// `content:` values which lower as `literal`.
     Pattern {
         kind: Box<str>,
         body: Box<str>,
@@ -64,6 +55,14 @@ pub enum LqDirective {
     Filter {
         name: Box<str>,
         value: Box<str>,
+    },
+    /// A predicate leaf placeholder. `name` is the canonical dot-joined
+    /// active LQ predicate name (for example `repo.has.file`), while
+    /// `args_raw` preserves the comma-separated predicate argument body for
+    /// downstream typed lowering onto the active LQ predicate leaf.
+    Predicate {
+        name: Box<str>,
+        args_raw: Box<str>,
     },
     And(Vec<LqDirective>),
     Or(Vec<LqDirective>),
@@ -82,6 +81,7 @@ impl LqDirective {
         match self {
             Self::Pattern { .. } => "pattern",
             Self::Filter { .. } => "filter",
+            Self::Predicate { .. } => "predicate",
             Self::And(_) => "and",
             Self::Or(_) => "or",
             Self::Not(_) => "not",
@@ -98,7 +98,10 @@ impl serde::Serialize for LqDirective {
         use serde::ser::SerializeMap as _;
         let n = match self {
             Self::And(_) | Self::Or(_) | Self::Not(_) => 2,
-            Self::Pattern { .. } | Self::Filter { .. } | Self::Filtered { .. } => 3,
+            Self::Pattern { .. }
+            | Self::Filter { .. }
+            | Self::Predicate { .. }
+            | Self::Filtered { .. } => 3,
         };
         let mut m = ser.serialize_map(Some(n))?;
         m.serialize_entry("tag", self.tag())?;
@@ -110,6 +113,10 @@ impl serde::Serialize for LqDirective {
             Self::Filter { name, value } => {
                 m.serialize_entry("name", name.as_ref())?;
                 m.serialize_entry("value", value.as_ref())?;
+            }
+            Self::Predicate { name, args_raw } => {
+                m.serialize_entry("name", name.as_ref())?;
+                m.serialize_entry("args_raw", args_raw.as_ref())?;
             }
             Self::And(xs) | Self::Or(xs) => {
                 m.serialize_entry("items", xs)?;
@@ -147,6 +154,7 @@ impl<'de> serde::Deserialize<'de> for LqDirective {
                 let mut body_s: Option<String> = None;
                 let mut name: Option<String> = None;
                 let mut value: Option<String> = None;
+                let mut args_raw: Option<String> = None;
                 let mut items: Option<Vec<LqDirective>> = None;
                 let mut item: Option<Box<LqDirective>> = None;
                 let mut filters: Option<Vec<LqDirective>> = None;
@@ -203,6 +211,12 @@ impl<'de> serde::Deserialize<'de> for LqDirective {
                             }
                             value = Some(map.next_value()?);
                         }
+                        "args_raw" => {
+                            if args_raw.is_some() {
+                                return Err(M::Error::duplicate_field("args_raw"));
+                            }
+                            args_raw = Some(map.next_value()?);
+                        }
                         "items" => {
                             if items.is_some() {
                                 return Err(M::Error::duplicate_field("items"));
@@ -225,8 +239,8 @@ impl<'de> serde::Deserialize<'de> for LqDirective {
                             return Err(M::Error::unknown_field(
                                 other,
                                 &[
-                                    "tag", "kind", "body", "name", "value", "items", "item",
-                                    "filters",
+                                    "tag", "kind", "body", "name", "value", "args_raw", "items",
+                                    "item", "filters",
                                 ],
                             ));
                         }
@@ -248,6 +262,15 @@ impl<'de> serde::Deserialize<'de> for LqDirective {
                         Ok(LqDirective::Filter {
                             name: name.into_boxed_str(),
                             value: value.into_boxed_str(),
+                        })
+                    }
+                    "predicate" => {
+                        let name = name.ok_or_else(|| M::Error::missing_field("name"))?;
+                        let args_raw =
+                            args_raw.ok_or_else(|| M::Error::missing_field("args_raw"))?;
+                        Ok(LqDirective::Predicate {
+                            name: name.into_boxed_str(),
+                            args_raw: args_raw.into_boxed_str(),
                         })
                     }
                     "and" => {
@@ -297,9 +320,17 @@ pub fn translate(
 
 fn translate_inner(sg: SgQuery) -> Result<LqDirective, BridgeError> {
     match sg {
-        SgQuery::Pattern(p) => Ok(LqDirective::Pattern {
-            kind: Box::<str>::from("literal"),
-            body: p,
+        SgQuery::Pattern { kind, body } => Ok(LqDirective::Pattern {
+            kind: Box::<str>::from(kind.as_str()),
+            body,
+        }),
+        SgQuery::Predicate {
+            scope,
+            name,
+            args_raw,
+        } => Ok(LqDirective::Predicate {
+            name: format!("{scope}.{name}").into_boxed_str(),
+            args_raw,
         }),
         SgQuery::And(xs) => {
             let mut out: Vec<LqDirective> = Vec::with_capacity(xs.len());
@@ -313,7 +344,7 @@ fn translate_inner(sg: SgQuery) -> Result<LqDirective, BridgeError> {
             for x in xs {
                 out.push(translate_inner(x)?);
             }
-            Ok(LqDirective::Or(out))
+            Ok(hoist_common_filtered_or(out))
         }
         SgQuery::Not(inner) => {
             let lowered = translate_inner(*inner)?;
@@ -324,41 +355,13 @@ fn translate_inner(sg: SgQuery) -> Result<LqDirective, BridgeError> {
 }
 
 fn translate_filtered(filters: Vec<SgFilter>, body: SgQuery) -> Result<LqDirective, BridgeError> {
-    // Ambiguity check: at most one of {fork:, archived:, visibility:}
-    // is allowed because all three lower onto the `visibility` LQ
-    // filter. Mixing them is a fail-closed ambiguity.
-    let mut visibility_sources: Vec<&'static str> = Vec::new();
-    for f in &filters {
-        match f {
-            SgFilter::Fork(_) => visibility_sources.push("fork"),
-            SgFilter::Archived(_) => visibility_sources.push("archived"),
-            SgFilter::Visibility(_) => visibility_sources.push("visibility"),
-            SgFilter::Repo(_)
-            | SgFilter::File(_)
-            | SgFilter::Lang(_)
-            | SgFilter::Type(_)
-            | SgFilter::Case(_)
-            | SgFilter::Select(_)
-            | SgFilter::Count(_)
-            | SgFilter::Patterntype(_)
-            | SgFilter::Content(_)
-            | SgFilter::Context(_)
-            | SgFilter::Index(_) => {}
-        }
-    }
-    if visibility_sources.len() > 1 {
-        let candidates = visibility_sources.join(",");
-        return Err(BridgeError::ambiguous_filter(
-            "visibility",
-            format!("multiple filters compete for LQ `visibility:` target: [{candidates}]"),
-        ));
-    }
     let mut lowered_filters: Vec<LqDirective> = Vec::with_capacity(filters.len());
     let mut content_patterns: Vec<LqDirective> = Vec::new();
     for f in filters {
         match lower_filter(&f)? {
             LowerOutcome::Filter(d) => lowered_filters.push(d),
             LowerOutcome::ContentPattern(d) => content_patterns.push(d),
+            LowerOutcome::Drop => {}
         }
     }
     let body_lowered = translate_inner(body)?;
@@ -397,9 +400,36 @@ fn translate_filtered(filters: Vec<SgFilter>, body: SgQuery) -> Result<LqDirecti
     }
 }
 
+fn hoist_common_filtered_or(items: Vec<LqDirective>) -> LqDirective {
+    let hoisted_filters = {
+        let mut iter = items.iter();
+        let Some(LqDirective::Filtered { filters, .. }) = iter.next() else {
+            return LqDirective::Or(items);
+        };
+        if !iter.all(|item| {
+            matches!(item, LqDirective::Filtered { filters: branch, .. } if branch == filters)
+        }) {
+            return LqDirective::Or(items);
+        }
+        filters.clone()
+    };
+    let mut bodies: Vec<LqDirective> = Vec::with_capacity(items.len());
+    for item in items {
+        let LqDirective::Filtered { body, .. } = item else {
+            return LqDirective::Or(bodies);
+        };
+        bodies.push(*body);
+    }
+    LqDirective::Filtered {
+        filters: hoisted_filters,
+        body: Box::new(LqDirective::Or(bodies)),
+    }
+}
+
 enum LowerOutcome {
     Filter(LqDirective),
     ContentPattern(LqDirective),
+    Drop,
 }
 
 fn lower_filter(f: &SgFilter) -> Result<LowerOutcome, BridgeError> {
@@ -411,6 +441,10 @@ fn lower_filter(f: &SgFilter) -> Result<LowerOutcome, BridgeError> {
         })),
         SgFilter::File(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
             name: Box::<str>::from("file"),
+            value: v.clone(),
+        })),
+        SgFilter::Path(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
+            name: Box::<str>::from("path"),
             value: v.clone(),
         })),
         SgFilter::Lang(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
@@ -437,65 +471,74 @@ fn lower_filter(f: &SgFilter) -> Result<LowerOutcome, BridgeError> {
             name: Box::<str>::from("patterntype"),
             value: v.clone(),
         })),
-        // Normalized to `visibility:`.
-        SgFilter::Fork(v) => normalize_fork(v).map(LowerOutcome::Filter),
-        SgFilter::Archived(v) => normalize_archived(v).map(LowerOutcome::Filter),
-        SgFilter::Visibility(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
-            name: Box::<str>::from("visibility"),
-            value: v.clone(),
-        })),
+        SgFilter::Fork(v) => validate_yes_no_only("fork", v).map(|value| {
+            LowerOutcome::Filter(LqDirective::Filter {
+                name: Box::<str>::from("fork"),
+                value,
+            })
+        }),
+        SgFilter::Archived(v) => validate_yes_no_only("archived", v).map(|value| {
+            LowerOutcome::Filter(LqDirective::Filter {
+                name: Box::<str>::from("archived"),
+                value,
+            })
+        }),
+        SgFilter::Visibility(v) => validate_visibility(v).map(|value| {
+            LowerOutcome::Filter(LqDirective::Filter {
+                name: Box::<str>::from("visibility"),
+                value,
+            })
+        }),
         // Normalized: `content:` becomes a pattern leaf attached to
         // the body.
         SgFilter::Content(v) => Ok(LowerOutcome::ContentPattern(LqDirective::Pattern {
             kind: Box::<str>::from("literal"),
             body: v.clone(),
         })),
-        // Refused.
-        SgFilter::Index(v) => Err(BridgeError::unsupported_directive(
-            &format!("index:{v}"),
-            "Sourcegraph `index:` directive has no LQ projection; search-plane indexing policy is fixed",
+        SgFilter::Index(v) => match v.as_ref() {
+            "yes" | "only" => Ok(LowerOutcome::Drop),
+            "no" => Err(BridgeError::unsupported_directive(
+                "index:no",
+                "Sourcegraph `index:no` is refused because this stack is index-only",
+            )),
+            other => Err(BridgeError::unsupported_directive(
+                &format!("index:{other}"),
+                "Sourcegraph `index:` value must be one of yes|no|only",
+            )),
+        },
+        SgFilter::Boost(v) => Err(BridgeError::unsupported_directive(
+            &format!("boost:{v}"),
+            "Sourcegraph `boost:` is not representable on the active LQ contract",
         )),
-        SgFilter::Context(v) => Err(BridgeError::unsupported_directive(
-            &format!("context:{v}"),
-            "Sourcegraph `context:` named-search references are scope-tags outside the LQ model",
+        SgFilter::Context(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
+            name: Box::<str>::from("context"),
+            value: v.clone(),
+        })),
+        SgFilter::Timeout(v) => Err(BridgeError::unsupported_directive(
+            &format!("timeout:{v}"),
+            "Sourcegraph `timeout:` is not representable on the active LQ contract",
         )),
     }
 }
 
-fn normalize_fork(value: &str) -> Result<LqDirective, BridgeError> {
-    let canonical = match value {
-        "yes" => "include_forks",
-        "no" => "exclude_forks",
-        "only" => "only_forks",
-        other => {
-            return Err(BridgeError::unsupported_directive(
-                &format!("fork:{other}"),
-                "Sourcegraph `fork:` value must be one of yes|no|only",
-            ));
-        }
-    };
-    Ok(LqDirective::Filter {
-        name: Box::<str>::from("visibility"),
-        value: Box::<str>::from(canonical),
-    })
+fn validate_yes_no_only(name: &str, value: &str) -> Result<Box<str>, BridgeError> {
+    match value {
+        "yes" | "no" | "only" => Ok(Box::<str>::from(value)),
+        other => Err(BridgeError::unsupported_directive(
+            &format!("{name}:{other}"),
+            format!("Sourcegraph `{name}:` value must be one of yes|no|only"),
+        )),
+    }
 }
 
-fn normalize_archived(value: &str) -> Result<LqDirective, BridgeError> {
-    let canonical = match value {
-        "yes" => "include_archived",
-        "no" => "exclude_archived",
-        "only" => "only_archived",
-        other => {
-            return Err(BridgeError::unsupported_directive(
-                &format!("archived:{other}"),
-                "Sourcegraph `archived:` value must be one of yes|no|only",
-            ));
-        }
-    };
-    Ok(LqDirective::Filter {
-        name: Box::<str>::from("visibility"),
-        value: Box::<str>::from(canonical),
-    })
+fn validate_visibility(value: &str) -> Result<Box<str>, BridgeError> {
+    match value {
+        "public" | "private" | "any" => Ok(Box::<str>::from(value)),
+        other => Err(BridgeError::unsupported_directive(
+            &format!("visibility:{other}"),
+            "Sourcegraph `visibility:` value must be one of public|private|any",
+        )),
+    }
 }
 
 fn is_empty_placeholder(d: &LqDirective) -> bool {
@@ -506,7 +549,7 @@ fn is_empty_placeholder(d: &LqDirective) -> bool {
 mod tests {
     use super::{LqDirective, translate};
     use crate::errors::BridgeErrorCode;
-    use crate::syntax::{SgFilter, SgQuery, parse_sourcegraph};
+    use crate::syntax::{SgFilter, SgPatternKind, SgQuery, parse_sourcegraph};
     use crate::version::SourcegraphVersionTag;
 
     /// Resolve the supported-pin tag for tests.
@@ -539,7 +582,10 @@ mod tests {
             Ok(q) => q,
             Err(e) => {
                 assert!(false, "parse failed for `{s}`: {e}");
-                SgQuery::Pattern(Box::<str>::from(""))
+                SgQuery::Pattern {
+                    kind: SgPatternKind::Literal,
+                    body: Box::<str>::from(""),
+                }
             }
         }
     }
@@ -586,6 +632,7 @@ mod tests {
         for (sg, name) in [
             ("repo:x foo", "repo"),
             ("file:x foo", "file"),
+            ("path:^src/ foo", "path"),
             ("lang:rust foo", "lang"),
             ("type:symbol foo", "type"),
             ("case:yes foo", "case"),
@@ -607,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_fork_yes_becomes_visibility() {
+    fn adopted_fork_yes_is_preserved() {
         let lq = run("fork:yes foo");
         let LqDirective::Filtered { filters, .. } = lq else {
             assert!(false, "expected Filtered");
@@ -617,16 +664,13 @@ mod tests {
             assert!(false, "expected Filter");
             return;
         };
-        assert_eq!(&**name, "visibility");
-        assert_eq!(&**value, "include_forks");
+        assert_eq!(&**name, "fork");
+        assert_eq!(&**value, "yes");
     }
 
     #[test]
-    fn normalized_fork_no_and_only() {
-        for (sg, expect) in [
-            ("fork:no foo", "exclude_forks"),
-            ("fork:only foo", "only_forks"),
-        ] {
+    fn adopted_fork_no_and_only() {
+        for (sg, expect) in [("fork:no foo", "no"), ("fork:only foo", "only")] {
             let lq = run(sg);
             let LqDirective::Filtered { filters, .. } = lq else {
                 assert!(false, "{sg}: expected Filtered");
@@ -641,11 +685,11 @@ mod tests {
     }
 
     #[test]
-    fn normalized_archived_values() {
+    fn adopted_archived_values() {
         for (sg, expect) in [
-            ("archived:yes foo", "include_archived"),
-            ("archived:no foo", "exclude_archived"),
-            ("archived:only foo", "only_archived"),
+            ("archived:yes foo", "yes"),
+            ("archived:no foo", "no"),
+            ("archived:only foo", "only"),
         ] {
             let lq = run(sg);
             let LqDirective::Filtered { filters, .. } = lq else {
@@ -656,7 +700,7 @@ mod tests {
                 assert!(false, "{sg}: expected Filter");
                 continue;
             };
-            assert_eq!(&**name, "visibility");
+            assert_eq!(&**name, "archived");
             assert_eq!(&**value, expect);
         }
     }
@@ -698,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_index_directive() {
+    fn index_no_is_refused_but_yes_and_only_are_dropped() {
         let q = parse("index:no foo");
         let v = ver();
         match translate(q, &v) {
@@ -711,54 +755,138 @@ mod tests {
                 }
             }
         }
-    }
 
-    #[test]
-    fn refused_context_directive() {
-        let q = parse("context:global foo");
-        let v = ver();
-        match translate(q, &v) {
-            Ok(_) => assert!(false, "context: must refuse"),
-            Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective),
+        for sg in ["index:yes foo", "index:only foo"] {
+            let lowered = run(sg);
+            let LqDirective::Pattern { body, .. } = lowered else {
+                assert!(false, "{sg}: expected body pattern after index no-op");
+                continue;
+            };
+            assert_eq!(&*body, "foo");
         }
     }
 
     #[test]
-    fn ambiguous_filter_when_fork_and_visibility_combined() {
-        let q = SgQuery::Filtered {
-            filters: vec![
-                SgFilter::Fork(Box::<str>::from("yes")),
-                SgFilter::Visibility(Box::<str>::from("public")),
-            ],
-            body: Box::new(SgQuery::Pattern(Box::<str>::from("foo"))),
+    fn context_is_preserved_as_filter() {
+        let lowered = run("context:global foo");
+        let LqDirective::Filtered { filters, .. } = lowered else {
+            assert!(false, "expected Filtered");
+            return;
         };
-        let v = ver();
-        match translate(q, &v) {
-            Ok(_) => assert!(false, "ambiguous combo must refuse"),
-            Err(e) => {
-                assert_eq!(e.code, BridgeErrorCode::BridgeAmbiguousFilter);
-                match e.source_construct.as_deref() {
-                    Some(s) => assert_eq!(s, "visibility"),
-                    None => assert!(false, "expected source_construct"),
+        let Some(LqDirective::Filter { name, value }) = filters.first() else {
+            assert!(false, "expected Filter");
+            return;
+        };
+        assert_eq!(&**name, "context");
+        assert_eq!(&**value, "global");
+    }
+
+    #[test]
+    fn boost_and_timeout_are_typed_refusals() {
+        for (sg, construct) in [("boost:5 foo", "boost:5"), ("timeout:1s foo", "timeout:1s")] {
+            let q = parse(sg);
+            let v = ver();
+            match translate(q, &v) {
+                Ok(_) => assert!(false, "{sg} must refuse"),
+                Err(e) => {
+                    assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
+                    match e.source_construct.as_deref() {
+                        Some(s) => assert_eq!(s, construct),
+                        None => assert!(false, "expected source_construct"),
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn ambiguous_filter_when_fork_and_archived_combined() {
+    fn visibility_values_are_validated_and_preserved() {
+        for value in ["public", "private", "any"] {
+            let lowered = run(&format!("visibility:{value} foo"));
+            let LqDirective::Filtered { filters, .. } = lowered else {
+                assert!(false, "expected Filtered");
+                continue;
+            };
+            let Some(LqDirective::Filter { name, value: got }) = filters.first() else {
+                assert!(false, "expected Filter");
+                continue;
+            };
+            assert_eq!(&**name, "visibility");
+            assert_eq!(&**got, value);
+        }
+    }
+
+    #[test]
+    fn invalid_visibility_value_is_refused() {
+        let q = parse("visibility:team foo");
+        match translate(q, &ver()) {
+            Ok(_) => assert!(false, "visibility:team must refuse"),
+            Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective),
+        }
+    }
+
+    #[test]
+    fn fork_archived_visibility_and_context_are_all_preserved() {
         let q = SgQuery::Filtered {
             filters: vec![
                 SgFilter::Fork(Box::<str>::from("yes")),
                 SgFilter::Archived(Box::<str>::from("no")),
+                SgFilter::Visibility(Box::<str>::from("public")),
+                SgFilter::Context(Box::<str>::from("global")),
             ],
-            body: Box::new(SgQuery::Pattern(Box::<str>::from("foo"))),
+            body: Box::new(SgQuery::Pattern {
+                kind: SgPatternKind::Literal,
+                body: Box::<str>::from("foo"),
+            }),
         };
-        let v = ver();
-        match translate(q, &v) {
-            Ok(_) => assert!(false, "ambiguous combo must refuse"),
-            Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeAmbiguousFilter),
-        }
+        let lowered = match translate(q, &ver()) {
+            Ok(lowered) => lowered,
+            Err(e) => {
+                assert!(false, "all scope filters should lower: {e}");
+                return;
+            }
+        };
+        let LqDirective::Filtered { filters, .. } = lowered else {
+            assert!(false, "expected Filtered");
+            return;
+        };
+        assert_eq!(filters.len(), 4);
+    }
+
+    #[test]
+    fn repo_predicate_lowers_to_predicate_directive() {
+        let q = parse("repo:has.file(path:src/lib.rs)");
+        let lowered = match translate(q, &ver()) {
+            Ok(lowered) => lowered,
+            Err(e) => {
+                assert!(false, "repo predicate must lower, got {e}");
+                return;
+            }
+        };
+        let LqDirective::Predicate { name, args_raw } = lowered else {
+            assert!(false, "expected Predicate directive");
+            return;
+        };
+        assert_eq!(&*name, "repo.has.file");
+        assert_eq!(&*args_raw, "path:src/lib.rs");
+    }
+
+    #[test]
+    fn file_predicate_lowers_to_predicate_directive() {
+        let q = parse(r#"file:contains("TODO")"#);
+        let lowered = match translate(q, &ver()) {
+            Ok(lowered) => lowered,
+            Err(e) => {
+                assert!(false, "file predicate must lower, got {e}");
+                return;
+            }
+        };
+        let LqDirective::Predicate { name, args_raw } = lowered else {
+            assert!(false, "expected Predicate directive");
+            return;
+        };
+        assert_eq!(&*name, "file.contains");
+        assert_eq!(&*args_raw, r#""TODO""#);
     }
 
     #[test]
@@ -783,6 +911,46 @@ mod tests {
             return;
         };
         assert_eq!(&*body, "foo");
+    }
+
+    #[test]
+    fn phrase_and_regex_preserve_pattern_kind() {
+        let phrase = run("\"hello world\"");
+        let LqDirective::Pattern { kind, body } = phrase else {
+            assert!(false, "expected phrase pattern");
+            return;
+        };
+        assert_eq!(&*kind, "phrase");
+        assert_eq!(&*body, "hello world");
+
+        let regex = run("/h.llo/");
+        let LqDirective::Pattern { kind, body } = regex else {
+            assert!(false, "expected regex pattern");
+            return;
+        };
+        assert_eq!(&*kind, "regex");
+        assert_eq!(&*body, "h.llo");
+    }
+
+    #[test]
+    fn identical_filtered_or_branches_are_hoisted() {
+        let lowered = run("repo:acme/foo alpha OR repo:acme/foo beta");
+        let LqDirective::Filtered { filters, body } = lowered else {
+            assert!(false, "expected hoisted Filtered");
+            return;
+        };
+        assert_eq!(filters.len(), 1);
+        let Some(LqDirective::Filter { name, value }) = filters.first() else {
+            assert!(false, "expected shared filter");
+            return;
+        };
+        assert_eq!(&**name, "repo");
+        assert_eq!(&**value, "acme/foo");
+        let LqDirective::Or(branches) = *body else {
+            assert!(false, "expected OR body");
+            return;
+        };
+        assert_eq!(branches.len(), 2);
     }
 
     #[test]
@@ -813,6 +981,23 @@ mod tests {
                 kind: Box::<str>::from("literal"),
                 body: Box::<str>::from("foo"),
             }),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(e) = ciborium::ser::into_writer(&d, &mut buf) {
+            assert!(false, "{e}");
+        }
+        let got: Result<LqDirective, _> = ciborium::de::from_reader(buf.as_slice());
+        match got {
+            Ok(v) => assert_eq!(v, d),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn lq_directive_serde_roundtrip_predicate() {
+        let d = LqDirective::Predicate {
+            name: Box::<str>::from("repo.has.file"),
+            args_raw: Box::<str>::from(r#"path:src/lib.rs, name:"Cargo.toml""#),
         };
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&d, &mut buf) {

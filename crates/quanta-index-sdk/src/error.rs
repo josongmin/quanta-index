@@ -14,9 +14,11 @@ pub enum SdkError {
     #[error("transport: {0}")]
     Transport(#[source] quanta_index_ipc::IpcError),
 
-    #[error("channel: {0}")]
-    Channel(#[from] quanta_index_channel::ChannelError),
-
+    // QI-SDK-01: SDK no longer opens channel publishers directly, so the
+    // `Channel(ChannelError)` variant was removed alongside the dependency
+    // drop. Channel-level failures now surface through the ingest
+    // dispatcher as typed `SearchPlaneIpcError` (code/message) and arrive
+    // here as `Remote { code, message }`.
     #[error("remote {code}: {message}")]
     Remote { code: String, message: String },
 }

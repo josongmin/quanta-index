@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV1, RepoMapChunkRecordDtoV1,
-    RepoMapFileIndexRecordV1, RepoMapFocusSubjectDtoV1, RepoMapGraphEdgeDtoV1,
-    RepoMapQueryRequestV1, RepoMapSourceBundleV1, RevisionId,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
+    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto, RepoMapQueryRequest,
+    RepoMapSourceBundle, RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -20,8 +20,8 @@ fn manifest_generation() -> ManifestGeneration {
     ManifestGeneration::new(17)
 }
 
-fn source_bundle() -> RepoMapSourceBundleV1 {
-    RepoMapSourceBundleV1 {
+fn source_bundle() -> RepoMapSourceBundle {
+    RepoMapSourceBundle {
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: manifest_generation(),
@@ -33,21 +33,21 @@ fn source_bundle() -> RepoMapSourceBundleV1 {
         exactness_summary: "owner-surface-exact".to_string(),
         redaction_state: "Unredacted".to_string(),
         file_indices: vec![
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/lib.rs".to_string(),
                 file_path: "src/lib.rs".to_string(),
                 file_kind: "library".to_string(),
                 line_count: 200,
                 symbol_records: Vec::new(),
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/main.rs".to_string(),
                 file_path: "src/main.rs".to_string(),
                 file_kind: "binary".to_string(),
                 line_count: 120,
                 symbol_records: Vec::new(),
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/http.rs".to_string(),
                 file_path: "src/http.rs".to_string(),
                 file_kind: "http".to_string(),
@@ -56,38 +56,38 @@ fn source_bundle() -> RepoMapSourceBundleV1 {
             },
         ],
         call_edges: vec![
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs".to_string(),
                 to_identity: "src/main.rs".to_string(),
                 edge_kind: "call".to_string(),
             },
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs".to_string(),
                 to_identity: "src/http.rs".to_string(),
                 edge_kind: "call".to_string(),
             },
         ],
-        import_edges: vec![RepoMapGraphEdgeDtoV1 {
+        import_edges: vec![RepoMapGraphEdgeDto {
             from_identity: "src/main.rs".to_string(),
             to_identity: "src/lib.rs".to_string(),
             edge_kind: "import".to_string(),
         }],
         chunk_records: vec![
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/lib.rs".to_string(),
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 120,
                 preview_text: "owner path library orchestrates query ranking".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/main.rs".to_string(),
                 owner_path: "src/main.rs".to_string(),
                 token_count: 84,
                 preview_text: "main entrypoint owner path".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/http.rs".to_string(),
                 owner_path: "src/http.rs".to_string(),
                 token_count: 56,
@@ -100,7 +100,7 @@ fn source_bundle() -> RepoMapSourceBundleV1 {
 
 fn activate(store: &RepoMapGenerationStore) -> Result<(), CoreError> {
     let bundle = source_bundle();
-    store.activate_generation(&RepoMapActivateGenerationRequestV1 {
+    store.activate_generation(&RepoMapActivateGenerationRequest {
         repo_id: bundle.repo_id,
         revision_id: bundle.revision_id,
         manifest_generation: bundle.manifest_generation,
@@ -108,8 +108,8 @@ fn activate(store: &RepoMapGenerationStore) -> Result<(), CoreError> {
     })
 }
 
-fn query_request(focus_subjects: Vec<RepoMapFocusSubjectDtoV1>) -> RepoMapQueryRequestV1 {
-    RepoMapQueryRequestV1 {
+fn query_request(focus_subjects: Vec<RepoMapFocusSubjectDto>) -> RepoMapQueryRequest {
+    RepoMapQueryRequest {
         repo_id: repo_id(),
         revision_id: revision_id(),
         manifest_generation: manifest_generation(),
@@ -157,11 +157,10 @@ fn ingest_bundle_materializes_snapshot_and_serves_query() {
         "activate should succeed: {activation_result:?}"
     );
 
-    let response_result =
-        store.read_query_snapshot(&query_request(vec![RepoMapFocusSubjectDtoV1 {
-            subject_identity: "src/lib.rs".to_string(),
-            subject_doc_type: "File".to_string(),
-        }]));
+    let response_result = store.read_query_snapshot(&query_request(vec![RepoMapFocusSubjectDto {
+        subject_identity: "src/lib.rs".to_string(),
+        subject_doc_type: "File".to_string(),
+    }]));
     assert!(
         response_result.is_ok(),
         "query should succeed against materialized snapshot: {response_result:?}"

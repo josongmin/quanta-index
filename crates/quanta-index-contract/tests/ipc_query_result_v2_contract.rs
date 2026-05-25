@@ -142,6 +142,7 @@ fn lexical_request() -> TextQueryRequest {
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
+        top_k: 50,
     }
 }
 
@@ -170,7 +171,7 @@ fn lexical_candidate() -> LexicalCandidate {
 
 fn semantic_request() -> SemanticQueryRequest {
     SemanticQueryRequest {
-        query_text: "1.0 0.0".to_owned(),
+        query_text: Some("1.0 0.0".to_owned()),
         query_vector: None,
         query_vector_ref: None,
         generation: Some(generation_pin()),
@@ -183,7 +184,7 @@ fn semantic_request() -> SemanticQueryRequest {
 fn hybrid_request() -> HybridQueryRequest {
     HybridQueryRequest {
         text_query: lexical_request(),
-        semantic_query_text: "0.0 1.0".to_owned(),
+        semantic_query_text: Some("0.0 1.0".to_owned()),
         semantic_vector: None,
         semantic_vector_ref: None,
         generation: Some(generation_pin()),
@@ -194,7 +195,7 @@ fn hybrid_request() -> HybridQueryRequest {
 
 fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQueryRequest {
     SemanticQueryRequest {
-        query_text: "semantic-explicit-vector".to_owned(),
+        query_text: Some("semantic-explicit-vector".to_owned()),
         query_vector: None,
         query_vector_ref: Some(vector_ref),
         generation: Some(generation_pin()),
@@ -207,7 +208,7 @@ fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQu
 fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> HybridQueryRequest {
     HybridQueryRequest {
         text_query: lexical_request(),
-        semantic_query_text: "hybrid-explicit-vector".to_owned(),
+        semantic_query_text: Some("hybrid-explicit-vector".to_owned()),
         semantic_vector: None,
         semantic_vector_ref: Some(vector_ref),
         generation: Some(generation_pin()),

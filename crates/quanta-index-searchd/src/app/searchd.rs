@@ -21,18 +21,23 @@ pub fn drive(runtime: SearchdRuntime, shutdown: Arc<AtomicBool>) -> Result<()> {
         mut dispatcher,
         query_server,
         control_server,
+        ingest_server,
         ..
     } = runtime;
     let query_shutdown = query_server.shutdown_handle();
     let control_shutdown = control_server.shutdown_handle();
+    let ingest_shutdown = ingest_server.shutdown_handle();
     let query_join = query_server.spawn(DEFAULT_ACCEPT_IDLE)?;
     let control_join = control_server.spawn(DEFAULT_ACCEPT_IDLE)?;
+    // QI-RT-01: ingest server runs alongside query / control.
+    let ingest_join = ingest_server.spawn(DEFAULT_ACCEPT_IDLE)?;
 
     let shutdown_for_loop = Arc::clone(&shutdown);
     let loop_result = dispatcher.run_until(move || shutdown_for_loop.load(Ordering::Acquire));
 
     query_shutdown.trigger();
     control_shutdown.trigger();
+    ingest_shutdown.trigger();
     let query_join_result = match query_join.join() {
         Ok(inner) => inner.map_err(anyhow::Error::from),
         Err(panic) => Err(anyhow::anyhow!("query uds thread panicked: {panic:?}")),
@@ -41,8 +46,13 @@ pub fn drive(runtime: SearchdRuntime, shutdown: Arc<AtomicBool>) -> Result<()> {
         Ok(inner) => inner.map_err(anyhow::Error::from),
         Err(panic) => Err(anyhow::anyhow!("control uds thread panicked: {panic:?}")),
     };
+    let ingest_join_result = match ingest_join.join() {
+        Ok(inner) => inner.map_err(anyhow::Error::from),
+        Err(panic) => Err(anyhow::anyhow!("ingest uds thread panicked: {panic:?}")),
+    };
     loop_result?;
     query_join_result?;
     control_join_result?;
+    ingest_join_result?;
     Ok(())
 }

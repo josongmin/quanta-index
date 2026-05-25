@@ -5,22 +5,27 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use quanta_index_channel::{LexicalWalSubscriber, SemanticWalSubscriber};
 use quanta_index_contract::{
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
 };
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
+    SemanticIngestPort,
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_search_plane::{
     ActivationCatalog, ChannelDispatcher, Ledger, SearchPlaneControlDispatcher,
-    SearchPlaneDispatcher,
+    SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
 };
 
 use crate::app::config::SearchdConfig;
-use crate::app::ipc_dispatcher::{SearchPlaneControlIpcAdapter, SearchPlaneQueryIpcAdapter};
-use crate::app::server::{SearchPlaneControlServer, SearchPlaneQueryServer};
+use crate::app::ipc_dispatcher::{
+    SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
+};
+use crate::app::server::{
+    SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
+};
 
 pub struct SearchdRuntimeParts {
     pub lex_sub: LexicalWalSubscriber,
@@ -32,6 +37,12 @@ pub struct SearchdRuntimeParts {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
+    /// QI-RT-01: typed lexical ingest path. Concrete adapter (channel-backed)
+    /// is wired here by the composition root; downstream code only sees the
+    /// `dyn LexicalIngestPort` shape.
+    pub lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync>,
+    /// QI-RT-01: typed semantic ingest path.
+    pub sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync>,
     pub activation_catalog: Arc<ActivationCatalog>,
 }
 
@@ -44,6 +55,9 @@ pub struct SearchdRuntime {
     >,
     pub control_server: SearchPlaneControlServer<
         dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
+    >,
+    pub ingest_server: SearchPlaneIngestServer<
+        dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
     >,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
 }
@@ -61,6 +75,8 @@ impl SearchdRuntime {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
+            lex_ingest_port,
+            sem_ingest_port,
             activation_catalog,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
@@ -80,9 +96,13 @@ impl SearchdRuntime {
             activation_catalog.clone(),
         ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
-            repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
             activation_catalog,
+        ));
+        let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
+            lex_ingest_port,
+            sem_ingest_port,
+            repo_map_bundle_ingest_port,
         ));
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
@@ -102,12 +122,22 @@ impl SearchdRuntime {
             control_adapter,
         )
         .map_err(anyhow::Error::from)?;
+        let ingest_adapter: Arc<
+            dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
+        > = Arc::new(SearchPlaneIngestIpcAdapter::new(ingest_dispatcher));
+        let ingest_server = SearchPlaneIngestServer::bind(
+            "quanta-index-ingest-uds",
+            config.ingest_socket_path(),
+            ingest_adapter,
+        )
+        .map_err(anyhow::Error::from)?;
 
         Ok(Self {
             config,
             dispatcher,
             query_server,
             control_server,
+            ingest_server,
             repo_map_query_port,
         })
     }

@@ -450,7 +450,7 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
 - **Depends on:** T4.1 + T4.3
 - **Scope:**
   - new module `crates/quanta-index-searchd/src/app/uds_listener.rs`
-  - opens `tokio::net::UnixListener` at `config.socket_path` (current-thread runtime)
+  - opens query/control `tokio::net::UnixListener`s at `config.query_socket_path` / `config.control_socket_path` (current-thread runtime)
   - per-connection task loop:
     1. read frame via T4.3 decoder
     2. decode error → close the connection fail-closed; do not emit a response frame (H-SP3)
@@ -461,8 +461,8 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
   - removes stale socket file on startup if no other process listening (verify via connect attempt)
 - **Open design decision D13 (accepted):** tokio current_thread Phase 1; multi-thread post-Phase 3
 - **TDD test list:**
-  1. listener binds socket; client connects + roundtrips one query
-  2. malformed frame from client → Error envelope received; connection still alive (next request works)
+  1. listener binds query socket; client connects + roundtrips one query
+  2. malformed frame from client → connection closes fail-closed; no response frame is emitted
   3. SIGINT during idle → listener closes; pending sockets drained
   4. stale socket file present → cleanly removed at startup
   5. end-to-end lexical query through socket → matches in-process result
@@ -474,11 +474,11 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
 
 - **Depends on:** T4.4
 - **Scope:**
-  - `serve` subcommand accepts `--socket-path PATH`, `--state-root PATH` overrides
+  - `serve` subcommand accepts `--query-socket-path PATH`, `--control-socket-path PATH`, `--state-root PATH` overrides
   - env vars remain fallback
   - parse error → stderr `error: ...` + exit code `2`
 - **TDD test list:**
-  1. `--socket-path /tmp/x.sock` overrides config.socket_path
+  1. `--query-socket-path /tmp/q.sock` and `--control-socket-path /tmp/c.sock` override config paths
   2. `--state-root /tmp/sr` overrides + derives control DB + socket paths
   3. unknown flag → exit code 2
   4. existing no-arg `serve` still works
@@ -522,7 +522,7 @@ E3 ticket들이 build port 호출 시점에 inline read+verify를 책임진다. 
   - `scenarios_hsp.rs`:
     - **H-SP1** activate-before-materialize blocked at orchestrator (T3.5)
     - **H-SP2** serve query on unreadied gen → typed `NotReady` envelope, not empty
-    - **H-SP3** UDS framing error on active path → Error envelope, listener stays alive
+    - **H-SP3** UDS framing error on active path → connection closes fail-closed; listener remains available for new connections
 - **Files:** test files above
 - **Complexity:** M
 
@@ -641,7 +641,7 @@ When a ticket completes, update the status table below.
 | T4.1 | **partial** | — | Lexical + explain real (Arc-owned engine, Tantivy Raw/All/Any/Not, `timeout_ms` cooperative deadline, **explicit-generation override now validated against active pin = UNKNOWN_GENERATION fail-closed**). **Semantic + hybrid deferred-with-reason**: no `QueryEmbedder` shipped, both return typed `NotImplemented`. Closing this row requires picking a text-embedding model + wiring Lance ANN — flagged as Phase 3.5 follow-up |
 | T4.2 | **done** | — | `BoundGenerationPin` + `ControlPlane::pin_generation`; per-query snapshot; 4 tests incl. U-SP4 |
 | T4.3 | **done** | — | CBOR codec with 16 MiB cap, 21 tests (roundtrip + framing errors + 2 proptests) |
-| T4.4 | **done** | — | `UdsListener` on tokio; per-conn dispatch; decode error → Error envelope keeps listener alive; SIGINT/SIGTERM clean shutdown; `searchd::app::serve` composition root wires `DomainQueryEngine` + adapters via `Arc`; **real binary e2e test** spawns `searchd serve`, sends CBOR over UDS, receives typed `not_ready` error, SIGINT triggers clean exit |
-| T4.5 | **done** | — | `--state-root` / `--socket-path` CLI overrides; `ServeOptions` with_overrides composition; 9 unit tests |
+| T4.4 | **done** | — | split query/control UDS listeners on tokio; per-conn dispatch; decode error closes the connection fail-closed with no response frame; SIGINT/SIGTERM clean shutdown; `searchd` composition root wires query/control dispatchers + adapters via `Arc`; real binary e2e covers UDS roundtrip and clean shutdown |
+| T4.5 | **done** | — | `--state-root` / query-control socket CLI overrides; `ServeOptions` with_overrides composition; 9 unit tests |
 | T5.1 | **done** | — | U-SP1 outbox visibility; U-SP2 lexical happy-path via **real `searchd` binary + UDS** (`serve_smoke::serve_binary_happy_path_lexical_roundtrip_over_uds`); U-SP3 **real process restart** (`serve_smoke::serve_binary_restart_preserves_active_generation_and_index` spawns, SIGINTs, respawns, asserts same `LexicalCandidate`s); U-SP4 pin-survives-activate via control pin snapshot |
-| T5.2 | **done** | — | E-SP1 dup prepare; E-SP2 stale activation (3 facets); E-SP3 digest-mismatch fail-closed; C-SP1 NotReady-not-empty; C-SP2 lexical-only readiness; H-SP1 build-fail blocks activation; H-SP2 query-on-unready typed `NotReady`; H-SP3 UDS framing error → `IPC_DECODE` Error envelope, listener stays alive; **error codes use SCREAMING_SNAKE_CASE per SSOT** (`NOT_READY`, `INVALID_CONTRACT`, `NOT_FOUND`, `NOT_IMPLEMENTED`, `STORAGE`, `IPC_DECODE`) |
+| T5.2 | **done** | — | E-SP1 dup prepare; E-SP2 stale activation (3 facets); E-SP3 digest-mismatch fail-closed; C-SP1 NotReady-not-empty; C-SP2 lexical-only readiness; H-SP1 build-fail blocks activation; H-SP2 query-on-unready typed `NotReady`; H-SP3 UDS framing error closes the connection fail-closed; **error codes use SCREAMING_SNAKE_CASE per SSOT** (`NOT_READY`, `INVALID_CONTRACT`, `NOT_FOUND`, `NOT_IMPLEMENTED`, `STORAGE`, `IPC_DECODE`) |

@@ -4,14 +4,14 @@
 #![deny(clippy::map_err_ignore)]
 
 mod batch;
-mod client;
-mod config;
+pub(crate) mod client;
+pub(crate) mod config;
 mod error;
 mod generations;
-mod lexical;
+pub(crate) mod lexical;
 mod repomap;
 mod search;
-mod semantic;
+pub(crate) mod semantic;
 mod symbol;
 mod transport;
 
@@ -20,24 +20,31 @@ pub use client::QuantaIndex;
 pub use config::ConnectOptions;
 pub use error::SdkError;
 pub use generations::GenerationNamespace;
-pub use lexical::{ChunkMutation, LexicalBatch, LexicalNamespace, LexicalQueryBuilder, SymbolMutation};
+pub use lexical::{
+    ChunkMutation, LexicalBatch, LexicalNamespace, LexicalQueryBuilder, SymbolMutation,
+};
 pub use repomap::RepoMapNamespace;
 pub use search::{HybridQueryBuilder, SearchNamespace};
-pub use semantic::{EmbeddingMutation, SemanticBatch, SemanticNamespace, SemanticQueryBuilder, SemanticVector};
+pub use semantic::{
+    EmbeddingMutation, SemanticBatch, SemanticNamespace, SemanticQueryBuilder, SemanticVector,
+};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
-pub use transport::{ControlTransport, QueryTransport, UdsControlTransport, UdsQueryTransport};
+pub use transport::{
+    ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
+    UdsQueryTransport,
+};
 
+pub use quanta_index_contract::lex::{
+    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+};
 pub use quanta_index_contract::{
     ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, GenerationPin,
-    GenerationSelector, HybridQueryResponse, LexicalCandidate, ManifestGeneration,
-    RepoId, RepoMapActivateGenerationRequestV1, RepoMapMutationAckV1, RepoMapQueryRequestV1,
-    RepoMapQueryResponseV1, RepoMapSourceBundleV1, RepoRelativePath, RevisionId,
-    SearchExplanation, SearchPlaneActivationAck, SearchPlaneExplainQueryResponse,
-    SearchPlaneTrackKind, SemanticQueryResponse, SymbolId, SymbolQueryResponse,
-    TextQueryResponse, TextQuerySyntax,
-};
-pub use quanta_index_contract::lex::{
-    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan, SymbolVisibility,
+    GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
+    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
+    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivationAck,
+    SearchPlaneExplainQueryResponse, SearchPlaneTrackKind, SemanticQueryResponse, SymbolId,
+    SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

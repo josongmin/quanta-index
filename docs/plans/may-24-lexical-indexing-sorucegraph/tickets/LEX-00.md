@@ -507,7 +507,7 @@ Each row cites an evidence artifact. Per [implementation-plan.md §1.4](../imple
 - [crates/quanta-index-lexical/src/lib.rs](../../../../crates/quanta-index-lexical/src/lib.rs) — current stub adapter
 - [crates/quanta-index-core/src/domains/lexical/mod.rs](../../../../crates/quanta-index-core/src/domains/lexical/mod.rs) — domain home
 - [crates/quanta-index-core/src/domains/lexical/outbound.rs](../../../../crates/quanta-index-core/src/domains/lexical/outbound.rs) — port host
-- [crates/quanta-index-contract/src/results/candidates.rs](../../../../crates/quanta-index-contract/src/results/candidates.rs) — `LexicalCandidate`
+- [crates/quanta-index-contract-base/src/results/candidates.rs](../../../../crates/quanta-index-contract-base/src/results/candidates.rs) — `LexicalCandidate`
 - [crates/quanta-index-contract/src/query/expression.rs](../../../../crates/quanta-index-contract/src/query/expression.rs) — `LqExpr`
 - [crates/quanta-index-contract/src/query/options.rs](../../../../crates/quanta-index-contract/src/query/options.rs) — `LqOptionSet`
 - [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` rule

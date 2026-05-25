@@ -114,6 +114,7 @@ fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnve
             query_text: needle.to_string(),
             generation: Some(pin),
             generation_selector: None,
+            top_k: 50,
         }),
     }
 }

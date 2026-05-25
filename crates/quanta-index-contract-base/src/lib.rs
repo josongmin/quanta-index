@@ -17,8 +17,13 @@ pub mod macros;
 
 pub mod ids;
 pub mod query;
+pub mod results;
 
 pub use ids::{
     FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
-pub use query::{GenerationPin, GenerationSelector, TextQuerySyntax};
+pub use query::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
+pub use results::{
+    BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide,
+    LexicalCandidate, StructuralBinding, StructuralCandidate,
+};

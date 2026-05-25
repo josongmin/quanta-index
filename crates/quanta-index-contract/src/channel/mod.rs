@@ -16,4 +16,4 @@ pub use ops::{
     SemanticSeal, UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding,
     UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
-pub use records::{ChunkRecord, EmbeddingRecord};
+pub use records::{ChunkRecord, EmbeddingRecord, LexicalRepoMetadataRecord};

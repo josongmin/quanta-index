@@ -1,13 +1,15 @@
-use quanta_index_contract::{GenerationSelector, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax};
+use quanta_index_contract::{
+    GenerationSelector, RepoId, RevisionId, SymbolQueryResponse, TextQuerySyntax,
+};
 
-use crate::{QuantaIndex, SdkError, lexical::execute_symbol_query};
+use crate::{QuantaIndex, SdkError};
 
 pub struct SymbolNamespace<'a> {
     client: &'a QuantaIndex,
 }
 
 impl<'a> SymbolNamespace<'a> {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
     }
 
@@ -22,6 +24,7 @@ pub struct SymbolQueryBuilder<'a> {
     syntax: TextQuerySyntax,
     query_text: Option<String>,
     selection: Option<GenerationSelector>,
+    top_k: Option<u32>,
 }
 
 impl<'a> SymbolQueryBuilder<'a> {
@@ -31,6 +34,7 @@ impl<'a> SymbolQueryBuilder<'a> {
             syntax: TextQuerySyntax::Native,
             query_text: None,
             selection: None,
+            top_k: None,
         }
     }
 
@@ -63,13 +67,52 @@ impl<'a> SymbolQueryBuilder<'a> {
         self
     }
 
+    /// QI-QRY-01: required result cap.
+    #[must_use]
+    pub fn top_k(mut self, top_k: u32) -> Self {
+        self.top_k = Some(top_k);
+        self
+    }
+
     pub fn execute(self) -> Result<SymbolQueryResponse, SdkError> {
         let query_text = self
             .query_text
             .ok_or_else(|| SdkError::Usage("symbol query text is required".to_string()))?;
-        let selection = self
-            .selection
-            .ok_or_else(|| SdkError::Usage("symbol generation selection is required".to_string()))?;
-        execute_symbol_query(self.client, self.syntax, query_text, selection)
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("symbol generation selection is required".to_string())
+        })?;
+        let top_k = self
+            .top_k
+            .ok_or_else(|| SdkError::Usage("symbol top_k is required".to_string()))?;
+        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
+        let response = self.client.dispatch_query(
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(
+                quanta_index_contract::SymbolQueryRequest {
+                    syntax: self.syntax,
+                    query_text,
+                    generation,
+                    generation_selector,
+                    top_k,
+                },
+            ),
+        )?;
+        match response {
+            quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(results) => Ok(results),
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected symbol query response, got {}",
+                    QuantaIndex::query_response_kind(&other)
+                )))
+            }
+        }
     }
 }

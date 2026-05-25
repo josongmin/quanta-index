@@ -11,7 +11,9 @@ use anyhow::Result;
 use quanta_index_contract::{
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
@@ -46,6 +48,14 @@ pub type SearchPlaneControlServer<D> = QueryServer<
     SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneControlIpcResponse,
+    D,
+>;
+
+pub type SearchPlaneIngestServer<D> = QueryServer<
+    SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponseEnvelope,
+    SearchPlaneIngestIpcResponse,
     D,
 >;
 

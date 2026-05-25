@@ -260,28 +260,65 @@ impl ActivationCatalog {
         revision_id: &RevisionId,
         track: SearchPlaneTrackKind,
     ) -> Result<GenerationPin, CoreError> {
-        let key = ActivationKey {
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            track,
-        };
-        let record = {
-            let entries = self.entries.read().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            entries.get(&key).cloned().ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "activate-generation: no active {track:?} generation for repo={} revision={}",
-                    repo_id.as_str(),
-                    revision_id.as_str()
-                ))
-            })?
-        };
+        let record = self.resolve_record(repo_id, revision_id, track)?;
         Ok(GenerationPin::new(
             record.repo_id,
             record.revision_id,
             record.manifest_generation,
         ))
+    }
+
+    /// QI-ACT-01: return the full [`ActiveGenerationRecord`] for one
+    /// `(repo, revision, track)` triple — same lookup as [`Self::resolve`]
+    /// but preserves `manifest_digest` (load-bearing for the admin
+    /// surface). Fail-closed on missing entry per CLAUDE.md safety rule.
+    pub fn resolve_record(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Result<ActiveGenerationRecord, CoreError> {
+        let key = ActivationKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        let entries = self.entries.read().map_err(|err| {
+            CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+        })?;
+        entries.get(&key).cloned().ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "activate-generation: no active {track:?} generation for repo={} revision={}",
+                repo_id.as_str(),
+                revision_id.as_str()
+            ))
+        })
+    }
+
+    /// QI-ACT-01: return every active generation record for one
+    /// `(repo, revision)` pair, ordered by track declaration order (lexical
+    /// before semantic). Empty Vec when nothing is activated yet — empty
+    /// is a legitimate state, distinct from `NotReady` for a specific track.
+    pub fn entries_for(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<ActiveGenerationRecord>, CoreError> {
+        let mut records: Vec<ActiveGenerationRecord> = {
+            let entries = self.entries.read().map_err(|err| {
+                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+            })?;
+            entries
+                .iter()
+                .filter(|(key, _)| key.repo_id == *repo_id && key.revision_id == *revision_id)
+                .map(|(_, record)| record.clone())
+                .collect()
+        };
+        // ActivationKey BTreeMap iteration is ordered by (repo, revision,
+        // track); the filter preserves that, so `records` is already in
+        // track-declaration order.
+        records.sort_by(|a, b| a.track.cmp(&b.track));
+        Ok(records)
     }
 }
 

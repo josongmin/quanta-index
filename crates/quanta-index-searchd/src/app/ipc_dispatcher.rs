@@ -2,11 +2,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
 };
 use quanta_index_ipc::IpcDispatcher;
-use quanta_index_search_plane::{SearchPlaneControlDispatcher, SearchPlaneDispatcher};
+use quanta_index_search_plane::{
+    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
+};
 
 pub(super) trait PlaneDispatch<Request, Response>: Send + Sync {
     fn dispatch(&self, request: Request) -> Response;
@@ -25,6 +27,14 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
 {
     fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
         SearchPlaneControlDispatcher::dispatch(self, request)
+    }
+}
+
+impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
+    for SearchPlaneIngestDispatcher
+{
+    fn dispatch(&self, request: SearchPlaneIngestIpcRequest) -> SearchPlaneIngestIpcResponse {
+        SearchPlaneIngestDispatcher::dispatch(self, request)
     }
 }
 
@@ -48,6 +58,12 @@ pub(super) type SearchPlaneControlIpcAdapter = SearchPlaneIpcDispatcher<
     SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse,
     SearchPlaneControlDispatcher,
+>;
+
+pub(super) type SearchPlaneIngestIpcAdapter = SearchPlaneIpcDispatcher<
+    SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestDispatcher,
 >;
 
 impl<Request, Response, D> SearchPlaneIpcDispatcher<Request, Response, D>

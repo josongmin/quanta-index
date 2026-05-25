@@ -27,12 +27,12 @@ use quanta_index_channel::{
 };
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
-    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle, ManifestGeneration,
-    RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticChannelOp,
-    SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest,
-    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
+    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle,
+    LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope,
+    SemanticChannelOp, SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef,
+    StructuralQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -57,16 +57,44 @@ fn generation() -> ManifestGeneration {
 }
 
 fn chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    chunk_payload_with_metadata("", "", 0, 0, text)
+}
+
+fn chunk_payload_with_metadata(
+    repo_relative_path: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+    text: &str,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let record = ChunkRecord {
-        repo_relative_path: RepoRelativePath::new(""),
-        language: String::new().into_boxed_str(),
-        start_line: 0,
-        end_line: 0,
+        repo_relative_path: RepoRelativePath::new(repo_relative_path),
+        language: language.to_string().into_boxed_str(),
+        start_line,
+        end_line,
         snippet: text.to_string().into_boxed_str(),
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)
         .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
+    Ok(buf)
+}
+
+fn repo_metadata_payload(
+    fork: bool,
+    archived: bool,
+    visibility: LqVisibility,
+    contexts: &[&str],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let record = LexicalRepoMetadataRecord {
+        fork,
+        archived,
+        visibility,
+        contexts: contexts.iter().map(ToString::to_string).collect(),
+    };
+    let mut buf = Vec::new();
+    ciborium::into_writer(&record, &mut buf)
+        .map_err(|err| -> Box<dyn Error> { format!("encode repo metadata: {err}").into() })?;
     Ok(buf)
 }
 
@@ -234,6 +262,129 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
 }
 
 #[test]
+fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        for (id, path, language, start_line, end_line, payload) in [
+            ("alpha", "src/lib.rs", "rust", 3_u32, 8_u32, "needle alpha"),
+            ("beta", "src/main.rs", "rust", 10_u32, 18_u32, "needle beta"),
+            (
+                "gamma",
+                "src/lib.py",
+                "python",
+                20_u32,
+                24_u32,
+                "needle gamma",
+            ),
+        ] {
+            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(id),
+                payload: chunk_payload_with_metadata(
+                    path, language, start_line, end_line, payload,
+                )?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-sourcegraph-metadata-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 7,
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "path:src/lib.rs lang:rust needle".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            top_k: 50,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph metadata query never became ready".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let results = match response.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical.results,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Text, got {other:?}").into());
+        }
+    };
+    if results.len() != 1 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected 1 metadata-filtered hit, got {results:?}").into());
+    }
+    let candidate = results
+        .first()
+        .ok_or_else(|| "metadata-filtered result missing first candidate".to_string())?;
+    if candidate.candidate_id != "alpha" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected alpha, got {}", candidate.candidate_id).into());
+    }
+    if candidate.repo_relative_path.as_str() != "src/lib.rs" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected src/lib.rs path, got {}",
+            candidate.repo_relative_path.as_str()
+        )
+        .into());
+    }
+    if candidate.start_line != 3 || candidate.end_line != 8 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected line span 3..8, got {}..{}",
+            candidate.start_line, candidate.end_line
+        )
+        .into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
 fn hybrid_query_requires_joint_seal() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
@@ -286,8 +437,9 @@ fn hybrid_query_requires_joint_seal() -> TestResult {
                 query_text: "only".to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: "1.0 0.0".to_string(),
+            semantic_query_text: Some("1.0 0.0".to_string()),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             semantic_vector: None,
             semantic_vector_ref: None,
@@ -394,8 +546,9 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
                     query_text: "sphinx".to_string(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
+                    top_k: 50,
                 },
-                semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+                semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
                 generation: Some(pin.clone()),
                 semantic_vector: None,
                 semantic_vector_ref: None,
@@ -423,8 +576,9 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
                 query_text: "sphinx".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             generation: Some(pin),
             semantic_vector: None,
             semantic_vector_ref: None,
@@ -536,8 +690,9 @@ fn hybrid_query_with_explicit_semantic_vector_ignores_query_text() -> TestResult
                 query_text: "sphinx".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: "not a float vector".to_string(),
+            semantic_query_text: Some("not a float vector".to_string()),
             semantic_vector: None,
             semantic_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0_f32, 0.0_f32])),
             generation: Some(pin),
@@ -616,8 +771,9 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
                         ManifestGeneration::new(8),
                     )),
                     generation_selector: None,
+                    top_k: 50,
                 },
-                semantic_query_text: "1.0 0.0".to_string(),
+                semantic_query_text: Some("1.0 0.0".to_string()),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 semantic_vector: None,
                 semantic_vector_ref: None,
@@ -657,12 +813,117 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
 }
 
 #[test]
-fn hybrid_query_surfaces_lexical_lowering_typed_error() -> TestResult {
+fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
 
     {
         let lex_pub = open_lexical_publisher(state_root)?;
+        let _ = lex_pub.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: repo_metadata_payload(
+                false,
+                false,
+                LqVisibility::Public,
+                &["global", "team-search"],
+            )?,
+        }))?;
+        let _ = lex_pub.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("alpha"),
+            payload: chunk_payload("needle")?,
+        }))?;
+        let _ = lex_pub.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-sourcegraph-context-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 17,
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "fork:no archived:no visibility:public context:global needle".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            top_k: 50,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| match resp.payload {
+                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                _ => true,
+            })
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph context filter never progressed past NOT_READY".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let results = match response.payload {
+        SearchPlaneQueryIpcResponse::Text(text) => text.results,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Text, got {other:?}").into());
+        }
+    };
+    if results.len() != 1 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected one context-filtered hit, got {results:?}").into());
+    }
+    if results
+        .first()
+        .map(|candidate| candidate.candidate_id.as_str())
+        != Some("alpha")
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected alpha hit, got {results:?}").into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let lex_pub = open_lexical_publisher(state_root)?;
+        let _ = lex_pub.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: repo_metadata_payload(false, false, LqVisibility::Public, &["global"])?,
+        }))?;
         let _ = lex_pub.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
             repo_id: repo(),
             revision_id: revision(),
@@ -711,11 +972,13 @@ fn hybrid_query_surfaces_lexical_lowering_typed_error() -> TestResult {
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
             text_query: TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
-                query_text: "visibility:public needle".to_string(),
+                query_text: "fork:no archived:no visibility:public context:global needle"
+                    .to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             generation: Some(pin),
             semantic_vector: None,
             semantic_vector_ref: None,
@@ -734,27 +997,31 @@ fn hybrid_query_surfaces_lexical_lowering_typed_error() -> TestResult {
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("hybrid lowering error never progressed past NOT_READY".into());
+        return Err("hybrid visibility filter never progressed past NOT_READY".into());
     }
 
     let response = send_query_request(&socket, &req)?;
-    let err = match response.payload {
-        SearchPlaneQueryIpcResponse::Error(err) => err,
+    let results = match response.payload {
+        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => hybrid.results,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
+            return Err(format!("expected Hybrid, got {other:?}").into());
         }
     };
-    if err.code != "BRIDGE_UNSUPPORTED_FILTER" {
+    if results.len() != 1 {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected BRIDGE_UNSUPPORTED_FILTER, got {}", err.code).into());
+        return Err(format!("expected one hybrid hit, got {results:?}").into());
     }
-    if !err.message.contains("visibility filter `public`") {
+    if results
+        .first()
+        .map(|candidate| candidate.candidate_id.as_str())
+        != Some("alpha")
+    {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("unexpected lowering error message: {}", err.message).into());
+        return Err(format!("expected alpha top hit, got {results:?}").into());
     }
 
     shutdown.store(true, Ordering::Release);
@@ -787,7 +1054,7 @@ fn semantic_only_query_requires_semantic_seal() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "1.0".to_string(),
+            query_text: Some("1.0".to_string()),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
@@ -868,7 +1135,7 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
@@ -971,7 +1238,7 @@ fn semantic_query_with_explicit_query_vector_ignores_query_text() -> TestResult 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 97,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "not numeric".to_string(),
+            query_text: Some("not numeric".to_string()),
             query_vector: None,
             query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0_f32, 0.0_f32])),
             generation: Some(pin),
@@ -1067,7 +1334,7 @@ fn semantic_query_with_handle_ref_resolves_active_generation_vector() -> TestRes
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 96,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "still not numeric".to_string(),
+            query_text: Some("still not numeric".to_string()),
             query_vector: None,
             query_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
             generation: Some(pin),
@@ -1138,7 +1405,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+                query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
                 query_vector: None,
                 query_vector_ref: None,
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
@@ -1229,7 +1496,7 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
@@ -1366,7 +1633,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
@@ -1499,7 +1766,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin.clone()),
@@ -1585,7 +1852,7 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "NaN".to_string(),
+            query_text: Some("NaN".to_string()),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
@@ -1660,8 +1927,9 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
                     query_text: "needle".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
+                    top_k: 50,
                 },
-                semantic_query_text: "1.0 0.0".to_string(),
+                semantic_query_text: Some("1.0 0.0".to_string()),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 semantic_vector: None,
                 semantic_vector_ref: None,
@@ -1778,8 +2046,9 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
                 query_text: "scope".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             generation: Some(pin),
             semantic_vector: None,
             semantic_vector_ref: None,
@@ -1859,6 +2128,7 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
                     query_text: "match { foo($X) }".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
+                    top_k: 50,
                 },
             }),
         },
@@ -1964,6 +2234,7 @@ fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> Tes
                     query_text: query_text.clone(),
                     generation: Some(pin.clone()),
                     generation_selector: None,
+                    top_k: 50,
                 },
                 target: BridgeTarget::CodeQl,
             }),
@@ -2037,6 +2308,7 @@ fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
             query_text: needle.to_string(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
+            top_k: 50,
         }),
     }
 }

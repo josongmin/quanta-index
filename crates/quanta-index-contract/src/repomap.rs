@@ -21,7 +21,7 @@ use serde::{
 use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapSymbolRecordDtoV1 {
+pub struct RepoMapSymbolRecordDto {
     pub subject_identity: String,
     pub subject_doc_type: String,
     pub subject_kind: String,
@@ -37,12 +37,12 @@ const REPOMAP_SYMBOL_RECORD_DTO_V1_FIELDS: &[&str] = &[
     "owner_path",
 ];
 
-impl Serialize for RepoMapSymbolRecordDtoV1 {
+impl Serialize for RepoMapSymbolRecordDto {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapSymbolRecordDtoV1", 5)?;
+        let mut state = serializer.serialize_struct("RepoMapSymbolRecordDto", 5)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.serialize_field("subject_kind", &self.subject_kind)?;
@@ -55,10 +55,10 @@ impl Serialize for RepoMapSymbolRecordDtoV1 {
 struct RepoMapSymbolRecordDtoV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapSymbolRecordDtoV1Visitor {
-    type Value = RepoMapSymbolRecordDtoV1;
+    type Value = RepoMapSymbolRecordDto;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapSymbolRecordDtoV1 map")
+        formatter.write_str("a RepoMapSymbolRecordDto map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -117,7 +117,7 @@ impl<'de> Visitor<'de> for RepoMapSymbolRecordDtoV1Visitor {
         let subject_kind = subject_kind.ok_or_else(|| de::Error::missing_field("subject_kind"))?;
         let symbol_name = symbol_name.ok_or_else(|| de::Error::missing_field("symbol_name"))?;
         let owner_path = owner_path.ok_or_else(|| de::Error::missing_field("owner_path"))?;
-        Ok(RepoMapSymbolRecordDtoV1 {
+        Ok(RepoMapSymbolRecordDto {
             subject_identity,
             subject_doc_type,
             subject_kind,
@@ -127,13 +127,13 @@ impl<'de> Visitor<'de> for RepoMapSymbolRecordDtoV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapSymbolRecordDtoV1 {
+impl<'de> Deserialize<'de> for RepoMapSymbolRecordDto {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapSymbolRecordDtoV1",
+            "RepoMapSymbolRecordDto",
             REPOMAP_SYMBOL_RECORD_DTO_V1_FIELDS,
             RepoMapSymbolRecordDtoV1Visitor,
         )
@@ -141,12 +141,12 @@ impl<'de> Deserialize<'de> for RepoMapSymbolRecordDtoV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapFileIndexRecordV1 {
+pub struct RepoMapFileIndexRecord {
     pub file_identity: String,
     pub file_path: String,
     pub file_kind: String,
     pub line_count: u32,
-    pub symbol_records: Vec<RepoMapSymbolRecordDtoV1>,
+    pub symbol_records: Vec<RepoMapSymbolRecordDto>,
 }
 
 const REPOMAP_FILE_INDEX_RECORD_V1_FIELDS: &[&str] = &[
@@ -157,12 +157,12 @@ const REPOMAP_FILE_INDEX_RECORD_V1_FIELDS: &[&str] = &[
     "symbol_records",
 ];
 
-impl Serialize for RepoMapFileIndexRecordV1 {
+impl Serialize for RepoMapFileIndexRecord {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapFileIndexRecordV1", 5)?;
+        let mut state = serializer.serialize_struct("RepoMapFileIndexRecord", 5)?;
         state.serialize_field("file_identity", &self.file_identity)?;
         state.serialize_field("file_path", &self.file_path)?;
         state.serialize_field("file_kind", &self.file_kind)?;
@@ -175,10 +175,10 @@ impl Serialize for RepoMapFileIndexRecordV1 {
 struct RepoMapFileIndexRecordV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapFileIndexRecordV1Visitor {
-    type Value = RepoMapFileIndexRecordV1;
+    type Value = RepoMapFileIndexRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapFileIndexRecordV1 map")
+        formatter.write_str("a RepoMapFileIndexRecord map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -189,7 +189,7 @@ impl<'de> Visitor<'de> for RepoMapFileIndexRecordV1Visitor {
         let mut file_path: Option<String> = None;
         let mut file_kind: Option<String> = None;
         let mut line_count: Option<u32> = None;
-        let mut symbol_records: Option<Vec<RepoMapSymbolRecordDtoV1>> = None;
+        let mut symbol_records: Option<Vec<RepoMapSymbolRecordDto>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "file_identity" => {
@@ -237,7 +237,7 @@ impl<'de> Visitor<'de> for RepoMapFileIndexRecordV1Visitor {
         let line_count = line_count.ok_or_else(|| de::Error::missing_field("line_count"))?;
         let symbol_records =
             symbol_records.ok_or_else(|| de::Error::missing_field("symbol_records"))?;
-        Ok(RepoMapFileIndexRecordV1 {
+        Ok(RepoMapFileIndexRecord {
             file_identity,
             file_path,
             file_kind,
@@ -247,13 +247,13 @@ impl<'de> Visitor<'de> for RepoMapFileIndexRecordV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapFileIndexRecordV1 {
+impl<'de> Deserialize<'de> for RepoMapFileIndexRecord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapFileIndexRecordV1",
+            "RepoMapFileIndexRecord",
             REPOMAP_FILE_INDEX_RECORD_V1_FIELDS,
             RepoMapFileIndexRecordV1Visitor,
         )
@@ -261,7 +261,7 @@ impl<'de> Deserialize<'de> for RepoMapFileIndexRecordV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapGraphEdgeDtoV1 {
+pub struct RepoMapGraphEdgeDto {
     pub from_identity: String,
     pub to_identity: String,
     pub edge_kind: String,
@@ -269,12 +269,12 @@ pub struct RepoMapGraphEdgeDtoV1 {
 
 const REPOMAP_GRAPH_EDGE_DTO_V1_FIELDS: &[&str] = &["from_identity", "to_identity", "edge_kind"];
 
-impl Serialize for RepoMapGraphEdgeDtoV1 {
+impl Serialize for RepoMapGraphEdgeDto {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapGraphEdgeDtoV1", 3)?;
+        let mut state = serializer.serialize_struct("RepoMapGraphEdgeDto", 3)?;
         state.serialize_field("from_identity", &self.from_identity)?;
         state.serialize_field("to_identity", &self.to_identity)?;
         state.serialize_field("edge_kind", &self.edge_kind)?;
@@ -285,10 +285,10 @@ impl Serialize for RepoMapGraphEdgeDtoV1 {
 struct RepoMapGraphEdgeDtoV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapGraphEdgeDtoV1Visitor {
-    type Value = RepoMapGraphEdgeDtoV1;
+    type Value = RepoMapGraphEdgeDto;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapGraphEdgeDtoV1 map")
+        formatter.write_str("a RepoMapGraphEdgeDto map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -330,7 +330,7 @@ impl<'de> Visitor<'de> for RepoMapGraphEdgeDtoV1Visitor {
             from_identity.ok_or_else(|| de::Error::missing_field("from_identity"))?;
         let to_identity = to_identity.ok_or_else(|| de::Error::missing_field("to_identity"))?;
         let edge_kind = edge_kind.ok_or_else(|| de::Error::missing_field("edge_kind"))?;
-        Ok(RepoMapGraphEdgeDtoV1 {
+        Ok(RepoMapGraphEdgeDto {
             from_identity,
             to_identity,
             edge_kind,
@@ -338,13 +338,13 @@ impl<'de> Visitor<'de> for RepoMapGraphEdgeDtoV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapGraphEdgeDtoV1 {
+impl<'de> Deserialize<'de> for RepoMapGraphEdgeDto {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapGraphEdgeDtoV1",
+            "RepoMapGraphEdgeDto",
             REPOMAP_GRAPH_EDGE_DTO_V1_FIELDS,
             RepoMapGraphEdgeDtoV1Visitor,
         )
@@ -352,7 +352,7 @@ impl<'de> Deserialize<'de> for RepoMapGraphEdgeDtoV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapChunkRecordDtoV1 {
+pub struct RepoMapChunkRecordDto {
     pub subject_identity: String,
     pub owner_path: String,
     pub token_count: u32,
@@ -368,12 +368,12 @@ const REPOMAP_CHUNK_RECORD_DTO_V1_FIELDS: &[&str] = &[
     "exactness",
 ];
 
-impl Serialize for RepoMapChunkRecordDtoV1 {
+impl Serialize for RepoMapChunkRecordDto {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapChunkRecordDtoV1", 5)?;
+        let mut state = serializer.serialize_struct("RepoMapChunkRecordDto", 5)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("owner_path", &self.owner_path)?;
         state.serialize_field("token_count", &self.token_count)?;
@@ -386,10 +386,10 @@ impl Serialize for RepoMapChunkRecordDtoV1 {
 struct RepoMapChunkRecordDtoV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapChunkRecordDtoV1Visitor {
-    type Value = RepoMapChunkRecordDtoV1;
+    type Value = RepoMapChunkRecordDto;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapChunkRecordDtoV1 map")
+        formatter.write_str("a RepoMapChunkRecordDto map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -447,7 +447,7 @@ impl<'de> Visitor<'de> for RepoMapChunkRecordDtoV1Visitor {
         let token_count = token_count.ok_or_else(|| de::Error::missing_field("token_count"))?;
         let preview_text = preview_text.ok_or_else(|| de::Error::missing_field("preview_text"))?;
         let exactness = exactness.ok_or_else(|| de::Error::missing_field("exactness"))?;
-        Ok(RepoMapChunkRecordDtoV1 {
+        Ok(RepoMapChunkRecordDto {
             subject_identity,
             owner_path,
             token_count,
@@ -457,13 +457,13 @@ impl<'de> Visitor<'de> for RepoMapChunkRecordDtoV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapChunkRecordDtoV1 {
+impl<'de> Deserialize<'de> for RepoMapChunkRecordDto {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapChunkRecordDtoV1",
+            "RepoMapChunkRecordDto",
             REPOMAP_CHUNK_RECORD_DTO_V1_FIELDS,
             RepoMapChunkRecordDtoV1Visitor,
         )
@@ -471,7 +471,7 @@ impl<'de> Deserialize<'de> for RepoMapChunkRecordDtoV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapSourceBundleV1 {
+pub struct RepoMapSourceBundle {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
@@ -482,10 +482,10 @@ pub struct RepoMapSourceBundleV1 {
     pub graph_coverage_class: String,
     pub exactness_summary: String,
     pub redaction_state: String,
-    pub file_indices: Vec<RepoMapFileIndexRecordV1>,
-    pub call_edges: Vec<RepoMapGraphEdgeDtoV1>,
-    pub import_edges: Vec<RepoMapGraphEdgeDtoV1>,
-    pub chunk_records: Vec<RepoMapChunkRecordDtoV1>,
+    pub file_indices: Vec<RepoMapFileIndexRecord>,
+    pub call_edges: Vec<RepoMapGraphEdgeDto>,
+    pub import_edges: Vec<RepoMapGraphEdgeDto>,
+    pub chunk_records: Vec<RepoMapChunkRecordDto>,
 }
 
 const REPOMAP_SOURCE_BUNDLE_V1_FIELDS: &[&str] = &[
@@ -505,12 +505,12 @@ const REPOMAP_SOURCE_BUNDLE_V1_FIELDS: &[&str] = &[
     "chunk_records",
 ];
 
-impl Serialize for RepoMapSourceBundleV1 {
+impl Serialize for RepoMapSourceBundle {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapSourceBundleV1", 14)?;
+        let mut state = serializer.serialize_struct("RepoMapSourceBundle", 14)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -532,10 +532,10 @@ impl Serialize for RepoMapSourceBundleV1 {
 struct RepoMapSourceBundleV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
-    type Value = RepoMapSourceBundleV1;
+    type Value = RepoMapSourceBundle;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapSourceBundleV1 map")
+        formatter.write_str("a RepoMapSourceBundle map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -552,10 +552,10 @@ impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
         let mut graph_coverage_class: Option<String> = None;
         let mut exactness_summary: Option<String> = None;
         let mut redaction_state: Option<String> = None;
-        let mut file_indices: Option<Vec<RepoMapFileIndexRecordV1>> = None;
-        let mut call_edges: Option<Vec<RepoMapGraphEdgeDtoV1>> = None;
-        let mut import_edges: Option<Vec<RepoMapGraphEdgeDtoV1>> = None;
-        let mut chunk_records: Option<Vec<RepoMapChunkRecordDtoV1>> = None;
+        let mut file_indices: Option<Vec<RepoMapFileIndexRecord>> = None;
+        let mut call_edges: Option<Vec<RepoMapGraphEdgeDto>> = None;
+        let mut import_edges: Option<Vec<RepoMapGraphEdgeDto>> = None;
+        let mut chunk_records: Option<Vec<RepoMapChunkRecordDto>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -672,7 +672,7 @@ impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
         let import_edges = import_edges.ok_or_else(|| de::Error::missing_field("import_edges"))?;
         let chunk_records =
             chunk_records.ok_or_else(|| de::Error::missing_field("chunk_records"))?;
-        Ok(RepoMapSourceBundleV1 {
+        Ok(RepoMapSourceBundle {
             repo_id,
             revision_id,
             manifest_generation,
@@ -691,13 +691,13 @@ impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapSourceBundleV1 {
+impl<'de> Deserialize<'de> for RepoMapSourceBundle {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapSourceBundleV1",
+            "RepoMapSourceBundle",
             REPOMAP_SOURCE_BUNDLE_V1_FIELDS,
             RepoMapSourceBundleV1Visitor,
         )
@@ -705,7 +705,7 @@ impl<'de> Deserialize<'de> for RepoMapSourceBundleV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapActivateGenerationRequestV1 {
+pub struct RepoMapActivateGenerationRequest {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
@@ -719,12 +719,12 @@ const REPOMAP_ACTIVATE_GENERATION_REQUEST_V1_FIELDS: &[&str] = &[
     "manifest_digest",
 ];
 
-impl Serialize for RepoMapActivateGenerationRequestV1 {
+impl Serialize for RepoMapActivateGenerationRequest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapActivateGenerationRequestV1", 4)?;
+        let mut state = serializer.serialize_struct("RepoMapActivateGenerationRequest", 4)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -736,10 +736,10 @@ impl Serialize for RepoMapActivateGenerationRequestV1 {
 struct RepoMapActivateGenerationRequestV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapActivateGenerationRequestV1Visitor {
-    type Value = RepoMapActivateGenerationRequestV1;
+    type Value = RepoMapActivateGenerationRequest;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapActivateGenerationRequestV1 map")
+        formatter.write_str("a RepoMapActivateGenerationRequest map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -790,7 +790,7 @@ impl<'de> Visitor<'de> for RepoMapActivateGenerationRequestV1Visitor {
             manifest_generation.ok_or_else(|| de::Error::missing_field("manifest_generation"))?;
         let manifest_digest =
             manifest_digest.ok_or_else(|| de::Error::missing_field("manifest_digest"))?;
-        Ok(RepoMapActivateGenerationRequestV1 {
+        Ok(RepoMapActivateGenerationRequest {
             repo_id,
             revision_id,
             manifest_generation,
@@ -799,13 +799,13 @@ impl<'de> Visitor<'de> for RepoMapActivateGenerationRequestV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV1 {
+impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequest {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapActivateGenerationRequestV1",
+            "RepoMapActivateGenerationRequest",
             REPOMAP_ACTIVATE_GENERATION_REQUEST_V1_FIELDS,
             RepoMapActivateGenerationRequestV1Visitor,
         )
@@ -813,7 +813,7 @@ impl<'de> Deserialize<'de> for RepoMapActivateGenerationRequestV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapMutationAckV1 {
+pub struct RepoMapMutationAck {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
@@ -821,12 +821,12 @@ pub struct RepoMapMutationAckV1 {
 
 const REPOMAP_MUTATION_ACK_V1_FIELDS: &[&str] = &["repo_id", "revision_id", "manifest_generation"];
 
-impl Serialize for RepoMapMutationAckV1 {
+impl Serialize for RepoMapMutationAck {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapMutationAckV1", 3)?;
+        let mut state = serializer.serialize_struct("RepoMapMutationAck", 3)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -837,10 +837,10 @@ impl Serialize for RepoMapMutationAckV1 {
 struct RepoMapMutationAckV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
-    type Value = RepoMapMutationAckV1;
+    type Value = RepoMapMutationAck;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapMutationAckV1 map")
+        formatter.write_str("a RepoMapMutationAck map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -882,7 +882,7 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
         let revision_id = revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?;
         let manifest_generation =
             manifest_generation.ok_or_else(|| de::Error::missing_field("manifest_generation"))?;
-        Ok(RepoMapMutationAckV1 {
+        Ok(RepoMapMutationAck {
             repo_id,
             revision_id,
             manifest_generation,
@@ -890,13 +890,13 @@ impl<'de> Visitor<'de> for RepoMapMutationAckV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapMutationAckV1 {
+impl<'de> Deserialize<'de> for RepoMapMutationAck {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapMutationAckV1",
+            "RepoMapMutationAck",
             REPOMAP_MUTATION_ACK_V1_FIELDS,
             RepoMapMutationAckV1Visitor,
         )
@@ -904,7 +904,7 @@ impl<'de> Deserialize<'de> for RepoMapMutationAckV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RepoMapSnapshotMetaV1 {
+pub struct RepoMapSnapshotMeta {
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
@@ -922,12 +922,12 @@ const REPOMAP_SNAPSHOT_META_V1_FIELDS: &[&str] = &[
     "exactness_summary",
 ];
 
-impl Serialize for RepoMapSnapshotMetaV1 {
+impl Serialize for RepoMapSnapshotMeta {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapSnapshotMetaV1", 6)?;
+        let mut state = serializer.serialize_struct("RepoMapSnapshotMeta", 6)?;
         state.serialize_field("snapshot_id", &self.snapshot_id)?;
         state.serialize_field("projection_version", &self.projection_version)?;
         state.serialize_field("authority_digest", &self.authority_digest)?;
@@ -941,10 +941,10 @@ impl Serialize for RepoMapSnapshotMetaV1 {
 struct RepoMapSnapshotMetaV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapSnapshotMetaV1Visitor {
-    type Value = RepoMapSnapshotMetaV1;
+    type Value = RepoMapSnapshotMeta;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapSnapshotMetaV1 map")
+        formatter.write_str("a RepoMapSnapshotMeta map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1014,7 +1014,7 @@ impl<'de> Visitor<'de> for RepoMapSnapshotMetaV1Visitor {
             graph_coverage_class.ok_or_else(|| de::Error::missing_field("graph_coverage_class"))?;
         let exactness_summary =
             exactness_summary.ok_or_else(|| de::Error::missing_field("exactness_summary"))?;
-        Ok(RepoMapSnapshotMetaV1 {
+        Ok(RepoMapSnapshotMeta {
             snapshot_id,
             projection_version,
             authority_digest,
@@ -1025,13 +1025,13 @@ impl<'de> Visitor<'de> for RepoMapSnapshotMetaV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapSnapshotMetaV1 {
+impl<'de> Deserialize<'de> for RepoMapSnapshotMeta {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapSnapshotMetaV1",
+            "RepoMapSnapshotMeta",
             REPOMAP_SNAPSHOT_META_V1_FIELDS,
             RepoMapSnapshotMetaV1Visitor,
         )
@@ -1039,19 +1039,19 @@ impl<'de> Deserialize<'de> for RepoMapSnapshotMetaV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct RepoMapFocusSubjectDtoV1 {
+pub struct RepoMapFocusSubjectDto {
     pub subject_identity: String,
     pub subject_doc_type: String,
 }
 
 const REPOMAP_FOCUS_SUBJECT_DTO_V1_FIELDS: &[&str] = &["subject_identity", "subject_doc_type"];
 
-impl Serialize for RepoMapFocusSubjectDtoV1 {
+impl Serialize for RepoMapFocusSubjectDto {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapFocusSubjectDtoV1", 2)?;
+        let mut state = serializer.serialize_struct("RepoMapFocusSubjectDto", 2)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.end()
@@ -1061,10 +1061,10 @@ impl Serialize for RepoMapFocusSubjectDtoV1 {
 struct RepoMapFocusSubjectDtoV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapFocusSubjectDtoV1Visitor {
-    type Value = RepoMapFocusSubjectDtoV1;
+    type Value = RepoMapFocusSubjectDto;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapFocusSubjectDtoV1 map")
+        formatter.write_str("a RepoMapFocusSubjectDto map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1099,20 +1099,20 @@ impl<'de> Visitor<'de> for RepoMapFocusSubjectDtoV1Visitor {
             subject_identity.ok_or_else(|| de::Error::missing_field("subject_identity"))?;
         let subject_doc_type =
             subject_doc_type.ok_or_else(|| de::Error::missing_field("subject_doc_type"))?;
-        Ok(RepoMapFocusSubjectDtoV1 {
+        Ok(RepoMapFocusSubjectDto {
             subject_identity,
             subject_doc_type,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapFocusSubjectDtoV1 {
+impl<'de> Deserialize<'de> for RepoMapFocusSubjectDto {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapFocusSubjectDtoV1",
+            "RepoMapFocusSubjectDto",
             REPOMAP_FOCUS_SUBJECT_DTO_V1_FIELDS,
             RepoMapFocusSubjectDtoV1Visitor,
         )
@@ -1120,7 +1120,7 @@ impl<'de> Deserialize<'de> for RepoMapFocusSubjectDtoV1 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RepoMapEntryDtoV1 {
+pub struct RepoMapEntryDto {
     pub subject_identity: String,
     pub subject_doc_type: String,
     pub subject_kind: String,
@@ -1164,12 +1164,12 @@ const REPOMAP_ENTRY_DTO_V1_FIELDS: &[&str] = &[
     "redaction_state",
 ];
 
-impl Serialize for RepoMapEntryDtoV1 {
+impl Serialize for RepoMapEntryDto {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapEntryDtoV1", 19)?;
+        let mut state = serializer.serialize_struct("RepoMapEntryDto", 19)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.serialize_field("subject_kind", &self.subject_kind)?;
@@ -1202,10 +1202,10 @@ impl Serialize for RepoMapEntryDtoV1 {
 struct RepoMapEntryDtoV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
-    type Value = RepoMapEntryDtoV1;
+    type Value = RepoMapEntryDto;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapEntryDtoV1 map")
+        formatter.write_str("a RepoMapEntryDto map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1387,7 +1387,7 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
             projection_status.ok_or_else(|| de::Error::missing_field("projection_status"))?;
         let redaction_state =
             redaction_state.ok_or_else(|| de::Error::missing_field("redaction_state"))?;
-        Ok(RepoMapEntryDtoV1 {
+        Ok(RepoMapEntryDto {
             subject_identity,
             subject_doc_type,
             subject_kind,
@@ -1411,13 +1411,13 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapEntryDtoV1 {
+impl<'de> Deserialize<'de> for RepoMapEntryDto {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapEntryDtoV1",
+            "RepoMapEntryDto",
             REPOMAP_ENTRY_DTO_V1_FIELDS,
             RepoMapEntryDtoV1Visitor,
         )
@@ -1425,14 +1425,14 @@ impl<'de> Deserialize<'de> for RepoMapEntryDtoV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct RepoMapQueryRequestV1 {
+pub struct RepoMapQueryRequest {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
     pub query_text: String,
     pub top_k: u32,
     pub token_budget: u32,
-    pub focus_subjects: Vec<RepoMapFocusSubjectDtoV1>,
+    pub focus_subjects: Vec<RepoMapFocusSubjectDto>,
 }
 
 const REPOMAP_QUERY_REQUEST_V1_FIELDS: &[&str] = &[
@@ -1445,12 +1445,12 @@ const REPOMAP_QUERY_REQUEST_V1_FIELDS: &[&str] = &[
     "focus_subjects",
 ];
 
-impl Serialize for RepoMapQueryRequestV1 {
+impl Serialize for RepoMapQueryRequest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapQueryRequestV1", 7)?;
+        let mut state = serializer.serialize_struct("RepoMapQueryRequest", 7)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -1465,10 +1465,10 @@ impl Serialize for RepoMapQueryRequestV1 {
 struct RepoMapQueryRequestV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapQueryRequestV1Visitor {
-    type Value = RepoMapQueryRequestV1;
+    type Value = RepoMapQueryRequest;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapQueryRequestV1 map")
+        formatter.write_str("a RepoMapQueryRequest map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1481,7 +1481,7 @@ impl<'de> Visitor<'de> for RepoMapQueryRequestV1Visitor {
         let mut query_text: Option<String> = None;
         let mut top_k: Option<u32> = None;
         let mut token_budget: Option<u32> = None;
-        let mut focus_subjects: Option<Vec<RepoMapFocusSubjectDtoV1>> = None;
+        let mut focus_subjects: Option<Vec<RepoMapFocusSubjectDto>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -1543,7 +1543,7 @@ impl<'de> Visitor<'de> for RepoMapQueryRequestV1Visitor {
         let token_budget = token_budget.ok_or_else(|| de::Error::missing_field("token_budget"))?;
         let focus_subjects =
             focus_subjects.ok_or_else(|| de::Error::missing_field("focus_subjects"))?;
-        Ok(RepoMapQueryRequestV1 {
+        Ok(RepoMapQueryRequest {
             repo_id,
             revision_id,
             manifest_generation,
@@ -1555,13 +1555,13 @@ impl<'de> Visitor<'de> for RepoMapQueryRequestV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapQueryRequestV1 {
+impl<'de> Deserialize<'de> for RepoMapQueryRequest {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapQueryRequestV1",
+            "RepoMapQueryRequest",
             REPOMAP_QUERY_REQUEST_V1_FIELDS,
             RepoMapQueryRequestV1Visitor,
         )
@@ -1569,12 +1569,12 @@ impl<'de> Deserialize<'de> for RepoMapQueryRequestV1 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RepoMapQueryResponseV1 {
+pub struct RepoMapQueryResponse {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
-    pub snapshot_meta: RepoMapSnapshotMetaV1,
-    pub entries: Vec<RepoMapEntryDtoV1>,
+    pub snapshot_meta: RepoMapSnapshotMeta,
+    pub entries: Vec<RepoMapEntryDto>,
     pub dropped_entries_count: u32,
     pub drop_reason_codes: Vec<String>,
     pub degraded_reason_codes: Vec<String>,
@@ -1591,12 +1591,12 @@ const REPOMAP_QUERY_RESPONSE_V1_FIELDS: &[&str] = &[
     "degraded_reason_codes",
 ];
 
-impl Serialize for RepoMapQueryResponseV1 {
+impl Serialize for RepoMapQueryResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapQueryResponseV1", 8)?;
+        let mut state = serializer.serialize_struct("RepoMapQueryResponse", 8)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -1612,10 +1612,10 @@ impl Serialize for RepoMapQueryResponseV1 {
 struct RepoMapQueryResponseV1Visitor;
 
 impl<'de> Visitor<'de> for RepoMapQueryResponseV1Visitor {
-    type Value = RepoMapQueryResponseV1;
+    type Value = RepoMapQueryResponse;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapQueryResponseV1 map")
+        formatter.write_str("a RepoMapQueryResponse map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1625,8 +1625,8 @@ impl<'de> Visitor<'de> for RepoMapQueryResponseV1Visitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
-        let mut snapshot_meta: Option<RepoMapSnapshotMetaV1> = None;
-        let mut entries: Option<Vec<RepoMapEntryDtoV1>> = None;
+        let mut snapshot_meta: Option<RepoMapSnapshotMeta> = None;
+        let mut entries: Option<Vec<RepoMapEntryDto>> = None;
         let mut dropped_entries_count: Option<u32> = None;
         let mut drop_reason_codes: Option<Vec<String>> = None;
         let mut degraded_reason_codes: Option<Vec<String>> = None;
@@ -1701,7 +1701,7 @@ impl<'de> Visitor<'de> for RepoMapQueryResponseV1Visitor {
             drop_reason_codes.ok_or_else(|| de::Error::missing_field("drop_reason_codes"))?;
         let degraded_reason_codes = degraded_reason_codes
             .ok_or_else(|| de::Error::missing_field("degraded_reason_codes"))?;
-        Ok(RepoMapQueryResponseV1 {
+        Ok(RepoMapQueryResponse {
             repo_id,
             revision_id,
             manifest_generation,
@@ -1714,13 +1714,13 @@ impl<'de> Visitor<'de> for RepoMapQueryResponseV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapQueryResponseV1 {
+impl<'de> Deserialize<'de> for RepoMapQueryResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapQueryResponseV1",
+            "RepoMapQueryResponse",
             REPOMAP_QUERY_RESPONSE_V1_FIELDS,
             RepoMapQueryResponseV1Visitor,
         )
@@ -1737,10 +1737,10 @@ mod tests {
     //! accidental drift from the prior derived impls.
 
     use super::{
-        ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV1, RepoMapChunkRecordDtoV1,
-        RepoMapEntryDtoV1, RepoMapFileIndexRecordV1, RepoMapFocusSubjectDtoV1,
-        RepoMapGraphEdgeDtoV1, RepoMapMutationAckV1, RepoMapQueryRequestV1, RepoMapQueryResponseV1,
-        RepoMapSnapshotMetaV1, RepoMapSourceBundleV1, RepoMapSymbolRecordDtoV1, RevisionId,
+        ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
+        RepoMapEntryDto, RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto,
+        RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSnapshotMeta,
+        RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId,
     };
     use std::collections::BTreeMap;
 
@@ -1773,8 +1773,8 @@ mod tests {
         Ok(())
     }
 
-    fn sample_symbol_record() -> RepoMapSymbolRecordDtoV1 {
-        RepoMapSymbolRecordDtoV1 {
+    fn sample_symbol_record() -> RepoMapSymbolRecordDto {
+        RepoMapSymbolRecordDto {
             subject_identity: "sym::ident".into(),
             subject_doc_type: "rust".into(),
             subject_kind: "function".into(),
@@ -1783,8 +1783,8 @@ mod tests {
         }
     }
 
-    fn sample_file_index_record() -> RepoMapFileIndexRecordV1 {
-        RepoMapFileIndexRecordV1 {
+    fn sample_file_index_record() -> RepoMapFileIndexRecord {
+        RepoMapFileIndexRecord {
             file_identity: "file::ident".into(),
             file_path: "src/lib.rs".into(),
             file_kind: "rust".into(),
@@ -1793,16 +1793,16 @@ mod tests {
         }
     }
 
-    fn sample_graph_edge() -> RepoMapGraphEdgeDtoV1 {
-        RepoMapGraphEdgeDtoV1 {
+    fn sample_graph_edge() -> RepoMapGraphEdgeDto {
+        RepoMapGraphEdgeDto {
             from_identity: "from::ident".into(),
             to_identity: "to::ident".into(),
             edge_kind: "call".into(),
         }
     }
 
-    fn sample_chunk_record() -> RepoMapChunkRecordDtoV1 {
-        RepoMapChunkRecordDtoV1 {
+    fn sample_chunk_record() -> RepoMapChunkRecordDto {
+        RepoMapChunkRecordDto {
             subject_identity: "chunk::ident".into(),
             owner_path: "src/lib.rs".into(),
             token_count: 128,
@@ -1811,15 +1811,15 @@ mod tests {
         }
     }
 
-    fn sample_focus_subject() -> RepoMapFocusSubjectDtoV1 {
-        RepoMapFocusSubjectDtoV1 {
+    fn sample_focus_subject() -> RepoMapFocusSubjectDto {
+        RepoMapFocusSubjectDto {
             subject_identity: "focus::ident".into(),
             subject_doc_type: "rust".into(),
         }
     }
 
-    fn sample_snapshot_meta() -> RepoMapSnapshotMetaV1 {
-        RepoMapSnapshotMetaV1 {
+    fn sample_snapshot_meta() -> RepoMapSnapshotMeta {
+        RepoMapSnapshotMeta {
             snapshot_id: "snap-1".into(),
             projection_version: 7,
             authority_digest: "blake3:deadbeef".into(),
@@ -1829,12 +1829,12 @@ mod tests {
         }
     }
 
-    fn sample_entry() -> RepoMapEntryDtoV1 {
+    fn sample_entry() -> RepoMapEntryDto {
         let contributing_signals = BTreeMap::from([
             ("centrality".to_owned(), 100_i64),
             ("recency".to_owned(), -3_i64),
         ]);
-        RepoMapEntryDtoV1 {
+        RepoMapEntryDto {
             subject_identity: "entry::ident".into(),
             subject_doc_type: "rust".into(),
             subject_kind: "function".into(),
@@ -1869,8 +1869,8 @@ mod tests {
         ManifestGeneration::new(11)
     }
 
-    fn sample_source_bundle() -> RepoMapSourceBundleV1 {
-        RepoMapSourceBundleV1 {
+    fn sample_source_bundle() -> RepoMapSourceBundle {
+        RepoMapSourceBundle {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
@@ -1888,8 +1888,8 @@ mod tests {
         }
     }
 
-    fn sample_activate_request() -> RepoMapActivateGenerationRequestV1 {
-        RepoMapActivateGenerationRequestV1 {
+    fn sample_activate_request() -> RepoMapActivateGenerationRequest {
+        RepoMapActivateGenerationRequest {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
@@ -1897,16 +1897,16 @@ mod tests {
         }
     }
 
-    fn sample_mutation_ack() -> RepoMapMutationAckV1 {
-        RepoMapMutationAckV1 {
+    fn sample_mutation_ack() -> RepoMapMutationAck {
+        RepoMapMutationAck {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
         }
     }
 
-    fn sample_query_request() -> RepoMapQueryRequestV1 {
-        RepoMapQueryRequestV1 {
+    fn sample_query_request() -> RepoMapQueryRequest {
+        RepoMapQueryRequest {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),
@@ -1917,8 +1917,8 @@ mod tests {
         }
     }
 
-    fn sample_query_response() -> RepoMapQueryResponseV1 {
-        RepoMapQueryResponseV1 {
+    fn sample_query_response() -> RepoMapQueryResponse {
+        RepoMapQueryResponse {
             repo_id: sample_repo_id(),
             revision_id: sample_revision_id(),
             manifest_generation: sample_manifest_generation(),

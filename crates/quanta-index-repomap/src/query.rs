@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use quanta_index_contract::{RepoMapQueryRequestV1, RepoMapQueryResponseV1};
+use quanta_index_contract::{RepoMapQueryRequest, RepoMapQueryResponse};
 use quanta_index_core::{CoreError, RepoMapPolicy};
 
 use crate::model::RepoMapSnapshotV1;
@@ -10,8 +10,8 @@ pub struct RepoMapQueryEngine;
 impl RepoMapQueryEngine {
     pub fn query(
         snapshot: &RepoMapSnapshotV1,
-        request: &RepoMapQueryRequestV1,
-    ) -> Result<RepoMapQueryResponseV1, CoreError> {
+        request: &RepoMapQueryRequest,
+    ) -> Result<RepoMapQueryResponse, CoreError> {
         RepoMapPolicy::validate_query(request)?;
 
         let query_terms = tokenize(&request.query_text);
@@ -109,7 +109,7 @@ impl RepoMapQueryEngine {
         let dropped_entries_count =
             saturating_u32_from_usize(entries.iter().filter(|entry| !entry.included).count());
 
-        Ok(RepoMapQueryResponseV1 {
+        Ok(RepoMapQueryResponse {
             repo_id: snapshot.repo_id.clone(),
             revision_id: snapshot.revision_id.clone(),
             manifest_generation: snapshot.manifest_generation,

@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -7,20 +6,21 @@ use std::sync::{
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
 };
 
 use crate::{
     ConnectOptions, GenerationNamespace, LexicalNamespace, QueryTransport, RepoMapNamespace,
     SdkError, SearchNamespace, SemanticNamespace, SymbolNamespace, UdsControlTransport,
-    UdsQueryTransport,
+    UdsIngestTransport, UdsQueryTransport,
 };
-use crate::{ControlTransport, config::ResolvedConnectOptions};
+use crate::{ControlTransport, IngestTransport};
 
 struct QuantaIndexInner {
-    state_root: Option<std::path::PathBuf>,
     query_transport: Arc<dyn QueryTransport>,
     control_transport: Arc<dyn ControlTransport>,
+    ingest_transport: Arc<dyn IngestTransport>,
     next_request_id: AtomicU64,
 }
 
@@ -31,8 +31,12 @@ pub struct QuantaIndex {
 
 impl QuantaIndex {
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
-        let resolved = options.resolve()?;
-        Ok(Self::from_resolved(resolved))
+        let (_state_root, query_socket, control_socket, ingest_socket) = options.resolve()?;
+        Ok(Self::from_resolved(
+            query_socket,
+            control_socket,
+            ingest_socket,
+        ))
     }
 
     #[must_use]
@@ -65,7 +69,7 @@ impl QuantaIndex {
         GenerationNamespace::new(self)
     }
 
-    pub(crate) fn dispatch_query(
+    pub(super) fn dispatch_query(
         &self,
         payload: SearchPlaneQueryIpcRequest,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
@@ -86,11 +90,20 @@ impl QuantaIndex {
                 code: error.code,
                 message: error.message,
             }),
-            payload => Ok(payload),
+            payload @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Ok(payload),
         }
     }
 
-    pub(crate) fn dispatch_control(
+    pub(super) fn dispatch_control(
         &self,
         payload: SearchPlaneControlIpcRequest,
     ) -> Result<SearchPlaneControlIpcResponse, SdkError> {
@@ -111,19 +124,44 @@ impl QuantaIndex {
                 code: error.code,
                 message: error.message,
             }),
-            payload => Ok(payload),
+            payload @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => Ok(payload),
         }
     }
 
-    pub(crate) fn state_root(&self) -> Result<&Path, SdkError> {
-        self.inner.state_root.as_deref().ok_or_else(|| {
-            SdkError::Usage(
-                "publish surface requires a resolved state root; connect via state root".to_string(),
-            )
-        })
+    /// QI-SDK-01: typed ingest dispatch. Returns the non-Error response
+    /// variant on success; converts `SearchPlaneIngestIpcResponse::Error`
+    /// into a typed [`SdkError::Remote`].
+    pub(super) fn dispatch_ingest(
+        &self,
+        payload: SearchPlaneIngestIpcRequest,
+    ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
+        let request_id = self.next_request_id();
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let response = self.inner.ingest_transport.send(envelope)?;
+        if response.request_id != request_id {
+            return Err(SdkError::Protocol(format!(
+                "ingest response request_id {} != request {}",
+                response.request_id, request_id
+            )));
+        }
+        match response.payload {
+            SearchPlaneIngestIpcResponse::Error(error) => Err(SdkError::Remote {
+                code: error.code,
+                message: error.message,
+            }),
+            payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)) => Ok(payload),
+        }
     }
 
-    pub(crate) fn selection_to_fields(
+    pub(super) fn selection_to_fields(
         selection: GenerationSelector,
     ) -> (Option<GenerationPin>, Option<GenerationSelector>) {
         match selection {
@@ -132,37 +170,78 @@ impl QuantaIndex {
         }
     }
 
-    pub(crate) fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, SdkError> {
-        let mut buf: Vec<u8> = Vec::new();
-        ciborium::ser::into_writer(value, &mut buf)
-            .map_err(|err| SdkError::Serialization(format!("cbor encode failed: {err}")))?;
-        Ok(buf)
+    pub(super) const fn query_response_kind(
+        response: &SearchPlaneQueryIpcResponse,
+    ) -> &'static str {
+        match response {
+            SearchPlaneQueryIpcResponse::Text(_) => "text",
+            SearchPlaneQueryIpcResponse::Symbol(_) => "symbol",
+            SearchPlaneQueryIpcResponse::Semantic(_) => "semantic",
+            SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
+            SearchPlaneQueryIpcResponse::History(_) => "history",
+            SearchPlaneQueryIpcResponse::Structural(_) => "structural",
+            SearchPlaneQueryIpcResponse::Bridge(_) => "bridge",
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
+            SearchPlaneQueryIpcResponse::Explain(_) => "explain",
+            SearchPlaneQueryIpcResponse::Error(_) => "error",
+            SearchPlaneQueryIpcResponse::Sourcegraph(_) => "sourcegraph",
+        }
     }
 
-    fn from_resolved(resolved: ResolvedConnectOptions) -> Self {
-        let query_transport = Arc::new(UdsQueryTransport::new(resolved.query_socket));
-        let control_transport = Arc::new(UdsControlTransport::new(resolved.control_socket));
+    pub(super) const fn control_response_kind(
+        response: &SearchPlaneControlIpcResponse,
+    ) -> &'static str {
+        match response {
+            SearchPlaneControlIpcResponse::ActivationAck(_) => "activation_ack",
+            SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
+            SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
+                "current_generation_snapshot"
+            }
+            SearchPlaneControlIpcResponse::GenerationStatusReport(_) => "generation_status_report",
+            SearchPlaneControlIpcResponse::Error(_) => "error",
+        }
+    }
+
+    pub(super) const fn ingest_response_kind(
+        response: &SearchPlaneIngestIpcResponse,
+    ) -> &'static str {
+        match response {
+            SearchPlaneIngestIpcResponse::LexicalReceipt(_) => "lexical_receipt",
+            SearchPlaneIngestIpcResponse::SemanticReceipt(_) => "semantic_receipt",
+            SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
+            SearchPlaneIngestIpcResponse::Error(_) => "error",
+        }
+    }
+
+    fn from_resolved(
+        query_socket: std::path::PathBuf,
+        control_socket: std::path::PathBuf,
+        ingest_socket: std::path::PathBuf,
+    ) -> Self {
+        let query_transport = Arc::new(UdsQueryTransport::new(query_socket));
+        let control_transport = Arc::new(UdsControlTransport::new(control_socket));
+        let ingest_transport = Arc::new(UdsIngestTransport::new(ingest_socket));
         Self {
             inner: Arc::new(QuantaIndexInner {
-                state_root: resolved.state_root,
                 query_transport,
                 control_transport,
+                ingest_transport,
                 next_request_id: AtomicU64::new(1),
             }),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn from_transports(
-        state_root: Option<std::path::PathBuf>,
+    pub(super) fn from_transports(
         query_transport: Arc<dyn QueryTransport>,
         control_transport: Arc<dyn ControlTransport>,
+        ingest_transport: Arc<dyn IngestTransport>,
     ) -> Self {
         Self {
             inner: Arc::new(QuantaIndexInner {
-                state_root,
                 query_transport,
                 control_transport,
+                ingest_transport,
                 next_request_id: AtomicU64::new(1),
             }),
         }

@@ -9,8 +9,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# QI-SDK-01: SDK no longer opens channel publishers directly. All publish
+# paths go through `SearchPlaneIngestIpcRequest` via the typed ingest
+# transport. `quanta-index-channel` is intentionally absent from this
+# dependency surface.
 ciborium.workspace = true
-quanta-index-channel = { path = "../quanta-index-channel" }
 quanta-index-contract = { path = "../quanta-index-contract" }
 quanta-index-ipc = { path = "../quanta-index-ipc" }
 serde.workspace = true

@@ -108,6 +108,13 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-semantic",
         }
     ),
+    "quanta-index-sdk": frozenset(
+        {
+            "quanta-index-channel",
+            "quanta-index-contract",
+            "quanta-index-ipc",
+        }
+    ),
     "quanta-index-searchctl": frozenset({"quanta-index-contract", "quanta-index-ipc"}),
 }
 

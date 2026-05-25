@@ -1,4 +1,4 @@
-use quanta_index_contract::{
+use quanta_index_contract_base::{
     BridgeCandidatePacket, BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate,
     TextQueryRequest, TextQuerySyntax,
 };
@@ -28,7 +28,7 @@ pub fn export_bridge_candidate_packet(
 
 #[cfg(test)]
 mod tests {
-    use quanta_index_contract::{
+    use quanta_index_contract_base::{
         BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate, ManifestGeneration, RepoId,
         RepoRelativePath, RevisionId, TextQueryRequest, TextQuerySyntax,
     };
@@ -64,6 +64,7 @@ mod tests {
             query_text: "repo:acme/foo needle".to_string(),
             generation: Some(pin()),
             generation_selector: None,
+            top_k: 50,
         };
         let packet = export_bridge_candidate_packet(
             BridgeTarget::CodeQl,
@@ -90,6 +91,7 @@ mod tests {
             query_text: "needle".to_string(),
             generation: Some(pin()),
             generation_selector: None,
+            top_k: 50,
         };
         let packet = export_bridge_candidate_packet(
             BridgeTarget::CodeQl,

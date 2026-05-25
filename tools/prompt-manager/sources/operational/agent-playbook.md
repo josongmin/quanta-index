@@ -4,8 +4,12 @@
 
 ## Quick Check
 
-- workspace check: `cargo check --workspace`
-- one crate check: `cargo check -p <crate>`
+- preferred agent surface: `just rust-profile <name>`
+- default local compile: `just rust-profile dev-fast`
+- daemon-only compile: `just rust-profile dev-daemon`
+- widest compile rail: `just rust-profile dev-all-targets`
+- shared-surface validation: `just rust-profile validate-shared-surface`
+- one crate probe when the profile catalog is insufficient: `cargo check -p <crate>`
 
 ## Formatting and Lints
 
@@ -18,9 +22,12 @@
 
 ## Tests
 
-- full workspace tests: `cargo test --workspace`
-- one crate tests: `cargo test -p <crate>`
-- full Rust closeout: `just verify-rust`
+- default local tests: `just rust-profile test-fast`
+- integration rail: `just rust-profile test-integration`
+- daemon e2e rail: `just rust-profile test-daemon`
+- full Rust closeout: `just rust-profile verify-rust`
+- history summary: `just rust-profile-history-summary`
+- one crate probe when the profile catalog is insufficient: `cargo test -p <crate>`
 
 ## Structured Agent Output
 

@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 ciborium = { workspace = true }
-quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-contract-base = { version = "0.1.0", path = "../quanta-index-contract-base" }
 serde = { workspace = true }
 
 [dev-dependencies]

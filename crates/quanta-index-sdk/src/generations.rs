@@ -1,7 +1,10 @@
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RevisionId, SearchPlaneActivateGenerationRequest,
-    SearchPlaneActivationAck, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-    SearchPlaneTrackKind,
+    ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    ipc::{
+        CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
+        GenerationStatusRequest, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+    },
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -11,7 +14,7 @@ pub struct GenerationNamespace<'a> {
 }
 
 impl<'a> GenerationNamespace<'a> {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
     }
 
@@ -29,8 +32,73 @@ impl<'a> GenerationNamespace<'a> {
             .dispatch_control(SearchPlaneControlIpcRequest::ActivateGeneration(request))?;
         match response {
             SearchPlaneControlIpcResponse::ActivationAck(ack) => Ok(ack),
-            other => Err(SdkError::Protocol(format!(
-                "expected activation ack, got {other:?}"
+            other @ (SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected activation ack, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
+        }
+    }
+
+    /// QI-ACT-01: look up the active generation for one
+    /// `(repo, revision, track)` triple. Fails with [`SdkError::Remote`]
+    /// when no entry exists (typed code `NOT_READY`); the activation
+    /// catalog is the single source of truth — no client-side default.
+    pub fn current(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Result<GenerationSnapshot, SdkError> {
+        let response =
+            self.client
+                .dispatch_control(SearchPlaneControlIpcRequest::CurrentGeneration(
+                    CurrentGenerationRequest {
+                        repo_id,
+                        revision_id,
+                        track,
+                    },
+                ))?;
+        match response {
+            SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => Ok(snapshot),
+            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+                "expected current generation snapshot, got {}",
+                QuantaIndex::control_response_kind(&other)
+            ))),
+        }
+    }
+
+    /// QI-ACT-01: return every active track for one `(repo, revision)`
+    /// pair. Empty `tracks` vec means nothing is activated yet — distinct
+    /// from a per-track `NOT_READY` from [`Self::current`].
+    pub fn status(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    ) -> Result<GenerationStatusReport, SdkError> {
+        let response =
+            self.client
+                .dispatch_control(SearchPlaneControlIpcRequest::GenerationStatus(
+                    GenerationStatusRequest {
+                        repo_id,
+                        revision_id,
+                    },
+                ))?;
+        match response {
+            SearchPlaneControlIpcResponse::GenerationStatusReport(report) => Ok(report),
+            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+                "expected generation status report, got {}",
+                QuantaIndex::control_response_kind(&other)
             ))),
         }
     }
@@ -120,12 +188,14 @@ impl<'a> ActivationBuilder<'a> {
                 "activation requires at least one track".to_string(),
             ));
         }
-        self.client.generations().commit(SearchPlaneActivateGenerationRequest {
-            repo_id,
-            revision_id,
-            manifest_generation,
-            manifest_digest,
-            tracks: self.tracks,
-        })
+        self.client
+            .generations()
+            .commit(SearchPlaneActivateGenerationRequest {
+                repo_id,
+                revision_id,
+                manifest_generation,
+                manifest_digest,
+                tracks: self.tracks,
+            })
     }
 }

@@ -119,7 +119,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 # Testing
 
-- default Rust test rail: `cargo test --workspace`
+- default Rust test rail: `just rust-profile test-fast`
 - behavior changes require regression tests
 - prompt-manager changes require `tools/prompt-manager/tests/test_pm.py`
 - policy/validator changes require property tests in `crates/quanta-index-core/tests/property_policies.rs`
@@ -127,9 +127,11 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 ## Test rails
 
-- unit: `just rust-test-unit`
-- integration: `just rust-test-integration`
-- e2e smoke: `just rust-test-e2e`
+- unit/local fast: `just rust-profile test-fast`
+- integration: `just rust-profile test-integration`
+- cli smoke: `just rust-profile test-cli-smoke`
+- e2e smoke: `just rust-profile test-daemon`
+- shared-surface validation: `just rust-profile validate-shared-surface`
 - pyramid: `just rust-test-pyramid`
 - property invariants: included in the integration rail (proptest)
 - benchmark regression guard: `just rust-bench` (criterion)
@@ -141,7 +143,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - `just rust-tsan` / `just rust-asan` — ThreadSanitizer / AddressSanitizer (nightly + `-Z build-std`)
 - `just rust-mutants` — cargo-mutants on `quanta-index-core`
 - `just rust-udeps` — unused-dep detection via rustc (nightly)
-- aggregate: `just verify-rust-heavy`
+- aggregate: `just rust-profile verify-rust-heavy`
 - CI: scheduled nightly + workflow_dispatch via `.github/workflows/correctness.yml`
 
 

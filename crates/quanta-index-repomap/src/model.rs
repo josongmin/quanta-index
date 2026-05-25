@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapEntryDtoV1, RepoMapSnapshotMetaV1, RevisionId,
+    ManifestGeneration, RepoId, RepoMapEntryDto, RepoMapSnapshotMeta, RevisionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,8 +44,8 @@ pub struct RepoMapEntryV1 {
 
 impl RepoMapEntryV1 {
     #[must_use]
-    pub fn to_dto(&self) -> RepoMapEntryDtoV1 {
-        RepoMapEntryDtoV1 {
+    pub fn to_dto(&self) -> RepoMapEntryDto {
+        RepoMapEntryDto {
             subject_identity: self.subject_identity.clone(),
             subject_doc_type: self.subject_doc_type.clone(),
             subject_kind: self.subject_kind.clone(),
@@ -74,6 +74,6 @@ pub struct RepoMapSnapshotV1 {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
-    pub snapshot_meta: RepoMapSnapshotMetaV1,
+    pub snapshot_meta: RepoMapSnapshotMeta,
     pub entries: Vec<RepoMapEntryV1>,
 }

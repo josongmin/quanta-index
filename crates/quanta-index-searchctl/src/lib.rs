@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDtoV1, RepoMapQueryRequestV1,
+    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDto, RepoMapQueryRequest,
     RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticQueryRequest,
@@ -233,6 +233,7 @@ fn parse_lexical(
     let mut manifest_generation: Option<u64> = None;
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -245,6 +246,7 @@ fn parse_lexical(
             }
             "--syntax" => syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?),
             "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
+            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
             other => return Err(CliError::usage(format!("unknown lexical flag `{other}`"))),
         }
     }
@@ -252,11 +254,13 @@ fn parse_lexical(
     let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
+    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
     Ok(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
         syntax,
         query_text,
         generation: Some(generation),
         generation_selector: None,
+        top_k,
     }))
 }
 
@@ -325,7 +329,7 @@ fn parse_semantic(
         "--query-vector-handle",
     )?;
     Ok(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-        query_text,
+        query_text: (!query_text.is_empty()).then_some(query_text),
         query_vector: None,
         query_vector_ref,
         generation: Some(generation),
@@ -374,6 +378,7 @@ fn parse_hybrid(
         }
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let text_query_top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
     let text_query = TextQueryRequest {
         syntax: lexical_syntax
             .ok_or_else(|| CliError::usage("missing --lexical-syntax".to_string()))?,
@@ -381,6 +386,7 @@ fn parse_hybrid(
             .ok_or_else(|| CliError::usage("missing --lexical-query".to_string()))?,
         generation: Some(generation.clone()),
         generation_selector: None,
+        top_k: text_query_top_k,
     };
     let (semantic_query_text, semantic_vector_ref) = resolve_semantic_input(
         semantic_query_text,
@@ -392,7 +398,7 @@ fn parse_hybrid(
     )?;
     Ok(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
         text_query,
-        semantic_query_text,
+        semantic_query_text: (!semantic_query_text.is_empty()).then_some(semantic_query_text),
         semantic_vector: None,
         semantic_vector_ref,
         generation: Some(generation),
@@ -444,7 +450,7 @@ fn parse_repomap(
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut token_budget: Option<u32> = None;
-    let mut focus_subjects: Vec<RepoMapFocusSubjectDtoV1> = Vec::new();
+    let mut focus_subjects: Vec<RepoMapFocusSubjectDto> = Vec::new();
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -466,7 +472,7 @@ fn parse_repomap(
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
     Ok(SearchPlaneQueryIpcRequest::RepoMapQuery(
-        RepoMapQueryRequestV1 {
+        RepoMapQueryRequest {
             repo_id: generation.repo_id,
             revision_id: generation.revision_id,
             manifest_generation: generation.manifest_generation,
@@ -634,7 +640,7 @@ fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
     })
 }
 
-fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDtoV1> {
+fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
     let (subject_identity, subject_doc_type) = value.split_once(':').ok_or_else(|| {
         CliError::usage(format!(
             "--focus-subject expects <subject_identity>:<subject_doc_type>, got `{value}`"
@@ -645,7 +651,7 @@ fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDtoV1> {
             "--focus-subject requires non-empty identity and doc type, got `{value}`"
         )));
     }
-    Ok(RepoMapFocusSubjectDtoV1 {
+    Ok(RepoMapFocusSubjectDto {
         subject_identity: subject_identity.to_string(),
         subject_doc_type: subject_doc_type.to_string(),
     })
@@ -1119,7 +1125,7 @@ mod tests {
         let SearchPlaneQueryIpcRequest::Semantic(request) = parsed.request.payload else {
             panic!("expected semantic payload");
         };
-        assert_eq!(request.query_text, "1 0 2.5");
+        assert_eq!(request.query_text, Some("1 0 2.5".to_string()));
         assert_eq!(request.query_vector, None);
         assert_eq!(
             request.query_vector_ref,
@@ -1157,7 +1163,7 @@ mod tests {
         let SearchPlaneQueryIpcRequest::Hybrid(request) = parsed.request.payload else {
             panic!("expected hybrid payload");
         };
-        assert_eq!(request.semantic_query_text, "1 0 2.5");
+        assert_eq!(request.semantic_query_text, Some("1 0 2.5".to_string()));
         assert_eq!(request.semantic_vector, None);
         assert_eq!(
             request.semantic_vector_ref,
@@ -1217,7 +1223,7 @@ mod tests {
         let SearchPlaneQueryIpcRequest::Semantic(request) = parsed.request.payload else {
             panic!("expected semantic payload");
         };
-        assert_eq!(request.query_text, "");
+        assert_eq!(request.query_text, None);
         assert_eq!(request.query_vector, None);
         assert_eq!(
             request.query_vector_ref,
@@ -1255,7 +1261,7 @@ mod tests {
         let SearchPlaneQueryIpcRequest::Hybrid(request) = parsed.request.payload else {
             panic!("expected hybrid payload");
         };
-        assert_eq!(request.semantic_query_text, "");
+        assert_eq!(request.semantic_query_text, None);
         assert_eq!(request.semantic_vector, None);
         assert_eq!(
             request.semantic_vector_ref,

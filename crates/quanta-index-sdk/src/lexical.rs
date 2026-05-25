@@ -1,10 +1,10 @@
-use quanta_index_channel::{BundleChannelPublisher, open_lexical_publisher};
-use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationSelector, LexicalChannelOp, LexicalFullBundle,
-    ManifestGeneration, RepoId, RevisionId, SymbolId, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax, UpsertChunk, UpsertSymbol,
-};
 use quanta_index_contract::lex::SymbolRecord;
+use quanta_index_contract::{
+    ChunkId, ChunkRecord, GenerationSelector, LexicalChunkDelete, LexicalChunkMutation,
+    LexicalChunkUpsert, LexicalIngestBatch, LexicalSymbolDelete, LexicalSymbolMutation,
+    LexicalSymbolUpsert, ManifestGeneration, RepoId, RevisionId, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+};
 
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
 
@@ -95,7 +95,8 @@ impl LexicalBatch {
 
     #[must_use]
     pub fn symbol_upsert(mut self, symbol_id: SymbolId, record: SymbolRecord) -> Self {
-        self.symbols.push(SymbolMutation::Upsert { symbol_id, record });
+        self.symbols
+            .push(SymbolMutation::Upsert { symbol_id, record });
         self
     }
 
@@ -117,7 +118,7 @@ pub struct LexicalNamespace<'a> {
 }
 
 impl<'a> LexicalNamespace<'a> {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
     }
 
@@ -126,74 +127,63 @@ impl<'a> LexicalNamespace<'a> {
         LexicalQueryBuilder::new(self.client)
     }
 
+    /// QI-SDK-01: publish a lexical batch through the typed ingest IPC.
+    /// The SDK no longer opens a channel publisher directly; searchd owns
+    /// the channel and returns the inclusive sequence range in the
+    /// response.
     pub fn publish(&self, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
-        let publisher = open_lexical_publisher(self.client.state_root()?)?;
-        let mut receipt = BatchReceipt::default();
-        if matches!(batch.mode, BatchMode::ReplaceGeneration) {
-            let seq = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: batch.generation,
-                payload: batch.manifest_payload.clone(),
-            }))?;
-            receipt.record(seq);
+        let wire_batch = LexicalIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            mode: batch.mode.to_wire(),
+            manifest_payload: batch.manifest_payload.clone(),
+            chunks: batch.chunks.iter().map(map_chunk).collect(),
+            symbols: batch.symbols.iter().map(map_symbol).collect(),
+            seal: batch.seal,
+        };
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch))?;
+        match response {
+            SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+                "expected lexical receipt, got {}",
+                QuantaIndex::ingest_response_kind(&other)
+            ))),
         }
-        for chunk in &batch.chunks {
-            let op = match chunk {
-                ChunkMutation::Upsert { chunk_id, record } => {
-                    let payload = QuantaIndex::encode_cbor(record)?;
-                    LexicalChannelOp::UpsertChunk(UpsertChunk {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: chunk_id.clone(),
-                        payload,
-                    })
-                }
-                ChunkMutation::Delete { chunk_id } => {
-                    LexicalChannelOp::DeleteChunk(quanta_index_contract::DeleteChunk {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: chunk_id.clone(),
-                    })
-                }
-            };
-            let seq = publisher.publish(op)?;
-            receipt.record(seq);
+    }
+}
+
+fn map_chunk(mutation: &ChunkMutation) -> LexicalChunkMutation {
+    match mutation {
+        ChunkMutation::Upsert { chunk_id, record } => {
+            LexicalChunkMutation::Upsert(LexicalChunkUpsert {
+                chunk_id: chunk_id.clone(),
+                record: record.clone(),
+            })
         }
-        for symbol in &batch.symbols {
-            let op = match symbol {
-                SymbolMutation::Upsert { symbol_id, record } => {
-                    let payload = QuantaIndex::encode_cbor(record)?;
-                    LexicalChannelOp::UpsertSymbol(UpsertSymbol {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        symbol_id: symbol_id.clone(),
-                        payload,
-                    })
-                }
-                SymbolMutation::Delete { symbol_id } => {
-                    LexicalChannelOp::DeleteSymbol(quanta_index_contract::DeleteSymbol {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        symbol_id: symbol_id.clone(),
-                    })
-                }
-            };
-            let seq = publisher.publish(op)?;
-            receipt.record(seq);
+        ChunkMutation::Delete { chunk_id } => LexicalChunkMutation::Delete(LexicalChunkDelete {
+            chunk_id: chunk_id.clone(),
+        }),
+    }
+}
+
+fn map_symbol(mutation: &SymbolMutation) -> LexicalSymbolMutation {
+    match mutation {
+        SymbolMutation::Upsert { symbol_id, record } => {
+            LexicalSymbolMutation::Upsert(LexicalSymbolUpsert {
+                symbol_id: symbol_id.clone(),
+                record: record.clone(),
+            })
         }
-        if batch.seal {
-            let seq =
-                publisher.seal(batch.repo_id.clone(), batch.revision_id.clone(), batch.generation)?;
-            receipt.record(seq);
-            receipt.mark_sealed();
+        SymbolMutation::Delete { symbol_id } => {
+            LexicalSymbolMutation::Delete(LexicalSymbolDelete {
+                symbol_id: symbol_id.clone(),
+            })
         }
-        publisher.flush()?;
-        Ok(receipt)
     }
 }
 
@@ -202,6 +192,7 @@ pub struct LexicalQueryBuilder<'a> {
     syntax: TextQuerySyntax,
     query_text: Option<String>,
     selection: Option<GenerationSelector>,
+    top_k: Option<u32>,
 }
 
 impl<'a> LexicalQueryBuilder<'a> {
@@ -211,6 +202,7 @@ impl<'a> LexicalQueryBuilder<'a> {
             syntax: TextQuerySyntax::Native,
             query_text: None,
             selection: None,
+            top_k: None,
         }
     }
 
@@ -243,52 +235,53 @@ impl<'a> LexicalQueryBuilder<'a> {
         self
     }
 
+    /// QI-QRY-01: required result cap. SDK enforces this is set before
+    /// dispatch so the contract DTO carries an authoritative value.
+    #[must_use]
+    pub fn top_k(mut self, top_k: u32) -> Self {
+        self.top_k = Some(top_k);
+        self
+    }
+
     pub fn execute(self) -> Result<TextQueryResponse, SdkError> {
         let query_text = self
             .query_text
             .ok_or_else(|| SdkError::Usage("lexical query text is required".to_string()))?;
-        let selection = self
-            .selection
-            .ok_or_else(|| SdkError::Usage("lexical generation selection is required".to_string()))?;
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("lexical generation selection is required".to_string())
+        })?;
+        let top_k = self
+            .top_k
+            .ok_or_else(|| SdkError::Usage("lexical top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-        let response = self
-            .client
-            .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(
-                TextQueryRequest {
-                    syntax: self.syntax,
-                    query_text,
-                    generation,
-                    generation_selector,
-                },
-            ))?;
+        let response =
+            self.client
+                .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(
+                    TextQueryRequest {
+                        syntax: self.syntax,
+                        query_text,
+                        generation,
+                        generation_selector,
+                        top_k,
+                    },
+                ))?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Text(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
-                "expected text query response, got {other:?}"
-            ))),
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected text query response, got {}",
+                    QuantaIndex::query_response_kind(&other)
+                )))
+            }
         }
-    }
-}
-
-pub(crate) fn execute_symbol_query(
-    client: &QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: String,
-    selection: GenerationSelector,
-) -> Result<SymbolQueryResponse, SdkError> {
-    let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-    let response = client.dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(
-        quanta_index_contract::SymbolQueryRequest {
-            syntax,
-            query_text,
-            generation,
-            generation_selector,
-        },
-    ))?;
-    match response {
-        quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(results) => Ok(results),
-        other => Err(SdkError::Protocol(format!(
-            "expected symbol query response, got {other:?}"
-        ))),
     }
 }

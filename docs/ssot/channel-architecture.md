@@ -370,7 +370,8 @@ producer (cross-repo) ◄── contract, channel  (api+factory only)
       cursor
       publisher.lock
   search-plane/
-    searchd.sock
+    query.sock
+    control.sock
   indexes/
     lexical/{repo_id}/{revision_id}/g{manifest_generation}/
     semantic/{repo_id}/{revision_id}/g{manifest_generation}/

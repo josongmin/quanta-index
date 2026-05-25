@@ -10,13 +10,14 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ciborium.workspace = true
 quanta-index-channel = { version = "0.1.0", path = "../quanta-index-channel" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
+serde = { workspace = true }
 serde_json.workspace = true
 
 [dev-dependencies]
-ciborium.workspace = true
 tempfile.workspace = true

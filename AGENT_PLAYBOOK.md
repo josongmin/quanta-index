@@ -9,8 +9,12 @@
 
 ## Quick Check
 
-- workspace check: `cargo check --workspace`
-- one crate check: `cargo check -p <crate>`
+- preferred agent surface: `just rust-profile <name>`
+- default local compile: `just rust-profile dev-fast`
+- daemon-only compile: `just rust-profile dev-daemon`
+- widest compile rail: `just rust-profile dev-all-targets`
+- shared-surface validation: `just rust-profile validate-shared-surface`
+- one crate probe when the profile catalog is insufficient: `cargo check -p <crate>`
 
 ## Formatting and Lints
 
@@ -23,9 +27,12 @@
 
 ## Tests
 
-- full workspace tests: `cargo test --workspace`
-- one crate tests: `cargo test -p <crate>`
-- full Rust closeout: `just verify-rust`
+- default local tests: `just rust-profile test-fast`
+- integration rail: `just rust-profile test-integration`
+- daemon e2e rail: `just rust-profile test-daemon`
+- full Rust closeout: `just rust-profile verify-rust`
+- history summary: `just rust-profile-history-summary`
+- one crate probe when the profile catalog is insufficient: `cargo test -p <crate>`
 
 ## Structured Agent Output
 
@@ -49,10 +56,14 @@
 
 # Quick Reference
 
-- `cargo check --workspace`
+- `just rust-profile dev-fast`
+- `just rust-profile validate-shared-surface`
+- `just rust-profile test-fast`
+- `just rust-profile verify-rust`
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
+- `just rust-profile-list`
+- `just rust-profile-history-summary`
 - `python3 tools/prompt-manager/pm.py sync`
 - `python3 tools/prompt-manager/pm.py lint`
 - `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
@@ -63,19 +74,25 @@
 # Rust Front Door Fast Path
 
 Canonical Rust commands:
-- `cargo check --workspace`
+- `just rust-profile dev-fast`
+- `just rust-profile dev-daemon`
+- `just rust-profile dev-all-targets`
+- `just rust-profile validate-shared-surface`
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
+- `just rust-profile test-fast`
+- `just rust-profile test-integration`
+- `just rust-profile test-daemon`
 - `bash scripts/run-cargo-deny.sh`
 - `python3 scripts/check_workspace_lints.py`
 - `bash scripts/check-rust-allow-attributes.sh`
 
 Canonical developer shortcuts:
-- `just check`
-- `just clippy`
-- `just test`
-- `just verify-rust`
+- `just rust-profile-list`
+- `just rust-profile dev-fast`
+- `just rust-profile test-fast`
+- `just rust-profile verify-rust`
+- `just rust-profile-history-summary`
 - `just verify`
 
 

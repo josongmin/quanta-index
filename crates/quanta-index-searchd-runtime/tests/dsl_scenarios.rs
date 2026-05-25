@@ -5,6 +5,10 @@
     clippy::let_underscore_untyped,
     reason = "publisher ops intentionally discard ack payloads in integration setup"
 )]
+#![expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "integration response checks intentionally collapse non-target variants"
+)]
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -20,8 +24,9 @@ use quanta_index_channel::{
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
     EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalChannelOp,
-    LexicalFullBundle, ManifestGeneration, PlannerStage, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    LexicalFullBundle, LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, PlannerStage,
+    RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticChannelOp,
     SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
     UpsertEmbedding,
@@ -51,16 +56,44 @@ fn generation() -> ManifestGeneration {
 }
 
 fn chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    chunk_payload_with_metadata("", "", 0, 0, text)
+}
+
+fn chunk_payload_with_metadata(
+    repo_relative_path: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+    text: &str,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let record = ChunkRecord {
-        repo_relative_path: RepoRelativePath::new(""),
-        language: String::new().into_boxed_str(),
-        start_line: 0,
-        end_line: 0,
+        repo_relative_path: RepoRelativePath::new(repo_relative_path),
+        language: language.to_string().into_boxed_str(),
+        start_line,
+        end_line,
         snippet: text.to_string().into_boxed_str(),
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)
         .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
+    Ok(buf)
+}
+
+fn repo_metadata_payload(
+    fork: bool,
+    archived: bool,
+    visibility: LqVisibility,
+    contexts: &[&str],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let record = LexicalRepoMetadataRecord {
+        fork,
+        archived,
+        visibility,
+        contexts: contexts.iter().map(ToString::to_string).collect(),
+    };
+    let mut buf = Vec::new();
+    ciborium::into_writer(&record, &mut buf)
+        .map_err(|err| -> Box<dyn Error> { format!("encode repo metadata: {err}").into() })?;
     Ok(buf)
 }
 
@@ -163,6 +196,7 @@ fn lexical_request(
             query_text: query_text.to_string(),
             generation: Some(pin()),
             generation_selector: None,
+            top_k: 50,
         }),
     }
 }
@@ -186,6 +220,153 @@ fn wait_for_non_error(socket: &Path, request: &SearchPlaneQueryIpcRequestEnvelop
             Err(_) => false,
         }
     })
+}
+
+#[test]
+fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: repo_metadata_payload(
+                false,
+                false,
+                LqVisibility::Public,
+                &["global", "team-search"],
+            )?,
+        }))?;
+        for (id, path, language, start_line, end_line, payload) in [
+            (
+                "alpha",
+                "src/lib.rs",
+                "rust",
+                10_u32,
+                14_u32,
+                "needle rust alpha",
+            ),
+            (
+                "beta",
+                "src/main.rs",
+                "rust",
+                21_u32,
+                26_u32,
+                "needle rust beta",
+            ),
+            (
+                "gamma",
+                "src/lib.py",
+                "python",
+                30_u32,
+                35_u32,
+                "needle python gamma",
+            ),
+        ] {
+            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(id),
+                payload: chunk_payload_with_metadata(
+                    path, language, start_line, end_line, payload,
+                )?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-metadata-filters")?;
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let query_text = "repo:repo-dsl path:src/lib.rs lang:rust fork:no archived:no visibility:public context:global needle";
+    let request = lexical_request(2, TextQuerySyntax::Sourcegraph, query_text);
+    if !wait_for_non_error(&socket, &request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph metadata query never became ready".into());
+    }
+
+    for _ in 0..5_u8 {
+        let response = send_query_request(&socket, &request)?;
+        let results = match response.payload {
+            SearchPlaneQueryIpcResponse::Text(lexical) => lexical.results,
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err(format!("expected Text, got {other:?}").into());
+            }
+        };
+        if results.len() != 1 {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected 1 metadata-filtered hit, got {results:?}").into());
+        }
+        let candidate = results
+            .first()
+            .ok_or_else(|| "metadata-filtered result missing first candidate".to_string())?;
+        if candidate.candidate_id != "alpha" {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected alpha, got {}", candidate.candidate_id).into());
+        }
+        if candidate.repo_relative_path.as_str() != "src/lib.rs" {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "expected src/lib.rs path, got {}",
+                candidate.repo_relative_path.as_str()
+            )
+            .into());
+        }
+        if candidate.start_line != 10 || candidate.end_line != 14 {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "expected line span 10..14, got {}..{}",
+                candidate.start_line, candidate.end_line
+            )
+            .into());
+        }
+    }
+
+    let negative_request = lexical_request(3, TextQuerySyntax::Sourcegraph, "archived:only needle");
+    let negative_response = send_query_request(&socket, &negative_request)?;
+    let negative_results = match negative_response.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical.results,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Text for archived negative query, got {other:?}").into());
+        }
+    };
+    if !negative_results.is_empty() {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected archived:only to return 0 hits for non-archived repo, got {:?}",
+            lexical_ids(&negative_results)
+        )
+        .into());
+    }
+
+    stop_runtime(shutdown, join)
 }
 
 #[test]
@@ -278,7 +459,233 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
 }
 
 #[test]
-fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
+fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        for (id, path, payload) in [
+            ("alpha", "src/lib.rs", "needle alpha"),
+            ("beta", "src/main.rs", "needle beta"),
+            ("gamma", "docs/readme.md", "other text"),
+        ] {
+            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(id),
+                payload: chunk_payload_with_metadata(path, "rust", 1, 2, payload)?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-repo-has-file")?;
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let request = lexical_request(
+        13,
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/lib.rs) needle",
+    );
+    if !wait_for_non_error(&socket, &request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("repo.has.file query never became ready".into());
+    }
+    let ids = match send_query_request(&socket, &request)?.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)
+        | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Lexical, got {other:?}").into());
+        }
+    };
+    if sort_ids(ids.clone()) != ["alpha".to_string(), "beta".to_string()] {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected repo.has.file ids: {ids:?}").into());
+    }
+
+    let miss_request = lexical_request(
+        14,
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:missing.rs) needle",
+    );
+    if !wait_for_non_error(&socket, &miss_request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("repo.has.file miss query never became ready".into());
+    }
+    let miss_ids = match send_query_request(&socket, &miss_request)?.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)
+        | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Lexical for miss case, got {other:?}").into());
+        }
+    };
+    if !miss_ids.is_empty() {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected 0 repo.has.file miss ids, got {miss_ids:?}").into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        for (id, payload) in [
+            ("alpha", "sphinx of quartz"),
+            ("beta", "riddle42"),
+            ("gamma", "sphinx of clay"),
+        ] {
+            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(id),
+                payload: chunk_payload(payload)?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-phrase-regex")?;
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let request = lexical_request(
+        11,
+        TextQuerySyntax::Sourcegraph,
+        "\"sphinx of quartz\" OR /riddle[0-9]+/",
+    );
+    if !wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Text(_)
+                | SearchPlaneQueryIpcResponse::Symbol(_)
+                | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::History(_)
+                | SearchPlaneQueryIpcResponse::Structural(_)
+                | SearchPlaneQueryIpcResponse::Bridge(_)
+                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                | SearchPlaneQueryIpcResponse::Explain(_)
+                | SearchPlaneQueryIpcResponse::Sourcegraph(_) => true,
+                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+            },
+            Err(_) => false,
+        }
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph phrase/regex query never progressed past NOT_READY".into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let ids = match response.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)
+        | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Lexical, got {other:?}").into());
+        }
+    };
+    if sort_ids(ids.clone()) != ["alpha".to_string(), "beta".to_string()] {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected Sourcegraph phrase/regex ids: {ids:?}").into());
+    }
+
+    let regexp_option_request = lexical_request(
+        12,
+        TextQuerySyntax::Sourcegraph,
+        "patterntype:regexp riddle[0-9]+",
+    );
+    if !wait_for_non_error(&socket, &regexp_option_request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("sourcegraph patterntype:regexp query never became ready".into());
+    }
+    let regexp_option_ids = match send_query_request(&socket, &regexp_option_request)?.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)
+        | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Lexical for patterntype:regexp, got {other:?}").into());
+        }
+    };
+    if regexp_option_ids != ["beta".to_string()] {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected Sourcegraph patterntype:regexp ids: {regexp_option_ids:?}"
+        )
+        .into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
 
@@ -343,10 +750,14 @@ fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
     }
 
     let regex_request = lexical_request(3, TextQuerySyntax::Native, "/riddle[0-9]+/");
-    let regex_err = match send_query_request(&socket, &regex_request)?.payload {
-        SearchPlaneQueryIpcResponse::Error(err) => err,
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
-        | SearchPlaneQueryIpcResponse::Symbol(_)
+    if !wait_for_non_error(&socket, &regex_request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("LQ regex query never became ready".into());
+    }
+    let regex_ids = match send_query_request(&socket, &regex_request)?.payload {
+        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -354,16 +765,17 @@ fn lq_phrase_executes_live_and_regex_leaf_fails_closed() -> TestResult {
         | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)
         | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected regex leaf to fail closed, got {other:?}").into());
+            return Err(format!("expected live regex result, got {other:?}").into());
         }
     };
-    if regex_err.code != "INVALID_REQUEST" {
+    if regex_ids != ["beta".to_string()] {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("unexpected regex error code: {}", regex_err.code).into());
+        return Err(format!("unexpected LQ regex ids: {regex_ids:?}").into());
     }
 
     stop_runtime(shutdown, join)
@@ -427,7 +839,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 3,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             query_vector: None,
             query_vector_ref: None,
             generation: Some(pin()),
@@ -583,8 +995,9 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
                 generation: Some(pin()),
                 generation_selector: None,
+                top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
             semantic_vector: None,
             semantic_vector_ref: None,
             generation: Some(pin()),
@@ -728,6 +1141,7 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
                     query_text: query_text.to_string(),
                     generation: Some(pin()),
                     generation_selector: None,
+                    top_k: 50,
                 },
                 target: BridgeTarget::CodeQl,
             }),

@@ -11,13 +11,15 @@
 //!
 //! ```text
 //! query   := term (WS term)*
-//! term    := group | NOT term | filter | pattern
+//! term    := group | NOT term | predicate | filter | pattern
 //! group   := '(' query ')'
 //! filter  := ident ':' value
+//! predicate := ('repo' | 'file') ':' ident ('.' ident)* '(' ... ')'
 //! ident   := [A-Za-z][A-Za-z0-9_]*
-//! value   := non-whitespace, non-')' run (quoted runs unsupported v1)
+//! value   := non-whitespace, non-')' run
 //! pattern := one of:
 //!              '"' ... '"'   — phrase
+//!              '/' ... '/'   — regex
 //!              non-keyword run of non-whitespace, non-')' bytes
 //! ```
 //!
@@ -45,6 +47,7 @@ use crate::errors::{BridgeError, BridgeErrorCode};
 pub enum SgFilter {
     Repo(Box<str>),
     File(Box<str>),
+    Path(Box<str>),
     Lang(Box<str>),
     Type(Box<str>),
     Case(Box<str>),
@@ -57,6 +60,8 @@ pub enum SgFilter {
     Visibility(Box<str>),
     Context(Box<str>),
     Index(Box<str>),
+    Boost(Box<str>),
+    Timeout(Box<str>),
 }
 
 impl SgFilter {
@@ -66,6 +71,7 @@ impl SgFilter {
         match self {
             Self::Repo(_) => "repo",
             Self::File(_) => "file",
+            Self::Path(_) => "path",
             Self::Lang(_) => "lang",
             Self::Type(_) => "type",
             Self::Case(_) => "case",
@@ -78,6 +84,8 @@ impl SgFilter {
             Self::Visibility(_) => "visibility",
             Self::Context(_) => "context",
             Self::Index(_) => "index",
+            Self::Boost(_) => "boost",
+            Self::Timeout(_) => "timeout",
         }
     }
 
@@ -87,6 +95,7 @@ impl SgFilter {
         match self {
             Self::Repo(v)
             | Self::File(v)
+            | Self::Path(v)
             | Self::Lang(v)
             | Self::Type(v)
             | Self::Case(v)
@@ -98,7 +107,9 @@ impl SgFilter {
             | Self::Content(v)
             | Self::Visibility(v)
             | Self::Context(v)
-            | Self::Index(v) => v,
+            | Self::Index(v)
+            | Self::Boost(v)
+            | Self::Timeout(v) => v,
         }
     }
 
@@ -111,6 +122,7 @@ impl SgFilter {
         let f = match name {
             "repo" => Self::Repo(v),
             "file" => Self::File(v),
+            "path" => Self::Path(v),
             "lang" => Self::Lang(v),
             "type" => Self::Type(v),
             "case" => Self::Case(v),
@@ -123,9 +135,67 @@ impl SgFilter {
             "visibility" => Self::Visibility(v),
             "context" => Self::Context(v),
             "index" => Self::Index(v),
+            "boost" => Self::Boost(v),
+            "timeout" => Self::Timeout(v),
             _ => return None,
         };
         Some(f)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SgPatternKind {
+    Literal,
+    Phrase,
+    Regex,
+}
+
+impl SgPatternKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::Phrase => "phrase",
+            Self::Regex => "regex",
+        }
+    }
+
+    fn from_str(v: &str) -> Option<Self> {
+        match v {
+            "literal" => Some(Self::Literal),
+            "phrase" => Some(Self::Phrase),
+            "regex" => Some(Self::Regex),
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for SgPatternKind {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SgPatternKind {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = SgPatternKind;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("SgPatternKind string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SgPatternKind, E> {
+                SgPatternKind::from_str(v)
+                    .ok_or_else(|| E::unknown_variant(v, &["literal", "phrase", "regex"]))
+            }
+        }
+        de.deserialize_str(V)
     }
 }
 
@@ -203,7 +273,15 @@ impl<'de> serde::Deserialize<'de> for SgFilter {
 /// trees, and bare phrases all collapse onto the other variants.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SgQuery {
-    Pattern(Box<str>),
+    Pattern {
+        kind: SgPatternKind,
+        body: Box<str>,
+    },
+    Predicate {
+        scope: Box<str>,
+        name: Box<str>,
+        args_raw: Box<str>,
+    },
     And(Vec<SgQuery>),
     Or(Vec<SgQuery>),
     Not(Box<SgQuery>),
@@ -217,7 +295,8 @@ impl SgQuery {
     /// Tag string used by the hand-rolled serde impl.
     const fn tag(&self) -> &'static str {
         match self {
-            Self::Pattern(_) => "pattern",
+            Self::Pattern { .. } => "pattern",
+            Self::Predicate { .. } => "predicate",
             Self::And(_) => "and",
             Self::Or(_) => "or",
             Self::Not(_) => "not",
@@ -233,14 +312,25 @@ impl serde::Serialize for SgQuery {
     {
         use serde::ser::SerializeMap as _;
         let n = match self {
-            Self::Pattern(_) | Self::And(_) | Self::Or(_) | Self::Not(_) => 2,
-            Self::Filtered { .. } => 3,
+            Self::Pattern { .. } | Self::Filtered { .. } => 3,
+            Self::Predicate { .. } => 4,
+            Self::And(_) | Self::Or(_) | Self::Not(_) => 2,
         };
         let mut m = ser.serialize_map(Some(n))?;
         m.serialize_entry("tag", self.tag())?;
         match self {
-            Self::Pattern(p) => {
-                m.serialize_entry("value", p.as_ref())?;
+            Self::Pattern { kind, body } => {
+                m.serialize_entry("kind", kind)?;
+                m.serialize_entry("value", body.as_ref())?;
+            }
+            Self::Predicate {
+                scope,
+                name,
+                args_raw,
+            } => {
+                m.serialize_entry("scope", scope.as_ref())?;
+                m.serialize_entry("name", name.as_ref())?;
+                m.serialize_entry("args_raw", args_raw.as_ref())?;
             }
             Self::And(xs) | Self::Or(xs) => {
                 m.serialize_entry("value", xs)?;
@@ -277,7 +367,11 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
                 mut map: M,
             ) -> Result<SgQuery, M::Error> {
                 let mut tag: Option<String> = None;
+                let mut kind: Option<SgPatternKind> = None;
                 let mut s_value: Option<String> = None;
+                let mut scope: Option<String> = None;
+                let mut pred_name: Option<String> = None;
+                let mut args_raw: Option<String> = None;
                 let mut l_value: Option<Vec<SgQuery>> = None;
                 let mut sub_value: Option<Box<SgQuery>> = None;
                 let mut filters: Option<Vec<SgFilter>> = None;
@@ -325,12 +419,41 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
                                         "filtered SgQuery must use `filters` + `body` keys, not `value`",
                                     ));
                                 }
+                                "predicate" => {
+                                    return Err(M::Error::custom(
+                                        "predicate SgQuery must use `scope` + `name` + `args_raw`, not `value`",
+                                    ));
+                                }
                                 other => {
                                     return Err(M::Error::custom(format!(
                                         "unknown SgQuery tag `{other}`"
                                     )));
                                 }
                             }
+                        }
+                        "kind" => {
+                            if kind.is_some() {
+                                return Err(M::Error::duplicate_field("kind"));
+                            }
+                            kind = Some(map.next_value()?);
+                        }
+                        "scope" => {
+                            if scope.is_some() {
+                                return Err(M::Error::duplicate_field("scope"));
+                            }
+                            scope = Some(map.next_value()?);
+                        }
+                        "name" => {
+                            if pred_name.is_some() {
+                                return Err(M::Error::duplicate_field("name"));
+                            }
+                            pred_name = Some(map.next_value()?);
+                        }
+                        "args_raw" => {
+                            if args_raw.is_some() {
+                                return Err(M::Error::duplicate_field("args_raw"));
+                            }
+                            args_raw = Some(map.next_value()?);
                         }
                         "filters" => {
                             if filters.is_some() {
@@ -347,7 +470,10 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
                         other => {
                             return Err(M::Error::unknown_field(
                                 other,
-                                &["tag", "value", "filters", "body"],
+                                &[
+                                    "tag", "kind", "value", "scope", "name", "args_raw", "filters",
+                                    "body",
+                                ],
                             ));
                         }
                     }
@@ -356,7 +482,22 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
                 match t.as_str() {
                     "pattern" => {
                         let s = s_value.ok_or_else(|| M::Error::missing_field("value"))?;
-                        Ok(SgQuery::Pattern(s.into_boxed_str()))
+                        let kind = kind.unwrap_or(SgPatternKind::Literal);
+                        Ok(SgQuery::Pattern {
+                            kind,
+                            body: s.into_boxed_str(),
+                        })
+                    }
+                    "predicate" => {
+                        let scope = scope.ok_or_else(|| M::Error::missing_field("scope"))?;
+                        let name = pred_name.ok_or_else(|| M::Error::missing_field("name"))?;
+                        let args_raw =
+                            args_raw.ok_or_else(|| M::Error::missing_field("args_raw"))?;
+                        Ok(SgQuery::Predicate {
+                            scope: scope.into_boxed_str(),
+                            name: name.into_boxed_str(),
+                            args_raw: args_raw.into_boxed_str(),
+                        })
                     }
                     "and" => {
                         let xs = l_value.ok_or_else(|| M::Error::missing_field("value"))?;
@@ -559,9 +700,15 @@ impl<'a> Parser<'a> {
             self.pos = self.pos.saturating_add(1);
             return Ok(inner);
         }
+        if let Some(predicate) = self.try_parse_repo_file_predicate()? {
+            return Ok(predicate);
+        }
         // Phrase: "..."
         if self.peek() == Some(b'"') {
             return self.parse_phrase();
+        }
+        if self.peek() == Some(b'/') {
+            return self.parse_regex();
         }
         // Filter or pattern: read a non-whitespace, non-')' run.
         let start = self.pos;
@@ -603,15 +750,18 @@ impl<'a> Parser<'a> {
                 |f| {
                     Ok(SgQuery::Filtered {
                         filters: vec![f],
-                        body: Box::new(SgQuery::Pattern(Box::<str>::from(""))),
+                        body: Box::new(SgQuery::Pattern {
+                            kind: SgPatternKind::Literal,
+                            body: Box::<str>::from(""),
+                        }),
                     })
                 },
             );
         }
-        // Bare pattern. Reject Sourcegraph short-aliases that we don't
-        // ship; this is the documented refused set from
-        // [BRIDGE-01 § 6.1].
-        Ok(SgQuery::Pattern(Box::<str>::from(run)))
+        Ok(SgQuery::Pattern {
+            kind: SgPatternKind::Literal,
+            body: Box::<str>::from(run),
+        })
     }
 
     fn parse_phrase(&mut self) -> Result<SgQuery, BridgeError> {
@@ -632,7 +782,10 @@ impl<'a> Parser<'a> {
                     )
                 })?;
                 self.pos = self.pos.saturating_add(1);
-                return Ok(SgQuery::Pattern(Box::<str>::from(s)));
+                return Ok(SgQuery::Pattern {
+                    kind: SgPatternKind::Phrase,
+                    body: Box::<str>::from(s),
+                });
             }
             self.pos = self.pos.saturating_add(1);
         }
@@ -641,6 +794,210 @@ impl<'a> Parser<'a> {
             None,
             format!("unterminated phrase starting at offset {start}"),
         ))
+    }
+
+    fn parse_regex(&mut self) -> Result<SgQuery, BridgeError> {
+        self.pos = self.pos.saturating_add(1);
+        let start = self.pos;
+        let mut escaped = false;
+        while let Some(b) = self.peek() {
+            self.pos = self.pos.saturating_add(1);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match b {
+                b'\\' => escaped = true,
+                b'/' => {
+                    let end = self.pos.saturating_sub(1);
+                    let slice = self
+                        .src
+                        .get(start..end)
+                        .ok_or_else(|| BridgeError::translate_fail("internal: regex slice OOB"))?;
+                    let s = core::str::from_utf8(slice).map_err(|err| {
+                        BridgeError::new(
+                            BridgeErrorCode::BridgeTranslateFail,
+                            None,
+                            format!("non-utf8 in regex at offset {start}: {err}"),
+                        )
+                    })?;
+                    return Ok(SgQuery::Pattern {
+                        kind: SgPatternKind::Regex,
+                        body: Box::<str>::from(s),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Err(BridgeError::new(
+            BridgeErrorCode::BridgeTranslateFail,
+            None,
+            format!("unterminated regex starting at offset {start}"),
+        ))
+    }
+
+    fn try_parse_repo_file_predicate(&mut self) -> Result<Option<SgQuery>, BridgeError> {
+        let save = self.pos;
+        if !self.skip_ident() {
+            return Ok(None);
+        }
+        let scope_end = self.pos;
+        if self.peek() != Some(b':') {
+            self.pos = save;
+            return Ok(None);
+        }
+        let scope = self.slice_to_str(save, scope_end, "predicate scope")?;
+        if scope != "repo" && scope != "file" {
+            self.pos = save;
+            return Ok(None);
+        }
+        self.pos = self.pos.saturating_add(1);
+        let name_start = self.pos;
+        if !self.skip_ident() {
+            self.pos = save;
+            return Ok(None);
+        }
+        while self.peek() == Some(b'.') {
+            self.pos = self.pos.saturating_add(1);
+            if !self.skip_ident() {
+                return Err(BridgeError::new(
+                    BridgeErrorCode::BridgeTranslateFail,
+                    None,
+                    format!("invalid predicate segment at offset {}", self.pos),
+                ));
+            }
+        }
+        if self.peek() != Some(b'(') {
+            self.pos = save;
+            return Ok(None);
+        }
+        let name_end = self.pos;
+        let name = self.slice_to_str(name_start, name_end, "predicate name")?;
+        self.pos = self.pos.saturating_add(1);
+        let args_start = self.pos;
+        let args_end = self.scan_predicate_args()?;
+        let args_raw = self.slice_to_str(args_start, args_end, "predicate args")?;
+        Ok(Some(SgQuery::Predicate {
+            scope: Box::<str>::from(scope),
+            name: Box::<str>::from(name),
+            args_raw: Box::<str>::from(args_raw),
+        }))
+    }
+
+    fn scan_predicate_args(&mut self) -> Result<usize, BridgeError> {
+        enum ScanMode {
+            Normal,
+            Phrase,
+            Raw,
+            Regex,
+        }
+
+        let start = self.pos;
+        let mut depth: usize = 1;
+        let mut escaped = false;
+        let mut mode = ScanMode::Normal;
+        while let Some(b) = self.peek() {
+            self.pos = self.pos.saturating_add(1);
+            match mode {
+                ScanMode::Normal => match b {
+                    b'"' => mode = ScanMode::Phrase,
+                    b'\'' => mode = ScanMode::Raw,
+                    b'/' => {
+                        let prev = if self.pos >= 2 {
+                            self.src
+                                .get(self.pos.saturating_sub(2))
+                                .copied()
+                                .unwrap_or(b'(')
+                        } else {
+                            b'('
+                        };
+                        if self.pos.saturating_sub(1) == start
+                            || matches!(prev, b'(' | b',' | b' ' | b'\t' | b':')
+                        {
+                            mode = ScanMode::Regex;
+                        }
+                    }
+                    b'(' => depth = depth.saturating_add(1),
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return Ok(self.pos.saturating_sub(1));
+                        }
+                    }
+                    _ => {}
+                },
+                ScanMode::Phrase => {
+                    if escaped {
+                        escaped = false;
+                    } else {
+                        match b {
+                            b'\\' => escaped = true,
+                            b'"' => mode = ScanMode::Normal,
+                            _ => {}
+                        }
+                    }
+                }
+                ScanMode::Raw => {
+                    if escaped {
+                        escaped = false;
+                    } else {
+                        match b {
+                            b'\\' => escaped = true,
+                            b'\'' => mode = ScanMode::Normal,
+                            _ => {}
+                        }
+                    }
+                }
+                ScanMode::Regex => {
+                    if escaped {
+                        escaped = false;
+                    } else {
+                        match b {
+                            b'\\' => escaped = true,
+                            b'/' => mode = ScanMode::Normal,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Err(BridgeError::new(
+            BridgeErrorCode::BridgeTranslateFail,
+            None,
+            format!("unterminated predicate starting at offset {start}"),
+        ))
+    }
+
+    fn skip_ident(&mut self) -> bool {
+        let Some(first) = self.peek() else {
+            return false;
+        };
+        if !first.is_ascii_alphabetic() {
+            return false;
+        }
+        self.pos = self.pos.saturating_add(1);
+        while let Some(b) = self.peek() {
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.pos = self.pos.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+        true
+    }
+
+    fn slice_to_str(&self, start: usize, end: usize, label: &str) -> Result<&'a str, BridgeError> {
+        let slice = self
+            .src
+            .get(start..end)
+            .ok_or_else(|| BridgeError::translate_fail(format!("internal: {label} slice OOB")))?;
+        core::str::from_utf8(slice).map_err(|err| {
+            BridgeError::new(
+                BridgeErrorCode::BridgeTranslateFail,
+                None,
+                format!("non-utf8 in {label} at offset {start}: {err}"),
+            )
+        })
     }
 }
 
@@ -698,9 +1055,15 @@ fn collapse_filters(q: SgQuery) -> SgQuery {
         body_terms
             .into_iter()
             .next()
-            .unwrap_or_else(|| SgQuery::Pattern(Box::<str>::from("")))
+            .unwrap_or_else(|| SgQuery::Pattern {
+                kind: SgPatternKind::Literal,
+                body: Box::<str>::from(""),
+            })
     } else if body_terms.is_empty() {
-        SgQuery::Pattern(Box::<str>::from(""))
+        SgQuery::Pattern {
+            kind: SgPatternKind::Literal,
+            body: Box::<str>::from(""),
+        }
     } else {
         SgQuery::And(body_terms)
     };
@@ -715,12 +1078,12 @@ fn collapse_filters(q: SgQuery) -> SgQuery {
 }
 
 fn is_empty_pattern_placeholder(q: &SgQuery) -> bool {
-    matches!(q, SgQuery::Pattern(p) if p.is_empty())
+    matches!(q, SgQuery::Pattern { kind: SgPatternKind::Literal, body } if body.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SgFilter, SgQuery, parse_sourcegraph};
+    use super::{SgFilter, SgPatternKind, SgQuery, parse_sourcegraph};
     use crate::errors::BridgeErrorCode;
 
     fn unwrap_ok(q: Result<SgQuery, crate::errors::BridgeError>) -> SgQuery {
@@ -728,7 +1091,10 @@ mod tests {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "parse failed: {e}");
-                SgQuery::Pattern(Box::<str>::from(""))
+                SgQuery::Pattern {
+                    kind: SgPatternKind::Literal,
+                    body: Box::<str>::from(""),
+                }
             }
         }
     }
@@ -736,21 +1102,34 @@ mod tests {
     #[test]
     fn parses_bare_pattern() {
         let q = unwrap_ok(parse_sourcegraph("foo"));
-        let SgQuery::Pattern(p) = q else {
+        let SgQuery::Pattern { kind, body } = q else {
             assert!(false, "expected Pattern");
             return;
         };
-        assert_eq!(&*p, "foo");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "foo");
     }
 
     #[test]
     fn parses_phrase() {
         let q = unwrap_ok(parse_sourcegraph("\"hello world\""));
-        let SgQuery::Pattern(p) = q else {
+        let SgQuery::Pattern { kind, body } = q else {
             assert!(false, "expected Pattern(phrase)");
             return;
         };
-        assert_eq!(&*p, "hello world");
+        assert_eq!(kind, SgPatternKind::Phrase);
+        assert_eq!(&*body, "hello world");
+    }
+
+    #[test]
+    fn parses_regex() {
+        let q = unwrap_ok(parse_sourcegraph(r"/h.llo\/world/"));
+        let SgQuery::Pattern { kind, body } = q else {
+            assert!(false, "expected Pattern(regex)");
+            return;
+        };
+        assert_eq!(kind, SgPatternKind::Regex);
+        assert_eq!(&*body, r"h.llo\/world");
     }
 
     #[test]
@@ -766,11 +1145,12 @@ mod tests {
             return;
         };
         assert_eq!(&**v, "acme/foo");
-        let SgQuery::Pattern(p) = *body else {
+        let SgQuery::Pattern { kind, body } = *body else {
             assert!(false, "expected empty body");
             return;
         };
-        assert_eq!(&*p, "");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "");
     }
 
     #[test]
@@ -781,11 +1161,12 @@ mod tests {
             return;
         };
         assert_eq!(filters.len(), 1);
-        let SgQuery::Pattern(p) = *body else {
+        let SgQuery::Pattern { kind, body } = *body else {
             assert!(false, "expected Pattern body");
             return;
         };
-        assert_eq!(&*p, "bar");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "bar");
     }
 
     #[test]
@@ -796,11 +1177,12 @@ mod tests {
             return;
         };
         assert_eq!(filters.len(), 3);
-        let SgQuery::Pattern(p) = *body else {
+        let SgQuery::Pattern { kind, body } = *body else {
             assert!(false, "expected Pattern body");
             return;
         };
-        assert_eq!(&*p, "foo");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "foo");
     }
 
     #[test]
@@ -830,11 +1212,12 @@ mod tests {
             assert!(false, "expected Not");
             return;
         };
-        let SgQuery::Pattern(p) = *inner else {
+        let SgQuery::Pattern { kind, body } = *inner else {
             assert!(false, "expected Pattern inside Not");
             return;
         };
-        assert_eq!(&*p, "foo");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "foo");
     }
 
     #[test]
@@ -912,6 +1295,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unterminated_regex() {
+        match parse_sourcegraph("/hello") {
+            Ok(_) => assert!(false, "unterminated regex must reject"),
+            Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeTranslateFail),
+        }
+    }
+
+    #[test]
     fn filter_with_slash_value() {
         let q = unwrap_ok(parse_sourcegraph("repo:^github.com/acme/.*$"));
         let SgQuery::Filtered { filters, .. } = q else {
@@ -930,11 +1321,75 @@ mod tests {
         // Colon-bearing pattern with a non-identifier head reads as
         // a bare pattern (e.g. `:abc` has no name part).
         let q = unwrap_ok(parse_sourcegraph(":abc"));
-        let SgQuery::Pattern(p) = q else {
+        let SgQuery::Pattern { kind, body } = q else {
             assert!(false, "expected Pattern");
             return;
         };
-        assert_eq!(&*p, ":abc");
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, ":abc");
+    }
+
+    #[test]
+    fn parses_path_filter() {
+        let q = unwrap_ok(parse_sourcegraph("path:^src/ foo"));
+        let SgQuery::Filtered { filters, .. } = q else {
+            assert!(false, "expected Filtered");
+            return;
+        };
+        let Some(SgFilter::Path(v)) = filters.first() else {
+            assert!(false, "expected Path");
+            return;
+        };
+        assert_eq!(&**v, "^src/");
+    }
+
+    #[test]
+    fn parses_repo_predicate() {
+        let q = unwrap_ok(parse_sourcegraph(
+            r#"repo:has.file(path:src/lib.rs, name:"Cargo.toml")"#,
+        ));
+        let SgQuery::Predicate {
+            scope,
+            name,
+            args_raw,
+        } = q
+        else {
+            assert!(false, "expected Predicate");
+            return;
+        };
+        assert_eq!(&*scope, "repo");
+        assert_eq!(&*name, "has.file");
+        assert_eq!(&*args_raw, r#"path:src/lib.rs, name:"Cargo.toml""#);
+    }
+
+    #[test]
+    fn parses_file_predicate_with_phrase_arg() {
+        let q = unwrap_ok(parse_sourcegraph(r#"file:contains("impl Display") foo"#));
+        let SgQuery::And(xs) = q else {
+            assert!(false, "expected And");
+            return;
+        };
+        assert_eq!(xs.len(), 2);
+        let Some(SgQuery::Predicate {
+            scope,
+            name,
+            args_raw,
+        }) = xs.first()
+        else {
+            assert!(false, "expected Predicate");
+            return;
+        };
+        assert_eq!(&**scope, "file");
+        assert_eq!(&**name, "contains");
+        assert_eq!(&**args_raw, r#""impl Display""#);
+    }
+
+    #[test]
+    fn rejects_unterminated_predicate() {
+        match parse_sourcegraph("repo:has.file(path:src") {
+            Ok(_) => assert!(false, "unterminated predicate must reject"),
+            Err(e) => assert_eq!(e.code, BridgeErrorCode::BridgeTranslateFail),
+        }
     }
 
     #[test]
@@ -953,7 +1408,10 @@ mod tests {
 
     #[test]
     fn sgquery_serde_roundtrip_pattern() {
-        let q = SgQuery::Pattern(Box::<str>::from("foo"));
+        let q = SgQuery::Pattern {
+            kind: SgPatternKind::Phrase,
+            body: Box::<str>::from("foo"),
+        };
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&q, &mut buf) {
             assert!(false, "{e}");
@@ -972,7 +1430,28 @@ mod tests {
                 SgFilter::Repo(Box::<str>::from("acme/foo")),
                 SgFilter::Lang(Box::<str>::from("rust")),
             ],
-            body: Box::new(SgQuery::Pattern(Box::<str>::from("bar"))),
+            body: Box::new(SgQuery::Pattern {
+                kind: SgPatternKind::Literal,
+                body: Box::<str>::from("bar"),
+            }),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(e) = ciborium::ser::into_writer(&q, &mut buf) {
+            assert!(false, "{e}");
+        }
+        let got: Result<SgQuery, _> = ciborium::de::from_reader(buf.as_slice());
+        match got {
+            Ok(v) => assert_eq!(v, q),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn sgquery_serde_roundtrip_predicate() {
+        let q = SgQuery::Predicate {
+            scope: Box::<str>::from("repo"),
+            name: Box::<str>::from("has.file"),
+            args_raw: Box::<str>::from("path:src"),
         };
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&q, &mut buf) {

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::Path, sync::RwLock};
 
-use quanta_index_contract::{RepoId, RepoMapQueryRequestV1, RepoMapQueryResponseV1, RevisionId};
-use quanta_index_contract::{RepoMapActivateGenerationRequestV1, RepoMapSourceBundleV1};
+use quanta_index_contract::{RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId};
+use quanta_index_contract::{RepoMapActivateGenerationRequest, RepoMapSourceBundle};
 use quanta_index_core::{
     CoreError, RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort,
 };
@@ -88,7 +88,7 @@ impl RepoMapGenerationStore {
         })
     }
 
-    pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundleV1) -> Result<(), CoreError> {
+    pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
         if bundle.authority_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: authority_digest must not be empty".to_string(),
@@ -124,7 +124,7 @@ impl RepoMapGenerationStore {
 
     pub fn activate_generation(
         &self,
-        request: &RepoMapActivateGenerationRequestV1,
+        request: &RepoMapActivateGenerationRequest,
     ) -> Result<(), CoreError> {
         if request.manifest_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
@@ -173,8 +173,8 @@ impl RepoMapGenerationStore {
 
     pub fn read_query_snapshot(
         &self,
-        request: &RepoMapQueryRequestV1,
-    ) -> Result<RepoMapQueryResponseV1, CoreError> {
+        request: &RepoMapQueryRequest,
+    ) -> Result<RepoMapQueryResponse, CoreError> {
         self.ensure_generation_activated(request)?;
         let key = RepoMapStoreKeyV1::new(
             &request.repo_id,
@@ -213,10 +213,7 @@ impl RepoMapGenerationStore {
             .map_or_else(|_| None, |guard| guard.get(&key).copied())
     }
 
-    fn ensure_generation_activated(
-        &self,
-        request: &RepoMapQueryRequestV1,
-    ) -> Result<(), CoreError> {
+    fn ensure_generation_activated(&self, request: &RepoMapQueryRequest) -> Result<(), CoreError> {
         let key = (
             request.repo_id.as_str().to_string(),
             request.revision_id.as_str().to_string(),
@@ -246,7 +243,7 @@ impl RepoMapGenerationStore {
 }
 
 impl RepoMapBundleIngestPort for RepoMapGenerationStore {
-    fn ingest_bundle(&self, bundle: &RepoMapSourceBundleV1) -> Result<(), CoreError> {
+    fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
         Self::ingest_bundle(self, bundle)
     }
 }
@@ -254,14 +251,14 @@ impl RepoMapBundleIngestPort for RepoMapGenerationStore {
 impl RepoMapGenerationActivatePort for RepoMapGenerationStore {
     fn activate_generation(
         &self,
-        request: &RepoMapActivateGenerationRequestV1,
+        request: &RepoMapActivateGenerationRequest,
     ) -> Result<(), CoreError> {
         Self::activate_generation(self, request)
     }
 }
 
 impl RepoMapQueryPort for RepoMapGenerationStore {
-    fn query(&self, request: RepoMapQueryRequestV1) -> Result<RepoMapQueryResponseV1, CoreError> {
+    fn query(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
         Self::read_query_snapshot(self, &request)
     }
 }

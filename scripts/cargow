@@ -6,6 +6,170 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Shellcheck disable is local and intentional: the env script exports cache paths
 # that should affect this process before we exec cargo.
 # shellcheck disable=SC1091
+
+has_arg() {
+  local needle="$1"
+  shift
+
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+arg_value() {
+  local short_flag="$1"
+  local long_flag="$2"
+  shift 2
+
+  local expect_value="0"
+  local arg
+  for arg in "$@"; do
+    if [[ "$expect_value" == "1" ]]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+
+    case "$arg" in
+      "${short_flag}"|"${long_flag}")
+        expect_value="1"
+        ;;
+      "${short_flag}="*|"${long_flag}="*)
+        printf '%s\n' "${arg#*=}"
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+detect_lane() {
+  local subcommand="${1:-}"
+  shift || true
+
+  local package_name=""
+  if package_name="$(arg_value "-p" "--package" "$@")"; then
+    :
+  else
+    package_name=""
+  fi
+
+  case "$subcommand" in
+    check|build)
+      if has_arg "--timings" "$@"; then
+        if [[ "$package_name" == "quanta-index-searchd-runtime" ]]; then
+          printf '%s\n' "timings-daemon-lane"
+          return 0
+        fi
+        if has_arg "--all-targets" "$@"; then
+          printf '%s\n' "timings-all-targets-lane"
+          return 0
+        fi
+        printf '%s\n' "timings-fast-lane"
+        return 0
+      fi
+
+      if [[ "$package_name" == "quanta-index-searchd-runtime" ]]; then
+        printf '%s\n' "daemon-lane"
+        return 0
+      fi
+      if has_arg "--all-targets" "$@"; then
+        printf '%s\n' "all-targets-lane"
+        return 0
+      fi
+      if has_arg "--lib" "$@" && has_arg "--bins" "$@"; then
+        printf '%s\n' "fast-lane"
+        return 0
+      fi
+      printf '%s\n' "dev-lane"
+      ;;
+    clippy)
+      printf '%s\n' "clippy-lane"
+      ;;
+    test)
+      if [[ "$package_name" == "quanta-index-searchd-runtime" ]]; then
+        printf '%s\n' "test-daemon-lane"
+        return 0
+      fi
+      if has_arg "--test" "$@"; then
+        if [[ "$package_name" == "quanta-index-searchctl" || "$package_name" == "quanta-index-conformance" ]]; then
+          printf '%s\n' "test-cli-smoke-lane"
+          return 0
+        fi
+        printf '%s\n' "test-integration-lane"
+        return 0
+      fi
+      if has_arg "--lib" "$@" && has_arg "--bins" "$@"; then
+        printf '%s\n' "test-fast-lane"
+        return 0
+      fi
+      printf '%s\n' "test-workspace-lane"
+      ;;
+    doc)
+      printf '%s\n' "doc-lane"
+      ;;
+    bench)
+      printf '%s\n' "bench-lane"
+      ;;
+    clean)
+      printf '%s\n' "shared"
+      ;;
+    *)
+      printf '%s\n' "shared"
+      ;;
+  esac
+}
+
+log_cargo_event() {
+  local lane="$1"
+  local lane_source="$2"
+  local exit_code="$3"
+  local duration_ms="$4"
+  local cargo_subcommand="${5:-}"
+
+  if [[ "${QUANTA_INDEX_BUILD_LOGGING:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  if ! python3 "${SCRIPT_DIR}/../tools/ci/timing/rust_profile_history.py" \
+      append-cargo \
+      "$lane" \
+      "$lane_source" \
+      "$exit_code" \
+      "$duration_ms" \
+      "$cargo_subcommand"; then
+    printf 'warning: cargo lane log append failed for lane=%s\n' "$lane" >&2
+  fi
+}
+
+lane="${QUANTA_INDEX_BUILD_LANE:-}"
+lane_source="env"
+if [[ "${1:-}" == "--lane" ]]; then
+  lane="${2:-}"
+  lane_source="explicit"
+  shift 2
+elif [[ -z "$lane" ]]; then
+  lane="$(detect_lane "$@")"
+  lane_source="auto"
+fi
+export QUANTA_INDEX_BUILD_LANE="$lane"
+
 source "${SCRIPT_DIR}/quanta-index-env.sh"
 
-exec cargo "$@"
+start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+
+set +e
+cargo "$@"
+status="$?"
+set -e
+
+end_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+duration_ms="$((end_ms - start_ms))"
+
+log_cargo_event "$lane" "$lane_source" "$status" "$duration_ms" "${1:-}"
+exit "$status"

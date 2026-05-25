@@ -5,7 +5,7 @@
 # - `just <recipe>`
 #
 # Both source `scripts/quanta-index-env.sh`, which exports:
-#   CARGO_TARGET_DIR=$QUANTA_INDEX_CACHE_ROOT/target
+#   CARGO_TARGET_DIR=$QUANTA_INDEX_CACHE_ROOT/target/$QUANTA_INDEX_BUILD_LANE
 #
 # Default cache roots:
 #   macOS: ~/Library/Caches/quanta-index

@@ -20,7 +20,33 @@ Build artifacts:
 
 - use `./scripts/cargow ...` for raw Cargo commands
 - use `just ...` for repo recipes
+- agent/default entrypoint: `just rust-profile <name>`
 - both route `target/` and related local caches to the shared external cache root instead of the repo working tree
+
+Recommended Rust profiles:
+
+- `just rust-profile dev-fast` — default local edit loop
+- `just rust-profile dev-daemon` — daemon/runtime-only loop
+- `just rust-profile dev-all-targets` — widest compile rail after shared-surface edits
+- `just rust-profile validate-shared-surface` — contract/core/sdk/search-plane shared-surface validation
+- `just rust-profile test-fast` — default local test loop
+- `just rust-profile test-integration` — contract/core/channel/lexical/repomap integration rail
+- `just rust-profile test-daemon` — `searchd-runtime` scenario/e2e rail
+- `just rust-profile verify-rust` — standard merge gate
+- `just rust-profile verify-rust-heavy` — nightly/heavy correctness rail
+- `just rust-profile timings-fast` / `timings-daemon` — build-regression capture rails
+
+Rule:
+
+- prefer a named profile over synthesizing raw `cargo` feature/target sets
+- only drop to raw `cargo` when the profile catalog does not cover the task
+
+Build profile history:
+
+- `scripts/cargow` appends lane-level JSONL history under `{state_root}/build-profile/history.jsonl`
+- `just rust-profile <name>` appends high-level profile selection history to the same file
+- entries are compact by default: timestamp, lane/profile key, subcommand/recipe, duration, and exit code only
+- `just rust-profile-history-summary` renders the accumulated profile/lane/failure summary
 
 Quality gates:
 

@@ -27,12 +27,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV1, RepoMapChunkRecordDtoV1,
-    RepoMapFileIndexRecordV1, RepoMapFocusSubjectDtoV1, RepoMapGraphEdgeDtoV1,
-    RepoMapQueryRequestV1, RepoMapSourceBundleV1, RepoMapSymbolRecordDtoV1, RevisionId,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
+    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto, RepoMapQueryRequest,
+    RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::send_request;
@@ -91,6 +93,13 @@ fn send_control_request(
     send_request(socket, request)
 }
 
+fn send_ingest_request(
+    socket: &Path,
+    request: &SearchPlaneIngestIpcRequestEnvelope,
+) -> Result<SearchPlaneIngestIpcResponseEnvelope, quanta_index_ipc::IpcError> {
+    send_request(socket, request)
+}
+
 fn check_connection_fatal(
     err: quanta_index_ipc::IpcError,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,8 +123,8 @@ where
     false
 }
 
-fn repo_map_bundle() -> RepoMapSourceBundleV1 {
-    RepoMapSourceBundleV1 {
+fn repo_map_bundle() -> RepoMapSourceBundle {
+    RepoMapSourceBundle {
         repo_id: repo(),
         revision_id: revision(),
         manifest_generation: generation(),
@@ -127,12 +136,12 @@ fn repo_map_bundle() -> RepoMapSourceBundleV1 {
         exactness_summary: "owner-e2e-exact".to_string(),
         redaction_state: "Unredacted".to_string(),
         file_indices: vec![
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/lib.rs".to_string(),
                 file_path: "src/lib.rs".to_string(),
                 file_kind: "library".to_string(),
                 line_count: 110,
-                symbol_records: vec![RepoMapSymbolRecordDtoV1 {
+                symbol_records: vec![RepoMapSymbolRecordDto {
                     subject_identity: "src/lib.rs::Alpha".to_string(),
                     subject_doc_type: "Symbol".to_string(),
                     subject_kind: "struct".to_string(),
@@ -140,12 +149,12 @@ fn repo_map_bundle() -> RepoMapSourceBundleV1 {
                     owner_path: "src/lib.rs".to_string(),
                 }],
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "src/service/mod.rs".to_string(),
                 file_path: "src/service/mod.rs".to_string(),
                 file_kind: "service_module".to_string(),
                 line_count: 170,
-                symbol_records: vec![RepoMapSymbolRecordDtoV1 {
+                symbol_records: vec![RepoMapSymbolRecordDto {
                     subject_identity: "src/service/mod.rs::Beta".to_string(),
                     subject_doc_type: "Symbol".to_string(),
                     subject_kind: "service".to_string(),
@@ -153,7 +162,7 @@ fn repo_map_bundle() -> RepoMapSourceBundleV1 {
                     owner_path: "src/service/mod.rs".to_string(),
                 }],
             },
-            RepoMapFileIndexRecordV1 {
+            RepoMapFileIndexRecord {
                 file_identity: "tests/repo_map.rs".to_string(),
                 file_path: "tests/repo_map.rs".to_string(),
                 file_kind: "test".to_string(),
@@ -162,38 +171,38 @@ fn repo_map_bundle() -> RepoMapSourceBundleV1 {
             },
         ],
         call_edges: vec![
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/service/mod.rs::Beta".to_string(),
                 to_identity: "src/lib.rs::Alpha".to_string(),
                 edge_kind: "call".to_string(),
             },
-            RepoMapGraphEdgeDtoV1 {
+            RepoMapGraphEdgeDto {
                 from_identity: "src/service/mod.rs::Beta".to_string(),
                 to_identity: "tests/repo_map.rs".to_string(),
                 edge_kind: "call".to_string(),
             },
         ],
-        import_edges: vec![RepoMapGraphEdgeDtoV1 {
+        import_edges: vec![RepoMapGraphEdgeDto {
             from_identity: "src/service/mod.rs".to_string(),
             to_identity: "src/lib.rs".to_string(),
             edge_kind: "import".to_string(),
         }],
         chunk_records: vec![
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/lib.rs::Alpha".to_string(),
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 64,
                 preview_text: "Alpha library owner index".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "src/service/mod.rs::Beta".to_string(),
                 owner_path: "src/service/mod.rs".to_string(),
                 token_count: 96,
                 preview_text: "Beta service owner query entrypoint".to_string(),
                 exactness: "Exact".to_string(),
             },
-            RepoMapChunkRecordDtoV1 {
+            RepoMapChunkRecordDto {
                 subject_identity: "tests/repo_map.rs".to_string(),
                 owner_path: "tests/repo_map.rs".to_string(),
                 token_count: 40,
@@ -207,14 +216,14 @@ fn repo_map_bundle() -> RepoMapSourceBundleV1 {
 fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id: 77,
-        payload: SearchPlaneQueryIpcRequest::RepoMapQuery(RepoMapQueryRequestV1 {
+        payload: SearchPlaneQueryIpcRequest::RepoMapQuery(RepoMapQueryRequest {
             repo_id: repo(),
             revision_id: revision(),
             manifest_generation: generation(),
             query_text: "service owner".to_string(),
             top_k: 1,
             token_budget: 90,
-            focus_subjects: vec![RepoMapFocusSubjectDtoV1 {
+            focus_subjects: vec![RepoMapFocusSubjectDto {
                 subject_identity: "src/service/mod.rs::Beta".to_string(),
                 subject_doc_type: "Symbol".to_string(),
             }],
@@ -222,24 +231,24 @@ fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
     }
 }
 
-fn repo_map_ingest_request() -> SearchPlaneControlIpcRequestEnvelope {
-    SearchPlaneControlIpcRequestEnvelope {
+// QI-INT-01: RepoMap bundle ingest now flows over the ingest IPC, not the
+// control IPC. Old envelope shape preserved as a helper for the ingest test.
+fn repo_map_ingest_envelope() -> SearchPlaneIngestIpcRequestEnvelope {
+    SearchPlaneIngestIpcRequestEnvelope {
         request_id: 75,
-        payload: SearchPlaneControlIpcRequest::RepoMapIngest(repo_map_bundle()),
+        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repo_map_bundle()),
     }
 }
 
 fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
     SearchPlaneControlIpcRequestEnvelope {
         request_id: 76,
-        payload: SearchPlaneControlIpcRequest::RepoMapActivate(
-            RepoMapActivateGenerationRequestV1 {
-                repo_id: repo(),
-                revision_id: revision(),
-                manifest_generation: generation(),
-                manifest_digest: "manifest-digest-11".to_string(),
-            },
-        ),
+        payload: SearchPlaneControlIpcRequest::RepoMapActivate(RepoMapActivateGenerationRequest {
+            repo_id: repo(),
+            revision_id: revision(),
+            manifest_generation: generation(),
+            manifest_digest: "manifest-digest-11".to_string(),
+        }),
     }
 }
 
@@ -250,6 +259,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -266,10 +276,16 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         drop(join.join());
         return Err("control socket never appeared".into());
     }
-    let ingest = send_control_request(&control_socket, &repo_map_ingest_request())?;
+    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("ingest socket never appeared".into());
+    }
+    // QI-INT-01: RepoMap bundle ingest now goes via the ingest socket.
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())?;
     if !matches!(
         ingest.payload,
-        SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
     ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -354,6 +370,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -370,10 +387,15 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         drop(join.join());
         return Err("control socket never appeared".into());
     }
-    let ingest = send_control_request(&control_socket, &repo_map_ingest_request())?;
+    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("ingest socket never appeared".into());
+    }
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())?;
     if !matches!(
         ingest.payload,
-        SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+        SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
     ) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -498,6 +520,7 @@ fn cross_socket_requests_fail_closed() -> TestResult {
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
@@ -514,13 +537,18 @@ fn cross_socket_requests_fail_closed() -> TestResult {
         drop(join.join());
         return Err("control socket never appeared".into());
     }
+    if !wait_until(Duration::from_secs(2), || ingest_socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("ingest socket never appeared".into());
+    }
 
-    match send_control_request(&query_socket, &repo_map_ingest_request()) {
+    match send_ingest_request(&query_socket, &repo_map_ingest_envelope()) {
         Ok(unexpected) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
             return Err(format!(
-                "control envelope on query socket must fail closed, got {unexpected:?}"
+                "ingest envelope on query socket must fail closed, got {unexpected:?}"
             )
             .into());
         }

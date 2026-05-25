@@ -1,11 +1,11 @@
-use quanta_index_contract::RepoMapQueryRequestV1;
+use quanta_index_contract::RepoMapQueryRequest;
 
 use crate::CoreError;
 
 pub struct RepoMapPolicy;
 
 impl RepoMapPolicy {
-    pub fn validate_query(request: &RepoMapQueryRequestV1) -> Result<(), CoreError> {
+    pub fn validate_query(request: &RepoMapQueryRequest) -> Result<(), CoreError> {
         if request.repo_id.as_str().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap query: repo_id must not be empty".to_string(),

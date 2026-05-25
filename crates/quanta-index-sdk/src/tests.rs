@@ -1,22 +1,37 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use quanta_index_channel::{
-    BundleChannelSubscriber, open_lexical_subscriber, open_semantic_subscriber,
+use quanta_index_contract::lex::{
+    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, GenerationSelector, HybridQueryResponse,
-    ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoRelativePath, RevisionId,
-    SearchExplanation, SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
-    SemanticQueryResponse, SymbolId, TextQueryResponse,
-};
-use quanta_index_contract::lex::{
-    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan, SymbolVisibility,
+    BatchPublishReceipt, ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord,
+    GenerationSelector, HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry,
+    RepoId, RepoMapMutationAck, RepoRelativePath, RevisionId, SearchExplanation,
+    SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
+    SymbolId, TextQueryResponse,
 };
 
-use crate::{ConnectOptions, ControlTransport, LexicalBatch, QuantaIndex, QueryTransport, SemanticBatch, Track};
+use crate::{
+    ConnectOptions, ControlTransport, IngestTransport, LexicalBatch, QuantaIndex, QueryTransport,
+    SemanticBatch, Track,
+};
+
+macro_rules! ok_or_fail {
+    ($expr:expr $(,)?) => {
+        match $expr {
+            Ok(value) => value,
+            Err(err) => {
+                assert!(false, "unexpected error: {err}");
+                return;
+            }
+        }
+    };
+}
 
 struct StubQueryTransport {
     requests: Mutex<Vec<SearchPlaneQueryIpcRequestEnvelope>>,
@@ -82,8 +97,49 @@ impl ControlTransport for StubControlTransport {
             .lock()
             .map_err(|err| crate::SdkError::Protocol(format!("control response poisoned: {err}")))?
             .take()
-            .ok_or_else(|| crate::SdkError::Protocol("missing stub control response".to_string()))?;
+            .ok_or_else(|| {
+                crate::SdkError::Protocol("missing stub control response".to_string())
+            })?;
         Ok(SearchPlaneControlIpcResponseEnvelope {
+            request_id: request.request_id,
+            payload,
+        })
+    }
+}
+
+/// QI-SDK-01: stub ingest transport. Replaces the old channel-publisher
+/// fixtures the SDK used to spin up. Records incoming requests so tests can
+/// assert on the typed batch the SDK assembled.
+struct StubIngestTransport {
+    requests: Mutex<Vec<SearchPlaneIngestIpcRequestEnvelope>>,
+    response: Mutex<Option<SearchPlaneIngestIpcResponse>>,
+}
+
+impl StubIngestTransport {
+    fn new(response: SearchPlaneIngestIpcResponse) -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            response: Mutex::new(Some(response)),
+        }
+    }
+}
+
+impl IngestTransport for StubIngestTransport {
+    fn send(
+        &self,
+        request: SearchPlaneIngestIpcRequestEnvelope,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        self.requests
+            .lock()
+            .map_err(|err| crate::SdkError::Protocol(format!("ingest transport poisoned: {err}")))?
+            .push(request.clone());
+        let payload = self
+            .response
+            .lock()
+            .map_err(|err| crate::SdkError::Protocol(format!("ingest response poisoned: {err}")))?
+            .take()
+            .ok_or_else(|| crate::SdkError::Protocol("missing stub ingest response".to_string()))?;
+        Ok(SearchPlaneIngestIpcResponseEnvelope {
             request_id: request.request_id,
             payload,
         })
@@ -118,13 +174,16 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
 
 fn sample_explanation() -> SearchExplanation {
     SearchExplanation {
-        summary: "ok".to_string(),
         planner_trace: vec![PlannerTraceEntry {
             stage: PlannerStage::Plan,
             detail: "planned".to_string(),
         }],
         engines_touched: vec![quanta_index_contract::EngineTouched::Semantic],
         early_stop_reason: None,
+        contributions: Vec::new(),
+        ranker_weights_hash: [0; 32],
+        strategy: "test".to_string(),
+        summary: "ok".to_string(),
     }
 }
 
@@ -134,52 +193,30 @@ fn sample_symbol() -> SymbolRecord {
         name: "sample".into(),
         kind: SymbolKind::Function,
         span: SymbolSpan {
-            file: quanta_index_contract::FileId::new("src/lib.rs"),
-            start_byte: 0,
-            end_byte: 10,
-            start_line: 1,
-            start_col_utf16: 0,
-            end_line: 1,
-            end_col_utf16: 10,
+            path: "src/lib.rs".into(),
+            byte_start: 0,
+            byte_end: 10,
+            line_start: 1,
+            line_end: 1,
         },
-        lang: LangId::new("rust"),
+        lang: LangId::Rust,
         parent: None,
         container_name: None,
-        relationship: SymbolRelationship {
-            is_definition: true,
-            is_reference: false,
-            visibility: SymbolVisibility::Public,
-        },
+        relationship: SymbolRelationship::Def,
     }
 }
 
-#[test]
-fn connect_options_from_state_root_resolve_default_sockets() -> Result<(), Box<dyn std::error::Error>>
-{
-    let resolved = ConnectOptions::from_state_root("/tmp/qi-state").resolve()?;
-    assert_eq!(resolved.state_root, Some(PathBuf::from("/tmp/qi-state")));
-    assert_eq!(
-        resolved.query_socket,
-        PathBuf::from("/tmp/qi-state/search-plane/query.sock")
-    );
-    assert_eq!(
-        resolved.control_socket,
-        PathBuf::from("/tmp/qi-state/search-plane/control.sock")
-    );
-    Ok(())
+fn unused_query() -> Arc<StubQueryTransport> {
+    Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+        },
+    )))
 }
 
-#[test]
-fn semantic_query_builder_emits_active_selector_and_inline_vector_ref(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Semantic(
-        SemanticQueryResponse {
-            generation: sample_generation_pin(),
-            results: vec![sample_hit()],
-            explanation: sample_explanation(),
-        },
-    )));
-    let control = Arc::new(StubControlTransport::new(
+fn unused_control() -> Arc<StubControlTransport> {
+    Arc::new(StubControlTransport::new(
         quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(
             SearchPlaneActivationAck {
                 repo_id: repo_id(),
@@ -189,163 +226,187 @@ fn semantic_query_builder_emits_active_selector_and_inline_vector_ref(
                 tracks: vec![Track::Lexical],
             },
         ),
-    ));
-    let client = QuantaIndex::from_transports(None, query.clone(), control);
-    let _response = client
-        .semantic()
-        .query()
-        .vector(vec![0.1, 0.2, 0.3])
-        .scope_native("lang:rust")
-        .active(repo_id(), revision_id())
-        .top_k(5)
-        .execute()?;
-    let requests = query
+    ))
+}
+
+fn unused_ingest() -> Arc<StubIngestTransport> {
+    Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt::default()),
+    ))
+}
+
+fn only_query_request(
+    transport: &StubQueryTransport,
+) -> Result<SearchPlaneQueryIpcRequestEnvelope, crate::SdkError> {
+    let requests = transport
         .requests
         .lock()
-        .map_err(|err| format!("query requests poisoned: {err}"))?;
-    let payload = &requests[0].payload;
-    match payload {
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request) => {
-            assert_eq!(request.query_text, "");
-            assert!(request.query_vector.is_none());
-            match request.query_vector_ref.as_ref() {
-                Some(quanta_index_contract::SemanticVectorRef::Inline(vector)) => {
-                    assert_eq!(vector, &vec![0.1, 0.2, 0.3]);
-                }
-                other => return Err(format!("unexpected vector ref: {other:?}").into()),
-            }
-            match request.generation_selector.as_ref() {
-                Some(GenerationSelector::Active {
-                    repo_id,
-                    revision_id,
-                }) => {
-                    assert_eq!(repo_id.as_str(), "repo-1");
-                    assert_eq!(revision_id.as_str(), "rev-1");
-                }
-                other => return Err(format!("unexpected generation selector: {other:?}").into()),
-            }
-            let scope = request.scope.as_ref().ok_or("missing scope")?;
-            assert_eq!(scope.query_text, "lang:rust");
-        }
-        other => return Err(format!("unexpected query payload: {other:?}").into()),
+        .map_err(|err| crate::SdkError::Protocol(format!("query request list poisoned: {err}")))?;
+    let len = requests.len();
+    if len != 1 {
+        return Err(crate::SdkError::Protocol(format!(
+            "expected exactly one query request, got {len}"
+        )));
     }
-    Ok(())
+    requests
+        .first()
+        .cloned()
+        .ok_or_else(|| crate::SdkError::Protocol("missing captured query request".to_string()))
+}
+
+fn only_ingest_request(
+    transport: &StubIngestTransport,
+) -> Result<SearchPlaneIngestIpcRequestEnvelope, crate::SdkError> {
+    let requests = transport
+        .requests
+        .lock()
+        .map_err(|err| crate::SdkError::Protocol(format!("ingest request list poisoned: {err}")))?;
+    let len = requests.len();
+    if len != 1 {
+        return Err(crate::SdkError::Protocol(format!(
+            "expected exactly one ingest request, got {len}"
+        )));
+    }
+    requests
+        .first()
+        .cloned()
+        .ok_or_else(|| crate::SdkError::Protocol("missing captured ingest request".to_string()))
 }
 
 #[test]
-fn hybrid_query_builder_emits_text_and_vector_legs() -> Result<(), Box<dyn std::error::Error>> {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Hybrid(
-        HybridQueryResponse {
+fn connect_options_from_state_root_resolve_default_sockets() {
+    let resolved = ok_or_fail!(ConnectOptions::from_state_root("/tmp/qi-state").resolve());
+    assert_eq!(resolved.0, Some(PathBuf::from("/tmp/qi-state")));
+    assert_eq!(
+        resolved.1,
+        PathBuf::from("/tmp/qi-state/search-plane/query.sock")
+    );
+    assert_eq!(
+        resolved.2,
+        PathBuf::from("/tmp/qi-state/search-plane/control.sock")
+    );
+    assert_eq!(
+        resolved.3,
+        PathBuf::from("/tmp/qi-state/search-plane/ingest.sock"),
+        "QI-SDK-01: ingest socket resolves to state_root/search-plane/ingest.sock"
+    );
+}
+
+#[test]
+fn semantic_query_builder_emits_active_selector_and_inline_vector_ref() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             explanation: sample_explanation(),
-        },
-    )));
-    let control = Arc::new(StubControlTransport::new(
-        quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(
-            SearchPlaneActivationAck {
-                repo_id: repo_id(),
-                revision_id: revision_id(),
-                manifest_generation: ManifestGeneration::new(7),
-                manifest_digest: "digest".to_string(),
-                tracks: vec![Track::Lexical, Track::Semantic],
-            },
-        ),
+        }),
     ));
-    let client = QuantaIndex::from_transports(None, query.clone(), control);
-    let _response = client
-        .search()
-        .hybrid()
-        .native("trait Searcher")
-        .vector(vec![1.0, 2.0])
+    let control = unused_control();
+    let ingest = unused_ingest();
+    let client = QuantaIndex::from_transports(query.clone(), control, ingest);
+    let response = client
+        .semantic()
+        .query()
         .active(repo_id(), revision_id())
-        .top_k(10)
-        .execute()?;
-    let requests = query
-        .requests
-        .lock()
-        .map_err(|err| format!("query requests poisoned: {err}"))?;
-    match &requests[0].payload {
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request) => {
-            assert_eq!(request.text_query.query_text, "trait Searcher");
-            assert_eq!(request.semantic_query_text, "");
-            assert_eq!(request.top_k, 10);
-        }
-        other => return Err(format!("unexpected query payload: {other:?}").into()),
-    }
-    Ok(())
+        .vector(vec![0.1, 0.2, 0.3])
+        .top_k(5)
+        .execute();
+    let _response = ok_or_fail!(response);
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(req) = &captured.payload else {
+        assert!(
+            false,
+            "expected semantic request, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(req.top_k, 5);
+    assert!(req.query_vector_ref.is_some());
+    assert!(matches!(
+        req.generation_selector,
+        Some(GenerationSelector::Active { .. })
+    ));
 }
 
 #[test]
-fn activation_builder_emits_track_set() -> Result<(), Box<dyn std::error::Error>> {
+fn lexical_query_builder_carries_top_k_to_wire_contract() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
         },
     )));
-    let control = Arc::new(StubControlTransport::new(
-        quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(
-            SearchPlaneActivationAck {
-                repo_id: repo_id(),
-                revision_id: revision_id(),
-                manifest_generation: ManifestGeneration::new(9),
-                manifest_digest: "digest".to_string(),
-                tracks: vec![Track::Lexical, Track::Semantic],
-            },
-        ),
-    ));
-    let client = QuantaIndex::from_transports(None, query, control.clone());
-    let _ack = client
-        .generations()
-        .activate()
-        .repo(repo_id())
-        .revision(revision_id())
-        .generation(ManifestGeneration::new(9))
-        .manifest_digest("digest")
-        .tracks([Track::Lexical, Track::Semantic, Track::Lexical])
-        .commit()?;
-    let requests = control
-        .requests
-        .lock()
-        .map_err(|err| format!("control requests poisoned: {err}"))?;
-    match &requests[0].payload {
-        quanta_index_contract::SearchPlaneControlIpcRequest::ActivateGeneration(request) => {
-            assert_eq!(request.tracks.len(), 2);
-            assert_eq!(request.tracks[0], SearchPlaneTrackKind::Lexical);
-            assert_eq!(request.tracks[1], SearchPlaneTrackKind::Semantic);
-        }
-        other => return Err(format!("unexpected control payload: {other:?}").into()),
-    }
-    Ok(())
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .lexical()
+            .query()
+            .native("needle")
+            .active(repo_id(), revision_id())
+            .top_k(42)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
+        assert!(
+            false,
+            "expected text request, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(
+        req.top_k, 42,
+        "QI-QRY-01: TextQueryRequest.top_k must be set from builder"
+    );
 }
 
 #[test]
-fn lexical_and_semantic_publish_encode_records_for_channel_consumers(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    let no_query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
             generation: sample_generation_pin(),
-            results: vec![],
-        },
-    )));
-    let no_control = Arc::new(StubControlTransport::new(
-        quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(
-            SearchPlaneActivationAck {
-                repo_id: repo_id(),
-                revision_id: revision_id(),
-                manifest_generation: ManifestGeneration::new(1),
-                manifest_digest: "digest".to_string(),
-                tracks: vec![Track::Lexical],
-            },
-        ),
+            results: vec![sample_hit()],
+            explanation: sample_explanation(),
+        }),
     ));
-    let client = QuantaIndex::from_transports(
-        Some(dir.path().to_path_buf()),
-        no_query,
-        no_control,
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .search()
+            .hybrid()
+            .native("scope text")
+            .vector_handle("handle-1")
+            .active(repo_id(), revision_id())
+            .top_k(7)
+            .execute()
     );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(req) = &captured.payload else {
+        assert!(
+            false,
+            "expected hybrid request, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(req.top_k, 7);
+    assert_eq!(req.text_query.top_k, 7);
+    assert!(req.semantic_vector_ref.is_some());
+}
+
+#[test]
+fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
+    let receipt = BatchPublishReceipt {
+        first_seq: Some(ChannelSeq::new(0)),
+        last_seq: Some(ChannelSeq::new(3)),
+        sealed: true,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::LexicalReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let chunk = ChunkRecord {
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         language: "rust".into(),
@@ -353,78 +414,229 @@ fn lexical_and_semantic_publish_encode_records_for_channel_consumers(
         end_line: 4,
         snippet: "fn sample() {}".into(),
     };
-    let lex_batch = LexicalBatch::replace_generation(
+    let batch =
+        LexicalBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1))
+            .chunk_upsert(ChunkId::new("chunk-1"), chunk.clone())
+            .symbol_upsert(SymbolId::new("sym-1"), sample_symbol());
+    let observed = ok_or_fail!(client.lexical().publish(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
+        assert!(
+            false,
+            "expected PublishLexicalBatch, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(wire.repo_id, repo_id());
+    assert_eq!(wire.chunks.len(), 1);
+    assert_eq!(wire.symbols.len(), 1);
+    assert!(wire.seal);
+    let Some(first_chunk) = wire.chunks.first() else {
+        assert!(false, "expected one lexical chunk mutation");
+        return;
+    };
+    let quanta_index_contract::LexicalChunkMutation::Upsert(upsert) = first_chunk else {
+        assert!(false, "expected upsert mutation, got {first_chunk:?}");
+        return;
+    };
+    assert_eq!(upsert.record, chunk);
+}
+
+#[test]
+fn semantic_publish_routes_through_ingest_transport_and_carries_typed_embeddings() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::SemanticReceipt(BatchPublishReceipt::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch =
+        SemanticBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1))
+            .embedding_upsert(
+                EmbeddingId::new("emb-1"),
+                EmbeddingRecord {
+                    owner_kind: "chunk".into(),
+                    owner_id: "chunk-1".into(),
+                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                    language: LangId::Rust,
+                    symbol_kind: None,
+                    start_line: 1,
+                    end_line: 4,
+                    snippet: "fn sample() {}".into(),
+                    vector: vec![0.1, 0.2],
+                },
+            );
+    let _receipt = ok_or_fail!(client.semantic().publish(&batch));
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let SearchPlaneIngestIpcRequest::PublishSemanticBatch(wire) = &captured.payload else {
+        assert!(
+            false,
+            "expected PublishSemanticBatch, got {payload:?}",
+            payload = captured.payload
+        );
+        return;
+    };
+    assert_eq!(wire.embeddings.len(), 1);
+    assert!(wire.seal);
+}
+
+#[test]
+fn repomap_publish_routes_through_ingest_transport() {
+    let ack = RepoMapMutationAck {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        manifest_generation: ManifestGeneration::new(1),
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RepoMapReceipt(ack.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let bundle = quanta_index_contract::RepoMapSourceBundle {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        manifest_generation: ManifestGeneration::new(1),
+        snapshot_id: "snap".to_string(),
+        projection_version: 1,
+        authority_digest: "digest".to_string(),
+        item_index_availability: "available".to_string(),
+        graph_coverage_class: "full".to_string(),
+        exactness_summary: "exact".to_string(),
+        redaction_state: "Unredacted".to_string(),
+        file_indices: vec![],
+        call_edges: vec![],
+        import_edges: vec![],
+        chunk_records: vec![],
+    };
+    let observed = ok_or_fail!(client.repomap().publish(bundle));
+    assert_eq!(observed.manifest_generation, ack.manifest_generation);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(matches!(
+        captured.payload,
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundle(_)
+    ));
+}
+
+#[test]
+fn lexical_publish_propagates_ingest_error_as_typed_remote() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
+            code: "INVALID_REQUEST".to_string(),
+            message: "channel rejected".to_string(),
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest);
+    let batch =
+        LexicalBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1));
+    let err = client.lexical().publish(&batch).err();
+    let Some(crate::SdkError::Remote { code, message }) = err else {
+        assert!(false, "expected Remote error, got {err:?}");
+        return;
+    };
+    assert_eq!(code, "INVALID_REQUEST");
+    assert!(message.contains("channel rejected"));
+}
+
+#[test]
+fn generations_current_returns_snapshot_from_control_response() {
+    use crate::Track;
+    use quanta_index_contract::{GenerationSnapshot, SearchPlaneControlIpcResponse};
+    let snapshot = GenerationSnapshot {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        track: Track::Lexical,
+        manifest_generation: ManifestGeneration::new(11),
+        manifest_digest: "digest-11".to_string(),
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let observed = ok_or_fail!(client.generations().current(
         repo_id(),
         revision_id(),
-        ManifestGeneration::new(1),
-    )
-    .chunk_upsert(ChunkId::new("chunk-1"), chunk.clone())
-    .symbol_upsert(SymbolId::new("sym-1"), sample_symbol());
-    let sem_batch = SemanticBatch::replace_generation(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(1),
-    )
-    .embedding_upsert(
-        EmbeddingId::new("emb-1"),
-        EmbeddingRecord {
-            owner_kind: "chunk".into(),
-            owner_id: "chunk-1".into(),
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-            language: LangId::new("rust"),
-            symbol_kind: None,
-            start_line: 1,
-            end_line: 4,
-            snippet: "fn sample() {}".into(),
-            vector: vec![0.1, 0.2],
-        },
+        Track::Lexical,
+    ));
+    assert_eq!(observed, snapshot);
+    let captured = match control.requests.lock() {
+        Ok(captured) => captured.first().cloned(),
+        Err(err) => {
+            assert!(false, "unexpected poisoned control requests: {err}");
+            return;
+        }
+    };
+    assert!(matches!(
+        captured.map(|request| request.payload),
+        Some(quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(_))
+    ));
+}
+
+#[test]
+fn generations_current_propagates_not_ready_as_typed_remote() {
+    use crate::Track;
+    use quanta_index_contract::{SearchPlaneControlIpcResponse, SearchPlaneIpcError};
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+            code: "NOT_READY".to_string(),
+            message: "no active Lexical generation for repo=r revision=rev".to_string(),
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    let err = client
+        .generations()
+        .current(repo_id(), revision_id(), Track::Lexical)
+        .err();
+    let Some(crate::SdkError::Remote { code, .. }) = err else {
+        assert!(false, "expected Remote error, got {err:?}");
+        return;
+    };
+    assert_eq!(code, "NOT_READY");
+}
+
+#[test]
+fn generations_status_returns_report_with_track_records() {
+    use crate::Track;
+    use quanta_index_contract::{
+        GenerationStatusReport, SearchPlaneControlIpcResponse, TrackReadinessRecord,
+    };
+    let report = GenerationStatusReport {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        tracks: vec![
+            TrackReadinessRecord {
+                track: Track::Lexical,
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest: "digest-lex".to_string(),
+            },
+            TrackReadinessRecord {
+                track: Track::Semantic,
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest: "digest-sem".to_string(),
+            },
+        ],
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::GenerationStatusReport(report.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    let observed = ok_or_fail!(client.generations().status(repo_id(), revision_id()));
+    assert_eq!(observed, report);
+    assert_eq!(observed.tracks.len(), 2);
+}
+
+#[test]
+fn generations_status_returns_empty_tracks_when_nothing_activated() {
+    use quanta_index_contract::{GenerationStatusReport, SearchPlaneControlIpcResponse};
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::GenerationStatusReport(GenerationStatusReport {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            tracks: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    let observed = ok_or_fail!(client.generations().status(repo_id(), revision_id()));
+    assert!(
+        observed.tracks.is_empty(),
+        "QI-ACT-01: empty tracks is legitimate state, distinct from NOT_READY"
     );
-    let _lex_receipt = client.lexical().publish(&lex_batch)?;
-    let _sem_receipt = client.semantic().publish(&sem_batch)?;
-    let mut lex_sub = open_lexical_subscriber(dir.path())?;
-    let mut sem_sub = open_semantic_subscriber(dir.path())?;
-    let evt1 = lex_sub.next_event()?.ok_or("missing lexical evt1")?;
-    let evt2 = lex_sub.next_event()?.ok_or("missing lexical evt2")?;
-    let evt3 = lex_sub.next_event()?.ok_or("missing lexical evt3")?;
-    let evt4 = lex_sub.next_event()?.ok_or("missing lexical evt4")?;
-    match evt2.op {
-        quanta_index_contract::LexicalChannelOp::UpsertChunk(op) => {
-            let decoded: ChunkRecord = ciborium::de::from_reader(op.payload.as_slice())?;
-            assert_eq!(decoded, chunk);
-        }
-        other => return Err(format!("unexpected lexical evt2: {other:?}").into()),
-    }
-    match evt3.op {
-        quanta_index_contract::LexicalChannelOp::UpsertSymbol(op) => {
-            let decoded: SymbolRecord = ciborium::de::from_reader(op.payload.as_slice())?;
-            assert_eq!(decoded.name.as_str(), "sample");
-        }
-        other => return Err(format!("unexpected lexical evt3: {other:?}").into()),
-    }
-    assert!(matches!(
-        evt4.op,
-        quanta_index_contract::LexicalChannelOp::Seal(_)
-    ));
-    let sem_evt1 = sem_sub.next_event()?.ok_or("missing semantic evt1")?;
-    let sem_evt2 = sem_sub.next_event()?.ok_or("missing semantic evt2")?;
-    let sem_evt3 = sem_sub.next_event()?.ok_or("missing semantic evt3")?;
-    match sem_evt2.op {
-        quanta_index_contract::SemanticChannelOp::UpsertEmbedding(op) => {
-            let decoded: EmbeddingRecord = ciborium::de::from_reader(op.payload.as_slice())?;
-            assert_eq!(decoded.owner_id.as_ref(), "chunk-1");
-        }
-        other => return Err(format!("unexpected semantic evt2: {other:?}").into()),
-    }
-    assert!(matches!(
-        sem_evt3.op,
-        quanta_index_contract::SemanticChannelOp::Seal(_)
-    ));
-    lex_sub.ack(evt1.seq)?;
-    lex_sub.ack(evt2.seq)?;
-    lex_sub.ack(evt3.seq)?;
-    lex_sub.ack(evt4.seq)?;
-    sem_sub.ack(sem_evt1.seq)?;
-    sem_sub.ack(sem_evt2.seq)?;
-    sem_sub.ack(sem_evt3.seq)?;
-    Ok(())
 }

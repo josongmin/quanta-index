@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BridgeQueryRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
-    RepoMapActivateGenerationRequestV1, RepoMapMutationAckV1, RepoMapQueryRequestV1,
-    RepoMapQueryResponseV1, RepoMapSourceBundleV1, SearchPlaneActivateGenerationRequest,
-    SearchPlaneActivationAck, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    BridgeQueryRequest, CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
+    GenerationStatusRequest, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
+    RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
+    RepoMapQueryResponse, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
+    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneSourcegraphQueryRequest, SearchPlaneSourcegraphQueryResponse,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
@@ -28,7 +29,7 @@ pub enum SearchPlaneQueryIpcRequest {
     History(HistoryQueryRequest),
     Structural(StructuralQueryRequest),
     Bridge(BridgeQueryRequest),
-    RepoMapQuery(RepoMapQueryRequestV1),
+    RepoMapQuery(RepoMapQueryRequest),
     Explain(SearchPlaneExplainQueryRequest),
     Sourcegraph(SearchPlaneSourcegraphQueryRequest),
 }
@@ -49,7 +50,7 @@ pub enum SearchPlaneQueryIpcResponse {
     History(SearchPlaneHistoryQueryResponse),
     Structural(SearchPlaneStructuralQueryResponse),
     Bridge(SearchPlaneBridgeQueryResponse),
-    RepoMapQuery(RepoMapQueryResponseV1),
+    RepoMapQuery(RepoMapQueryResponse),
     Explain(SearchPlaneExplainQueryResponse),
     Error(SearchPlaneIpcError),
     Sourcegraph(SearchPlaneSourcegraphQueryResponse),
@@ -65,8 +66,19 @@ pub struct SearchPlaneControlIpcRequestEnvelope {
 #[serde(tag = "kind", content = "payload")]
 pub enum SearchPlaneControlIpcRequest {
     ActivateGeneration(SearchPlaneActivateGenerationRequest),
-    RepoMapIngest(RepoMapSourceBundleV1),
-    RepoMapActivate(RepoMapActivateGenerationRequestV1),
+    // QI-INT-01: `RepoMapIngest(RepoMapSourceBundle)` was removed from the
+    // control surface. All RepoMap bundle publishes now go through the
+    // typed ingest IPC (`SearchPlaneIngestIpcRequest::PublishRepoMapBundle`)
+    // — the SDK switched in QI-SDK-01 and external consumers are expected to
+    // follow. Breaking-first per CLAUDE.md "compatibility preservation is
+    // not the default".
+    RepoMapActivate(RepoMapActivateGenerationRequest),
+    /// QI-ACT-01: read-only generation admin query for one
+    /// `(repo, revision, track)` triple.
+    CurrentGeneration(CurrentGenerationRequest),
+    /// QI-ACT-01: read-only status query returning all activated tracks for
+    /// one `(repo, revision)` pair.
+    GenerationStatus(GenerationStatusRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,6 +91,10 @@ pub struct SearchPlaneControlIpcResponseEnvelope {
 #[serde(tag = "kind", content = "payload")]
 pub enum SearchPlaneControlIpcResponse {
     ActivationAck(SearchPlaneActivationAck),
-    RepoMapMutationAck(RepoMapMutationAckV1),
+    RepoMapMutationAck(RepoMapMutationAck),
     Error(SearchPlaneIpcError),
+    /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::CurrentGeneration`].
+    CurrentGenerationSnapshot(GenerationSnapshot),
+    /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::GenerationStatus`].
+    GenerationStatusReport(GenerationStatusReport),
 }

@@ -210,7 +210,8 @@ crate는 capability 기준(`artifact`, `lexical`, `semantic`, `ipc`)이고, 구�
 | `QUANTA_INDEX_STATE_ROOT` | explicit state root |
 | default | `{QUANTA_INDEX_CACHE_ROOT}/state` or macOS `~/Library/Caches/quanta-index/state` |
 | control plane DB | `{state_root}/control-plane.sqlite3` |
-| UDS socket path (listener impl pending) | `{state_root}/search-plane/searchd.sock` |
+| query UDS socket path | `{state_root}/search-plane/query.sock` |
+| control UDS socket path | `{state_root}/search-plane/control.sock` |
 
 Build/cache (repo 밖):
 
@@ -230,7 +231,8 @@ All search-plane runtime data lives under `{state_root}`.
 {state_root}/
   control-plane.sqlite3
   search-plane/
-    searchd.sock
+    query.sock
+    control.sock
   bundles/
     {repo_id}/
       {revision_id}/
@@ -378,7 +380,8 @@ Transport split (decided):
 | Path | Transport | Owner | Notes |
 |------|-----------|-------|-------|
 | prepare / finalize / delta / readiness | direct Rust call against `quanta-index-control::ControlPlane` on shared `state_root` | producer + control-plane adapter | query UDS를 재사용하지 않는다 |
-| lexical / semantic / hybrid / explain query | UDS stream socket at `{state_root}/search-plane/searchd.sock` | `searchd` | one daemon multiplexes all repos/revisions |
+| lexical / semantic / hybrid / explain query | UDS stream socket at `{state_root}/search-plane/query.sock` | `searchd` | read-only query plane |
+| repo-map ingest / activation | UDS stream socket at `{state_root}/search-plane/control.sock` | `searchd` | mutation/control plane |
 
 ### 1. bundle-ingest ← prepare
 

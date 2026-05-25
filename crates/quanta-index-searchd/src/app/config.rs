@@ -8,6 +8,10 @@ pub struct SearchdConfig {
     state_root: PathBuf,
     query_socket_path: PathBuf,
     control_socket_path: PathBuf,
+    /// QI-RT-01: typed ingest socket. Producer-side SDK publishes typed
+    /// batches here; searchd's ingest dispatcher fans them out to channel
+    /// publishers.
+    ingest_socket_path: PathBuf,
 }
 
 impl SearchdConfig {
@@ -18,6 +22,7 @@ impl SearchdConfig {
             state_root,
             query_socket_path: socket_dir.join("query.sock"),
             control_socket_path: socket_dir.join("control.sock"),
+            ingest_socket_path: socket_dir.join("ingest.sock"),
         }
     }
 
@@ -55,14 +60,31 @@ impl SearchdConfig {
     }
 
     #[must_use]
+    pub fn ingest_socket_path(&self) -> &Path {
+        &self.ingest_socket_path
+    }
+
+    #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.query_socket_path()
     }
 
+    /// Override query / control socket paths. Ingest socket retains its
+    /// default `state_root/search-plane/ingest.sock` location; use
+    /// [`Self::with_ingest_socket_override`] to override that as well.
     #[must_use]
     pub fn with_socket_overrides(mut self, query_socket: PathBuf, control_socket: PathBuf) -> Self {
         self.query_socket_path = query_socket;
         self.control_socket_path = control_socket;
+        self
+    }
+
+    /// Override the ingest socket path independently. Test rails that need
+    /// per-instance ingest socket paths use this; the production path is the
+    /// default in [`Self::from_state_root`].
+    #[must_use]
+    pub fn with_ingest_socket_override(mut self, ingest_socket: PathBuf) -> Self {
+        self.ingest_socket_path = ingest_socket;
         self
     }
 }

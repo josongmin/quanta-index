@@ -1,10 +1,17 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    LexicalCandidate, ManifestGeneration, RepoId, RevisionId, SemanticChannelOp,
+    BatchPublishReceipt, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
+    SemanticChannelOp, SemanticIngestBatch,
 };
 
 use crate::error::CoreError;
+
+/// Ingest a typed semantic batch into the channel. QI-RT-01 counterpart to
+/// [`crate::LexicalIngestPort`].
+pub trait SemanticIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticReadiness {

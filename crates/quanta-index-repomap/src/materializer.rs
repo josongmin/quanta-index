@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{
-    RepoMapChunkRecordDtoV1, RepoMapFileIndexRecordV1, RepoMapGraphEdgeDtoV1,
-    RepoMapSnapshotMetaV1, RepoMapSourceBundleV1, RepoMapSymbolRecordDtoV1,
+    RepoMapChunkRecordDto, RepoMapFileIndexRecord, RepoMapGraphEdgeDto, RepoMapSnapshotMeta,
+    RepoMapSourceBundle, RepoMapSymbolRecordDto,
 };
 
 use crate::model::{RepoMapEntryV1, RepoMapSnapshotV1};
@@ -24,8 +24,8 @@ struct ChunkStatsV1 {
 
 impl RepoMapMaterializer {
     #[must_use]
-    pub fn materialize(bundle: &RepoMapSourceBundleV1) -> RepoMapSnapshotV1 {
-        let snapshot_meta = RepoMapSnapshotMetaV1 {
+    pub fn materialize(bundle: &RepoMapSourceBundle) -> RepoMapSnapshotV1 {
+        let snapshot_meta = RepoMapSnapshotMeta {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
             authority_digest: bundle.authority_digest.clone(),
@@ -102,8 +102,8 @@ impl RepoMapMaterializer {
 }
 
 fn build_file_entry(
-    bundle: &RepoMapSourceBundleV1,
-    file: &RepoMapFileIndexRecordV1,
+    bundle: &RepoMapSourceBundle,
+    file: &RepoMapFileIndexRecord,
     projection_status: &str,
     call_stats: &GraphStatsV1,
     import_stats: &GraphStatsV1,
@@ -217,8 +217,8 @@ fn build_file_entry(
 }
 
 fn build_symbol_entry(
-    bundle: &RepoMapSourceBundleV1,
-    symbol: &RepoMapSymbolRecordDtoV1,
+    bundle: &RepoMapSourceBundle,
+    symbol: &RepoMapSymbolRecordDto,
     projection_status: &str,
     call_stats: &GraphStatsV1,
     import_stats: &GraphStatsV1,
@@ -318,7 +318,7 @@ fn build_symbol_entry(
     }
 }
 
-fn graph_stats(edges: &[RepoMapGraphEdgeDtoV1]) -> BTreeMap<String, GraphStatsV1> {
+fn graph_stats(edges: &[RepoMapGraphEdgeDto]) -> BTreeMap<String, GraphStatsV1> {
     let mut stats = BTreeMap::<String, GraphStatsV1>::new();
     for edge in edges {
         let from = stats.entry(edge.from_identity.clone()).or_default();
@@ -330,7 +330,7 @@ fn graph_stats(edges: &[RepoMapGraphEdgeDtoV1]) -> BTreeMap<String, GraphStatsV1
 }
 
 fn chunk_stats(
-    chunks: &[RepoMapChunkRecordDtoV1],
+    chunks: &[RepoMapChunkRecordDto],
 ) -> (
     BTreeMap<String, ChunkStatsV1>,
     BTreeMap<String, ChunkStatsV1>,
@@ -349,7 +349,7 @@ fn chunk_stats(
     (by_subject, by_owner)
 }
 
-fn accumulate_chunk(stats: &mut ChunkStatsV1, chunk: &RepoMapChunkRecordDtoV1) {
+fn accumulate_chunk(stats: &mut ChunkStatsV1, chunk: &RepoMapChunkRecordDto) {
     stats.token_total = stats.token_total.saturating_add(chunk.token_count);
     if !chunk.preview_text.trim().is_empty() {
         stats
@@ -367,7 +367,7 @@ fn total_degree(stats: &GraphStatsV1) -> u32 {
     stats.incoming.saturating_add(stats.outgoing)
 }
 
-fn freshness_score(bundle: &RepoMapSourceBundleV1) -> u32 {
+fn freshness_score(bundle: &RepoMapSourceBundle) -> u32 {
     let item_index = bundle.item_index_availability.to_ascii_lowercase();
     let coverage = bundle.graph_coverage_class.to_ascii_lowercase();
     if (item_index.contains("available") || item_index.contains("full"))
@@ -381,7 +381,7 @@ fn freshness_score(bundle: &RepoMapSourceBundleV1) -> u32 {
     500
 }
 
-fn projection_status(bundle: &RepoMapSourceBundleV1) -> String {
+fn projection_status(bundle: &RepoMapSourceBundle) -> String {
     let item_index = bundle.item_index_availability.to_ascii_lowercase();
     let coverage = bundle.graph_coverage_class.to_ascii_lowercase();
     if (item_index.contains("available") || item_index.contains("full"))
@@ -392,7 +392,7 @@ fn projection_status(bundle: &RepoMapSourceBundleV1) -> String {
     "Partial".to_string()
 }
 
-fn exactness_signal(bundle: &RepoMapSourceBundleV1, chunk_stats: &ChunkStatsV1) -> u32 {
+fn exactness_signal(bundle: &RepoMapSourceBundle, chunk_stats: &ChunkStatsV1) -> u32 {
     let mut score: u32 = if bundle
         .exactness_summary
         .to_ascii_lowercase()

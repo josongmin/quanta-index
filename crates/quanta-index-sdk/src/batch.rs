@@ -1,27 +1,25 @@
-use quanta_index_contract::ChannelSeq;
+use quanta_index_contract::BatchIngestMode;
 
+/// SDK-facing batch mode. Wire counterpart is
+/// [`quanta_index_contract::BatchIngestMode`] (QI-ING-01).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatchMode {
     ReplaceGeneration,
     Delta,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct BatchReceipt {
-    pub first_seq: Option<ChannelSeq>,
-    pub last_seq: Option<ChannelSeq>,
-    pub sealed: bool,
-}
-
-impl BatchReceipt {
-    pub(crate) fn record(&mut self, seq: ChannelSeq) {
-        if self.first_seq.is_none() {
-            self.first_seq = Some(seq);
+impl BatchMode {
+    pub(crate) const fn to_wire(self) -> BatchIngestMode {
+        match self {
+            Self::ReplaceGeneration => BatchIngestMode::ReplaceGeneration,
+            Self::Delta => BatchIngestMode::Delta,
         }
-        self.last_seq = Some(seq);
-    }
-
-    pub(crate) fn mark_sealed(&mut self) {
-        self.sealed = true;
     }
 }
+
+/// QI-SDK-01: receipt for a batch publish.
+///
+/// Alias for wire [`quanta_index_contract::BatchPublishReceipt`]. The SDK no
+/// longer synthesises a sequence range client-side; `searchd` is the
+/// authority and returns the inclusive range in the ingest response.
+pub type BatchReceipt = quanta_index_contract::BatchPublishReceipt;

@@ -80,7 +80,7 @@ explain payload; LEX-01 owns the scalar score and its provenance.
 
 - existing lexical adapter ([lib.rs](../../../../crates/quanta-index-lexical/src/lib.rs)) returns `NotImplemented` for `build` / `open` — no scoring path exists today
 - historical commit `736ddea` carried Tantivy 0.22 default BM25 (`k1=1.2`, `b=0.75`) with no per-field tuning, no IDF persistence, no score normalization — this is what LEX-01 replaces
-- contract crate `LexicalCandidate.score: f32` field exists ([candidates.rs:20](../../../../crates/quanta-index-contract/src/results/candidates.rs#L20)) but is unconstrained — LEX-01 freezes the envelope
+- contract crate `LexicalCandidate.score: f32` field exists ([candidates.rs:20](../../../../crates/quanta-index-contract-base/src/results/candidates.rs#L20)) but is unconstrained — LEX-01 freezes the envelope
 - `SearchExplanation` is placeholder `{ summary: String }` per [implementation-plan.md §2.1](../implementation-plan.md#21-contract-crate--cratesquanta-index-contractsrc); GAP-05 v2 schema lands via PRE-CONTRACT-EXT — LEX-01 populates it
 
 ### 2.3 Why per-generation IDF persistence
@@ -553,7 +553,7 @@ Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rul
 | LEX01-Q7 | Cross-instance reproducibility test infrastructure — single-binary two-scope vs Docker | task brief + implementation-plan.md §4.4 | single-binary two-scope (no Docker). Matches the LEX-05 plan | LEX-01 start |
 | LEX01-Q8 | Compaction × IDF — when two generations compact, does the new generation's IDF table reuse one of the parents' or re-derive from the merged corpus? | RFC § Compaction; LEX-04 cross-reference | **re-derive** from the merged corpus at compaction time. Reusing a parent's IDF table would silently change a term's IDF as the corpus grows, violating per-generation determinism. ADR-018 placeholder for the compaction policy | LEX-04 / LEX-01 boundary |
 | LEX01-Q9 | UC-OPS-06 score envelope `SearchExplanation` schema — exact field names | PRE-CONTRACT-EXT GAP-05 | this ticket proposes: `score_envelope: { min: f32, max: f32, normalization: NormalizationKind, per_field_contributions: Vec<FieldContribution> }`. PRE-CONTRACT-EXT may revise — coordinate via handoff doc | PRE-CONTRACT-EXT start |
-| LEX01-Q10 | `f32` vs `f64` for the score envelope — drift risk | task brief | `f32`. `f64` is more precise but doubles wire and disk size with no observable ranking benefit at 10k candidates. Contract crate `LexicalCandidate.score: f32` is already pinned ([candidates.rs:20](../../../../crates/quanta-index-contract/src/results/candidates.rs#L20)). Cross-arch reproducibility addressed by §10 LEX01-R2 | LEX-01 start |
+| LEX01-Q10 | `f32` vs `f64` for the score envelope — drift risk | task brief | `f32`. `f64` is more precise but doubles wire and disk size with no observable ranking benefit at 10k candidates. Contract crate `LexicalCandidate.score: f32` is already pinned ([candidates.rs:20](../../../../crates/quanta-index-contract-base/src/results/candidates.rs#L20)). Cross-arch reproducibility addressed by §10 LEX01-R2 | LEX-01 start |
 
 ---
 
@@ -571,7 +571,7 @@ Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rul
 
 - [crates/quanta-index-lexical/src/lib.rs](../../../../crates/quanta-index-lexical/src/lib.rs) — current stub adapter
 - [crates/quanta-index-core/src/domains/lexical/](../../../../crates/quanta-index-core/src/domains/lexical/) — domain home (port host)
-- [crates/quanta-index-contract/src/results/candidates.rs](../../../../crates/quanta-index-contract/src/results/candidates.rs) — `LexicalCandidate.score: f32`
+- [crates/quanta-index-contract-base/src/results/candidates.rs](../../../../crates/quanta-index-contract-base/src/results/candidates.rs) — `LexicalCandidate.score: f32`
 - [crates/quanta-index-contract/src/results/explanation.rs](../../../../crates/quanta-index-contract/src/results/explanation.rs) — `SearchExplanation` placeholder
 - [crates/quanta-index-contract/src/query/pin.rs](../../../../crates/quanta-index-contract/src/query/pin.rs) — generation pin carrier
 - [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive`

@@ -8,6 +8,7 @@ use serde::{
 
 use crate::RepoRelativePath;
 use crate::lex::{LangId, SymbolKind};
+use crate::query::LqVisibility;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRecord {
@@ -115,6 +116,111 @@ impl<'de> Deserialize<'de> for ChunkRecord {
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct("ChunkRecord", CHUNK_RECORD_FIELDS, ChunkRecordVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LexicalRepoMetadataRecord {
+    pub fork: bool,
+    pub archived: bool,
+    pub visibility: LqVisibility,
+    pub contexts: Vec<String>,
+}
+
+const LEXICAL_REPO_METADATA_RECORD_FIELDS: &[&str] =
+    &["fork", "archived", "visibility", "contexts"];
+
+impl Serialize for LexicalRepoMetadataRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("LexicalRepoMetadataRecord", 4)?;
+        state.serialize_field("fork", &self.fork)?;
+        state.serialize_field("archived", &self.archived)?;
+        state.serialize_field("visibility", &self.visibility)?;
+        state.serialize_field("contexts", &self.contexts)?;
+        state.end()
+    }
+}
+
+struct LexicalRepoMetadataRecordVisitor;
+
+impl<'de> Visitor<'de> for LexicalRepoMetadataRecordVisitor {
+    type Value = LexicalRepoMetadataRecord;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a LexicalRepoMetadataRecord map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut fork: Option<bool> = None;
+        let mut archived: Option<bool> = None;
+        let mut visibility: Option<LqVisibility> = None;
+        let mut contexts: Option<Vec<String>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "fork" => {
+                    if fork.is_some() {
+                        return Err(de::Error::duplicate_field("fork"));
+                    }
+                    fork = Some(map.next_value()?);
+                }
+                "archived" => {
+                    if archived.is_some() {
+                        return Err(de::Error::duplicate_field("archived"));
+                    }
+                    archived = Some(map.next_value()?);
+                }
+                "visibility" => {
+                    if visibility.is_some() {
+                        return Err(de::Error::duplicate_field("visibility"));
+                    }
+                    visibility = Some(map.next_value()?);
+                }
+                "contexts" => {
+                    if contexts.is_some() {
+                        return Err(de::Error::duplicate_field("contexts"));
+                    }
+                    contexts = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        LEXICAL_REPO_METADATA_RECORD_FIELDS,
+                    ));
+                }
+            }
+        }
+        let contexts = contexts.ok_or_else(|| de::Error::missing_field("contexts"))?;
+        if contexts.iter().any(String::is_empty) {
+            return Err(de::Error::invalid_value(
+                de::Unexpected::Str(""),
+                &"non-empty context names",
+            ));
+        }
+        Ok(LexicalRepoMetadataRecord {
+            fork: fork.ok_or_else(|| de::Error::missing_field("fork"))?,
+            archived: archived.ok_or_else(|| de::Error::missing_field("archived"))?,
+            visibility: visibility.ok_or_else(|| de::Error::missing_field("visibility"))?,
+            contexts,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for LexicalRepoMetadataRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "LexicalRepoMetadataRecord",
+            LEXICAL_REPO_METADATA_RECORD_FIELDS,
+            LexicalRepoMetadataRecordVisitor,
+        )
     }
 }
 
@@ -274,5 +380,29 @@ impl<'de> Deserialize<'de> for EmbeddingRecord {
             EMBEDDING_RECORD_FIELDS,
             EmbeddingRecordVisitor,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LexicalRepoMetadataRecord;
+    use crate::query::LqVisibility;
+
+    #[test]
+    fn lexical_repo_metadata_record_round_trip() {
+        let record = LexicalRepoMetadataRecord {
+            fork: false,
+            archived: true,
+            visibility: LqVisibility::Private,
+            contexts: vec!["global".to_string(), "team/backend".to_string()],
+        };
+        let mut bytes = Vec::new();
+        let encoded = ciborium::into_writer(&record, &mut bytes);
+        assert!(encoded.is_ok(), "encode lexical repo metadata: {encoded:?}");
+        let decoded = ciborium::from_reader::<LexicalRepoMetadataRecord, _>(bytes.as_slice());
+        assert!(decoded.is_ok(), "decode lexical repo metadata: {decoded:?}");
+        if let Ok(decoded) = decoded {
+            assert_eq!(decoded, record);
+        }
     }
 }

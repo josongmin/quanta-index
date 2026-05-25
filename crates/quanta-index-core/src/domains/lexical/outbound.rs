@@ -1,5 +1,6 @@
 use quanta_index_contract::{
-    LexicalCandidate, LexicalChannelOp, LqQuery, ManifestGeneration, RepoId, RevisionId,
+    BatchPublishReceipt, LexicalCandidate, LexicalChannelOp, LexicalIngestBatch, LqQuery,
+    ManifestGeneration, RepoId, RevisionId,
 };
 
 use crate::error::CoreError;
@@ -35,6 +36,17 @@ pub trait LexicalIndexOpenPort: Send + Sync {
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
+}
+
+/// Ingest a typed lexical batch into the channel.
+///
+/// QI-RT-01 splits the producer-facing surface from the channel adapter so the
+/// SDK can drop its direct dependency on `quanta-index-channel`.
+/// Implementations fan the batch out to one or more [`LexicalChannelOp`]
+/// writes and return the inclusive sequence range in
+/// [`BatchPublishReceipt`].
+pub trait LexicalIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 /// Searcher handle returned by [`LexicalIndexOpenPort::open`].

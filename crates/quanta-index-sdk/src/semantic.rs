@@ -1,8 +1,8 @@
-use quanta_index_channel::{BundleChannelPublisher, open_semantic_publisher};
 use quanta_index_contract::{
     EmbeddingId, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SemanticCandidateScope, SemanticChannelOp, SemanticFullBundle, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, UpsertEmbedding,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SemanticCandidateScope,
+    SemanticEmbeddingDelete, SemanticEmbeddingMutation, SemanticEmbeddingUpsert,
+    SemanticIngestBatch, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
 };
 
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax};
@@ -14,7 +14,7 @@ pub enum SemanticVector {
 }
 
 impl SemanticVector {
-    fn into_ref(self) -> Result<SemanticVectorRef, SdkError> {
+    pub(super) fn into_ref(self) -> Result<SemanticVectorRef, SdkError> {
         match self {
             Self::Inline(vector) => {
                 if vector.is_empty() {
@@ -30,13 +30,13 @@ impl SemanticVector {
                         "semantic vector handle must not be empty".to_string(),
                     ));
                 }
-                Ok(SemanticVectorRef::Handle(handle))
+                Ok(SemanticVectorRef::Handle(handle.into()))
             }
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EmbeddingMutation {
     Upsert {
         embedding_id: EmbeddingId,
@@ -97,14 +97,17 @@ impl SemanticBatch {
 
     #[must_use]
     pub fn embedding_upsert(mut self, embedding_id: EmbeddingId, record: EmbeddingRecord) -> Self {
-        self.embeddings
-            .push(EmbeddingMutation::Upsert { embedding_id, record });
+        self.embeddings.push(EmbeddingMutation::Upsert {
+            embedding_id,
+            record,
+        });
         self
     }
 
     #[must_use]
     pub fn embedding_delete(mut self, embedding_id: EmbeddingId) -> Self {
-        self.embeddings.push(EmbeddingMutation::Delete { embedding_id });
+        self.embeddings
+            .push(EmbeddingMutation::Delete { embedding_id });
         self
     }
 
@@ -120,7 +123,7 @@ pub struct SemanticNamespace<'a> {
 }
 
 impl<'a> SemanticNamespace<'a> {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
     }
 
@@ -129,50 +132,49 @@ impl<'a> SemanticNamespace<'a> {
         SemanticQueryBuilder::new(self.client)
     }
 
+    /// QI-SDK-01: publish a semantic batch through the typed ingest IPC.
+    /// See [`crate::LexicalNamespace::publish`] for the lexical counterpart.
     pub fn publish(&self, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
-        let publisher = open_semantic_publisher(self.client.state_root()?)?;
-        let mut receipt = BatchReceipt::default();
-        if matches!(batch.mode, BatchMode::ReplaceGeneration) {
-            let seq = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: batch.generation,
-                payload: batch.manifest_payload.clone(),
-            }))?;
-            receipt.record(seq);
+        let wire_batch = SemanticIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            mode: batch.mode.to_wire(),
+            manifest_payload: batch.manifest_payload.clone(),
+            embeddings: batch.embeddings.iter().map(map_embedding).collect(),
+            seal: batch.seal,
+        };
+        let response =
+            self.client
+                .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
+                    wire_batch,
+                ))?;
+        match response {
+            SearchPlaneIngestIpcResponse::SemanticReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+                "expected semantic receipt, got {}",
+                QuantaIndex::ingest_response_kind(&other)
+            ))),
         }
-        for embedding in &batch.embeddings {
-            let op = match embedding {
-                EmbeddingMutation::Upsert { embedding_id, record } => {
-                    let payload = QuantaIndex::encode_cbor(record)?;
-                    SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        embedding_id: embedding_id.clone(),
-                        payload,
-                    })
-                }
-                EmbeddingMutation::Delete { embedding_id } => {
-                    SemanticChannelOp::DeleteEmbedding(quanta_index_contract::DeleteEmbedding {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        embedding_id: embedding_id.clone(),
-                    })
-                }
-            };
-            let seq = publisher.publish(op)?;
-            receipt.record(seq);
+    }
+}
+
+fn map_embedding(mutation: &EmbeddingMutation) -> SemanticEmbeddingMutation {
+    match mutation {
+        EmbeddingMutation::Upsert {
+            embedding_id,
+            record,
+        } => SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
+            embedding_id: embedding_id.clone(),
+            record: record.clone(),
+        }),
+        EmbeddingMutation::Delete { embedding_id } => {
+            SemanticEmbeddingMutation::Delete(SemanticEmbeddingDelete {
+                embedding_id: embedding_id.clone(),
+            })
         }
-        if batch.seal {
-            let seq =
-                publisher.seal(batch.repo_id.clone(), batch.revision_id.clone(), batch.generation)?;
-            receipt.record(seq);
-            receipt.mark_sealed();
-        }
-        publisher.flush()?;
-        Ok(receipt)
     }
 }
 
@@ -266,7 +268,9 @@ impl<'a> SemanticQueryBuilder<'a> {
         };
         let response = self.client.dispatch_query(
             quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: String::new(),
+                // QI-QRY-01 phase 2: vector path is authoritative; no text
+                // filler. `query_vector_ref` carries the typed handle / inline.
+                query_text: None,
                 query_vector: None,
                 query_vector_ref: Some(vector_ref),
                 generation,
@@ -277,9 +281,21 @@ impl<'a> SemanticQueryBuilder<'a> {
         )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
-                "expected semantic query response, got {other:?}"
-            ))),
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected semantic query response, got {}",
+                    QuantaIndex::query_response_kind(&other)
+                )))
+            }
         }
     }
 }

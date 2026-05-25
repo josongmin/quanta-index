@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
 
@@ -78,6 +79,28 @@ impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
     fn from_parts(
         request_id: u64,
         payload: quanta_index_contract::SearchPlaneControlIpcResponse,
+    ) -> Self {
+        Self {
+            request_id,
+            payload,
+        }
+    }
+}
+
+impl RequestEnvelope<quanta_index_contract::SearchPlaneIngestIpcRequest>
+    for SearchPlaneIngestIpcRequestEnvelope
+{
+    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneIngestIpcRequest) {
+        (self.request_id, self.payload)
+    }
+}
+
+impl ResponseEnvelope<quanta_index_contract::SearchPlaneIngestIpcResponse>
+    for SearchPlaneIngestIpcResponseEnvelope
+{
+    fn from_parts(
+        request_id: u64,
+        payload: quanta_index_contract::SearchPlaneIngestIpcResponse,
     ) -> Self {
         Self {
             request_id,

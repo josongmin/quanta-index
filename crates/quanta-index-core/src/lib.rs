@@ -16,14 +16,14 @@ pub use error::CoreError;
 pub use domains::channel::{ChannelDispatchPolicy, ChannelObserver};
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPolicy, LexicalQueryPort, LexicalReadiness,
-    LexicalSearcher,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalPolicy,
+    LexicalQueryPort, LexicalReadiness, LexicalSearcher,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,
     RepoMapService,
 };
 pub use domains::semantic::{
-    SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticPolicy, SemanticQueryPort,
-    SemanticReadiness, SemanticSearcher,
+    SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
+    SemanticQueryPort, SemanticReadiness, SemanticSearcher,
 };

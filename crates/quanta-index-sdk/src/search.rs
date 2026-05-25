@@ -1,7 +1,7 @@
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     RepoId, RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
+    TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError, SemanticVector};
@@ -11,7 +11,7 @@ pub struct SearchNamespace<'a> {
 }
 
 impl<'a> SearchNamespace<'a> {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
         Self { client }
     }
 
@@ -35,9 +35,21 @@ impl<'a> SearchNamespace<'a> {
         )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
-                "expected explain response, got {other:?}"
-            ))),
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected explain response, got {}",
+                    QuantaIndex::query_response_kind(&other)
+                )))
+            }
         }
     }
 }
@@ -114,30 +126,13 @@ impl<'a> HybridQueryBuilder<'a> {
         let query_text = self
             .query_text
             .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
-        let vector_ref = match self
+        let vector_ref = self
             .vector
             .ok_or_else(|| SdkError::Usage("hybrid semantic vector is required".to_string()))?
-        {
-            SemanticVector::Inline(vector) => {
-                if vector.is_empty() {
-                    return Err(SdkError::Usage(
-                        "hybrid semantic vector must not be empty".to_string(),
-                    ));
-                }
-                SemanticVectorRef::Inline(vector)
-            }
-            SemanticVector::Handle(handle) => {
-                if handle.is_empty() {
-                    return Err(SdkError::Usage(
-                        "hybrid semantic vector handle must not be empty".to_string(),
-                    ));
-                }
-                SemanticVectorRef::Handle(handle)
-            }
-        };
-        let selection = self
-            .selection
-            .ok_or_else(|| SdkError::Usage("hybrid generation selection is required".to_string()))?;
+            .into_ref()?;
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("hybrid generation selection is required".to_string())
+        })?;
         let top_k = self
             .top_k
             .ok_or_else(|| SdkError::Usage("hybrid top_k is required".to_string()))?;
@@ -151,8 +146,9 @@ impl<'a> HybridQueryBuilder<'a> {
                     query_text,
                     generation: text_generation,
                     generation_selector: text_generation_selector,
+                    top_k,
                 },
-                semantic_query_text: String::new(),
+                semantic_query_text: None,
                 semantic_vector: None,
                 semantic_vector_ref: Some(vector_ref),
                 generation,
@@ -162,9 +158,21 @@ impl<'a> HybridQueryBuilder<'a> {
         )?;
         match response {
             quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
-                "expected hybrid query response, got {other:?}"
-            ))),
+            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected hybrid query response, got {}",
+                    QuantaIndex::query_response_kind(&other)
+                )))
+            }
         }
     }
 }

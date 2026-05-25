@@ -28,13 +28,15 @@ pub mod results;
 pub use channel::{
     ChannelSeq, ChunkId, ChunkRecord, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef,
     DeleteSymbol, DeleteTag, EmbeddingId, EmbeddingRecord, EvictDirty, LexicalChannelOp,
-    LexicalFullBundle, LexicalSeal, SemanticChannelOp, SemanticFullBundle, SemanticSeal, SymbolId,
-    UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree,
-    UpsertRef, UpsertSymbol, UpsertTag,
+    LexicalFullBundle, LexicalRepoMetadataRecord, LexicalSeal, SemanticChannelOp,
+    SemanticFullBundle, SemanticSeal, SymbolId, UpsertChunk, UpsertCommit, UpsertDiffHunk,
+    UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
 pub use ipc::*;
 pub use quanta_index_contract_base::{
-    FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide, FileId,
+    GenerationId, LexicalCandidate, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, StructuralBinding, StructuralCandidate,
 };
 pub use query::*;
 pub use repomap::*;

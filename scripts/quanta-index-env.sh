@@ -5,6 +5,8 @@
 # Linux:  ${XDG_CACHE_HOME:-~/.cache}/quanta-index/
 #
 # Override the root with QUANTA_INDEX_CACHE_ROOT when needed.
+# Override the compile lane with QUANTA_INDEX_BUILD_LANE when a command should
+# use an isolated incremental/cache root.
 
 quanta_index_cache_root() {
   if [[ -n "${QUANTA_INDEX_CACHE_ROOT:-}" ]]; then
@@ -27,7 +29,10 @@ fi
 
 _QUANTA_INDEX_CACHE_ROOT="$(quanta_index_cache_root)"
 export QUANTA_INDEX_CACHE_ROOT="$_QUANTA_INDEX_CACHE_ROOT"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$_QUANTA_INDEX_CACHE_ROOT/target}"
+export QUANTA_INDEX_REPO_ROOT="${QUANTA_INDEX_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+export QUANTA_INDEX_BUILD_LANE="${QUANTA_INDEX_BUILD_LANE:-shared}"
+export QUANTA_INDEX_BUILD_LOGGING="${QUANTA_INDEX_BUILD_LOGGING:-1}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$_QUANTA_INDEX_CACHE_ROOT/target/${QUANTA_INDEX_BUILD_LANE}}"
 export QUANTA_INDEX_STATE_ROOT="${QUANTA_INDEX_STATE_ROOT:-$_QUANTA_INDEX_CACHE_ROOT/state}"
 export PYTEST_CACHE_DIR="${PYTEST_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/pytest}"
 export RUFF_CACHE_DIR="${RUFF_CACHE_DIR:-$_QUANTA_INDEX_CACHE_ROOT/ruff}"

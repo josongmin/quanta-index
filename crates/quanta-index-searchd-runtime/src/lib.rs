@@ -13,14 +13,20 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
-use quanta_index_channel::{open_lexical_subscriber, open_semantic_subscriber};
+use quanta_index_channel::{
+    BundleChannelPublisher, open_lexical_publisher, open_lexical_subscriber,
+    open_semantic_publisher, open_semantic_subscriber,
+};
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
+    SemanticIngestPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_search_plane::ActivationCatalog;
+use quanta_index_search_plane::{
+    ActivationCatalog, ChannelLexicalIngestAdapter, ChannelSemanticIngestAdapter,
+};
 use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_semantic::SemanticAdapter;
@@ -29,6 +35,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let state_root = config.state_root().to_path_buf();
     let lex_sub = open_lexical_subscriber(&state_root)?;
     let sem_sub = open_semantic_subscriber(&state_root)?;
+    let lex_publisher: Arc<
+        dyn BundleChannelPublisher<Op = quanta_index_contract::LexicalChannelOp> + Send + Sync,
+    > = Arc::new(open_lexical_publisher(&state_root)?);
+    let sem_publisher: Arc<
+        dyn BundleChannelPublisher<Op = quanta_index_contract::SemanticChannelOp> + Send + Sync,
+    > = Arc::new(open_semantic_publisher(&state_root)?);
 
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
@@ -42,8 +54,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
 
     let lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync> = lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter;
+    let lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
+        Arc::new(ChannelLexicalIngestAdapter::new(lex_publisher));
     let sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
+    let sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
+        Arc::new(ChannelSemanticIngestAdapter::new(sem_publisher));
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
@@ -57,8 +73,10 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             sem_sub,
             lex_build_port,
             lex_open_port,
+            lex_ingest_port,
             sem_build_port,
             sem_open_port,
+            sem_ingest_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
