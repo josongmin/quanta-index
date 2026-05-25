@@ -90,11 +90,11 @@ where
     _marker: PhantomData<fn() -> N>,
 }
 
-impl<N> NamespaceHandle<'_, N>
+impl<'a, N> NamespaceHandle<'a, N>
 where
     N: ?Sized,
 {
-    pub(crate) const fn new(client: &QuantaIndex) -> NamespaceHandle<'_, N> {
+    pub(crate) const fn new(client: &'a QuantaIndex) -> NamespaceHandle<'a, N> {
         NamespaceHandle {
             client,
             _marker: PhantomData,
@@ -103,13 +103,16 @@ where
 
     /// Underlying SDK client. Exposed for callers that want to drop back
     /// to the `lexical()` / `semantic()` sugar within the same scope.
+    ///
+    /// Returns the borrow tied to the client lifetime `'a`, not to
+    /// `&self`, so callers can hold the reference past the handle.
     #[must_use]
-    pub const fn client(&self) -> &QuantaIndex {
+    pub const fn client(&self) -> &'a QuantaIndex {
         self.client
     }
 }
 
-impl<N> NamespaceHandle<'_, N>
+impl<'a, N> NamespaceHandle<'a, N>
 where
     N: NamespaceIngest + ?Sized,
 {
@@ -121,7 +124,7 @@ where
     }
 }
 
-impl<N> NamespaceHandle<'_, N>
+impl<'a, N> NamespaceHandle<'a, N>
 where
     N: NamespaceQuery + ?Sized,
 {
@@ -129,8 +132,14 @@ where
     ///
     /// This is identical to the built-in `client.lexical().query()` or
     /// `client.semantic().query()` sugar. Those sugar layers delegate here.
+    ///
+    /// The returned builder is bound to the client lifetime `'a` (the
+    /// lifetime carried by the handle), not to `&self`. Sibling sugar
+    /// methods on [`LexicalNamespace<'a>`] / [`SemanticNamespace<'a>`] /
+    /// etc. already return `QueryBuilder<'a>`; this method matches them so
+    /// callers can hold the builder past the handle scope.
     #[must_use]
-    pub fn query(&self) -> N::QueryBuilder<'_> {
+    pub fn query(&self) -> N::QueryBuilder<'a> {
         N::query(self.client)
     }
 }
@@ -274,33 +283,19 @@ mod tests {
             ))),
         });
         let client = make_client(Arc::clone(&ingest));
-        let receipt = match client.ns::<DownstreamLexicalNs>().publish(&fixture_batch()) {
-            Ok(receipt) => receipt,
-            Err(err) => {
-                assert!(false, "downstream publish failed: {err}");
-                return;
-            }
-        };
+        let receipt = client
+            .ns::<DownstreamLexicalNs>()
+            .publish(&fixture_batch())
+            .expect("downstream publish must succeed");
         assert_eq!(receipt.first_seq, Some(ChannelSeq::new(0)));
-        let captured_payload = {
-            let captured = match ingest.requests.lock() {
-                Ok(captured) => captured,
-                Err(err) => {
-                    assert!(false, "captured requests poisoned: {err}");
-                    return;
-                }
-            };
-            assert_eq!(captured.len(), 1);
-            let Some(first) = captured.first() else {
-                assert!(false, "expected one captured request");
-                return;
-            };
-            let payload = first.payload.clone();
-            drop(captured);
-            payload
-        };
+        let captured = ingest
+            .requests
+            .lock()
+            .expect("captured requests must not be poisoned");
+        assert_eq!(captured.len(), 1);
+        let first = captured.first().expect("expected one captured request");
         assert!(matches!(
-            captured_payload,
+            first.payload,
             SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
         ));
     }
@@ -319,13 +314,10 @@ mod tests {
             ))),
         });
         let sugar_client = make_client(Arc::clone(&sugar_ingest));
-        let _sugar_receipt = match sugar_client.lexical().publish(&batch) {
-            Ok(receipt) => receipt,
-            Err(err) => {
-                assert!(false, "sugar publish failed: {err}");
-                return;
-            }
-        };
+        let _sugar_receipt = sugar_client
+            .lexical()
+            .publish(&batch)
+            .expect("sugar publish must succeed");
 
         let ns_ingest = Arc::new(StubIngestTransport {
             requests: Mutex::new(Vec::new()),
@@ -334,47 +326,34 @@ mod tests {
             ))),
         });
         let ns_client = make_client(Arc::clone(&ns_ingest));
-        let _ns_receipt = match ns_client.ns::<crate::LexicalNs>().publish(&batch) {
-            Ok(receipt) => receipt,
-            Err(err) => {
-                assert!(false, "ns publish failed: {err}");
-                return;
-            }
-        };
+        let _ns_receipt = ns_client
+            .ns::<crate::LexicalNs>()
+            .publish(&batch)
+            .expect("ns publish must succeed");
 
         let sugar_payload = {
-            let captured = match sugar_ingest.requests.lock() {
-                Ok(captured) => captured,
-                Err(err) => {
-                    assert!(false, "sugar captured poisoned: {err}");
-                    return;
-                }
-            };
+            let captured = sugar_ingest
+                .requests
+                .lock()
+                .expect("sugar captured must not be poisoned");
             assert_eq!(captured.len(), 1);
-            let Some(first) = captured.first() else {
-                assert!(false, "expected one sugar request");
-                return;
-            };
-            let payload = first.payload.clone();
-            drop(captured);
-            payload
+            captured
+                .first()
+                .expect("expected one sugar request")
+                .payload
+                .clone()
         };
         let ns_payload = {
-            let captured = match ns_ingest.requests.lock() {
-                Ok(captured) => captured,
-                Err(err) => {
-                    assert!(false, "ns captured poisoned: {err}");
-                    return;
-                }
-            };
+            let captured = ns_ingest
+                .requests
+                .lock()
+                .expect("ns captured must not be poisoned");
             assert_eq!(captured.len(), 1);
-            let Some(first) = captured.first() else {
-                assert!(false, "expected one ns request");
-                return;
-            };
-            let payload = first.payload.clone();
-            drop(captured);
-            payload
+            captured
+                .first()
+                .expect("expected one ns request")
+                .payload
+                .clone()
         };
         assert_eq!(sugar_payload, ns_payload);
     }

@@ -165,10 +165,10 @@ impl crate::NamespaceIngest for LexicalNs {
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected lexical receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "lexical receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
@@ -302,10 +302,10 @@ impl<'a> LexicalQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                Err(SdkError::Protocol(format!(
-                    "expected text query response, got {}",
-                    QuantaIndex::query_response_kind(&other)
-                )))
+                Err(SdkError::unexpected_response(
+                    "text query response",
+                    QuantaIndex::query_response_kind(&other),
+                ))
             }
         }
     }

@@ -97,10 +97,10 @@ impl crate::NamespaceIngest for RuntimeNs {
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected dirty receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "dirty receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
@@ -203,10 +203,10 @@ impl<'a> RuntimeQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
-                "expected runtime response, got {}",
-                QuantaIndex::query_response_kind(&other)
-            ))),
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+                "runtime response",
+                QuantaIndex::query_response_kind(&other),
+            )),
         }
     }
 }

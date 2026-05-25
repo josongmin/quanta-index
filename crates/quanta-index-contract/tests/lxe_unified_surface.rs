@@ -4,15 +4,23 @@
 //!
 //! * `SemanticQueryRequest.lexical_scope: Option<TextQueryRequest>` —
 //!   the `SemanticCandidateScope` dual surface has been deleted.
-//! * `lex::SearchExplanation` carries planner-trace, engines-touched,
-//!   early-stop reason, and summary fields (LXE-07 planner provenance).
+//! * `SearchExplanation` (canonical at
+//!   [`quanta_index_contract::results::SearchExplanation`], re-exported as
+//!   `lex::SearchExplanation`) carries `planner_trace` of typed
+//!   `PlannerTraceEntry { stage: PlannerStage, detail: String }`, an
+//!   `engines_touched` vector of typed `EngineTouched`, optional typed
+//!   `early_stop_reason`, and `summary` (LXE-07 planner provenance).
+//! * `SearchExplanationBuilder::ranker_weights_hash` accepts
+//!   `Result<[u8; 32], WeightsHashError>` so callers cannot silently
+//!   substitute a zero placeholder (CLAUDE.md digest-fallibility rule).
 //!
 //! Each test fails fast on shape drift; rerunning is the contract gate.
 
 #![forbid(unsafe_code)]
 
 use quanta_index_contract::lex::{
-    ExplanationRow, PlannerTraceNode, SearchExplanation, SearchExplanationBuilder,
+    EarlyStopReason, EngineTouched, ExplanationRow, PlannerStage, PlannerTraceEntry,
+    SearchExplanation, SearchExplanationBuilder, WeightsHashError,
 };
 use quanta_index_contract::{
     GenerationPin, ManifestGeneration, RepoId, RevisionId, SemanticQueryRequest, TextQueryRequest,
@@ -140,36 +148,59 @@ fn semantic_query_request_rejects_legacy_scope_field() -> TestRes {
     Ok(())
 }
 
+// --- LXE-01: assert the wire-field name remains `lexical_scope` -----------
+
 #[test]
-fn semantic_candidate_scope_is_gone_from_public_api() {
-    // Compile-time fence: a `use ...::SemanticCandidateScope;` would fail
-    // resolution, so we only need a sentinel that compiles only if the type
-    // is GONE — there is no such sentinel that survives a rename. Instead we
-    // check that the wire field is named `lexical_scope`; if a future commit
-    // restores `scope`, the rejection test above fires.
-    //
-    // We also verify by negation: build a SemanticQueryRequest using the
-    // `lexical_scope` field directly. If anyone reintroduces a struct
-    // literal field named `scope`, this test (and the rest of the file)
-    // fails to compile.
+fn semantic_query_request_wire_field_is_lexical_scope() -> TestRes {
+    // Compile-time + runtime fence: the canonical field is `lexical_scope`.
+    // If a future commit re-introduces a `scope` field literal, the struct
+    // literal below fails to compile; if the wire field is renamed, the
+    // map-key assertion below catches the regression.
     let sentinel = SemanticQueryRequest {
         query_text: None,
         query_vector: None,
         query_vector_ref: None,
         generation: None,
         generation_selector: None,
-        lexical_scope: None,
+        lexical_scope: Some(lexical_scope_text_query()),
         top_k: 1,
     };
-    // Touch a field to give the literal a side-effect (avoids clippy's
-    // `no_effect_underscore_binding`).
-    assert_eq!(sentinel.top_k, 1);
+    let bytes = encode(&sentinel)?;
+    let wire: ciborium::Value = decode(&bytes)?;
+    let ciborium::Value::Map(fields) = &wire else {
+        return Err("expected SemanticQueryRequest to encode as a map".into());
+    };
+    let saw_lexical_scope = fields
+        .iter()
+        .any(|(key, _)| matches!(key, ciborium::Value::Text(text) if text == "lexical_scope"));
+    if !saw_lexical_scope {
+        return Err("wire map missing `lexical_scope` field".into());
+    }
+    let saw_scope = fields
+        .iter()
+        .any(|(key, _)| matches!(key, ciborium::Value::Text(text) if text == "scope"));
+    if saw_scope {
+        return Err("wire map must not contain legacy `scope` field".into());
+    }
+    Ok(())
 }
 
 // --- LXE-07: SearchExplanation augmented with planner-provenance fields ----
 
 fn sample_explanation_full() -> SearchExplanation {
     SearchExplanation {
+        planner_trace: vec![
+            PlannerTraceEntry {
+                stage: PlannerStage::Filter,
+                detail: "repo:quanta-index".to_owned(),
+            },
+            PlannerTraceEntry {
+                stage: PlannerStage::LeafRegex,
+                detail: "Search.*Plane".to_owned(),
+            },
+        ],
+        engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        early_stop_reason: Some(EarlyStopReason::CountReached),
         contributions: vec![ExplanationRow {
             signal_name: Box::from("bm25"),
             signal_value: 1.0,
@@ -177,20 +208,8 @@ fn sample_explanation_full() -> SearchExplanation {
             contribution: 0.5,
         }],
         ranker_weights_hash: [0xab; 32],
-        strategy: Box::from("hybrid-v1"),
-        planner_trace: vec![
-            PlannerTraceNode {
-                node_kind: Box::from("filter"),
-                detail: Box::from("repo:quanta-index"),
-            },
-            PlannerTraceNode {
-                node_kind: Box::from("leaf:regex"),
-                detail: Box::from("Search.*Plane"),
-            },
-        ],
-        engines_touched: vec![Box::from("tantivy"), Box::from("lq-trigram")],
-        early_stop_reason: Some(Box::from("candidate_cap_hit")),
-        summary: Some(Box::from("regex narrowed by repo filter")),
+        strategy: "hybrid-v1".to_owned(),
+        summary: "regex narrowed by repo filter".to_owned(),
     }
 }
 
@@ -210,13 +229,19 @@ fn search_explanation_round_trips_all_seven_fields() -> TestRes {
     if decoded.planner_trace.len() != 2 {
         return Err("planner_trace dropped on roundtrip".into());
     }
-    if decoded.engines_touched.len() != 2 {
+    if decoded.planner_trace[0].stage != PlannerStage::Filter {
+        return Err("planner_trace[0].stage not preserved as typed enum".into());
+    }
+    if decoded.planner_trace[1].stage != PlannerStage::LeafRegex {
+        return Err("planner_trace[1].stage not preserved as typed enum".into());
+    }
+    if decoded.engines_touched != vec![EngineTouched::Lexical, EngineTouched::Semantic] {
         return Err("engines_touched dropped on roundtrip".into());
     }
-    if decoded.early_stop_reason.as_deref() != Some("candidate_cap_hit") {
+    if decoded.early_stop_reason != Some(EarlyStopReason::CountReached) {
         return Err("early_stop_reason dropped on roundtrip".into());
     }
-    if decoded.summary.as_deref() != Some("regex narrowed by repo filter") {
+    if decoded.summary != "regex narrowed by repo filter" {
         return Err("summary dropped on roundtrip".into());
     }
     if decoded.contributions.len() != 1 {
@@ -225,7 +250,7 @@ fn search_explanation_round_trips_all_seven_fields() -> TestRes {
     if decoded.ranker_weights_hash != [0xab; 32] {
         return Err("ranker_weights_hash dropped on roundtrip".into());
     }
-    if decoded.strategy.as_ref() != "hybrid-v1" {
+    if decoded.strategy != "hybrid-v1" {
         return Err("strategy dropped on roundtrip".into());
     }
     Ok(())
@@ -243,7 +268,7 @@ fn search_explanation_empty_round_trips() -> TestRes {
         || !decoded.planner_trace.is_empty()
         || !decoded.engines_touched.is_empty()
         || decoded.early_stop_reason.is_some()
-        || decoded.summary.is_some()
+        || !decoded.summary.is_empty()
     {
         return Err("SearchExplanation::empty did not produce empty fields".into());
     }
@@ -253,16 +278,16 @@ fn search_explanation_empty_round_trips() -> TestRes {
 #[test]
 fn search_explanation_builder_pushes_typed_fields() -> TestRes {
     let built = SearchExplanationBuilder::new()
-        .strategy(Box::from("lexical-only"))
-        .ranker_weights_hash([0x77; 32])
-        .push_trace(PlannerTraceNode {
-            node_kind: Box::from("leaf:phrase"),
-            detail: Box::from("\"index lookup\""),
+        .strategy("lexical-only".to_owned())
+        .ranker_weights_hash(Ok([0x77; 32]))?
+        .push_trace(PlannerTraceEntry {
+            stage: PlannerStage::LeafPhrase,
+            detail: "\"index lookup\"".to_owned(),
         })
-        .push_engine(Box::from("lq-positions"))
-        .push_engine(Box::from("lq-trigram"))
-        .early_stop_reason(Some(Box::from("budget_exhausted")))
-        .summary(Some(Box::from("phrase resolved against positions index")))
+        .push_engine(EngineTouched::Lexical)
+        .push_engine(EngineTouched::Bridge)
+        .early_stop_reason(Some(EarlyStopReason::Unsupported))
+        .summary("phrase resolved against positions index".to_owned())
         .build();
     if built.engines_touched.len() != 2 {
         return Err("builder.push_engine did not append".into());
@@ -270,16 +295,19 @@ fn search_explanation_builder_pushes_typed_fields() -> TestRes {
     if built.planner_trace.len() != 1 {
         return Err("builder.push_trace did not append".into());
     }
-    if built.strategy.as_ref() != "lexical-only" {
+    if built.planner_trace[0].stage != PlannerStage::LeafPhrase {
+        return Err("builder.push_trace stage not preserved".into());
+    }
+    if built.strategy != "lexical-only" {
         return Err("builder.strategy not propagated".into());
     }
     if built.ranker_weights_hash != [0x77; 32] {
         return Err("builder.ranker_weights_hash not propagated".into());
     }
-    if built.early_stop_reason.as_deref() != Some("budget_exhausted") {
+    if built.early_stop_reason != Some(EarlyStopReason::Unsupported) {
         return Err("builder.early_stop_reason not propagated".into());
     }
-    if built.summary.as_deref() != Some("phrase resolved against positions index") {
+    if built.summary != "phrase resolved against positions index" {
         return Err("builder.summary not propagated".into());
     }
     // Final value must also round-trip cleanly through CBOR.
@@ -289,6 +317,35 @@ fn search_explanation_builder_pushes_typed_fields() -> TestRes {
         return Err("builder output failed CBOR roundtrip".into());
     }
     Ok(())
+}
+
+#[test]
+fn search_explanation_builder_forwards_weights_hash_error() -> TestRes {
+    // The fallible setter must forward a producer error rather than swallow
+    // it or substitute a default. This is the digest-fallibility fence.
+    let result = SearchExplanationBuilder::new()
+        .ranker_weights_hash(Err(WeightsHashError::new("codec step failed")));
+    match result {
+        Err(err) => {
+            if !err.message().contains("codec step failed") {
+                return Err(format!(
+                    "WeightsHashError did not forward producer diagnostic: {}",
+                    err.message()
+                )
+                .into());
+            }
+            // Display surface must also include the diagnostic.
+            let rendered = format!("{err}");
+            if !rendered.contains("codec step failed") {
+                return Err(format!(
+                    "WeightsHashError Display did not include diagnostic: {rendered}",
+                )
+                .into());
+            }
+            Ok(())
+        }
+        Ok(_) => Err("WeightsHashError setter must forward producer error".into()),
+    }
 }
 
 #[test]
@@ -312,15 +369,34 @@ fn search_explanation_rejects_unknown_field() -> TestRes {
 }
 
 #[test]
-fn planner_trace_node_round_trips() -> TestRes {
-    let original = PlannerTraceNode {
-        node_kind: Box::from("filter"),
-        detail: Box::from("lang:rust"),
-    };
-    let bytes = encode(&original)?;
-    let decoded: PlannerTraceNode = decode(&bytes)?;
-    if decoded != original {
-        return Err("PlannerTraceNode roundtrip mismatch".into());
+fn planner_trace_entry_round_trips_typed_stage() -> TestRes {
+    // Replaces the legacy stringly-typed `PlannerTraceNode` roundtrip.
+    // Asserts that `stage` is the typed `PlannerStage` enum (not `Box<str>`)
+    // by exercising every variant the builder uses.
+    for stage in [
+        PlannerStage::Filter,
+        PlannerStage::LeafRegex,
+        PlannerStage::LeafPhrase,
+        PlannerStage::Parse,
+        PlannerStage::Normalize,
+        PlannerStage::Plan,
+        PlannerStage::ExecFanout,
+        PlannerStage::Merge,
+        PlannerStage::Rerank,
+        PlannerStage::Bridge,
+    ] {
+        let original = PlannerTraceEntry {
+            stage,
+            detail: format!("detail-for-{}", stage.as_str()),
+        };
+        let bytes = encode(&original)?;
+        let decoded: PlannerTraceEntry = decode(&bytes)?;
+        if decoded != original {
+            return Err(format!(
+                "PlannerTraceEntry roundtrip mismatch for {stage:?}: decoded={decoded:?}"
+            )
+            .into());
+        }
     }
     Ok(())
 }

@@ -73,6 +73,24 @@ fn control_subcommands_are_not_exposed() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+#[test]
+fn semantic_scope_query_requires_scope_top_k() {
+    let result = semantic_scope_query_requires_scope_top_k_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn semantic_scope_top_k_without_scope_query_is_rejected() {
+    let result = semantic_scope_top_k_without_scope_query_is_rejected_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn semantic_with_scope_query_and_scope_top_k_parses_successfully() {
+    let result = semantic_with_scope_query_and_scope_top_k_parses_successfully_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
 fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let _tempdir = tempdir()?;
     let socket_path = unique_socket_path();
@@ -157,6 +175,114 @@ fn control_subcommands_are_not_exposed_impl() -> Result<(), Box<dyn std::error::
     let stderr = String::from_utf8(output.stderr)?;
     if !stderr.contains("unknown subcommand") {
         return Err(format!("missing unknown-subcommand error in stderr: {stderr}").into());
+    }
+    Ok(())
+}
+
+fn semantic_scope_query_requires_scope_top_k_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("semantic")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--query-text")
+        .arg("foo")
+        .arg("--top-k")
+        .arg("10")
+        .arg("--scope-query")
+        .arg("foo")
+        .arg("--scope-syntax")
+        .arg("native")
+        .output()?;
+    if output.status.code() != Some(2) {
+        return Err(format!(
+            "expected usage exit code 2, got {:?} (stderr: {})",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    if !stderr.contains("scope-top-k") {
+        return Err(format!("missing scope-top-k in stderr: {stderr}").into());
+    }
+    Ok(())
+}
+
+fn semantic_scope_top_k_without_scope_query_is_rejected_impl()
+-> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("semantic")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--query-text")
+        .arg("foo")
+        .arg("--top-k")
+        .arg("10")
+        .arg("--scope-top-k")
+        .arg("20")
+        .output()?;
+    if output.status.code() != Some(2) {
+        return Err(format!(
+            "expected usage exit code 2, got {:?} (stderr: {})",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    if !stderr.contains("--scope-top-k") {
+        return Err(format!("missing --scope-top-k in stderr: {stderr}").into());
+    }
+    Ok(())
+}
+
+fn semantic_with_scope_query_and_scope_top_k_parses_successfully_impl()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Point at a socket path that definitely does not exist. If parsing succeeds, the CLI
+    // proceeds to IPC and fails with EXIT_TRANSPORT (1); if parsing fails, we get
+    // EXIT_USAGE (2). The assertion below distinguishes the two.
+    let socket_path = unique_socket_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("semantic")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--query-text")
+        .arg("embedding query")
+        .arg("--top-k")
+        .arg("10")
+        .arg("--scope-query")
+        .arg("foo")
+        .arg("--scope-syntax")
+        .arg("native")
+        .arg("--scope-top-k")
+        .arg("20")
+        .output()?;
+    if output.status.code() == Some(2) {
+        return Err(format!(
+            "parsing should succeed but got usage exit code (stderr: {})",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
     Ok(())
 }

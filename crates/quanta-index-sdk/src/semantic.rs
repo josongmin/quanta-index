@@ -166,10 +166,10 @@ impl crate::NamespaceIngest for SemanticNs {
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected semantic receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "semantic receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
@@ -205,6 +205,10 @@ pub struct SemanticQueryBuilder<'a> {
     selection: Option<GenerationSelector>,
     scope: Option<(TextQuerySyntax, String)>,
     top_k: Option<u32>,
+    /// QI-QRY-01: explicit lexical-scope candidate cap. Distinct from
+    /// the outer semantic `top_k` (final recall cap). When `scope` is
+    /// set, `scope_top_k` MUST also be set — see [`execute`].
+    scope_top_k: Option<u32>,
 }
 
 impl<'a> SemanticQueryBuilder<'a> {
@@ -215,6 +219,7 @@ impl<'a> SemanticQueryBuilder<'a> {
             selection: None,
             scope: None,
             top_k: None,
+            scope_top_k: None,
         }
     }
 
@@ -263,6 +268,19 @@ impl<'a> SemanticQueryBuilder<'a> {
         self
     }
 
+    /// QI-QRY-01: explicit lexical-scope candidate cap. When the
+    /// builder's lexical scope (`scope_native` / `scope_sourcegraph`) is
+    /// set, this MUST also be set; [`execute`] returns
+    /// [`SdkError::Usage`] otherwise. The two values are semantically
+    /// distinct: outer `top_k` is the final semantic recall cap, while
+    /// `scope_top_k` is the lexical candidate cap fed into the hybrid
+    /// scope stage.
+    #[must_use]
+    pub fn scope_top_k(mut self, scope_top_k: u32) -> Self {
+        self.scope_top_k = Some(scope_top_k);
+        self
+    }
+
     pub fn execute(self) -> Result<SemanticQueryResponse, SdkError> {
         let vector_ref = self
             .vector
@@ -275,18 +293,35 @@ impl<'a> SemanticQueryBuilder<'a> {
             .top_k
             .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection.clone());
-        let lexical_scope = if let Some((syntax, query_text)) = self.scope {
-            let (scope_generation, scope_generation_selector) =
-                QuantaIndex::selection_to_fields(selection);
-            Some(TextQueryRequest {
-                syntax,
-                query_text,
-                generation: scope_generation,
-                generation_selector: scope_generation_selector,
-                top_k,
-            })
-        } else {
-            None
+        let lexical_scope = match (self.scope, self.scope_top_k) {
+            (Some((syntax, query_text)), Some(scope_top_k)) => {
+                let (scope_generation, scope_generation_selector) =
+                    QuantaIndex::selection_to_fields(selection);
+                Some(TextQueryRequest {
+                    syntax,
+                    query_text,
+                    generation: scope_generation,
+                    generation_selector: scope_generation_selector,
+                    top_k: scope_top_k,
+                })
+            }
+            (Some(_), None) => {
+                return Err(SdkError::Usage(
+                    "semantic lexical scope is set but scope_top_k is missing; \
+                     scope_top_k is the lexical candidate cap and must be supplied \
+                     explicitly when scope_native / scope_sourcegraph is used"
+                        .to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(SdkError::Usage(
+                    "semantic scope_top_k is set but no lexical scope was \
+                     configured; call scope_native(...) or scope_sourcegraph(...) \
+                     to enable the lexical scope stage"
+                        .to_string(),
+                ));
+            }
+            (None, None) => None,
         };
         let response = self.client.dispatch_query(
             quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -314,10 +349,10 @@ impl<'a> SemanticQueryBuilder<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                Err(SdkError::Protocol(format!(
-                    "expected semantic query response, got {}",
-                    QuantaIndex::query_response_kind(&other)
-                )))
+                Err(SdkError::unexpected_response(
+                    "semantic query response",
+                    QuantaIndex::query_response_kind(&other),
+                ))
             }
         }
     }

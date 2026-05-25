@@ -39,8 +39,8 @@ use std::sync::{Arc, Mutex};
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, LexicalCandidate, LexicalChannelOp, LexicalRepoMetadataRecord, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType,
-    LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
@@ -355,6 +355,17 @@ fn load_repo_metadata_snapshot(
                 path.display()
             ))
         })
+}
+
+/// Build an `LqOptions` snapshot pinned to the standard pattern type.
+///
+/// Used by internal scope-discovery compiles (predicate path lowering) where
+/// the caller's regex options should NOT bleed into the discovery query —
+/// those are user-facing leaves planned separately.
+fn standard_pattern_options() -> LqOptions {
+    let mut opts = LqOptions::defaults();
+    opts.pattern_type = LqPatternType::Standard;
+    opts
 }
 
 fn normalize_language(value: &str) -> Option<String> {
@@ -737,6 +748,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             index,
             reader,
             repo_metadata,
+            regex_policy: self.regex_policy,
         }))
     }
 }
@@ -749,6 +761,10 @@ struct TantivySearcher {
     index: Index,
     reader: IndexReader,
     repo_metadata: Option<LexicalRepoMetadataRecord>,
+    /// Deployment-scoped regex policy threaded from the adapter at open time.
+    /// Read at the regex-leaf compile site rather than fabricated there, so
+    /// the dialect/literal/trigram-cap knobs are a single source of truth.
+    regex_policy: RegexPolicy,
 }
 
 #[derive(Clone)]
@@ -858,10 +874,13 @@ impl TantivySearcher {
         &self,
         leaf: &LqLeaf,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.with_doc_kind(
-            self.compile_leaf(leaf, LqPatternType::Standard)?,
-            TEXT_DOC_KIND,
-        );
+        // Predicate scope collection (`file.contains` / `file.has.content`)
+        // intentionally compiles with `LqPatternType::Standard` regardless of
+        // the caller's pattern type: it is a path-discovery prelude, not a
+        // user-facing leaf evaluation. The full caller options carry through
+        // to the user-facing executor pass downstream.
+        let scope_options = standard_pattern_options();
+        let compiled = self.with_doc_kind(self.compile_leaf(leaf, &scope_options)?, TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
@@ -1260,27 +1279,27 @@ impl TantivySearcher {
     fn compile_expr(
         &self,
         expr: &LqExpr,
-        pattern_type: LqPatternType,
+        options: &LqOptions,
     ) -> Result<Box<dyn Query>, CoreError> {
         match expr {
             LqExpr::Empty => Ok(Box::new(AllQuery)),
-            LqExpr::Leaf(leaf) => self.compile_leaf(leaf, pattern_type),
+            LqExpr::Leaf(leaf) => self.compile_leaf(leaf, options),
             LqExpr::All(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Must, self.compile_expr(part, pattern_type)?));
+                    clauses.push((Occur::Must, self.compile_expr(part, options)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Any(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Should, self.compile_expr(part, pattern_type)?));
+                    clauses.push((Occur::Should, self.compile_expr(part, options)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Not(inner) => {
-                let inner_q = self.compile_expr(inner, pattern_type)?;
+                let inner_q = self.compile_expr(inner, options)?;
                 let clauses: Vec<(Occur, Box<dyn Query>)> =
                     vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
@@ -1300,32 +1319,52 @@ impl TantivySearcher {
 
     /// Compile a content-side regex leaf via the LXE-04 planner pipeline.
     ///
+    /// All regex-shaped content leaves route here — both the explicit
+    /// `LqLeaf::Regex(_)` AST shape AND `LqLeaf::Keyword`/`LqLeaf::RawString`
+    /// leaves carrying `LqOptions::pattern_type = LqPatternType::Regexp`.
+    /// Routing both shapes through one body keeps the dialect filter,
+    /// trigram-missing threshold, and typed `LEX_REGEX_*` codes identical
+    /// across surface kinds — no second path bypasses the planner.
+    ///
+    /// Per-token semantics: the lexical index tokenizes `chunk_text` into
+    /// terms (Tantivy `TEXT` tokenizer), and Tantivy's `RegexQuery` matches
+    /// the pattern against ONE token at a time, not against the whole
+    /// document content. A pattern like `foo.*bar` therefore matches only
+    /// tokens containing both literals (e.g. `foobar`); it does NOT match
+    /// the cross-token string `foo bar` because the whitespace boundary
+    /// closes the token. Callers that need cross-token regex must compose
+    /// at a higher layer (phrase / structural) — this method intentionally
+    /// stays at the per-token authority.
+    ///
     /// Pipeline:
-    /// 1. plan the regex with `crate::regex::plan_regex` (dialect filter +
-    ///    literal extraction). Typed regex failures (lookbehind, possessive,
+    /// 1. plan the regex with `crate::regex::plan_regex` using the caller's
+    ///    real [`LqOptions`] and the adapter-injected
+    ///    [`RegexPolicy`]. Typed regex failures (lookbehind, possessive,
     ///    pattern budget) surface as `CoreError::Typed { code: "LEX_REGEX_*",
     ///    .. }` with a stable code per dialect-rejection kind.
-    /// 2. if the indexed corpus exceeds
-    ///    [`REGEX_TRIGRAM_INDEX_MISSING_THRESHOLD`] documents, surface
+    /// 2. if the indexed corpus exceeds the policy's
+    ///    `trigram_missing_doc_threshold`, surface
     ///    `LEX_REGEX_TRIGRAM_INDEX_MISSING` — we honestly admit the trigram
     ///    posting index is not yet wired here rather than silently
     ///    full-scanning a large corpus.
-    /// 3. otherwise, fall back to the Tantivy `RegexQuery` over the
-    ///    `chunk_text` field. This is the verify-only / full-scan path
-    ///    relative to the eventual trigram-prefilter pipeline; it is
-    ///    deterministic and correct, just unindexed.
+    /// 3. otherwise, lower to a Tantivy `RegexQuery` over the caller's
+    ///    `field`. This is the verify-only / full-scan path relative to the
+    ///    eventual trigram-prefilter pipeline; it is deterministic and
+    ///    correct, just unindexed.
     ///
-    /// Vendor tokens (`tantivy::*`, `regex::*`) are kept inside this method;
-    /// callers see only typed `CoreError`s and `Box<dyn Query>`.
-    fn compile_regex_content_leaf(&self, source: &str) -> Result<Box<dyn Query>, CoreError> {
-        let _plan = crate::regex::plan_regex(
-            source,
-            &quanta_index_contract::LqOptions::defaults(),
-            &crate::regex::RegexPolicy::defaults(),
-        )
-        .map_err(map_regex_plan_error)?;
+    /// Vendor tokens (`tantivy::*`, regex crate internals) are kept inside
+    /// this method; callers see only typed `CoreError`s and `Box<dyn
+    /// Query>`.
+    fn compile_regex_content_leaf(
+        &self,
+        field: Field,
+        source: &str,
+        options: &LqOptions,
+    ) -> Result<Box<dyn Query>, CoreError> {
+        let _plan = crate::regex::plan_regex(source, options, &self.regex_policy)
+            .map_err(map_regex_plan_error)?;
         let searcher = self.reader.searcher();
-        if searcher.num_docs() > REGEX_TRIGRAM_INDEX_MISSING_THRESHOLD {
+        if searcher.num_docs() > self.regex_policy.trigram_missing_doc_threshold {
             return Err(CoreError::Typed {
                 code: "LEX_REGEX_TRIGRAM_INDEX_MISSING".to_string(),
                 message:
@@ -1333,25 +1372,30 @@ impl TantivySearcher {
                         .to_string(),
             });
         }
-        self.regex_text_query(self.fields.chunk_text, source)
+        self.regex_text_query(field, source)
     }
 
     fn compile_leaf(
         &self,
         leaf: &LqLeaf,
-        pattern_type: LqPatternType,
+        options: &LqOptions,
     ) -> Result<Box<dyn Query>, CoreError> {
         let parser = self.query_parser();
         let query_text = match leaf {
             LqLeaf::Keyword(text) | LqLeaf::RawString(text) => {
-                if pattern_type == LqPatternType::Regexp {
-                    return self.regex_text_query(self.fields.chunk_text, text);
+                // Both AST shapes route through the planner-gated regex
+                // pipeline when the caller's options pin
+                // `LqPatternType::Regexp`; bypassing this would skip the
+                // dialect filter, the trigram-missing threshold, and the
+                // typed `LEX_REGEX_*` error codes.
+                if options.pattern_type == LqPatternType::Regexp {
+                    return self.compile_regex_content_leaf(self.fields.chunk_text, text, options);
                 }
                 text.clone()
             }
             LqLeaf::Phrase(text) => format!("\"{text}\""),
             LqLeaf::Regex(text) => {
-                return self.compile_regex_content_leaf(text);
+                return self.compile_regex_content_leaf(self.fields.chunk_text, text, options);
             }
             LqLeaf::StructuralBlock(_) => {
                 return Err(CoreError::Typed {
@@ -1378,7 +1422,7 @@ impl TantivySearcher {
     fn compile_filter(
         &self,
         filter: &LqFilter,
-        pattern_type: LqPatternType,
+        options: &LqOptions,
     ) -> Result<Option<Box<dyn Query>>, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -1400,7 +1444,7 @@ impl TantivySearcher {
             LqFilter::File { pattern, scope } => {
                 Ok(Some(self.compile_file_filter(pattern.as_str(), *scope)?))
             }
-            LqFilter::Content { leaf } => Ok(Some(self.compile_leaf(leaf, pattern_type)?)),
+            LqFilter::Content { leaf } => Ok(Some(self.compile_leaf(leaf, options)?)),
             LqFilter::Lang { id } => {
                 let Some(language) = normalize_language(id.as_str()) else {
                     return Err(CoreError::InvalidContract(
@@ -1440,13 +1484,11 @@ impl TantivySearcher {
         if !matches!(prepared.expr, LqExpr::Empty) {
             clauses.push((
                 Occur::Must,
-                self.compile_expr(&prepared.expr, query.options.pattern_type)?,
+                self.compile_expr(&prepared.expr, &query.options)?,
             ));
         }
         for filter in &query.filters {
-            if let Some(compiled_filter) =
-                self.compile_filter(filter, query.options.pattern_type)?
-            {
+            if let Some(compiled_filter) = self.compile_filter(filter, &query.options)? {
                 clauses.push((Occur::Must, compiled_filter));
             }
         }
@@ -1554,7 +1596,8 @@ fn is_unavailable_suppressed_by_metadata(code: &str, has_repo_metadata: bool) ->
 /// Returns `Ok(())` if the plan is executable on the live Tantivy rail.
 /// Returns `Err(CoreError::Typed { .. })` for typed-unavailable filters
 /// (deterministic first-wins ordering) and for planner errors that lower
-/// to typed failures (e.g. `count:0` → `LEX_FILTER_INVALID_COUNT`).
+/// to typed failures (e.g. `count:0` → `LEX_FILTER_INVALID_COUNT`,
+/// unsupported NOT/OR/filter combos → `LEX_PLANNER_UNSUPPORTED_*`).
 ///
 /// Ordering rule for `typed_unavailable`: the planner records typed-
 /// unavailable filters in the order they appeared in the input
@@ -1564,33 +1607,13 @@ fn is_unavailable_suppressed_by_metadata(code: &str, has_repo_metadata: bool) ->
 /// multi-line laundry list.
 ///
 /// Planner [`Unimplemented`](crate::planner::LexicalPlannerError::Unimplemented)
-/// shapes (top-level `All`/`Any`/`Not` IR nodes) are NOT a hard rejection
-/// today: the legacy executor still handles them. The planner pre-flight
-/// therefore swallows `Unimplemented` and `UnsupportedNotScope` /
-/// `UnsupportedOrScope` arms; only the typed planner errors surface here.
+/// shapes surface as `CoreError::NotImplemented` carrying the owning
+/// follow-up ticket. The planner is now the single authority for these IR
+/// shapes — there is no silent delegation to a legacy executor.
 fn planner_preflight(query: &LqQuery, has_repo_metadata: bool) -> Result<(), CoreError> {
     let plan = match crate::planner::LexicalPlanner::plan(query) {
         Ok(plan) => plan,
-        Err(err) => {
-            use crate::planner::LexicalPlannerError;
-            match err {
-                // Filter planning failed up-front (count:0, conflicting
-                // surface, …) → typed.
-                LexicalPlannerError::FilterPlan(_)
-                | LexicalPlannerError::RegexPlan(_)
-                | LexicalPlannerError::TrigramPlan(_)
-                | LexicalPlannerError::PhrasePlan(_)
-                | LexicalPlannerError::SymbolPlan(_) => return Err(map_planner_error(&err)),
-                // IR shapes the planner has not lowered yet (boolean
-                // composition, predicate extensions). The legacy executor
-                // still handles these; the planner's role here is filter
-                // pre-flight, not full execution authority.
-                LexicalPlannerError::UnsupportedNotScope
-                | LexicalPlannerError::UnsupportedOrScope
-                | LexicalPlannerError::UnsupportedFilterCombo
-                | LexicalPlannerError::Unimplemented { .. } => return Ok(()),
-            }
-        }
+        Err(err) => return Err(map_planner_error(&err)),
     };
     for entry in &plan.filters.typed_unavailable {
         if is_unavailable_suppressed_by_metadata(entry.code, has_repo_metadata) {
@@ -1635,11 +1658,24 @@ fn map_regex_plan_error(err: crate::regex::RegexPlannerError) -> CoreError {
 
 /// Lower a [`crate::planner::LexicalPlannerError`] into a [`CoreError`].
 ///
-/// Planner errors are either typed failures (count:0, conflicting surfaces,
-/// regex-dialect rejection) or "unimplemented" shapes the planner has not
-/// learned yet. The former lower to [`CoreError::Typed`] so the caller can
-/// see the stable code; the latter lower to [`CoreError::InvalidContract`]
-/// so the search path never silently runs an unplanned query.
+/// Every planner error variant surfaces as a typed `CoreError` so the search
+/// path never silently runs an unplanned query and never delegates to a
+/// legacy executor.
+///
+/// * Filter-plan failures (`count:0`, conflicting surfaces, unsupported
+///   filter combos) lower to `LEX_FILTER_*` typed codes.
+/// * Unsupported IR-shape arms (`UnsupportedNotScope`, `UnsupportedOrScope`,
+///   `UnsupportedFilterCombo`) lower to `LEX_PLANNER_UNSUPPORTED_*` typed
+///   codes — these are stable wire codes for IR shapes the planner has
+///   chosen not to lower.
+/// * `Unimplemented { owner_ticket, .. }` surfaces as
+///   `CoreError::NotImplemented` carrying the owning ticket id, so callers
+///   can attribute the gap to a concrete follow-up.
+/// * Leaf-planner failures (`RegexPlan`, `TrigramPlan`, `PhrasePlan`,
+///   `SymbolPlan`) lower to `InvalidContract` because their dedicated
+///   typed-error mappers (`map_regex_plan_error`, etc.) own the leaf-side
+///   surfacing on the live execution path; the planner pre-flight should
+///   never reach those arms in practice.
 fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
     use crate::planner::LexicalPlannerError;
     match err {
@@ -1661,20 +1697,28 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
                 }
             }
         },
-        // The remaining planner errors (`Unimplemented`,
-        // `UnsupportedNotScope`, `UnsupportedOrScope`,
-        // `UnsupportedFilterCombo`, `RegexPlan`, `TrigramPlan`,
-        // `PhrasePlan`, `SymbolPlan`) are typed-but-not-filter shapes —
-        // the planner pre-flight swallows IR-shape `Unimplemented` for
-        // backwards compatibility with the legacy executor, and the
-        // leaf planners surface their own typed errors via their
-        // dedicated callers (e.g. `compile_regex_content_leaf`). Anything
-        // that reaches here is therefore a true contract violation.
-        LexicalPlannerError::UnsupportedNotScope
-        | LexicalPlannerError::UnsupportedOrScope
-        | LexicalPlannerError::UnsupportedFilterCombo
-        | LexicalPlannerError::Unimplemented { .. }
-        | LexicalPlannerError::RegexPlan(_)
+        LexicalPlannerError::UnsupportedNotScope => CoreError::Typed {
+            code: "LEX_PLANNER_UNSUPPORTED_NOT_SCOPE".to_string(),
+            message: "lexical: planner does not yet lower the NOT scope shape".to_string(),
+        },
+        LexicalPlannerError::UnsupportedOrScope => CoreError::Typed {
+            code: "LEX_PLANNER_UNSUPPORTED_OR_SCOPE".to_string(),
+            message: "lexical: planner does not yet lower the OR scope shape".to_string(),
+        },
+        LexicalPlannerError::UnsupportedFilterCombo => CoreError::Typed {
+            code: "LEX_PLANNER_UNSUPPORTED_FILTER_COMBO".to_string(),
+            message: "lexical: planner does not yet lower this filter combination".to_string(),
+        },
+        LexicalPlannerError::Unimplemented { node, owner_ticket } => CoreError::NotImplemented(
+            format!("lex planner: IR node '{node}' is unimplemented (owner: {owner_ticket})"),
+        ),
+        // Leaf-planner errors reaching this site would mean the pre-flight
+        // disagreed with the live executor's leaf-side mapping. They are
+        // never produced on the current pipeline (leaves compile during
+        // executor lowering, not during pre-flight planning); the arm is
+        // kept for completeness and lowers to `InvalidContract` so the
+        // mismatch is visible rather than swallowed.
+        LexicalPlannerError::RegexPlan(_)
         | LexicalPlannerError::TrigramPlan(_)
         | LexicalPlannerError::PhrasePlan(_)
         | LexicalPlannerError::SymbolPlan(_) => {
@@ -1685,16 +1729,15 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
 
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
-        // LXE-02/LXE-03 planner authority: the planner is the source of truth
-        // for typed-unavailable filter surfacing. The first typed-unavailable
-        // entry wins — search never runs with a silently-dropped filter.
-        // The planner pre-flight runs BEFORE `LexicalPolicy::validate_query`
-        // so its typed codes (HISTORY_PRODUCER_UNAVAILABLE, REV_UNAVAILABLE,
-        // …) win over the core policy's `NotImplemented` returns. The
-        // policy still gates structural / empty-query / predicate-
-        // composition cases the planner does not yet cover.
-        planner_preflight(query, self.repo_metadata.is_some())?;
+        // Validation ordering: `LexicalPolicy::validate_query` runs FIRST so
+        // core-policy contract violations (empty-query rejection, structural
+        // fail-closed, top-level rev/type:commit gating, predicate-under-
+        // OR composition) surface their own typed errors before the lexical
+        // planner's pre-flight runs. The planner is then the single
+        // authority for typed-unavailable surfacing on filters/IR shapes
+        // that pass the core policy — overlapping responsibility is gone.
         LexicalPolicy::validate_query(query)?;
+        planner_preflight(query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
@@ -1725,8 +1768,8 @@ impl LexicalSearcher for TantivySearcher {
         query: &LqQuery,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        planner_preflight(query, self.repo_metadata.is_some())?;
         LexicalPolicy::validate_query(query)?;
+        planner_preflight(query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
@@ -1753,8 +1796,8 @@ impl LexicalSearcher for TantivySearcher {
     }
 
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
-        planner_preflight(query, self.repo_metadata.is_some())?;
         LexicalPolicy::validate_query(query)?;
+        planner_preflight(query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }

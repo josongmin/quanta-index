@@ -9,27 +9,31 @@
 //! (sections 3.1.1, 3.2, 3.3, 3.4 — `CommitRecord`, `DirtyRecord`,
 //! `ParseTreeRecord`, `SymbolRecord`).
 //!
-//! Downstream LQ-crate migration is a separate ticket; this scaffold only
-//! lands the canonical types so they can be referenced.
-//!
 //! Per `CLAUDE.md` D18, every type below carries a manual `impl Serialize` /
 //! `impl<'de> Deserialize<'de>`. No proc-macro derives.
+//!
+//! The ranker-explanation surface (`ExplanationRow`, `SearchExplanation`,
+//! `SearchExplanationBuilder`, `PlannerTraceEntry`, `PlannerStage`,
+//! `EngineTouched`, `EarlyStopReason`, `WeightsHashError`) lives in
+//! [`crate::results::explanation`]; the names below are convenience
+//! re-exports so callers that imported them from `lex::` keep compiling.
+//! New code should prefer `crate::results::*` directly.
 
 pub mod diff;
 pub mod dirty;
 pub mod error_code;
-pub mod explanation;
 pub mod history;
 pub mod lang;
 pub mod parse_tree;
 pub mod symbol;
 
+pub use crate::results::{
+    EarlyStopReason, EngineTouched, ExplanationRow, PlannerStage, PlannerTraceEntry,
+    SearchExplanation, SearchExplanationBuilder, WeightsHashError,
+};
 pub use diff::DiffHunkRecord;
 pub use dirty::DirtyRecord;
 pub use error_code::LexicalErrorCode;
-pub use explanation::{
-    ExplanationRow, PlannerTraceNode, SearchExplanation, SearchExplanationBuilder,
-};
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};
 pub use lang::LangId;
 pub use parse_tree::{ParseNode, ParseRoleTag, ParseTreeRecord};

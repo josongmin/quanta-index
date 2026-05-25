@@ -17,10 +17,11 @@
 //!   converts it to `Candidates`/`TypedError`. That is the closed-loop
 //!   guarantee.
 //!
-//! No row may be silently skipped. If a row marked `ExpectedFailing`
-//! *currently* matches the future behavior (i.e. wiring landed without the
-//! row being updated), the runner FAILS with a "row marked `ExpectedFailing`
-//! but actually green" message, forcing an honest update.
+//! No row may be silently skipped. A row marked `ExpectedFailing` stays
+//! GREEN while its `current_observation` continues to hold; the moment
+//! the observation diverges (e.g. the owner ticket lands and the engine
+//! now returns real candidates where empty was predicted), the row goes
+//! RED with a "promote this row" message, forcing an honest update.
 
 #![forbid(unsafe_code)]
 
@@ -35,21 +36,14 @@ use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 
 /// Per-row expected outcome. See module doc-comment for closed-loop semantics.
 ///
-/// `TypedError` is part of the matrix shape: `ExpectedFailing` rows tied to
-/// LXE-03 (fork/visibility/context) are expected to migrate to
-/// `TypedError { code: "..." }` once the producer-metadata fail-closed
-/// path lands. The variant is retained even when no current row uses it.
+/// Variants are added only as live rows exist for them (CLAUDE.md "dead
+/// port surface is forbidden"). When LXE-NN tickets land and ExpectedFailing
+/// rows promote to typed-error coverage, add the `TypedError` variant in
+/// the same PR.
 #[derive(Clone, Debug)]
 enum ExpectedOutcome {
     Candidates {
         ids: &'static [&'static str],
-    },
-    #[expect(
-        dead_code,
-        reason = "reserved until a live lexical matrix row promotes to typed-error coverage"
-    )]
-    TypedError {
-        code: &'static str,
     },
     ExpectedFailing {
         owner_ticket: &'static str,
@@ -66,14 +60,6 @@ enum CurrentObservation {
     /// match — wiring is overly broad and would NOT survive once the owner
     /// ticket lands).
     OverbroadIncludes(&'static [&'static str]),
-    /// Today this query returns the named typed error code (because the
-    /// feature is rejected by parser/translator/dispatcher rather than
-    /// executed).
-    #[expect(
-        dead_code,
-        reason = "reserved until an ExpectedFailing lexical row observes a typed error"
-    )]
-    TypedError(&'static str),
 }
 
 struct LexicalScenario {
@@ -502,26 +488,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                 }
             }
         }
-        ExpectedOutcome::TypedError { code } => match &result.typed_error {
-            Some(err) if err.code == *code => RowReport {
-                id: scenario.id,
-                failure: None,
-            },
-            Some(err) => RowReport {
-                id: scenario.id,
-                failure: Some(format!(
-                    "expected typed error code={code}, got code={} message={}",
-                    err.code, err.message
-                )),
-            },
-            None => RowReport {
-                id: scenario.id,
-                failure: Some(format!(
-                    "expected typed error code={code}, got candidates ids={:?}",
-                    candidate_ids(result)
-                )),
-            },
-        },
         ExpectedOutcome::ExpectedFailing {
             owner_ticket,
             reason,
@@ -574,28 +540,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                         }
                     }
                 }
-                CurrentObservation::TypedError(expected_code) => match observed_error {
-                    // Predicted typed-rejection observed — stay GREEN.
-                    // When the owner ticket lands, rejection will become
-                    // an executed match or a different code, flipping red.
-                    Some(code) if code == *expected_code => RowReport {
-                        id: scenario.id,
-                        failure: None,
-                    },
-                    Some(other) => RowReport {
-                        id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got {other}; reason={reason}"
-                        )),
-                    },
-                    None => RowReport {
-                        id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got candidates={:?}; reason={reason}",
-                            candidate_ids(result)
-                        )),
-                    },
-                },
             }
         }
     }
@@ -606,7 +550,7 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
 fn lexical_full_fidelity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;
-    let _sealed = rt.seal()?;
+    _ = rt.seal()?;
     let mut rt = rt.reopen()?;
 
     let mut failures: Vec<RowReport> = Vec::new();

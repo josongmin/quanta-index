@@ -282,6 +282,7 @@ fn parse_semantic(
     let mut top_k: Option<u32> = None;
     let mut scope_query_text: Option<String> = None;
     let mut scope_syntax: Option<TextQuerySyntax> = None;
+    let mut scope_top_k: Option<u32> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -302,19 +303,34 @@ fn parse_semantic(
             "--scope-syntax" => {
                 scope_syntax = Some(parse_syntax(&take_value(rest, "--scope-syntax")?)?);
             }
+            "--scope-top-k" => scope_top_k = Some(parse_u32_flag(rest, "--scope-top-k")?),
             other => return Err(CliError::usage(format!("unknown semantic flag `{other}`"))),
         }
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
     let lexical_scope = match (scope_query_text, scope_syntax) {
-        (None, None) => None,
-        (Some(query), Some(syntax)) => Some(TextQueryRequest {
-            syntax,
-            query_text: query,
-            generation: Some(generation.clone()),
-            generation_selector: None,
-            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-        }),
+        (None, None) => {
+            if scope_top_k.is_some() {
+                return Err(CliError::usage(
+                    "--scope-top-k is only valid when --scope-query is set".to_string(),
+                ));
+            }
+            None
+        }
+        (Some(query), Some(syntax)) => {
+            let scope_top_k = scope_top_k.ok_or_else(|| {
+                CliError::usage(
+                    "missing --scope-top-k (required when --scope-query is set)".to_string(),
+                )
+            })?;
+            Some(TextQueryRequest {
+                syntax,
+                query_text: query,
+                generation: Some(generation.clone()),
+                generation_selector: None,
+                top_k: scope_top_k,
+            })
+        }
         (Some(_), None) => {
             return Err(CliError::usage(
                 "semantic scope requires --scope-syntax".to_string(),
@@ -1078,7 +1094,7 @@ Global flags:
 Read-only subcommands:
   lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
   sourcegraph --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --sg-version SG-X.Y.Z --top-k N
-  semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph]
+  semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
   explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
   repomap  --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]

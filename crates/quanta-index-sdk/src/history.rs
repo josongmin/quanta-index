@@ -151,10 +151,10 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected history receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "history receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
@@ -271,10 +271,10 @@ impl<'a> HistoryQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
-                "expected history response, got {}",
-                QuantaIndex::query_response_kind(&other)
-            ))),
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+                "history response",
+                QuantaIndex::query_response_kind(&other),
+            )),
         }
     }
 }

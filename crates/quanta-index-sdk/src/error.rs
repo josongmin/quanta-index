@@ -22,3 +22,18 @@ pub enum SdkError {
     #[error("remote {code}: {message}")]
     Remote { code: String, message: String },
 }
+
+impl SdkError {
+    /// Build a [`SdkError::Protocol`] for the namespace-receipt /
+    /// query-response mismatch pattern that appears once per namespace
+    /// per direction. `expected` describes the wanted shape (e.g.
+    /// `"semantic receipt"`); `kind` is the human-readable label of
+    /// what actually arrived (typically produced by
+    /// [`crate::client::QuantaIndex::ingest_response_kind`] or
+    /// equivalents). Centralizing the format here keeps message wording
+    /// identical across namespaces.
+    #[must_use]
+    pub(crate) fn unexpected_response(expected: &str, kind: &str) -> Self {
+        SdkError::Protocol(format!("expected {expected}, got {kind}"))
+    }
+}

@@ -1,4 +1,10 @@
-//! E2E-02 — Sourcegraph parity.
+//! E2E-02 — Dual-syntax lowering parity.
+//!
+//! Two syntaxes (Sourcegraph + Native) must lower to identical lexical IR
+//! and produce identical query results when executed against the same
+//! generation. There is no external Sourcegraph reference: this matrix
+//! exercises self-parity between the two surface syntaxes that both feed
+//! into this daemon's single active lexical request lowering path.
 //!
 //! Each row pairs a Sourcegraph-syntax query and an equivalent native LQ
 //! query. The runner issues both against the same sealed corpus and
@@ -7,14 +13,13 @@
 //! 1. Both syntaxes return the **same** observed shape (same corpus ids in
 //!    the same order, OR the same typed error code).
 //! 2. The shape matches the row's `ExpectedOutcome` against the *current*
-//!    behavior (closed-loop: rows marked `ExpectedFailing` must currently
-//!    fail; when the owner ticket lands they go red and the row must be
-//!    updated).
+//!    behavior (closed-loop: rows marked `ExpectedFailing` stay GREEN
+//!    while their `current_observation` continues to hold; when the owner
+//!    ticket lands and behavior diverges, the row flips RED and must be
+//!    promoted).
 //!
-//! Both `Native` and `Sourcegraph` syntaxes must enter the same active
-//! lexical request lowering path (per E2E-02 `DoD`), so any divergence is a
-//! parity violation regardless of the wiring state of the underlying
-//! feature.
+//! Any divergence between the two syntaxes for a given row is a parity
+//! violation regardless of the wiring state of the underlying feature.
 
 #![forbid(unsafe_code)]
 
@@ -27,15 +32,12 @@ use std::fmt::Write as _;
 
 use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 
+/// Variants are added only as live rows exist for them (CLAUDE.md "dead
+/// port surface is forbidden"). When a parity row graduates to fully-green
+/// candidates or a row currently fails with a typed error, add the
+/// corresponding variant in the same PR.
 #[derive(Clone, Debug)]
 enum ExpectedOutcome {
-    /// Both syntaxes must return the same ordered candidate-id set, and
-    /// that set must equal `ids`.
-    #[expect(
-        dead_code,
-        reason = "reserved until a fully green parity row graduates from ExpectedFailing"
-    )]
-    Candidates { ids: &'static [&'static str] },
     /// Both syntaxes must reject with this typed error code.
     TypedError { code: &'static str },
     /// Wiring pending. Both syntaxes must currently exhibit
@@ -53,11 +55,6 @@ enum ExpectedOutcome {
 enum CurrentObservation {
     Empty,
     OverbroadIncludes(&'static [&'static str]),
-    #[expect(
-        dead_code,
-        reason = "reserved until a parity row currently fails with a typed error"
-    )]
-    TypedError(&'static str),
 }
 
 struct ParityScenario {
@@ -368,10 +365,6 @@ struct RowReport {
     failure: Option<String>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "matrix-style table assertion; splitting would obscure the per-outcome branches"
-)]
 fn assess(
     scenario: &ParityScenario,
     sg_result: &E2eQueryResult,
@@ -398,34 +391,6 @@ fn assess(
     }
 
     match &scenario.expected {
-        ExpectedOutcome::Candidates { ids } => {
-            if sg.typed_error_code.is_some() {
-                return RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected Candidates ids={ids:?}, both syntaxes returned typed error code={:?}",
-                        sg.typed_error_code
-                    )),
-                };
-            }
-            let mut expected: Vec<&'static str> = (*ids).to_vec();
-            expected.sort_unstable();
-            expected.dedup();
-            if sg.corpus_ids == expected {
-                RowReport {
-                    id: scenario.id,
-                    failure: None,
-                }
-            } else {
-                RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected ids={expected:?}, observed ids={:?}",
-                        sg.corpus_ids
-                    )),
-                }
-            }
-        }
         ExpectedOutcome::TypedError { code } => match &sg.typed_error_code {
             Some(observed) if observed == code => RowReport {
                 id: scenario.id,
@@ -451,70 +416,53 @@ fn assess(
             current_observation,
         } => match current_observation {
             CurrentObservation::Empty => {
+                // Closed-loop: row stays GREEN while *both* syntaxes still
+                // exhibit the predicted empty observation. When the owner
+                // ticket lands and the engine produces real candidates,
+                // the assertion flips red and the row owner must promote it.
                 if sg.corpus_ids.is_empty() && sg.typed_error_code.is_none() {
                     RowReport {
                         id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] row marked expected-failing but actually green for BOTH syntaxes (empty as predicted); update when {owner_ticket} ships; reason={reason}"
-                        )),
+                        failure: None,
                     }
                 } else {
                     RowReport {
                         id: scenario.id,
-                        failure: None,
+                        failure: Some(format!(
+                            "[ExpectedFailing owner={owner_ticket}] predicted empty observation but observed ids={:?} typed_error={:?}; {owner_ticket} may have landed — promote this row. reason={reason}",
+                            sg.corpus_ids, sg.typed_error_code,
+                        )),
                     }
                 }
             }
             CurrentObservation::OverbroadIncludes(must_include) => {
                 let all_included = must_include.iter().all(|id| sg.corpus_ids.contains(id));
                 if all_included {
+                    // Predicted overbroad shape observed — stay GREEN.
                     RowReport {
                         id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] both syntaxes currently overbroad as predicted (include={must_include:?}); when {owner_ticket} lands the filter must narrow; reason={reason}"
-                        )),
+                        failure: None,
                     }
                 } else {
                     RowReport {
                         id: scenario.id,
                         failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted overbroad shape includes={must_include:?} but observed={:?}; reason={reason}",
+                            "[ExpectedFailing owner={owner_ticket}] predicted overbroad shape includes={must_include:?} but observed={:?}; {owner_ticket} may have landed (filter narrowed) — promote this row. reason={reason}",
                             sg.corpus_ids
                         )),
                     }
                 }
             }
-            CurrentObservation::TypedError(expected_code) => match &sg.typed_error_code {
-                Some(observed) if observed == expected_code => RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "[ExpectedFailing owner={owner_ticket}] both syntaxes currently reject with {observed} as predicted; when {owner_ticket} lands the rejection must become executed or a different code; reason={reason}"
-                    )),
-                },
-                Some(observed) => RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got {observed}; reason={reason}"
-                    )),
-                },
-                None => RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got candidates={:?}; reason={reason}",
-                        sg.corpus_ids
-                    )),
-                },
-            },
         },
     }
 }
 
 #[test]
-#[ignore = "pending LXE-03..06 Sourcegraph parity audit matrix; run explicitly while closing that ticket pack"]
-fn sourcegraph_parity_matrix() -> AnyResult<()> {
+#[ignore = "pending LXE-03..06 dual-syntax parity audit matrix; run explicitly while closing that ticket pack"]
+fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;
-    let _sealed = rt.seal()?;
+    _ = rt.seal()?;
     let mut rt = rt.reopen()?;
 
     let mut failures: Vec<RowReport> = Vec::new();
@@ -546,7 +494,7 @@ fn sourcegraph_parity_matrix() -> AnyResult<()> {
     let mut buf = String::new();
     writeln!(
         buf,
-        "E2E-02 sourcegraph_parity_matrix: {} of {} rows failed (expected-failing rows: {}, currently green: {})",
+        "E2E-02 dual_syntax_lowering_parity_matrix: {} of {} rows failed (expected-failing rows: {}, currently green: {})",
         failures.len(),
         SCENARIOS.len(),
         expected_failing_count,

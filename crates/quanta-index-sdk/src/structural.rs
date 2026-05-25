@@ -111,10 +111,10 @@ impl crate::NamespaceIngest for StructuralNs {
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected structural receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "structural receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
@@ -217,10 +217,10 @@ impl<'a> StructuralQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
-                "expected structural response, got {}",
-                QuantaIndex::query_response_kind(&other)
-            ))),
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+                "structural response",
+                QuantaIndex::query_response_kind(&other),
+            )),
         }
     }
 }

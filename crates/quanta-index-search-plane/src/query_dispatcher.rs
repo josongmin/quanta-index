@@ -43,7 +43,14 @@ pub struct SearchPlaneDispatcher {
     lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
-    _structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
+    /// Held at the composition seam so the runtime can wire a producer once
+    /// the structural-block AST lands on the IPC wire. Today the dispatcher
+    /// fail-closes structural requests with `NotImplemented` and never
+    /// consults this port; the field's job is to keep the DIP-correct
+    /// constructor signature stable across the cutover so
+    /// `searchd::app::runtime` does not have to change.
+    #[allow(dead_code)]
+    structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     activation_catalog: Arc<ActivationCatalog>,
 }
@@ -65,7 +72,7 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             repo_map_query,
-            _structural_producer: structural_producer,
+            structural_producer,
             ledger,
             activation_catalog,
         }
@@ -1898,16 +1905,14 @@ mod tests {
         Ok(())
     }
 
-    /// LXE-09: structural dispatch routes through the domain producer port.
-    ///
-    /// The `FailClosedStructuralProducer` reports
-    /// `ParseTreeProducerUnavailable`, which the service maps to the stable
-    /// `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` wire code.
+    /// When the producer reports `Ready` the dispatcher still cannot run
+    /// because the IPC request does not yet carry an `LqStructuralBlock`.
+    /// In that case (and *only* that case) the wire code is the generic
+    /// `NOT_IMPLEMENTED`; every other readiness value is surfaced as the
+    /// matching stable `STR_*` code via the LXE-09 routing tests above.
     #[test]
-    fn structural_dispatch_routes_through_domain_port_and_returns_unavailable() -> TestResult {
-        let producer = Arc::new(RecordingStructuralProducer::new(
-            StructuralReadiness::ParseTreeProducerUnavailable,
-        ));
+    fn structural_dispatch_returns_not_implemented_when_producer_ready() -> TestResult {
+        let producer = Arc::new(RecordingStructuralProducer::new(StructuralReadiness::Ready));
         let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
 
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
@@ -1924,44 +1929,18 @@ mod tests {
 
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" {
-            return Err(format!("expected STR_PRODUCER_PARSE_TREE_UNAVAILABLE, got {code}").into());
+        if code != "NOT_IMPLEMENTED" {
+            return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
         }
-        if producer.readiness_calls.load(Ordering::SeqCst) == 0 {
-            return Err("expected RecordingStructuralProducer.readiness to be consulted".into());
-        }
-        Ok(())
-    }
-
-    /// LXE-09: a producer reporting `GenerationNotReady` propagates as the
-    /// stable `STR_GENERATION_NOT_READY` wire code — the service contract
-    /// is preserved across the dispatcher boundary.
-    #[test]
-    fn structural_dispatch_propagates_generation_not_ready() -> TestResult {
-        let producer = Arc::new(RecordingStructuralProducer::new(
-            StructuralReadiness::GenerationNotReady,
-        ));
-        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
-
-        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
-            quanta_index_contract::StructuralQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Native,
-                    query_text: "match { Symbol }".to_string(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 4,
-                },
-            },
-        ));
-
-        let (code, _message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "STR_GENERATION_NOT_READY" {
-            return Err(format!("expected STR_GENERATION_NOT_READY, got {code}").into());
-        }
-        if producer.readiness_calls.load(Ordering::SeqCst) == 0 {
-            return Err("expected RecordingStructuralProducer.readiness to be consulted".into());
+        // LXE-09 contract: readiness MUST be consulted, even on the Ready
+        // branch — so the typed failure code is authoritative on every
+        // other readiness value.
+        let consulted = producer.readiness_calls.load(Ordering::SeqCst);
+        if consulted != 1 {
+            return Err(format!(
+                "expected readiness to be consulted exactly once, got {consulted}"
+            )
+            .into());
         }
         Ok(())
     }

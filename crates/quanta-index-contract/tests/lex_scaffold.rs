@@ -541,6 +541,9 @@ fn explanation_row_cbor_roundtrip() -> TestRes {
 #[test]
 fn search_explanation_cbor_roundtrip() -> TestRes {
     let explanation = SearchExplanation {
+        planner_trace: Vec::new(),
+        engines_touched: Vec::new(),
+        early_stop_reason: None,
         contributions: vec![
             ExplanationRow {
                 signal_name: Box::from("bm25"),
@@ -556,11 +559,8 @@ fn search_explanation_cbor_roundtrip() -> TestRes {
             },
         ],
         ranker_weights_hash: [0xcc; 32],
-        strategy: Box::from("default-v1"),
-        planner_trace: Vec::new(),
-        engines_touched: Vec::new(),
-        early_stop_reason: None,
-        summary: None,
+        strategy: "default-v1".to_owned(),
+        summary: String::new(),
     };
     roundtrip_eq(&explanation)
 }

@@ -32,10 +32,12 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::Sourcegraph(_)
-            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Err(SdkError::Protocol(format!(
-                "expected repomap query response, got {}",
-                QuantaIndex::query_response_kind(&other)
-            ))),
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                Err(SdkError::unexpected_response(
+                    "repomap query response",
+                    QuantaIndex::query_response_kind(&other),
+                ))
+            }
         }
     }
 
@@ -61,10 +63,10 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
-                Err(SdkError::Protocol(format!(
-                    "expected repomap activate ack, got {}",
-                    QuantaIndex::control_response_kind(&other)
-                )))
+                Err(SdkError::unexpected_response(
+                    "repomap activate ack",
+                    QuantaIndex::control_response_kind(&other),
+                ))
             }
         }
     }
@@ -98,10 +100,10 @@ impl crate::NamespaceIngest for RepoMapNs {
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
-                "expected repomap receipt, got {}",
-                QuantaIndex::ingest_response_kind(&other)
-            ))),
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "repomap receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
         }
     }
 }
