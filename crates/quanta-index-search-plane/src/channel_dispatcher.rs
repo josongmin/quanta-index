@@ -153,10 +153,13 @@ fn apply_lex(
     builder
         .build(&repo, &revision, generation, &ops)
         .map_err(|e| anyhow::anyhow!("lexical build: {e}"))?;
+    let mut guard = ledger
+        .write()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
+    guard
+        .apply_lexical_authority_op(&event.op)
+        .map_err(|err| anyhow::anyhow!("lexical authority materialize: {err}"))?;
     if matches!(event.op, LexicalChannelOp::Seal(_)) {
-        let mut guard = ledger
-            .write()
-            .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
         guard.lexical_seal(generation);
     }
     Ok(())

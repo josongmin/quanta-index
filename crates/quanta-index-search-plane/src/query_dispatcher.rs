@@ -1,20 +1,23 @@
 //! Search-plane query orchestration using the in-memory readiness ledger as the
 //! source of truth.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, EngineTouched, GenerationPin, GenerationSelector,
-    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, LQ_VERSION_TAG, LqExpr, LqLeaf,
-    LqOptions, LqQuery, LqSpan, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
-    RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, SearchExplanation,
+    BridgeQueryRequest, BridgeScope, ChunkId, CommitCandidate, DiffCandidate, EngineTouched,
+    GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
+    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqExpr, LqLeaf, LqOptions, LqQuery,
+    LqSpan, LqStructuralBlock, LqStructuralNode, ManifestGeneration, PlannerStage,
+    PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation,
     SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind,
-    SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef, StructuralBinding,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
+    SemanticQueryResponse, SemanticVectorRef, StructuralBinding, StructuralCandidate,
     StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
 };
@@ -30,7 +33,9 @@ use quanta_index_core::{
 use quanta_index_lq_bridge::{
     BridgeErrorCode, SUPPORTED_SG_VERSION, SourcegraphVersionTag, export_bridge_candidate_packet,
 };
+use sha2::{Digest, Sha256};
 
+use crate::readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState};
 use crate::{ActivationCatalog, Ledger, lower_lexical_text_query};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -273,15 +278,69 @@ impl SearchPlaneDispatcher {
         })
     }
 
+    fn runtime_metadata(
+        &self,
+        request: &RuntimeMetadataQueryRequest,
+    ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, CoreError> {
+        if request.text_query.syntax != TextQuerySyntax::Native {
+            return Err(CoreError::InvalidContract(
+                "runtime metadata: only native DSL is supported on the SDK runtime route"
+                    .to_string(),
+            ));
+        }
+        let pin = resolve_lexical_request_pin(
+            self.activation_catalog.as_ref(),
+            &request.text_query,
+            SearchPlaneTrackKind::Lexical,
+            "runtime metadata",
+        )?;
+        let runtime_state = self.snapshot_runtime_state(&pin)?;
+        let structural_state = self.snapshot_structural_state(&pin)?;
+        let plan = parse_runtime_metadata_query(request.text_query.query_text.as_str())?;
+        let results = execute_runtime_metadata_query(
+            &pin,
+            &runtime_state,
+            &structural_state,
+            &plan,
+            request.text_query.top_k,
+        )?;
+        Ok(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: pin,
+            results,
+        })
+    }
+
     fn history(
         &self,
-        _request: HistoryQueryRequest,
+        request: HistoryQueryRequest,
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
-        Err(CoreError::Typed {
-            code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
-            message:
-                "history: producer commit/diff channel ops are not wired in this repo-first closeout"
-                    .to_string(),
+        if request.text_query.syntax != TextQuerySyntax::Native {
+            return Err(CoreError::InvalidContract(
+                "history: only native DSL is supported on the SDK history route".to_string(),
+            ));
+        }
+        let pin = resolve_lexical_request_pin(
+            self.activation_catalog.as_ref(),
+            &request.text_query,
+            SearchPlaneTrackKind::Lexical,
+            "history",
+        )?;
+        let state = self.snapshot_history_state(&pin)?;
+        if state.commits().is_empty() && state.diff_hunks().is_empty() {
+            return Err(CoreError::Typed {
+                code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
+                message: format!(
+                    "history: no local commit/diff authority materialized for generation {}",
+                    pin.manifest_generation.get()
+                ),
+            });
+        }
+        let plan = parse_history_query(request.text_query.query_text.as_str())?;
+        let (commits, diffs) = execute_history_query(&pin, &state, &plan, request.text_query.top_k)?;
+        Ok(SearchPlaneHistoryQueryResponse {
+            generation: pin,
+            commits,
+            diffs,
         })
     }
 
@@ -293,13 +352,34 @@ impl SearchPlaneDispatcher {
     /// fabricating a pattern or consulting the producer heuristically.
     fn structural(
         &self,
-        _request: &StructuralQueryRequest,
+        request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
-        Err(CoreError::Typed {
-            code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
-            message:
-                "structural: parse-tree source authority is not materialized on this route; fail-closed"
-                    .to_string(),
+        if request.text_query.syntax != TextQuerySyntax::Native {
+            return Err(CoreError::InvalidContract(
+                "structural: only native DSL is supported on the SDK structural route".to_string(),
+            ));
+        }
+        let pin = resolve_lexical_request_pin(
+            self.activation_catalog.as_ref(),
+            &request.text_query,
+            SearchPlaneTrackKind::Lexical,
+            "structural",
+        )?;
+        let state = self.snapshot_structural_state(&pin)?;
+        if state.parse_trees().is_empty() {
+            return Err(CoreError::Typed {
+                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                message: format!(
+                    "structural: no parse-tree authority materialized for generation {}",
+                    pin.manifest_generation.get()
+                ),
+            });
+        }
+        let plan = parse_structural_query(request.text_query.query_text.as_str())?;
+        let results = execute_structural_query(&pin, &state, &plan, request.text_query.top_k)?;
+        Ok(SearchPlaneStructuralQueryResponse {
+            generation: pin,
+            results,
         })
     }
 
@@ -515,11 +595,12 @@ impl SearchPlaneDispatcher {
     // Fail-closed with NOT_IMPLEMENTED per CLAUDE.md.
     fn dispatch_runtime_metadata(
         &self,
-        _request: quanta_index_contract::RuntimeMetadataQueryRequest,
+        request: RuntimeMetadataQueryRequest,
     ) -> SearchPlaneQueryIpcResponse {
-        SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(CoreError::NotImplemented(
-            "query: runtime-metadata path awaiting QI-RT-02 wiring".to_string(),
-        )))
+        match self.runtime_metadata(&request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::RuntimeMetadata(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
     }
 
     fn snapshot_lex_seal(&self) -> Result<Option<ManifestGeneration>, CoreError> {
@@ -536,6 +617,52 @@ impl SearchPlaneDispatcher {
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
         Ok(guard.semantic_sealed())
+    }
+
+    fn snapshot_history_state(
+        &self,
+        pin: &GenerationPin,
+    ) -> Result<HistoryAuthorityState, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard
+            .history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .cloned()
+            .ok_or_else(|| CoreError::NotReady("history: local authority state missing".to_string()))
+    }
+
+    fn snapshot_runtime_state(
+        &self,
+        pin: &GenerationPin,
+    ) -> Result<RuntimeMetadataState, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard
+            .runtime_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::NotReady("runtime metadata: local authority state missing".to_string())
+            })
+    }
+
+    fn snapshot_structural_state(
+        &self,
+        pin: &GenerationPin,
+    ) -> Result<StructuralAuthorityState, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard
+            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::NotReady("structural: local authority state missing".to_string())
+            })
     }
 }
 

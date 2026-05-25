@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
-    ChannelSeq, GenerationPin, ManifestGeneration, RepoId, RevisionId,
+    ChannelSeq, ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
 };
+use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
+use quanta_index_contract::{ChunkRecord, LexicalChannelOp};
 use quanta_index_core::CoreError;
 
 type SharedLedger = Arc<RwLock<Ledger>>;
@@ -54,6 +56,9 @@ impl TrackLedger {
 pub struct Ledger {
     lexical: TrackLedger,
     semantic: TrackLedger,
+    history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
+    runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
+    structural: BTreeMap<AuthorityKey, StructuralAuthorityState>,
 }
 
 impl Ledger {
@@ -119,6 +124,347 @@ impl Ledger {
 
     pub fn set_semantic_last_seen(&mut self, seq: ChannelSeq) {
         self.semantic.set_last_seen(seq);
+    }
+
+    fn authority_key(
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> AuthorityKey {
+        AuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+        }
+    }
+
+    fn history_state_mut(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> &mut HistoryAuthorityState {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.history.entry(key).or_default()
+    }
+
+    fn runtime_state_mut(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> &mut RuntimeMetadataState {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.runtime_metadata.entry(key).or_default()
+    }
+
+    fn structural_state_mut(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> &mut StructuralAuthorityState {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.structural.entry(key).or_default()
+    }
+
+    #[must_use]
+    pub fn history_state(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<&HistoryAuthorityState> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.history.get(&key)
+    }
+
+    #[must_use]
+    pub fn runtime_state(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<&RuntimeMetadataState> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.runtime_metadata.get(&key)
+    }
+
+    #[must_use]
+    pub fn structural_state(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<&StructuralAuthorityState> {
+        let key = Self::authority_key(repo_id, revision_id, generation);
+        self.structural.get(&key)
+    }
+
+    pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
+        match op {
+            LexicalChannelOp::UpsertChunk(payload) => {
+                self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                )
+                .chunks
+                .insert(payload.chunk_id.clone(), decode_record(&payload.payload, "chunk")?);
+            }
+            LexicalChannelOp::DeleteChunk(payload) => {
+                self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                )
+                .chunks
+                .remove(&payload.chunk_id);
+            }
+            LexicalChannelOp::UpsertCommit(payload) => {
+                let record: CommitRecord = decode_record(&payload.payload, "commit")?;
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                for parent in &record.parents {
+                    if !state.commits.contains_key(parent) {
+                        return Err(CoreError::Typed {
+                            code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
+                            message: format!(
+                                "history ingest: parent {} missing before child {}",
+                                parent, record.sha
+                            ),
+                        });
+                    }
+                }
+                state.commits.insert(record.sha, record);
+            }
+            LexicalChannelOp::UpsertRef(payload) => {
+                let sha = CommitSha::from_bytes(payload.sha);
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                if !state.commits.contains_key(&sha) {
+                    return Err(CoreError::Typed {
+                        code: "HISTORY_REF_NOT_FOUND".to_string(),
+                        message: format!(
+                            "history ingest: ref `{}` points to unknown commit {}",
+                            payload.name, sha
+                        ),
+                    });
+                }
+                state.refs.insert(payload.name.clone(), sha);
+            }
+            LexicalChannelOp::DeleteRef(payload) => {
+                self.history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                    .refs
+                    .remove(payload.name.as_ref());
+            }
+            LexicalChannelOp::UpsertTag(payload) => {
+                let sha = CommitSha::from_bytes(payload.sha);
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                if !state.commits.contains_key(&sha) {
+                    return Err(CoreError::Typed {
+                        code: "HISTORY_REF_NOT_FOUND".to_string(),
+                        message: format!(
+                            "history ingest: tag `{}` points to unknown commit {}",
+                            payload.name, sha
+                        ),
+                    });
+                }
+                state.tags.insert(payload.name.clone(), sha);
+            }
+            LexicalChannelOp::DeleteTag(payload) => {
+                self.history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                    .tags
+                    .remove(payload.name.as_ref());
+            }
+            LexicalChannelOp::UpsertDiffHunk(payload) => {
+                let record: DiffHunkRecord = decode_record(&payload.payload, "diff_hunk")?;
+                let commit_sha = CommitSha::from_bytes(payload.commit_sha);
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                if !state.commits.contains_key(&commit_sha) {
+                    return Err(CoreError::Typed {
+                        code: "HISTORY_REF_NOT_FOUND".to_string(),
+                        message: format!(
+                            "history ingest: diff hunk for unknown commit {}",
+                            commit_sha
+                        ),
+                    });
+                }
+                state.diff_hunks.insert(
+                    HistoryDiffKey {
+                        commit_sha,
+                        file_path: payload.file_path.clone(),
+                    },
+                    record,
+                );
+            }
+            LexicalChannelOp::UpsertDirty(payload) => {
+                self.runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                    .dirty_docs
+                    .insert(
+                        payload.doc_id.clone(),
+                        DirtyDocState {
+                            applied_at_ms: payload.applied_at_ms,
+                            payload_hash: payload.payload_hash,
+                        },
+                    );
+            }
+            LexicalChannelOp::EvictDirty(payload) => {
+                self.runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                    .dirty_docs
+                    .remove(&payload.doc_id);
+            }
+            LexicalChannelOp::UpsertParseTree(payload) => {
+                let record: ParseTreeRecord = decode_record(&payload.payload, "parse_tree")?;
+                self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                )
+                .parse_trees
+                .insert(payload.chunk_id.clone(), record);
+            }
+            LexicalChannelOp::DeleteParseTree(payload) => {
+                self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                )
+                .parse_trees
+                .remove(&payload.chunk_id);
+            }
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::DeleteSymbol(_)
+            | LexicalChannelOp::Seal(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn decode_record<T>(payload: &[u8], label: &str) -> Result<T, CoreError>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    ciborium::from_reader(payload).map_err(|err| CoreError::InvalidContract(format!(
+        "search-plane authority ledger: decode {label}: {err}"
+    )))
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AuthorityKey {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HistoryAuthorityState {
+    commits: BTreeMap<CommitSha, CommitRecord>,
+    refs: BTreeMap<Box<str>, CommitSha>,
+    tags: BTreeMap<Box<str>, CommitSha>,
+    diff_hunks: BTreeMap<HistoryDiffKey, DiffHunkRecord>,
+}
+
+impl HistoryAuthorityState {
+    #[must_use]
+    pub fn commits(&self) -> &BTreeMap<CommitSha, CommitRecord> {
+        &self.commits
+    }
+
+    #[must_use]
+    pub fn refs(&self) -> &BTreeMap<Box<str>, CommitSha> {
+        &self.refs
+    }
+
+    #[must_use]
+    pub fn tags(&self) -> &BTreeMap<Box<str>, CommitSha> {
+        &self.tags
+    }
+
+    #[must_use]
+    pub fn diff_hunks(&self) -> &BTreeMap<HistoryDiffKey, DiffHunkRecord> {
+        &self.diff_hunks
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HistoryDiffKey {
+    commit_sha: CommitSha,
+    file_path: Box<str>,
+}
+
+impl HistoryDiffKey {
+    #[must_use]
+    pub fn commit_sha(&self) -> CommitSha {
+        self.commit_sha
+    }
+
+    #[must_use]
+    pub fn file_path(&self) -> &str {
+        self.file_path.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirtyDocState {
+    applied_at_ms: u64,
+    payload_hash: [u8; 32],
+}
+
+impl DirtyDocState {
+    #[must_use]
+    pub const fn applied_at_ms(&self) -> u64 {
+        self.applied_at_ms
+    }
+
+    #[must_use]
+    pub const fn payload_hash(&self) -> &[u8; 32] {
+        &self.payload_hash
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeMetadataState {
+    dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
+}
+
+impl RuntimeMetadataState {
+    #[must_use]
+    pub fn dirty_docs(&self) -> &BTreeMap<ChunkId, DirtyDocState> {
+        &self.dirty_docs
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StructuralAuthorityState {
+    chunks: BTreeMap<ChunkId, ChunkRecord>,
+    parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
+}
+
+impl StructuralAuthorityState {
+    #[must_use]
+    pub fn chunks(&self) -> &BTreeMap<ChunkId, ChunkRecord> {
+        &self.chunks
+    }
+
+    #[must_use]
+    pub fn parse_trees(&self) -> &BTreeMap<ChunkId, ParseTreeRecord> {
+        &self.parse_trees
     }
 }
 
