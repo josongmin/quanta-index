@@ -303,9 +303,24 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         let mut diffs: Option<Vec<DiffCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "generation" => generation = Some(map.next_value()?),
-                "commits" => commits = Some(map.next_value()?),
-                "diffs" => diffs = Some(map.next_value()?),
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "commits" => {
+                    if commits.is_some() {
+                        return Err(de::Error::duplicate_field("commits"));
+                    }
+                    commits = Some(map.next_value()?);
+                }
+                "diffs" => {
+                    if diffs.is_some() {
+                        return Err(de::Error::duplicate_field("diffs"));
+                    }
+                    diffs = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -373,8 +388,18 @@ impl<'de> Visitor<'de> for SearchPlaneRuntimeMetadataQueryResponseVisitor {
         let mut results: Option<Vec<LexicalCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "generation" => generation = Some(map.next_value()?),
-                "results" => results = Some(map.next_value()?),
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "results" => {
+                    if results.is_some() {
+                        return Err(de::Error::duplicate_field("results"));
+                    }
+                    results = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -440,8 +465,18 @@ impl<'de> Visitor<'de> for SearchPlaneStructuralQueryResponseVisitor {
         let mut results: Option<Vec<StructuralCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "generation" => generation = Some(map.next_value()?),
-                "results" => results = Some(map.next_value()?),
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "results" => {
+                    if results.is_some() {
+                        return Err(de::Error::duplicate_field("results"));
+                    }
+                    results = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -507,8 +542,18 @@ impl<'de> Visitor<'de> for SearchPlaneBridgeQueryResponseVisitor {
         let mut packet: Option<BridgeCandidatePacket> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "generation" => generation = Some(map.next_value()?),
-                "packet" => packet = Some(map.next_value()?),
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "packet" => {
+                    if packet.is_some() {
+                        return Err(de::Error::duplicate_field("packet"));
+                    }
+                    packet = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -574,8 +619,18 @@ impl<'de> Visitor<'de> for SearchPlaneExplainQueryResponseVisitor {
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "generation" => generation = Some(map.next_value()?),
-                "explanation" => explanation = Some(map.next_value()?),
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "explanation" => {
+                    if explanation.is_some() {
+                        return Err(de::Error::duplicate_field("explanation"));
+                    }
+                    explanation = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,

@@ -258,8 +258,18 @@ impl<'de> Visitor<'de> for PlannerTraceEntryVisitor {
         let mut detail: Option<String> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "stage" => stage = Some(map.next_value()?),
-                "detail" => detail = Some(map.next_value()?),
+                "stage" => {
+                    if stage.is_some() {
+                        return Err(de::Error::duplicate_field("stage"));
+                    }
+                    stage = Some(map.next_value()?);
+                }
+                "detail" => {
+                    if detail.is_some() {
+                        return Err(de::Error::duplicate_field("detail"));
+                    }
+                    detail = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, PLANNER_TRACE_ENTRY_FIELDS)),
             }
         }

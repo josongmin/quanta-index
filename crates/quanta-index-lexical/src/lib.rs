@@ -292,16 +292,25 @@ fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
 }
 
-fn decode_repo_metadata_payload(bytes: &[u8]) -> Option<LexicalRepoMetadataRecord> {
-    if bytes.is_empty() {
-        return None;
+/// Legacy `FullBundle` placeholder payload.
+///
+/// Older producers used the literal `b"manifest"` as an opaque marker.
+/// New producers emit a CBOR-encoded `LexicalRepoMetadataRecord`. The two
+/// are distinguished here explicitly so that real decode failures surface
+/// as `InvalidContract` rather than silently routing to "no metadata".
+const LEGACY_FULL_BUNDLE_PAYLOAD: &[u8] = b"manifest";
+
+fn decode_repo_metadata_payload(
+    bytes: &[u8],
+) -> Result<Option<LexicalRepoMetadataRecord>, CoreError> {
+    if bytes.is_empty() || bytes == LEGACY_FULL_BUNDLE_PAYLOAD {
+        return Ok(None);
     }
-    // Historical FullBundle payloads were opaque producer-side blobs and many
-    // existing tests still write `b"manifest"` here. Treat undecodable bytes
-    // as legacy/no-metadata instead of breaking unrelated lexical flows.
     ciborium::from_reader::<LexicalRepoMetadataRecord, _>(bytes)
-        .into_iter()
-        .next()
+        .map(Some)
+        .map_err(|err| {
+            CoreError::InvalidContract(format!("lexical: repo metadata payload decode: {err}"))
+        })
 }
 
 fn persist_repo_metadata_snapshot(
@@ -603,7 +612,7 @@ impl LexicalAdapter {
             // FullBundle/Seal carry no document-level effect (dispatcher's
             // ledger update observes Seal).
             LexicalChannelOp::FullBundle(bundle) => {
-                let metadata = decode_repo_metadata_payload(&bundle.payload);
+                let metadata = decode_repo_metadata_payload(&bundle.payload)?;
                 {
                     let mut guard = self.repo_metadata.lock().map_err(|err| {
                         CoreError::Storage(format!("lexical repo metadata poisoned: {err}"))
