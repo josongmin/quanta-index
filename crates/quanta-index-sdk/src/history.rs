@@ -146,7 +146,12 @@ impl crate::NamespaceIngest for HistoryNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected history receipt, got {}",
                 QuantaIndex::ingest_response_kind(&other)
             ))),
@@ -157,7 +162,7 @@ impl crate::NamespaceIngest for HistoryNs {
 impl crate::NamespaceQuery for HistoryNs {
     type QueryBuilder<'a> = HistoryQueryBuilder<'a>;
 
-    fn query<'a>(client: &'a QuantaIndex) -> HistoryQueryBuilder<'a> {
+    fn query(client: &QuantaIndex) -> HistoryQueryBuilder<'_> {
         HistoryQueryBuilder::new(client)
     }
 }
@@ -256,7 +261,17 @@ impl<'a> HistoryQueryBuilder<'a> {
             }))?;
         match response {
             SearchPlaneQueryIpcResponse::History(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
                 "expected history response, got {}",
                 QuantaIndex::query_response_kind(&other)
             ))),

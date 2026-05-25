@@ -68,7 +68,8 @@ impl fmt::Display for RegexPlannerError {
 
 impl std::error::Error for RegexPlannerError {}
 
-/// Policy knobs for [`plan_regex`].
+/// Policy knobs for [`plan_regex`] and for the lexical adapter's regex
+/// execution gating.
 ///
 /// Default values produced by [`RegexPolicy::defaults`] are coupled to the
 /// upstream `quanta_index_lq_regex` constants (`MAX_NFA_STATES = 100_000`).
@@ -77,23 +78,34 @@ impl std::error::Error for RegexPlannerError {}
 /// `RegexExecutor::compile` does not return the estimated state count
 /// when it succeeds. The field is preserved for future enforcement and
 /// for error reporting on cap-exceed.
+///
+/// `trigram_missing_doc_threshold` is the corpus-size cap above which the
+/// lexical adapter's `compile_regex_content_leaf` surfaces
+/// `LEX_REGEX_TRIGRAM_INDEX_MISSING` instead of running a vendor full-scan
+/// regex. The lexical adapter does not yet maintain a trigram-postings
+/// field over indexed content; until that lands we honestly admit the gap
+/// above this threshold rather than silently running an O(corpus) regex
+/// on a large index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegexPolicy {
     pub max_nfa_states: u64,
     pub default_candidate_cap: u32,
     pub require_literal: bool,
+    pub trigram_missing_doc_threshold: u64,
 }
 
 impl RegexPolicy {
     /// Sane defaults: 10k NFA states budget, 10k candidate cap, mandatory
     /// literal NOT required (pure-wildcard patterns fall through to
-    /// verify-only execution downstream).
+    /// verify-only execution downstream), and 10k corpus-size cap before
+    /// the trigram-missing typed error fires.
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
             max_nfa_states: 10_000,
             default_candidate_cap: 10_000,
             require_literal: false,
+            trigram_missing_doc_threshold: 10_000,
         }
     }
 }

@@ -8,7 +8,33 @@ Cross-repo proof for semantica is tracked separately as `SM-VRF-01` in the seman
 
 Follow-on packet:
 - [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sorucegraph/tickets/SDK-ENTRY-01.md)
-- purpose: after the baseline SDK / ingest IPC cutover below, force the remaining history / runtime / structural source-authority entry through `quanta-index-sdk` only. That follow-on extends `LexicalBatch`; it does not introduce a second public ingest front door.
+- purpose: after the baseline SDK / ingest IPC cutover below, force the remaining history / runtime / structural source-authority entry through `quanta-index-sdk` only. That follow-on keeps one external SDK front door, but uses dedicated typed namespaces and batches (`history`, `runtime`, `structural`) instead of overloading `LexicalBatch`.
+
+## Follow-on decision lock
+
+These decisions are frozen before the source-authority follow-on starts:
+
+1. External Rust consumers use `quanta-index-sdk` only.
+   - primary typed query route: `history().query()` / `runtime().query()` / `structural().query()`
+   - raw text power-user route remains: `lexical().query().native(...)` / `sourcegraph().query()`
+2. Query execution has one canonical engine.
+   - typed builders own the canonical query DTO / AST surface
+   - raw text routes lower into that same canonical engine; no parallel "typed engine" vs "text engine" split
+3. Producer authority families publish through dedicated SDK namespaces and batches.
+   - `lexical().publish()` is chunk / symbol lexical ingest only
+   - `history().publish(HistoryBatch)` / `runtime().publish_dirty(DirtyBatch)` / `structural().publish(StructuralBatch)` own history / dirty / parse-tree ingress
+4. Readiness authority is family-local.
+   - history / runtime / structural each gate on their own local materialization or catalog watermark
+   - lexical seal is not reused as a readiness proxy for other families
+5. Public result carriers are family-specific.
+   - history returns `CommitCandidate` / `DiffCandidate`
+   - runtime returns `RuntimeMetadataCandidate`
+   - structural returns `StructuralCandidate { spans, bindings, role_tags }`
+6. Option behavior is frozen.
+   - `timeout` ships in this packet and is enforced in executor
+   - `index:only` is the only executable mode
+   - `index:no` is accepted on the canonical route and fails closed with typed `NotImplemented`
+   - `boost` is parser / carrier / planner-gate only; active ranking semantics stay out of scope for this packet
 
 ## Live residue (entry condition)
 
@@ -137,7 +163,7 @@ Add `IngestTransport`. `lexical().publish()` / `semantic().publish()` / `repomap
 - `publish()` maps batches to `PublishLexicalBatch` / `SemanticBatch` / `RepoMapBatch` and calls `IngestTransport::send()`
 - `BatchReceipt` comes from the server response, never synthesized from local channel sequences
 - An in-memory `IngestTransport` exists for unit tests. SDK tests must not produce filesystem channel side-effects
-- future lexical-track authority families (commit / diff / dirty / parse-tree) extend `LexicalBatch` instead of bypassing the SDK or creating a new public ingest namespace
+- future source-authority families (history / dirty / parse-tree) must land as dedicated SDK namespaces and typed batches, not raw ingress paths and not `LexicalBatch` overloads
 
 **Blockers** QI-ING-01, QI-RT-01
 
@@ -151,7 +177,7 @@ Add `IngestTransport`. `lexical().publish()` / `semantic().publish()` / `repomap
 
 ### QI-ACT-01 | quanta-index | Generation Admin Surface
 
-Add `generations().current()` and `generations().status()` to both SDK and daemon. The activation catalog is the only truth source.
+Add `generations().current()` and `generations().status()` to both SDK and daemon. The activation catalog is the only truth source for active-generation selection, not a replacement for family-local readiness checks in the history / runtime / structural follow-on.
 
 **Owner files**
 - [crates/quanta-index-contract/src/ipc/split.rs:66](../../crates/quanta-index-contract/src/ipc/split.rs#L66) (`SearchPlaneControlIpcRequest`: add `CurrentGeneration` / `GenerationStatus`)
@@ -163,7 +189,8 @@ Add `generations().current()` and `generations().status()` to both SDK and daemo
 
 **Acceptance**
 - `generations().current(repo_id)` returns the active generation from the activation catalog. Caller-side sqlite pin lookups are banned
-- `generations().status(repo_id)` returns readiness per index family (lexical / semantic / repomap)
+- `generations().status(repo_id)` returns activation / materialization status for the base shipped families (lexical / semantic / repomap)
+- follow-on history / runtime / structural families keep their own readiness authority; `generations().status()` is not the sole readiness gate for those families
 - Catalog absent or no active generation → typed `Err` (`NotReady` / `NoActiveGeneration`). No `0` / `GenerationSelector::Latest` fallback
 - `public-api` baseline updated
 
@@ -251,7 +278,7 @@ Callers use SDK namespace calls only. Direct split-IPC envelope assembly and soc
 
 ### SM-DEL-01 | semantica | Fallback and SQLite Pin Deletion
 
-Delete local lexical / semantic / hybrid fallback and caller-side sqlite generation pin resolution. Only `GenerationSelector::Active` + catalog status remain.
+Delete local lexical / semantic / hybrid fallback and caller-side sqlite generation pin resolution. `GenerationSelector::Active` remains for caller-side coordinate selection; readiness is resolved by the SDK/query path and family-local search-side authority, not caller-side catalog/sqlite heuristics.
 
 **Owner files** semantica repo
 
@@ -330,7 +357,7 @@ Close the contract serde / ingest / query / control SDK smoke / searchd e2e proo
 
 **Acceptance**
 - Contract serde round-trips for every `SearchPlaneIngest/Query/Control` variant
-- `searchd-runtime` e2e: publish via `ingest.sock` → `generations().status()` reports ready → query via `query.sock` returns expected result → control via `control.sock` activates correctly
+- `searchd-runtime` e2e: publish via `ingest.sock` → `generations().current()` / base-family `generations().status()` return the expected active/materialized state → query via `query.sock` returns expected result → control via `control.sock` activates correctly
 - `cargo tree -p quanta-index-sdk` contains zero `quanta-index-channel` entries
 - All structural lints pass on frozen baselines: `check-public-api.py`, `check-cargo-modules-snapshot.py`, `check-cargo-toml-hygiene.py`, `check-module-discipline.py`, `check-error-shape.py`, `check-digest-fallibility.py`, `check-llvm-lines.py`
 - `just rust-fuzz-smoke` runs the ingest / query / control envelope targets for 60s each. Zero panic, hang, or non-`Err` exit

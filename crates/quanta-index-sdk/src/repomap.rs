@@ -44,8 +44,8 @@ impl<'a> RepoMapNamespace<'a> {
     /// QI-INT-01: repo-map publish goes through the ingest IPC, not
     /// control. The control surface's `RepoMapIngest` variant has been
     /// removed.
-    pub fn publish(&self, bundle: RepoMapSourceBundle) -> Result<RepoMapMutationAck, SdkError> {
-        <RepoMapNs as crate::NamespaceIngest>::publish(self.client, &bundle)
+    pub fn publish(&self, bundle: &RepoMapSourceBundle) -> Result<RepoMapMutationAck, SdkError> {
+        <RepoMapNs as crate::NamespaceIngest>::publish(self.client, bundle)
     }
 
     pub fn activate(

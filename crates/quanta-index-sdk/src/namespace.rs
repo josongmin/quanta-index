@@ -57,10 +57,11 @@ pub trait NamespaceIngest {
 
 /// Marker capability: a namespace exposes a typed query builder.
 ///
-/// The builder carries the namespace's query-specific options (syntax,
-/// generation selection, top_k, etc.) and produces the typed response
-/// when executed. The associated `QueryBuilder<'a>` GAT ties the
-/// builder's lifetime to the SDK client reference.
+/// The builder carries the namespace's query-specific options.
+///
+/// Examples include syntax, generation selection, `top_k`, and the typed
+/// response returned by `execute()`. The associated `QueryBuilder<'a>` GAT
+/// ties the builder's lifetime to the SDK client reference.
 pub trait NamespaceQuery {
     /// Per-namespace builder type. Each namespace defines its own; there
     /// is no fat shared trait (ISP). The builder is responsible for
@@ -71,13 +72,14 @@ pub trait NamespaceQuery {
         Self: 'a;
 
     /// Construct a fresh query builder bound to `client`.
-    fn query<'a>(client: &'a QuantaIndex) -> Self::QueryBuilder<'a>;
+    fn query(client: &QuantaIndex) -> Self::QueryBuilder<'_>;
 }
 
-/// Handle returned by [`QuantaIndex::ns`]. Thin wrapper that gates
-/// `.publish` and `.query` on which capabilities the marker `N`
-/// implements; calling `.publish` on a namespace that does not implement
-/// [`NamespaceIngest`] is a compile-time error (no runtime fallback).
+/// Handle returned by [`QuantaIndex::ns`].
+///
+/// This wrapper gates `.publish` and `.query` on which capabilities the marker
+/// `N` implements. Calling `.publish` on a namespace that does not implement
+/// [`NamespaceIngest`] is a compile-time error.
 pub struct NamespaceHandle<'a, N>
 where
     N: ?Sized,
@@ -88,12 +90,12 @@ where
     _marker: PhantomData<fn() -> N>,
 }
 
-impl<'a, N> NamespaceHandle<'a, N>
+impl<N> NamespaceHandle<'_, N>
 where
     N: ?Sized,
 {
-    pub(crate) const fn new(client: &'a QuantaIndex) -> Self {
-        Self {
+    pub(crate) const fn new(client: &QuantaIndex) -> NamespaceHandle<'_, N> {
+        NamespaceHandle {
             client,
             _marker: PhantomData,
         }
@@ -102,12 +104,12 @@ where
     /// Underlying SDK client. Exposed for callers that want to drop back
     /// to the `lexical()` / `semantic()` sugar within the same scope.
     #[must_use]
-    pub const fn client(&self) -> &'a QuantaIndex {
+    pub const fn client(&self) -> &QuantaIndex {
         self.client
     }
 }
 
-impl<'a, N> NamespaceHandle<'a, N>
+impl<N> NamespaceHandle<'_, N>
 where
     N: NamespaceIngest + ?Sized,
 {
@@ -119,14 +121,16 @@ where
     }
 }
 
-impl<'a, N> NamespaceHandle<'a, N>
+impl<N> NamespaceHandle<'_, N>
 where
-    N: NamespaceQuery + ?Sized + 'a,
+    N: NamespaceQuery + ?Sized,
 {
-    /// Construct a fresh query builder for the namespace. Identical to the
-    /// built-in `client.lexical().query()` / `client.semantic().query()`
-    /// sugar — the sugar layers delegate to this path under the hood.
-    pub fn query(&self) -> N::QueryBuilder<'a> {
+    /// Construct a fresh query builder for the namespace.
+    ///
+    /// This is identical to the built-in `client.lexical().query()` or
+    /// `client.semantic().query()` sugar. Those sugar layers delegate here.
+    #[must_use]
+    pub fn query(&self) -> N::QueryBuilder<'_> {
         N::query(self.client)
     }
 }
@@ -151,9 +155,9 @@ mod tests {
     use super::*;
     use crate::{BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport};
 
-    /// Downstream marker. Demonstrates that wiring is decoupled from the
-    /// SDK core: this struct exists only in the test module, but it
-    /// composes through `client.ns::<DownstreamLexicalNs>()` without any
+    /// Downstream marker used only in this test module.
+    ///
+    /// It composes through `client.ns::<DownstreamLexicalNs>()` without any
     /// edit to the namespace module, client, or transports.
     struct DownstreamLexicalNs;
 
@@ -181,16 +185,21 @@ mod tests {
             &self,
             request: SearchPlaneIngestIpcRequestEnvelope,
         ) -> Result<SearchPlaneIngestIpcResponseEnvelope, SdkError> {
-            self.requests
-                .lock()
-                .expect("ingest mutex")
-                .push(request.clone());
-            let payload = self
-                .response
-                .lock()
-                .expect("ingest response mutex")
-                .take()
-                .expect("ingest stub response");
+            {
+                let mut requests = self
+                    .requests
+                    .lock()
+                    .map_err(|err| SdkError::Protocol(format!("ingest mutex poisoned: {err}")))?;
+                requests.push(request.clone());
+            }
+            let payload = {
+                let mut response = self.response.lock().map_err(|err| {
+                    SdkError::Protocol(format!("ingest response mutex poisoned: {err}"))
+                })?;
+                response
+                    .take()
+                    .ok_or_else(|| SdkError::Protocol("missing ingest stub response".to_string()))?
+            };
             Ok(SearchPlaneIngestIpcResponseEnvelope {
                 request_id: request.request_id,
                 payload,
@@ -265,15 +274,33 @@ mod tests {
             ))),
         });
         let client = make_client(Arc::clone(&ingest));
-        let receipt = client
-            .ns::<DownstreamLexicalNs>()
-            .publish(&fixture_batch())
-            .expect("downstream publish");
+        let receipt = match client.ns::<DownstreamLexicalNs>().publish(&fixture_batch()) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                assert!(false, "downstream publish failed: {err}");
+                return;
+            }
+        };
         assert_eq!(receipt.first_seq, Some(ChannelSeq::new(0)));
-        let captured = ingest.requests.lock().expect("captured");
-        assert_eq!(captured.len(), 1);
+        let captured_payload = {
+            let captured = match ingest.requests.lock() {
+                Ok(captured) => captured,
+                Err(err) => {
+                    assert!(false, "captured requests poisoned: {err}");
+                    return;
+                }
+            };
+            assert_eq!(captured.len(), 1);
+            let Some(first) = captured.first() else {
+                assert!(false, "expected one captured request");
+                return;
+            };
+            let payload = first.payload.clone();
+            drop(captured);
+            payload
+        };
         assert!(matches!(
-            captured[0].payload,
+            captured_payload,
             SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
         ));
     }
@@ -292,10 +319,13 @@ mod tests {
             ))),
         });
         let sugar_client = make_client(Arc::clone(&sugar_ingest));
-        let _sugar_receipt = sugar_client
-            .lexical()
-            .publish(&batch)
-            .expect("sugar publish");
+        let _sugar_receipt = match sugar_client.lexical().publish(&batch) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                assert!(false, "sugar publish failed: {err}");
+                return;
+            }
+        };
 
         let ns_ingest = Arc::new(StubIngestTransport {
             requests: Mutex::new(Vec::new()),
@@ -304,16 +334,49 @@ mod tests {
             ))),
         });
         let ns_client = make_client(Arc::clone(&ns_ingest));
-        let _ns_receipt = ns_client
-            .ns::<crate::LexicalNs>()
-            .publish(&batch)
-            .expect("ns publish");
+        let _ns_receipt = match ns_client.ns::<crate::LexicalNs>().publish(&batch) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                assert!(false, "ns publish failed: {err}");
+                return;
+            }
+        };
 
-        let sugar_captured = sugar_ingest.requests.lock().expect("sugar captured");
-        let ns_captured = ns_ingest.requests.lock().expect("ns captured");
-        assert_eq!(sugar_captured.len(), 1);
-        assert_eq!(ns_captured.len(), 1);
-        assert_eq!(sugar_captured[0].payload, ns_captured[0].payload);
+        let sugar_payload = {
+            let captured = match sugar_ingest.requests.lock() {
+                Ok(captured) => captured,
+                Err(err) => {
+                    assert!(false, "sugar captured poisoned: {err}");
+                    return;
+                }
+            };
+            assert_eq!(captured.len(), 1);
+            let Some(first) = captured.first() else {
+                assert!(false, "expected one sugar request");
+                return;
+            };
+            let payload = first.payload.clone();
+            drop(captured);
+            payload
+        };
+        let ns_payload = {
+            let captured = match ns_ingest.requests.lock() {
+                Ok(captured) => captured,
+                Err(err) => {
+                    assert!(false, "ns captured poisoned: {err}");
+                    return;
+                }
+            };
+            assert_eq!(captured.len(), 1);
+            let Some(first) = captured.first() else {
+                assert!(false, "expected one ns request");
+                return;
+            };
+            let payload = first.payload.clone();
+            drop(captured);
+            payload
+        };
+        assert_eq!(sugar_payload, ns_payload);
     }
 
     #[test]

@@ -1961,6 +1961,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+    )]
     fn cbor_roundtrip_entry() -> TestRes {
         roundtrip_eq(&sample_entry())
     }
@@ -1986,6 +1990,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+    )]
     fn cbor_roundtrip_query_response() -> TestRes {
         roundtrip_eq(&sample_query_response())
     }

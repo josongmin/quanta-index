@@ -5,10 +5,6 @@
     clippy::disallowed_methods,
     reason = "integration polling uses explicit Result fallback checks"
 )]
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "integration tests use Result-returning setup with assertion-style validation"
-)]
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -50,8 +46,10 @@ fn pin() -> GenerationPin {
 }
 
 fn commit_sha() -> CommitSha {
-    CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567")
-        .expect("fixture sha must be valid")
+    CommitSha::from_bytes([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ])
 }
 
 fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
@@ -89,7 +87,7 @@ where
     false
 }
 
-fn stop_runtime(shutdown: Arc<AtomicBool>, join: DriverJoin) -> TestResult {
+fn stop_runtime(shutdown: &Arc<AtomicBool>, join: DriverJoin) -> TestResult {
     shutdown.store(true, Ordering::Release);
     match join.join() {
         Ok(Ok(())) => Ok(()),
@@ -123,7 +121,7 @@ fn history_batch() -> quanta_index_sdk::HistoryBatch {
                 hunk_header: "@@ -1,1 +1,2 @@".to_string().into_boxed_str(),
                 side: quanta_index_contract::DiffHunkSide::After,
                 added_text: "todo!".to_string().into_boxed_str(),
-                removed_text: "".to_string().into_boxed_str(),
+                removed_text: String::new().into_boxed_str(),
                 touched_text: "todo!".to_string().into_boxed_str(),
                 byte_start: 0,
                 byte_end: 5,
@@ -170,7 +168,13 @@ fn structural_batch() -> StructuralBatch {
 fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
     match err {
         SdkError::Remote { code, .. } if code == expected => Ok(()),
-        other => Err(format!("expected remote code {expected}, got {other:?}").into()),
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            Err(format!("expected remote code {expected}, got {other:?}").into())
+        }
     }
 }
 
@@ -190,7 +194,7 @@ fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestRe
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
     }) {
-        stop_runtime(shutdown, join)?;
+        stop_runtime(&shutdown, join)?;
         return Err("sdk frontdoor sockets never appeared".into());
     }
 
@@ -206,19 +210,19 @@ fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestRe
     let structural_receipt = client.structural().publish(&structural_batch())?;
 
     if history_receipt.first_seq.is_none() || history_receipt.last_seq.is_none() {
-        stop_runtime(shutdown, join)?;
+        stop_runtime(&shutdown, join)?;
         return Err("history receipt missing sequence range".into());
     }
     if dirty_receipt.first_seq.is_none() || dirty_receipt.last_seq.is_none() {
-        stop_runtime(shutdown, join)?;
+        stop_runtime(&shutdown, join)?;
         return Err("dirty receipt missing sequence range".into());
     }
     if structural_receipt.first_seq.is_none() || structural_receipt.last_seq.is_none() {
-        stop_runtime(shutdown, join)?;
+        stop_runtime(&shutdown, join)?;
         return Err("structural receipt missing sequence range".into());
     }
 
-    stop_runtime(shutdown, join)
+    stop_runtime(&shutdown, join)
 }
 
 #[test]
@@ -237,7 +241,7 @@ fn sdk_query_frontdoor_surfaces_current_fail_closed_codes() -> TestResult {
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
     }) {
-        stop_runtime(shutdown, join)?;
+        stop_runtime(&shutdown, join)?;
         return Err("sdk frontdoor sockets never appeared".into());
     }
 
@@ -248,35 +252,44 @@ fn sdk_query_frontdoor_surfaces_current_fail_closed_codes() -> TestResult {
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let history_err = client
+    let Err(history_err) = client
         .history()
         .query()
         .native("type:commit author:alice")
         .pinned(pin())
         .top_k(5)
         .execute()
-        .expect_err("history query should fail closed until history executor lands");
+    else {
+        stop_runtime(&shutdown, join)?;
+        return Err("history query unexpectedly succeeded".into());
+    };
     expect_remote_code(history_err, "HISTORY_PRODUCER_UNAVAILABLE")?;
 
-    let runtime_err = client
+    let Err(runtime_err) = client
         .runtime()
         .query()
         .sourcegraph("dirty:yes")
         .pinned(pin())
         .top_k(3)
         .execute()
-        .expect_err("runtime metadata query should fail closed until QI-RT-02 lands");
+    else {
+        stop_runtime(&shutdown, join)?;
+        return Err("runtime metadata query unexpectedly succeeded".into());
+    };
     expect_remote_code(runtime_err, "NOT_IMPLEMENTED")?;
 
-    let structural_err = client
+    let Err(structural_err) = client
         .structural()
         .query()
         .native("match { :[x] }")
         .pinned(pin())
         .top_k(2)
         .execute()
-        .expect_err("structural query should fail closed until parse-tree executor lands");
+    else {
+        stop_runtime(&shutdown, join)?;
+        return Err("structural query unexpectedly succeeded".into());
+    };
     expect_remote_code(structural_err, "STR_PRODUCER_PARSE_TREE_UNAVAILABLE")?;
 
-    stop_runtime(shutdown, join)
+    stop_runtime(&shutdown, join)
 }

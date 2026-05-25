@@ -15,9 +15,9 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelDispatcher, HistoryIngestPort, Ledger, RuntimeMetadataIngestPort,
-    SearchPlaneControlDispatcher, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
-    StructuralIngestPort,
+    ActivationCatalog, ChannelDispatcher, FailClosedStructuralProducer, HistoryIngestPort, Ledger,
+    RuntimeMetadataIngestPort, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 
 use crate::app::config::SearchdConfig;
@@ -102,6 +102,11 @@ impl SearchdRuntime {
             lex_open_port,
             sem_open_port,
             Arc::clone(&repo_map_query_port),
+            // LXE-09: structural producer is fail-closed until step 2 lands a
+            // real parse-tree adapter. The dispatcher still routes through
+            // the domain port so STR_* readiness codes propagate without
+            // hardcoding error shapes in the dispatcher.
+            Arc::new(FailClosedStructuralProducer),
             Arc::clone(&ledger),
             activation_catalog.clone(),
         ));

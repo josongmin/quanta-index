@@ -10,119 +10,15 @@ use crate::{BridgeTarget, LexicalCandidate, SemanticVectorRef};
 
 use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SemanticCandidateScope {
-    pub syntax: TextQuerySyntax,
-    pub query_text: String,
-    pub generation: Option<GenerationPin>,
-    pub generation_selector: Option<GenerationSelector>,
-}
-
-const SEMANTIC_CANDIDATE_SCOPE_FIELDS: &[&str] =
-    &["syntax", "query_text", "generation", "generation_selector"];
-
-impl Serialize for SemanticCandidateScope {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut field_count: usize = 2;
-        if self.generation.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        if self.generation_selector.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state = serializer.serialize_struct("SemanticCandidateScope", field_count)?;
-        state.serialize_field("syntax", &self.syntax)?;
-        state.serialize_field("query_text", &self.query_text)?;
-        if let Some(generation) = &self.generation {
-            state.serialize_field("generation", generation)?;
-        }
-        if let Some(generation_selector) = &self.generation_selector {
-            state.serialize_field("generation_selector", generation_selector)?;
-        }
-        state.end()
-    }
-}
-
-struct SemanticCandidateScopeVisitor;
-
-impl<'de> Visitor<'de> for SemanticCandidateScopeVisitor {
-    type Value = SemanticCandidateScope;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SemanticCandidateScope map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut syntax: Option<TextQuerySyntax> = None;
-        let mut query_text: Option<String> = None;
-        let mut generation: Option<GenerationPin> = None;
-        let mut generation_seen = false;
-        let mut generation_selector: Option<GenerationSelector> = None;
-        let mut generation_selector_seen = false;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "syntax" => {
-                    if syntax.is_some() {
-                        return Err(de::Error::duplicate_field("syntax"));
-                    }
-                    syntax = Some(map.next_value()?);
-                }
-                "query_text" => {
-                    if query_text.is_some() {
-                        return Err(de::Error::duplicate_field("query_text"));
-                    }
-                    query_text = Some(map.next_value()?);
-                }
-                "generation" => {
-                    if generation_seen {
-                        return Err(de::Error::duplicate_field("generation"));
-                    }
-                    generation_seen = true;
-                    generation = Some(map.next_value()?);
-                }
-                "generation_selector" => {
-                    if generation_selector_seen {
-                        return Err(de::Error::duplicate_field("generation_selector"));
-                    }
-                    generation_selector_seen = true;
-                    generation_selector = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_CANDIDATE_SCOPE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SemanticCandidateScope {
-            syntax: syntax.ok_or_else(|| de::Error::missing_field("syntax"))?,
-            query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
-            generation,
-            generation_selector,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SemanticCandidateScope {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SemanticCandidateScope",
-            SEMANTIC_CANDIDATE_SCOPE_FIELDS,
-            SemanticCandidateScopeVisitor,
-        )
-    }
-}
-
+/// Semantic query request (LXE-01 §3: lexical scope unified on
+/// [`TextQueryRequest`]).
+///
+/// `lexical_scope` carries the optional lexical pre-filter used to restrict
+/// the semantic recall set. It is the canonical `TextQueryRequest` carrier —
+/// the prior `SemanticCandidateScope` mirror has been deleted. Callers that
+/// previously passed a scope must construct a `TextQueryRequest` with the
+/// desired `syntax`, `query_text`, `generation`/`generation_selector`, and
+/// `top_k` (the candidate cap for the lexical leg).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticQueryRequest {
     /// QI-QRY-01 phase 2: optional text fallback for callers that encode the
@@ -134,7 +30,11 @@ pub struct SemanticQueryRequest {
     pub query_vector_ref: Option<SemanticVectorRef>,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
-    pub scope: Option<SemanticCandidateScope>,
+    /// LXE-01 §3: lexical pre-filter for the semantic recall set. Replaces
+    /// the deleted `SemanticCandidateScope` dual surface. When `Some`, the
+    /// search-plane uses the `TextQueryRequest` to compute lexical
+    /// candidates that bound the semantic search.
+    pub lexical_scope: Option<TextQueryRequest>,
     pub top_k: u32,
 }
 
@@ -144,7 +44,7 @@ const SEMANTIC_QUERY_REQUEST_FIELDS: &[&str] = &[
     "query_vector_ref",
     "generation",
     "generation_selector",
-    "scope",
+    "lexical_scope",
     "top_k",
 ];
 
@@ -163,7 +63,7 @@ impl Serialize for SemanticQueryRequest {
         if self.generation_selector.is_some() {
             field_count = field_count.saturating_add(1);
         }
-        if self.scope.is_some() {
+        if self.lexical_scope.is_some() {
             field_count = field_count.saturating_add(1);
         }
         if self.query_vector.is_some() {
@@ -188,8 +88,8 @@ impl Serialize for SemanticQueryRequest {
         if let Some(generation_selector) = &self.generation_selector {
             state.serialize_field("generation_selector", generation_selector)?;
         }
-        if let Some(scope) = &self.scope {
-            state.serialize_field("scope", scope)?;
+        if let Some(lexical_scope) = &self.lexical_scope {
+            state.serialize_field("lexical_scope", lexical_scope)?;
         }
         state.serialize_field("top_k", &self.top_k)?;
         state.end()
@@ -216,7 +116,7 @@ impl<'de> Visitor<'de> for SemanticQueryRequestVisitor {
         let mut generation_seen = false;
         let mut generation_selector: Option<GenerationSelector> = None;
         let mut generation_selector_seen = false;
-        let mut scope: Option<Option<SemanticCandidateScope>> = None;
+        let mut lexical_scope: Option<Option<TextQueryRequest>> = None;
         let mut top_k: Option<u32> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -252,11 +152,11 @@ impl<'de> Visitor<'de> for SemanticQueryRequestVisitor {
                     generation_selector_seen = true;
                     generation_selector = Some(map.next_value()?);
                 }
-                "scope" => {
-                    if scope.is_some() {
-                        return Err(de::Error::duplicate_field("scope"));
+                "lexical_scope" => {
+                    if lexical_scope.is_some() {
+                        return Err(de::Error::duplicate_field("lexical_scope"));
                     }
-                    scope = Some(Some(map.next_value()?));
+                    lexical_scope = Some(Some(map.next_value()?));
                 }
                 "top_k" => {
                     if top_k.is_some() {
@@ -278,7 +178,7 @@ impl<'de> Visitor<'de> for SemanticQueryRequestVisitor {
             query_vector_ref,
             generation,
             generation_selector,
-            scope: scope.unwrap_or(None),
+            lexical_scope: lexical_scope.unwrap_or(None),
             top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
         })
     }

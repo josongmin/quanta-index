@@ -14,7 +14,8 @@ use proptest::prelude::*;
 use quanta_index_contract::ChunkId;
 use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DirtyRecord, ExplanationRow, LangId, LexicalErrorCode, ParseNode,
-    ParseTreeRecord, SearchExplanation, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    ParseTreeRecord, PlannerTraceNode, SearchExplanation, SymbolKind, SymbolRecord,
+    SymbolRelationship, SymbolSpan,
 };
 
 fn cbor_roundtrip<T>(value: &T) -> Result<T, String>
@@ -237,17 +238,43 @@ fn prop_explanation_row() -> impl Strategy<Value = ExplanationRow> {
         )
 }
 
+fn prop_planner_trace_node() -> impl Strategy<Value = PlannerTraceNode> {
+    (".{0,16}", ".{0,16}").prop_map(|(node_kind, detail)| PlannerTraceNode {
+        node_kind: node_kind.into_boxed_str(),
+        detail: detail.into_boxed_str(),
+    })
+}
+
 fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
     (
         prop_vec(prop_explanation_row(), 0..4),
         any::<[u8; 32]>(),
         ".{0,16}",
+        prop_vec(prop_planner_trace_node(), 0..3),
+        prop_vec(".{0,16}", 0..3),
+        proptest::option::of(".{0,16}"),
+        proptest::option::of(".{0,16}"),
     )
         .prop_map(
-            |(contributions, ranker_weights_hash, strategy)| SearchExplanation {
+            |(
+                contributions,
+                ranker_weights_hash,
+                strategy,
+                planner_trace,
+                engines_touched,
+                early_stop_reason,
+                summary,
+            )| SearchExplanation {
                 contributions,
                 ranker_weights_hash,
                 strategy: strategy.into_boxed_str(),
+                planner_trace,
+                engines_touched: engines_touched
+                    .into_iter()
+                    .map(String::into_boxed_str)
+                    .collect(),
+                early_stop_reason: early_stop_reason.map(String::into_boxed_str),
+                summary: summary.map(String::into_boxed_str),
             },
         )
 }

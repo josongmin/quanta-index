@@ -27,9 +27,8 @@ use quanta_index_contract::{
     LexicalFullBundle, LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, PlannerStage,
     RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticCandidateScope, SemanticChannelOp,
-    SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
-    UpsertEmbedding,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp, SemanticFullBundle,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -853,11 +852,12 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
             query_vector_ref: None,
             generation: Some(pin()),
             generation_selector: None,
-            scope: Some(SemanticCandidateScope {
+            lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "(alpha OR beta) scope NOT outsider".to_string(),
                 generation: Some(pin()),
                 generation_selector: None,
+                top_k: 2,
             }),
             top_k: 2,
         }),

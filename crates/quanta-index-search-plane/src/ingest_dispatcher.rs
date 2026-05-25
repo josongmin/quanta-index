@@ -769,8 +769,10 @@ mod tests {
     }
 
     fn fixture_commit_sha() -> CommitSha {
-        CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567")
-            .expect("fixture sha must be valid")
+        CommitSha::from_bytes([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        ])
     }
 
     fn fixture_commit_record() -> CommitRecord {
@@ -795,7 +797,7 @@ mod tests {
             hunk_header: "@@ -1,1 +1,2 @@".to_string().into_boxed_str(),
             side: DiffHunkSide::After,
             added_text: "todo!".to_string().into_boxed_str(),
-            removed_text: "".to_string().into_boxed_str(),
+            removed_text: String::new().into_boxed_str(),
             touched_text: "todo!".to_string().into_boxed_str(),
             byte_start: 0,
             byte_end: 5,
@@ -991,7 +993,7 @@ mod tests {
             ),
             "unexpected history op sequence",
         )?;
-        let LexicalChannelOp::UpsertCommit(commit) = &ops[0] else {
+        let Some(LexicalChannelOp::UpsertCommit(commit)) = ops.first() else {
             return Err(test_failure("expected UpsertCommit"));
         };
         let decoded_commit: CommitRecord = ciborium::from_reader(commit.payload.as_slice())?;
@@ -999,7 +1001,7 @@ mod tests {
             decoded_commit.author_time_ms == 11,
             "history commit payload lost author_time_ms",
         )?;
-        let LexicalChannelOp::UpsertDiffHunk(diff) = &ops[3] else {
+        let Some(LexicalChannelOp::UpsertDiffHunk(diff)) = ops.get(3) else {
             return Err(test_failure("expected UpsertDiffHunk"));
         };
         let decoded_diff: DiffHunkRecord = ciborium::from_reader(diff.payload.as_slice())?;
@@ -1043,7 +1045,7 @@ mod tests {
             ),
             "unexpected dirty op sequence",
         )?;
-        let LexicalChannelOp::UpsertDirty(entry) = &ops[0] else {
+        let Some(LexicalChannelOp::UpsertDirty(entry)) = ops.first() else {
             return Err(test_failure("expected UpsertDirty"));
         };
         ensure(
@@ -1091,12 +1093,16 @@ mod tests {
             ),
             "unexpected structural op sequence",
         )?;
-        let LexicalChannelOp::UpsertParseTree(tree) = &ops[0] else {
+        let Some(LexicalChannelOp::UpsertParseTree(tree)) = ops.first() else {
             return Err(test_failure("expected UpsertParseTree"));
         };
         let decoded_tree: ParseTreeRecord = ciborium::from_reader(tree.payload.as_slice())?;
+        let first_role = decoded_tree
+            .role_tags
+            .first()
+            .map(|role| role.role.as_ref());
         ensure(
-            decoded_tree.role_tags.len() == 1 && decoded_tree.role_tags[0].role.as_ref() == "expr",
+            decoded_tree.role_tags.len() == 1 && first_role == Some("expr"),
             "structural payload lost role tags",
         )?;
         ensure(

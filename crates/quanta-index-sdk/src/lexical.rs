@@ -134,11 +134,11 @@ impl<'a> LexicalNamespace<'a> {
     }
 }
 
-/// QI-NS-01: marker type for the built-in lexical namespace. The
-/// `client.lexical()` sugar delegates here through
-/// [`crate::NamespaceIngest`] / [`crate::NamespaceQuery`]; downstream
-/// callers that want explicit type-level routing can use
-/// `client.ns::<LexicalNs>()` directly.
+/// QI-NS-01 marker type for the built-in lexical namespace.
+///
+/// The `client.lexical()` sugar delegates here through
+/// [`crate::NamespaceIngest`] and [`crate::NamespaceQuery`]. Downstream
+/// callers can use `client.ns::<LexicalNs>()` directly.
 pub struct LexicalNs;
 
 impl crate::NamespaceIngest for LexicalNs {
@@ -176,7 +176,7 @@ impl crate::NamespaceIngest for LexicalNs {
 impl crate::NamespaceQuery for LexicalNs {
     type QueryBuilder<'a> = LexicalQueryBuilder<'a>;
 
-    fn query<'a>(client: &'a QuantaIndex) -> LexicalQueryBuilder<'a> {
+    fn query(client: &QuantaIndex) -> LexicalQueryBuilder<'_> {
         LexicalQueryBuilder::new(client)
     }
 }

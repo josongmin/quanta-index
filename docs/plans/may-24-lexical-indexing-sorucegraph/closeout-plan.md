@@ -91,8 +91,9 @@ Anything short of that stays `partial`, even if many individual crates are green
 ### 4.6 SDK-only entry closeout
 
 - external query / control / ingest entry must terminate at [`quanta-index-sdk`](../../../crates/quanta-index-sdk/)
-- query side keeps text-first entry (`lexical().query()` / `sourcegraph().query()`); history / runtime / structural expand under that front door
-- producer side extends `LexicalBatch` for commit / diff / dirty / parse-tree authority instead of adding ad hoc ingress surfaces
+- query side splits into typed-primary and raw-text-secondary: `history()/runtime()/structural()` are the public typed route; `lexical().query()` / `sourcegraph().query()` remain power-user raw-text routes
+- all public query routes converge on one canonical query engine; raw text lowers into the same AST / DTO surface as typed builders
+- producer side uses dedicated `HistoryBatch` / `DirtyBatch` / `StructuralBatch`; `LexicalBatch` remains chunk / symbol only
 
 ### 4.7 Claim / corpus / doc closeout
 

@@ -92,7 +92,12 @@ impl crate::NamespaceIngest for RuntimeNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected dirty receipt, got {}",
                 QuantaIndex::ingest_response_kind(&other)
             ))),
@@ -103,7 +108,7 @@ impl crate::NamespaceIngest for RuntimeNs {
 impl crate::NamespaceQuery for RuntimeNs {
     type QueryBuilder<'a> = RuntimeQueryBuilder<'a>;
 
-    fn query<'a>(client: &'a QuantaIndex) -> RuntimeQueryBuilder<'a> {
+    fn query(client: &QuantaIndex) -> RuntimeQueryBuilder<'_> {
         RuntimeQueryBuilder::new(client)
     }
 }
@@ -188,7 +193,17 @@ impl<'a> RuntimeQueryBuilder<'a> {
             ))?;
         match response {
             SearchPlaneQueryIpcResponse::RuntimeMetadata(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
                 "expected runtime response, got {}",
                 QuantaIndex::query_response_kind(&other)
             ))),

@@ -209,10 +209,10 @@ fn sample_symbol() -> SymbolRecord {
 }
 
 fn sample_commit_sha() -> CommitSha {
-    match CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567") {
-        Ok(sha) => sha,
-        Err(err) => panic!("unexpected sha parse failure: {err}"),
-    }
+    CommitSha::from_bytes([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ])
 }
 
 fn sample_commit_record() -> CommitRecord {
@@ -613,11 +613,16 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(wire.refs.len(), 1);
     assert_eq!(wire.tags.len(), 1);
     assert_eq!(wire.diff_hunks.len(), 1);
-    assert_eq!(wire.commits[0].author_time_ms, 11);
-    assert_eq!(
-        wire.diff_hunks[0].record.hunk_header.as_ref(),
-        "@@ -1,1 +1,2 @@"
-    );
+    let Some(first_commit) = wire.commits.first() else {
+        assert!(false, "expected one history commit");
+        return;
+    };
+    assert_eq!(first_commit.author_time_ms, 11);
+    let Some(first_diff) = wire.diff_hunks.first() else {
+        assert!(false, "expected one history diff hunk");
+        return;
+    };
+    assert_eq!(first_diff.record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
 }
 
 #[test]
@@ -691,7 +696,7 @@ fn repomap_publish_routes_through_ingest_transport() {
         import_edges: vec![],
         chunk_records: vec![],
     };
-    let observed = ok_or_fail!(client.repomap().publish(bundle));
+    let observed = ok_or_fail!(client.repomap().publish(&bundle));
     assert_eq!(observed.manifest_generation, ack.manifest_generation);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(matches!(

@@ -4,7 +4,7 @@ Status: `planning`
 
 Scope:
 - force every external producer / caller entrypoint through [`quanta-index-sdk`](../../../../crates/quanta-index-sdk/)
-- land the missing history / runtime-metadata / structural source-authority inputs without adding raw socket / channel entry shims
+- land the missing history / runtime-metadata / structural source-authority inputs through dedicated typed SDK namespaces and batches, not raw socket / channel entry shims
 - keep query-time evaluation local to `quanta-index`; no request-time git / source / tree-sitter / producer RPC
 
 Parent docs:
@@ -23,27 +23,40 @@ Parent docs:
    - Callers do not assemble split-IPC envelopes or socket paths directly.
    - Raw `SearchPlane*IpcRequest`, `LexicalChannelOp`, UDS socket strings remain internal surfaces.
 
-2. Query front doors stay text-first.
-   - Native LQ goes through `quanta-index-sdk::LexicalNamespace::query()`.
-   - Sourcegraph text goes through `quanta-index-sdk::SourcegraphNamespace::query()`.
-   - History / runtime-metadata / structural are expressed through the same text-query builders after AST expansion.
-   - Do not add public `HistoryNamespace` / `RuntimeNamespace` / `StructuralNamespace` unless a non-text typed API is proven necessary.
+2. Public query routes are split by audience, not by engine.
+   - Primary public route for the new families is typed SDK query: `history().query()`, `runtime().query()`, `structural().query()`.
+   - Raw text power-user route remains public: `lexical().query().native(...)` and `sourcegraph().query()`.
+   - Typed builders own the canonical query DTO / AST surface.
+   - Raw text routes lower into that same canonical engine. No parallel "typed engine" vs "text engine" implementation split.
 
-3. Producer source-authority for lexical-track extensions enters through one SDK publish surface.
-   - Extend [`LexicalBatch`](../../../../crates/quanta-index-sdk/src/lexical.rs) rather than adding a second external ingest namespace.
-   - New lexical-track input families:
-     - commit / ref / tag / diff-hunk
-     - dirty upsert / evict
-     - parse-tree upsert / delete
+3. Producer source-authority enters through dedicated SDK publish families.
+   - [`LexicalBatch`](../../../../crates/quanta-index-sdk/src/lexical.rs) is lexical chunk / symbol publish only.
+   - [`HistoryBatch`](../../../../crates/quanta-index-sdk/src/history.rs), [`DirtyBatch`](../../../../crates/quanta-index-sdk/src/runtime.rs), and [`StructuralBatch`](../../../../crates/quanta-index-sdk/src/structural.rs) own commit/diff, dirty, and parse-tree ingress respectively.
+   - No external raw ingest DTO or ad hoc side namespace is exposed outside the SDK.
 
 4. Search-side authority remains local.
    - Query-time `changed:` / `stale:` / `snapshot:` / `affected:` / `invalidated_by:` read local catalogs only.
    - `dirty:` reads a local dirty buffer fed by producer-authored ops.
    - Search side never walks git, never reads source bytes, never runs tree-sitter to fill missing authority.
 
-5. Missing authority fails closed.
+5. Readiness authority is family-local.
+   - `GenerationSelector` chooses coordinates only; it is not a readiness proof.
+   - History / runtime / structural each gate on their own local materialization or catalog watermark.
+   - Lexical seal is not reused as a readiness proxy for history / runtime / structural.
+
+6. Public result carriers are family-specific.
+   - History query returns `CommitCandidate` / `DiffCandidate`, not recycled `LexicalCandidate`.
+   - `CommitCandidate` exposes `author_time_ms` and `committer_time_ms`; `applied_at_ms` stays operational ordering metadata, not query-time time authority.
+   - Runtime query returns `RuntimeMetadataCandidate`, not `LexicalCandidate`.
+   - Structural query returns `StructuralCandidate { spans, bindings, role_tags }`.
+
+7. Missing authority and reserved features fail closed.
    - No producer record -> typed `NotReady` / `NotImplemented`
    - No hidden fallback to direct channel, raw socket, source scan, or tree-sitter.
+   - `timeout` ships in this packet and is enforced in executor.
+   - `index:only` is the only executable mode.
+   - `index:no` is accepted on the canonical route and fails closed with typed `NotImplemented`.
+   - `boost` is parser / carrier / planner-gate only; active ranking semantics stay out of scope for this packet.
 
 ---
 
@@ -51,7 +64,7 @@ Parent docs:
 
 Current repo truth is split:
 
-- query-side SDK surfaces exist for lexical / sourcegraph / semantic / hybrid / symbol / generations / repomap
+- query-side SDK surfaces already exist for lexical / sourcegraph / semantic / hybrid / symbol / generations / repomap / history / runtime / structural, but the new family semantics are still partial or fail-closed
 - ingest-side SDK surface exists, but [`LexicalBatch`](../../../../crates/quanta-index-sdk/src/lexical.rs) only carries chunks and symbols
 - remaining feature families that still need real source authority are:
   - history filters (`author:` / `message:` / `before:` / `after:` / `diff.*`)
@@ -70,12 +83,12 @@ This ticket prevents that.
 
 ## 3. Feature-to-source matrix
 
-| Feature family | User-facing entry | Producer/search-side authority input | Source owner | Required SDK change |
-|---|---|---|---|---|
-| History filters | `lexical().query().native(...)` / `sourcegraph().query()` | commit, ref, tag, diff-hunk records | `semantica-codegraph-v2` producer | extend `LexicalBatch` with history mutations |
-| Runtime metadata | same text-query builders | local catalogs for `changed/stale/snapshot`; dirty buffer for `dirty:` | mixed: local runtime catalogs + producer dirty ops | extend `LexicalBatch` with dirty mutations; no new query namespace |
-| Structural | same text-query builders | parse-tree records keyed by chunk | `semantica-codegraph-v2` producer | extend `LexicalBatch` with parse-tree mutations |
-| `boost/timeout/index` | same text-query builders | none; planner/executor-local | `quanta-index` only | AST/options + SDK builder passthrough only |
+| Feature family | Primary public entry | Secondary power-user entry | Producer/search-side authority input | Source owner | Required SDK / contract change |
+|---|---|---|---|---|---|
+| History filters | `history().query()` | `lexical().query().native(...)` / `sourcegraph().query()` | commit, ref, tag, diff-hunk records | `semantica-codegraph-v2` producer | dedicated `HistoryBatch` + typed history query DTO / result carrier |
+| Runtime metadata | `runtime().query()` | `lexical().query().native(...)` / `sourcegraph().query()` | local catalogs for `changed/stale/snapshot`; dirty buffer for `dirty:` | mixed: local runtime catalogs + producer dirty ops | dedicated `DirtyBatch` + `RuntimeMetadataCandidate` query/result surface |
+| Structural | `structural().query()` | `lexical().query().native(...)` / `sourcegraph().query()` | parse-tree records keyed by chunk | `semantica-codegraph-v2` producer | dedicated `StructuralBatch` + typed structural query DTO / richer structural result carrier |
+| `timeout/index/boost` | typed query builders | raw text routes that lower to the same AST where syntax exists | none; planner/executor-local | `quanta-index` only | canonical option carrier: `timeout` executes, `index:no` typed-`NotImplemented`, `boost` planner-gated |
 
 ---
 
@@ -105,24 +118,24 @@ Force all external query / control / ingest examples and supported call paths th
 
 ---
 
-### QI-LXB-01 | quanta-index | Extended `LexicalBatch` Contract
+### QI-LXB-01 | quanta-index | Dedicated Source-Authority SDK Namespaces
 
-Make `LexicalBatch` the single SDK ingress for all lexical-track producer authority.
+Freeze the dedicated SDK publish split for history / runtime / structural authority.
 
 **Owner files**
 - [../../../../crates/quanta-index-sdk/src/lexical.rs](../../../../crates/quanta-index-sdk/src/lexical.rs)
+- [../../../../crates/quanta-index-sdk/src/history.rs](../../../../crates/quanta-index-sdk/src/history.rs)
+- [../../../../crates/quanta-index-sdk/src/runtime.rs](../../../../crates/quanta-index-sdk/src/runtime.rs)
+- [../../../../crates/quanta-index-sdk/src/structural.rs](../../../../crates/quanta-index-sdk/src/structural.rs)
 - [../../../../crates/quanta-index-contract/src/ipc/ingest.rs](../../../../crates/quanta-index-contract/src/ipc/ingest.rs)
 - [../../../../crates/quanta-index-contract/src/channel/{ops,records}.rs](../../../../crates/quanta-index-contract/src/channel/ops.rs)
 
 **Acceptance**
-- `LexicalBatch` grows typed mutation families for:
-  - commit
-  - ref / tag
-  - diff-hunk
-  - dirty upsert / evict
-  - parse-tree upsert / delete
-- SDK `lexical().publish(batch)` remains the only external publish entry for those families
-- no new external ingest namespace is introduced for history/runtime/structural
+- `lexical().publish(batch)` is lexical chunk / symbol ingest only
+- `history().publish(HistoryBatch)` owns commit / ref / tag / diff-hunk ingress
+- `runtime().publish_dirty(DirtyBatch)` owns dirty ingress
+- `structural().publish(StructuralBatch)` owns parse-tree ingress
+- no external raw ingest namespace or raw DTO leaks out of the SDK
 
 **Blockers**
 - source-record shape freeze in `producer-handoff.md`
@@ -141,17 +154,19 @@ Land history filters against producer-authored commit / diff inputs.
 - [../../../../crates/quanta-index-contract/src/channel/{ops,records}.rs](../../../../crates/quanta-index-contract/src/channel/ops.rs)
 - [../../../../crates/quanta-index-lq-norm/src/{ast.rs,parser/mod.rs}](../../../../crates/quanta-index-lq-norm/src/ast.rs)
 - history materializer / executor crates
-- SDK lexical batch extensions from `QI-LXB-01`
+- dedicated SDK history publish surface from `QI-LXB-01`
 
 **Acceptance**
-- query carriers exist for:
+- typed query DTO / builder carriers exist for:
   - `author`
   - `committer`
   - `message`
   - `before/after/since/until`
   - `diff.added/diff.removed/diff.touched`
-- producer publishes commit/ref/tag/diff-hunk via SDK lexical batch only
+- producer publishes commit/ref/tag/diff-hunk via `history().publish()` only
 - query-time history search uses indexed local state only
+- `CommitCandidate` exposes `author_time_ms` and `committer_time_ms`
+- `applied_at_ms` remains ingest / ordering metadata only; it does not become the public time filter authority
 
 **Blockers**
 - `QI-LXB-01`
@@ -169,19 +184,20 @@ Land runtime metadata filters with the correct split between producer-fed dirty 
 **Owner files**
 - runtime metadata AST/parser surface
 - local runtime catalog / dirty buffer owners
-- SDK lexical batch extensions from `QI-LXB-01`
+- dedicated SDK runtime publish surface from `QI-LXB-01`
 
 **Acceptance**
-- query carriers exist for:
+- typed query DTO / builder carriers exist for:
   - `changed`
   - `dirty`
   - `stale`
   - `snapshot`
   - gated `affected`
   - gated `invalidated_by`
-- `dirty` enters only through SDK lexical batch -> ingest IPC -> local dirty buffer
+- `dirty` enters only through `runtime().publish_dirty()` -> ingest IPC -> local dirty buffer
 - `changed/stale/snapshot` are answered from local catalogs only
 - `affected/invalidated_by` stay typed-gated until invalidation catalog exists
+- runtime query response uses `RuntimeMetadataCandidate`, not `LexicalCandidate`
 
 **Blockers**
 - `QI-LXB-01`
@@ -199,18 +215,19 @@ Land rich structural operators against producer-authored parse trees.
 **Owner files**
 - structural AST / parser
 - parse-tree store / matcher
-- SDK lexical batch extensions from `QI-LXB-01`
+- dedicated SDK structural publish surface from `QI-LXB-01`
 - [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
 
 **Acceptance**
-- query carriers exist for:
+- typed query DTO / builder carriers exist for:
   - `inside`
   - `outside`
   - `where`
   - typed hole
-- parse-tree records enter only through SDK lexical batch
+- parse-tree records enter only through `structural().publish()`
 - no search-side tree-sitter extraction fallback
 - typed hole support is blocked on producer-side semantic-role coverage if raw node kind is insufficient
+- public structural results carry `spans`, `bindings`, and `role_tags`
 
 **Blockers**
 - `QI-LXB-01`
@@ -221,20 +238,28 @@ Land rich structural operators against producer-authored parse trees.
 
 ---
 
-### QI-QRY-02 | quanta-index | Text Query Builders Remain the Public Front Door
+### QI-QRY-02 | quanta-index | Canonical Query Engine + Raw Text Parity
 
-Keep the public query entry surface narrow while feature coverage grows.
+Keep one canonical query engine while preserving raw text power-user routes.
 
 **Owner files**
-- [../../../../crates/quanta-index-sdk/src/{lexical,sourcegraph,search}.rs](../../../../crates/quanta-index-sdk/src/lib.rs)
-- query contract DTOs
+- [../../../../crates/quanta-index-sdk/src/{history,runtime,structural,lexical,sourcegraph}.rs](../../../../crates/quanta-index-sdk/src/lib.rs)
+- [../../../../crates/quanta-index-contract/src/query/requests.rs](../../../../crates/quanta-index-contract/src/query/requests.rs)
+- [../../../../crates/quanta-index-contract/src/results/query_responses.rs](../../../../crates/quanta-index-contract/src/results/query_responses.rs)
+- [../../../../crates/quanta-index-search-plane/src/query_dispatcher.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher.rs)
 
 **Acceptance**
-- history / runtime-metadata / structural text queries are reachable through:
+- typed public route exists and is primary for the new families:
+  - `history().query()`
+  - `runtime().query()`
+  - `structural().query()`
+- raw text routes remain public and lower into the same canonical engine:
   - `lexical().query().native(...)`
   - `sourcegraph().query()`
 - no public raw query-envelope builders leak out of SDK
-- public result types are updated if history / structural need richer carriers than `LexicalCandidate`
+- `index:no` lowers onto the canonical route and fails closed with typed `NotImplemented`
+- `boost` lowers into the canonical carrier but planner refuses active ranking semantics in this packet
+- `timeout` lowers and is enforced in executor
 
 **Blockers**
 - `QI-HIST-01`
@@ -248,7 +273,7 @@ Keep the public query entry surface narrow while feature coverage grows.
 
 ### SM-SDK-02 | semantica | Producer Authority via SDK Only
 
-The producer repo emits every new lexical-track authority family through `quanta-index-sdk`.
+The producer repo emits every new source-authority family through `quanta-index-sdk`.
 
 **Owner repo**
 - `semantica-codegraph-v2`
@@ -256,7 +281,9 @@ The producer repo emits every new lexical-track authority family through `quanta
 **Acceptance**
 - no direct `quanta-index-channel` publisher in producer call sites
 - no raw split-IPC envelope assembly for publish paths
-- commit/diff/dirty/parse-tree emissions flow through SDK lexical batch only
+- commit/diff emissions flow through `history().publish()`
+- dirty emissions flow through `runtime().publish_dirty()`
+- parse-tree emissions flow through `structural().publish()`
 
 **Blockers**
 - `QI-SDK-02`
@@ -293,14 +320,16 @@ Close the packet with SDK-only external entry and real source-authority proof.
 5. `SM-SDK-02`
 6. `QI-VRF-02`
 
-Parallelism is safe only inside step 3 once the SDK lexical-batch contract is frozen.
+Parallelism is safe only inside step 3 once the dedicated SDK publish split is frozen.
 
 ---
 
 ## 6. Non-goals
 
-- adding a second public ingest namespace for history/runtime/structural
+- overloading `LexicalBatch` with history / runtime / structural authority families
 - letting semantica publish raw channel ops directly "temporarily"
 - request-time producer callbacks for `dirty:` / history / structural
 - search-side git / source / tree-sitter fallback
+- lexical seal reused as history / runtime / structural readiness proof
+- a separate raw-text execution engine that diverges from the typed query engine
 - claiming full Sourcegraph parity from this ticket alone

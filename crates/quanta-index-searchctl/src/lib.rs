@@ -15,9 +15,8 @@ use quanta_index_contract::{
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDto, RepoMapQueryRequest,
     RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSourcegraphQueryRequest,
-    SemanticCandidateScope, SemanticQueryRequest, SemanticVectorRef, TextQueryRequest,
-    TextQueryResponse, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest,
+    SemanticVectorRef, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 
@@ -307,13 +306,14 @@ fn parse_semantic(
         }
     }
     let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
-    let scope = match (scope_query_text, scope_syntax) {
+    let lexical_scope = match (scope_query_text, scope_syntax) {
         (None, None) => None,
-        (Some(query), Some(syntax)) => Some(SemanticCandidateScope {
+        (Some(query), Some(syntax)) => Some(TextQueryRequest {
             syntax,
             query_text: query,
             generation: Some(generation.clone()),
             generation_selector: None,
+            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
         }),
         (Some(_), None) => {
             return Err(CliError::usage(
@@ -340,7 +340,7 @@ fn parse_semantic(
         query_vector_ref,
         generation: Some(generation),
         generation_selector: None,
-        scope,
+        lexical_scope,
         top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
     }))
 }

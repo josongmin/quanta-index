@@ -27,7 +27,9 @@ pub mod symbol;
 pub use diff::DiffHunkRecord;
 pub use dirty::DirtyRecord;
 pub use error_code::LexicalErrorCode;
-pub use explanation::{ExplanationRow, SearchExplanation};
+pub use explanation::{
+    ExplanationRow, PlannerTraceNode, SearchExplanation, SearchExplanationBuilder,
+};
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};
 pub use lang::LangId;
 pub use parse_tree::{ParseNode, ParseRoleTag, ParseTreeRecord};

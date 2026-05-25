@@ -1,8 +1,8 @@
 use quanta_index_contract::{
     EmbeddingId, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SemanticCandidateScope,
-    SemanticEmbeddingDelete, SemanticEmbeddingMutation, SemanticEmbeddingUpsert,
-    SemanticIngestBatch, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SemanticEmbeddingDelete,
+    SemanticEmbeddingMutation, SemanticEmbeddingUpsert, SemanticIngestBatch, SemanticQueryRequest,
+    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest,
 };
 
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax};
@@ -177,7 +177,7 @@ impl crate::NamespaceIngest for SemanticNs {
 impl crate::NamespaceQuery for SemanticNs {
     type QueryBuilder<'a> = SemanticQueryBuilder<'a>;
 
-    fn query<'a>(client: &'a QuantaIndex) -> SemanticQueryBuilder<'a> {
+    fn query(client: &QuantaIndex) -> SemanticQueryBuilder<'_> {
         SemanticQueryBuilder::new(client)
     }
 }
@@ -275,14 +275,15 @@ impl<'a> SemanticQueryBuilder<'a> {
             .top_k
             .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection.clone());
-        let scope = if let Some((syntax, query_text)) = self.scope {
+        let lexical_scope = if let Some((syntax, query_text)) = self.scope {
             let (scope_generation, scope_generation_selector) =
                 QuantaIndex::selection_to_fields(selection);
-            Some(SemanticCandidateScope {
+            Some(TextQueryRequest {
                 syntax,
                 query_text,
                 generation: scope_generation,
                 generation_selector: scope_generation_selector,
+                top_k,
             })
         } else {
             None
@@ -296,7 +297,7 @@ impl<'a> SemanticQueryBuilder<'a> {
                 query_vector_ref: Some(vector_ref),
                 generation,
                 generation_selector,
-                scope,
+                lexical_scope,
                 top_k,
             }),
         )?;

@@ -25,6 +25,7 @@ pub use ingest_dispatcher::{
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use query_dispatcher::{
-    SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
+    FailClosedStructuralProducer, SearchPlaneDispatcher, SearchPlaneQueryDispatcher,
+    SearchPlaneQueryService, make_pin,
 };
 pub use readiness::{ActivationCatalog, ActiveGenerationRecord, Ledger, TrackLedger};

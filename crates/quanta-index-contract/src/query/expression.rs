@@ -39,6 +39,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn semantic_vector_ref_inline_cbor_roundtrip() -> TestRes {
         let v = SemanticVectorRef::Inline(vec![0.0, 1.5, -2.0]);
         let bytes = encode(&v)?;
@@ -72,6 +76,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn lq_expr_semantic_vector_inline_cbor_roundtrip() -> TestRes {
         let v = LqExpr::SemanticVector {
             vector_ref: SemanticVectorRef::Inline(vec![0.1, 0.2, 0.3]),

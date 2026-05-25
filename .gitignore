@@ -39,3 +39,7 @@ env/
 *.log
 *.tmp
 *.swp
+
+# cargo-mutants run artifacts (locally generated; not part of the build)
+mutants.out/
+mutants.out.old/

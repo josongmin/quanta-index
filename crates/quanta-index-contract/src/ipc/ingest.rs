@@ -2598,8 +2598,10 @@ mod tests {
     }
 
     fn fixture_commit_sha() -> CommitSha {
-        CommitSha::from_hex("0123456789abcdef0123456789abcdef01234567")
-            .expect("fixture sha must be valid")
+        CommitSha::from_bytes([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        ])
     }
 
     fn fixture_commit_record() -> CommitRecord {
@@ -2624,7 +2626,7 @@ mod tests {
             hunk_header: "@@ -1,1 +1,2 @@".to_string().into_boxed_str(),
             side: crate::DiffHunkSide::After,
             added_text: "todo!".to_string().into_boxed_str(),
-            removed_text: "".to_string().into_boxed_str(),
+            removed_text: String::new().into_boxed_str(),
             touched_text: "todo!".to_string().into_boxed_str(),
             byte_start: 0,
             byte_end: 5,
@@ -2784,6 +2786,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn semantic_embedding_mutation_round_trip() -> TestRes {
         let mutation = SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
             embedding_id: fixture_embedding_id(),
@@ -2805,6 +2811,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn semantic_ingest_batch_round_trip() -> TestRes {
         let batch = fixture_semantic_batch();
         let bytes = encode(&batch)?;
@@ -2866,6 +2876,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn search_plane_ingest_request_envelope_round_trip_semantic() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 2,

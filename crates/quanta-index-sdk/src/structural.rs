@@ -106,7 +106,12 @@ impl crate::NamespaceIngest for StructuralNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected structural receipt, got {}",
                 QuantaIndex::ingest_response_kind(&other)
             ))),
@@ -117,7 +122,7 @@ impl crate::NamespaceIngest for StructuralNs {
 impl crate::NamespaceQuery for StructuralNs {
     type QueryBuilder<'a> = StructuralQueryBuilder<'a>;
 
-    fn query<'a>(client: &'a QuantaIndex) -> StructuralQueryBuilder<'a> {
+    fn query(client: &QuantaIndex) -> StructuralQueryBuilder<'_> {
         StructuralQueryBuilder::new(client)
     }
 }
@@ -202,7 +207,17 @@ impl<'a> StructuralQueryBuilder<'a> {
             ))?;
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
-            other => Err(SdkError::Protocol(format!(
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::Protocol(format!(
                 "expected structural response, got {}",
                 QuantaIndex::query_response_kind(&other)
             ))),

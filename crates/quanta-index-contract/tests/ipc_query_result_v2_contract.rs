@@ -9,9 +9,8 @@ use quanta_index_contract::{
     DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryResponse, SemanticCandidateScope,
-    SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef, TextQueryRequest,
-    TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryResponse, SemanticQueryRequest,
+    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -147,12 +146,15 @@ fn lexical_request() -> TextQueryRequest {
     }
 }
 
-fn semantic_scope() -> SemanticCandidateScope {
-    SemanticCandidateScope {
+fn semantic_scope() -> TextQueryRequest {
+    TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
+        // LXE-01 §3: lexical scope unified on TextQueryRequest. The lexical
+        // candidate cap for the semantic pre-filter; tests use a tight cap.
+        top_k: 50,
     }
 }
 
@@ -177,7 +179,7 @@ fn semantic_request() -> SemanticQueryRequest {
         query_vector_ref: None,
         generation: Some(generation_pin()),
         generation_selector: None,
-        scope: Some(semantic_scope()),
+        lexical_scope: Some(semantic_scope()),
         top_k: 25,
     }
 }
@@ -201,7 +203,7 @@ fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQu
         query_vector_ref: Some(vector_ref),
         generation: Some(generation_pin()),
         generation_selector: None,
-        scope: Some(semantic_scope()),
+        lexical_scope: Some(semantic_scope()),
         top_k: 25,
     }
 }
@@ -358,7 +360,9 @@ fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> Tes
 
     let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
     if let SearchPlaneQueryIpcRequest::Semantic(inner) = decoded {
-        let lexical_scope = inner.scope.ok_or_else(|| "expected scope".to_string())?;
+        let lexical_scope = inner
+            .lexical_scope
+            .ok_or_else(|| "expected lexical_scope".to_string())?;
         if lexical_scope.syntax != TextQuerySyntax::Sourcegraph {
             return Err(format!(
                 "expected sourcegraph syntax, got {:?}",
@@ -504,7 +508,7 @@ fn search_plane_ipc_request_v2_semantic_rejects_duplicate_nested_lexical_syntax(
             let request_fields = map_fields_mut(wire)?;
             let payload = field_value_mut(request_fields, "payload")?;
             let payload_fields = map_fields_mut(payload)?;
-            let lexical_scope = field_value_mut(payload_fields, "scope")?;
+            let lexical_scope = field_value_mut(payload_fields, "lexical_scope")?;
             let lexical_scope_fields = map_fields_mut(lexical_scope)?;
             duplicate_text_field(lexical_scope_fields, "syntax")?;
             Ok(())

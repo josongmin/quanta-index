@@ -31,9 +31,9 @@ use quanta_index_contract::{
     LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath,
     RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneSourcegraphQueryRequest, SemanticCandidateScope, SemanticChannelOp,
-    SemanticFullBundle, SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest,
-    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
+    SearchPlaneSourcegraphQueryRequest, SemanticChannelOp, SemanticFullBundle,
+    SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest, TextQueryRequest,
+    TextQuerySyntax, UpsertChunk, UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::{SUPPORTED_SG_VERSION, TRANSLATOR_VERSION};
@@ -1168,7 +1168,7 @@ fn semantic_only_query_requires_semantic_seal() -> TestResult {
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
-            scope: None,
+            lexical_scope: None,
             top_k: 3,
         }),
     };
@@ -1249,7 +1249,7 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            scope: None,
+            lexical_scope: None,
             top_k: 1,
         }),
     };
@@ -1352,7 +1352,7 @@ fn semantic_query_with_explicit_query_vector_ignores_query_text() -> TestResult 
             query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0_f32, 0.0_f32])),
             generation: Some(pin),
             generation_selector: None,
-            scope: None,
+            lexical_scope: None,
             top_k: 1,
         }),
     };
@@ -1448,7 +1448,7 @@ fn semantic_query_with_handle_ref_resolves_active_generation_vector() -> TestRes
             query_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
             generation: Some(pin),
             generation_selector: None,
-            scope: None,
+            lexical_scope: None,
             top_k: 1,
         }),
     };
@@ -1519,7 +1519,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
                 query_vector_ref: None,
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
-                scope: Some(SemanticCandidateScope {
+                lexical_scope: Some(TextQueryRequest {
                     syntax: TextQuerySyntax::Sourcegraph,
                     query_text: "scope".to_string(),
                     generation: Some(GenerationPin::new(
@@ -1528,6 +1528,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
                         ManifestGeneration::new(8),
                     )),
                     generation_selector: None,
+                    top_k: 1,
                 }),
                 top_k: 1,
             }),
@@ -1610,11 +1611,12 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            scope: Some(SemanticCandidateScope {
+            lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "index:no scoped".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
+                top_k: 1,
             }),
             top_k: 1,
         }),
@@ -1747,11 +1749,12 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            scope: Some(SemanticCandidateScope {
+            lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope needle".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
+                top_k: 2,
             }),
             top_k: 2,
         }),
@@ -1880,11 +1883,12 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
             query_vector_ref: None,
             generation: Some(pin.clone()),
             generation_selector: None,
-            scope: Some(SemanticCandidateScope {
+            lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
                 query_text: "scope".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
+                top_k: 1,
             }),
             top_k: 1,
         }),
@@ -1966,7 +1970,7 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
             query_vector_ref: None,
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
-            scope: None,
+            lexical_scope: None,
             top_k: 3,
         }),
     };

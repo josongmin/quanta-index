@@ -14,9 +14,13 @@ use quanta_index_contract::{
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest,
     SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind,
-    SemanticCandidateScope, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
+    SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef, StructuralBinding,
     StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
+};
+use quanta_index_core::domains::structural::{
+    StructuralProducerPort, StructuralQueryRequest as DomainStructuralQueryRequest,
+    StructuralReadiness,
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
@@ -39,6 +43,7 @@ pub struct SearchPlaneDispatcher {
     lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    _structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     activation_catalog: Arc<ActivationCatalog>,
 }
@@ -52,6 +57,7 @@ impl SearchPlaneDispatcher {
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
         repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+        structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
     ) -> Self {
@@ -59,11 +65,13 @@ impl SearchPlaneDispatcher {
             lex_opener,
             sem_opener,
             repo_map_query,
+            _structural_producer: structural_producer,
             ledger,
             activation_catalog,
         }
     }
 
+    /// Lower the request and forward it to the live lexical searcher.
     fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
         LexicalPolicy::validate_query(&lowered)?;
@@ -158,8 +166,8 @@ impl SearchPlaneDispatcher {
         let pin = resolve_semantic_request_pin(self.activation_catalog.as_ref(), request)?;
         let materialized = self.snapshot_sem_seal()?;
         SemanticPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let scope_candidate_ids = if let Some(scope) = request.scope.as_ref() {
-            let lowered_scope = lower_lexical_text_query(&scope_to_text_query(scope))?;
+        let scope_candidate_ids = if let Some(scope) = request.lexical_scope.as_ref() {
+            let lowered_scope = lower_lexical_text_query(scope)?;
             LexicalPolicy::validate_query(&lowered_scope)?;
             let lex_materialized = self.snapshot_lex_seal()?;
             LexicalPolicy::validate_query_against_readiness(
@@ -271,16 +279,22 @@ impl SearchPlaneDispatcher {
         })
     }
 
+    /// Structural query dispatch.
+    ///
+    /// The IPC `StructuralQueryRequest` carries only a wrapped text query
+    /// today; the structural-block AST is not yet on the wire. Until the
+    /// owner ticket lands the wire shape, this path is fail-closed with
+    /// `NotImplemented` — the dispatcher must not fabricate an empty
+    /// `LqStructuralBlock` and route it through the producer (that would be
+    /// heuristic authority where the caller's `query_text` is discarded).
     fn structural(
         &self,
-        _request: StructuralQueryRequest,
+        _request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
-        Err(CoreError::Typed {
-            code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
-            message:
-                "structural: parse-tree producer ops are unavailable; runtime remains fail-closed"
-                    .to_string(),
-        })
+        Err(CoreError::NotImplemented(
+            "structural: query pattern is not yet on the IPC wire — pending owner ticket"
+                .to_string(),
+        ))
     }
 
     fn bridge(
@@ -395,56 +409,111 @@ impl SearchPlaneDispatcher {
 
     #[must_use]
     pub fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+        // One arm per variant; each delegates to a private handler that
+        // returns the already-wrapped `SearchPlaneQueryIpcResponse`. Adding a
+        // new variant means: add one handler fn + add one match arm — no
+        // edits to encode/decode/match/factory all at once.
         match request {
-            SearchPlaneQueryIpcRequest::Text(req) => match self.lexical_query(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Text(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Symbol(req) => match self.symbol(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Symbol(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Semantic(req) => match self.semantic_query(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Semantic(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Hybrid(req) => match self.hybrid_query(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Hybrid(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::History(req) => match self.history(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::History(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Structural(req) => match self.structural(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Structural(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Bridge(req) => match self.bridge(&req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Bridge(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::RepoMapQuery(req) => match self.repo_map(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::RepoMapQuery(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Explain(req) => match self.explain_query(req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Explain(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            SearchPlaneQueryIpcRequest::Sourcegraph(req) => match self.sourcegraph(&req) {
-                Ok(resp) => SearchPlaneQueryIpcResponse::Sourcegraph(resp),
-                Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-            },
-            // QI-RT-02 (in-flight): runtime-metadata query path is defined
-            // in the contract but the dispatcher implementation is not yet
-            // wired. Fail-closed with NOT_IMPLEMENTED per CLAUDE.md.
-            SearchPlaneQueryIpcRequest::RuntimeMetadata(_) => {
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(CoreError::NotImplemented(
-                    "query: runtime-metadata path awaiting QI-RT-02 wiring".to_string(),
-                )))
-            }
+            SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(req),
+            SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req),
+            SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
+            SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
+            SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(req),
+            SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(req),
+            SearchPlaneQueryIpcRequest::Bridge(req) => self.dispatch_bridge(req),
+            SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
+            SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req),
+            SearchPlaneQueryIpcRequest::Sourcegraph(req) => self.dispatch_sourcegraph(req),
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => self.dispatch_runtime_metadata(req),
         }
+    }
+
+    fn dispatch_text(&self, request: TextQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.lexical_query(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Text(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_symbol(&self, request: SymbolQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.symbol(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Symbol(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_semantic(&self, request: SemanticQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.semantic_query(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Semantic(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_hybrid(&self, request: HybridQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.hybrid_query(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Hybrid(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_history(&self, request: HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.history(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::History(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_structural(&self, request: StructuralQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.structural(&request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Structural(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_bridge(&self, request: BridgeQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.bridge(&request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Bridge(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_repo_map(&self, request: RepoMapQueryRequest) -> SearchPlaneQueryIpcResponse {
+        match self.repo_map(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::RepoMapQuery(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_explain(
+        &self,
+        request: SearchPlaneExplainQueryRequest,
+    ) -> SearchPlaneQueryIpcResponse {
+        match self.explain_query(request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Explain(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    fn dispatch_sourcegraph(
+        &self,
+        request: SearchPlaneSourcegraphQueryRequest,
+    ) -> SearchPlaneQueryIpcResponse {
+        match self.sourcegraph(&request) {
+            Ok(resp) => SearchPlaneQueryIpcResponse::Sourcegraph(resp),
+            Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
+        }
+    }
+
+    // QI-RT-02 (in-flight): runtime-metadata query path is defined in the
+    // contract but the dispatcher implementation is not yet wired.
+    // Fail-closed with NOT_IMPLEMENTED per CLAUDE.md.
+    fn dispatch_runtime_metadata(
+        &self,
+        _request: quanta_index_contract::RuntimeMetadataQueryRequest,
+    ) -> SearchPlaneQueryIpcResponse {
+        SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(CoreError::NotImplemented(
+            "query: runtime-metadata path awaiting QI-RT-02 wiring".to_string(),
+        )))
     }
 
     fn snapshot_lex_seal(&self) -> Result<Option<ManifestGeneration>, CoreError> {
@@ -491,6 +560,36 @@ impl ExplainQueryPort for SearchPlaneDispatcher {
         request: SearchPlaneExplainQueryRequest,
     ) -> Result<SearchPlaneExplainQueryResponse, CoreError> {
         self.explain(request)
+    }
+}
+
+/// Production stand-in for the structural producer port.
+///
+/// The structural dispatch path is fail-closed inside the dispatcher today
+/// (`structural()` returns `NotImplemented` until the wire shape lands), so
+/// this adapter is wired by the composition root purely to satisfy the
+/// `StructuralProducerPort` seam. `readiness` reports
+/// `ParseTreeProducerUnavailable` to keep the port honest; `execute` is
+/// unreachable because the service-side gate only invokes it on `Ready`.
+pub struct FailClosedStructuralProducer;
+
+impl StructuralProducerPort for FailClosedStructuralProducer {
+    fn readiness(&self, _request: &DomainStructuralQueryRequest) -> StructuralReadiness {
+        StructuralReadiness::ParseTreeProducerUnavailable
+    }
+
+    fn execute(
+        &self,
+        _request: &DomainStructuralQueryRequest,
+    ) -> Result<Vec<StructuralBinding>, quanta_index_core::domains::structural::StructuralError>
+    {
+        // Invariant: `StructuralService::query` only calls `execute` after
+        // `readiness` returns `Ready`; this adapter's `readiness` always
+        // returns `ParseTreeProducerUnavailable`, so this arm is unreachable.
+        // Fail loudly rather than carry dead defensive code.
+        unreachable!(
+            "FailClosedStructuralProducer::execute called despite ParseTreeProducerUnavailable readiness — wiring bug"
+        )
     }
 }
 
@@ -588,10 +687,10 @@ fn resolve_semantic_request_pin(
         SearchPlaneTrackKind::Semantic,
         "semantic",
     )?;
-    let scope_pin = match request.scope.as_ref() {
+    let scope_pin = match request.lexical_scope.as_ref() {
         Some(scope) => Some(resolve_lexical_request_pin(
             activation_catalog,
-            &scope_to_text_query(scope),
+            scope,
             SearchPlaneTrackKind::Lexical,
             "semantic scope",
         )?),
@@ -631,19 +730,6 @@ fn resolve_hybrid_request_pin(
         )),
         Some(pin) => Ok(pin),
         None => Ok(lexical_pin),
-    }
-}
-
-fn scope_to_text_query(scope: &SemanticCandidateScope) -> TextQueryRequest {
-    TextQueryRequest {
-        syntax: scope.syntax,
-        query_text: scope.query_text.clone(),
-        generation: scope.generation.clone(),
-        generation_selector: scope.generation_selector.clone(),
-        // Scope queries gate semantic candidates; the lexical retrieval cap is
-        // intentionally generous because final cardinality is governed by the
-        // semantic side.
-        top_k: default_top_k(),
     }
 }
 
@@ -830,7 +916,7 @@ pub fn make_pin(
 mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
-    use super::{SearchPlaneDispatcher, make_pin};
+    use super::{FailClosedStructuralProducer, SearchPlaneDispatcher, make_pin};
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::{
         BridgeQueryRequest, GenerationPin, HybridQueryRequest, LexicalCandidate,
@@ -1174,6 +1260,7 @@ mod tests {
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             Arc::new(RwLock::new(Ledger::default())),
             test_activation_catalog()?,
         );
@@ -1223,6 +1310,7 @@ mod tests {
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             Arc::new(RwLock::new(Ledger::default())),
             test_activation_catalog()?,
         );
@@ -1270,6 +1358,7 @@ mod tests {
             }),
             Arc::new(RejectSemanticOpener),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
         );
@@ -1339,6 +1428,7 @@ mod tests {
             }),
             Arc::new(RejectSemanticOpener),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
         );
@@ -1408,6 +1498,7 @@ mod tests {
                 state: Arc::clone(&state),
             }),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
         );
@@ -1423,7 +1514,7 @@ mod tests {
                     ManifestGeneration::new(9),
                 )),
                 generation_selector: None,
-                scope: None,
+                lexical_scope: None,
                 top_k: 3,
             }));
 
@@ -1478,6 +1569,7 @@ mod tests {
                 state: Arc::clone(&state),
             }),
             Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
         );
@@ -1536,6 +1628,340 @@ mod tests {
         }
         if !search_vectors.is_empty() {
             return Err(format!("unexpected global vectors: {search_vectors:?}").into());
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // LXE-02 / LXE-09 wiring tests.
+    //
+    // These exercise the new planner short-circuit and the structural
+    // domain-port routing path. They are additive — existing dispatcher
+    // tests remain unchanged.
+    // ------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use quanta_index_contract::StructuralBinding;
+    use quanta_index_core::domains::structural::{
+        StructuralError, StructuralProducerPort, StructuralQueryRequest, StructuralReadiness,
+    };
+
+    /// Test producer that records how many times `readiness` was consulted
+    /// and lets a test choose which readiness value is returned.
+    struct RecordingStructuralProducer {
+        readiness: StructuralReadiness,
+        readiness_calls: AtomicUsize,
+    }
+
+    impl RecordingStructuralProducer {
+        fn new(readiness: StructuralReadiness) -> Self {
+            Self {
+                readiness,
+                readiness_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl StructuralProducerPort for RecordingStructuralProducer {
+        fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
+            let _prev: usize = self.readiness_calls.fetch_add(1, Ordering::SeqCst);
+            self.readiness
+        }
+
+        fn execute(
+            &self,
+            _request: &StructuralQueryRequest,
+        ) -> Result<Vec<StructuralBinding>, StructuralError> {
+            // Unreachable when the service gates on `Ready` and the test
+            // injects a non-`Ready` readiness; defensive typed error keeps
+            // the producer fail-closed.
+            Err(StructuralError::ProducerExecution(
+                "RecordingStructuralProducer.execute should not be reached".to_string(),
+            ))
+        }
+    }
+
+    fn structural_dispatcher_with_producer<P>(
+        producer: Arc<P>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>>
+    where
+        P: StructuralProducerPort + Send + Sync + 'static,
+    {
+        Ok(SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            producer,
+            ready_ledger(),
+            test_activation_catalog()?,
+        ))
+    }
+
+    fn ready_pin() -> quanta_index_contract::GenerationPin {
+        make_pin(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+        )
+    }
+
+    fn ipc_error_from(response: SearchPlaneQueryIpcResponse) -> Result<(String, String), String> {
+        match response {
+            SearchPlaneQueryIpcResponse::Error(err) => Ok((err.code, err.message)),
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                Err(format!("expected Error response, got {other:?}"))
+            }
+        }
+    }
+
+    /// Repo-metadata-backed filters must reach the live searcher.
+    ///
+    /// The dispatcher no longer rejects `fork:` at routing time because the
+    /// real searcher is the authority for whether repo metadata is present and
+    /// can suppress the planner's conservative unavailable code.
+    #[test]
+    fn lexical_dispatch_returns_typed_when_filter_is_fork_only() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: Vec::new(),
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "fork:only foo".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Text(text) => {
+                if !text.results.is_empty() {
+                    return Err(format!(
+                        "expected empty passthrough result set, got {:?}",
+                        text.results
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => {
+                return Err(format!("expected Text response, got {other:?}").into());
+            }
+        }
+        let search_top_ks = {
+            let guard = state
+                .lock()
+                .map_err(|err| format!("lexical state poisoned: {err}"))?;
+            guard.search_top_ks.clone()
+        };
+        if search_top_ks.as_slice() != [5] {
+            return Err(format!(
+                "expected metadata filter query to reach searcher with top_k=5, got {search_top_ks:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `rev:` remains fail-closed at the dispatcher boundary.
+    ///
+    /// Unlike repo-metadata-backed filters, `rev:` has no executable lexical
+    /// rail today; `LexicalPolicy` rejects it before the searcher is opened.
+    #[test]
+    fn lexical_dispatch_returns_typed_when_filter_is_rev() -> TestResult {
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(StubLexicalOpener {
+                results: Vec::new(),
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "rev:deadbeef foo".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "NOT_IMPLEMENTED" {
+            return Err(format!("expected NOT_IMPLEMENTED, got {code}").into());
+        }
+        Ok(())
+    }
+
+    /// LXE-02: a query without unavailable filters reaches the searcher.
+    /// The full hit shape is D1's territory; this test only proves no
+    /// typed-unavailable error fires on the happy path.
+    #[test]
+    fn lexical_dispatch_passes_through_when_no_unavailable_filters() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("hit", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        // LXE-02 planner currently lowers only `LqExpr::Empty` and a single
+        // `LqExpr::Leaf` shape; boolean composition (LXE-03) is unimplemented
+        // and would surface `Unimplemented` from the planner. The happy-path
+        // witness here is therefore a single keyword leaf — full multi-token
+        // queries land with LXE-03.
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Text(text) => {
+                if text.results.len() != 1 {
+                    return Err(format!("expected 1 result, got {}", text.results.len()).into());
+                }
+            }
+            SearchPlaneQueryIpcResponse::Error(err) => {
+                return Err(format!(
+                    "expected Text response, got Error {} / {}",
+                    err.code, err.message
+                )
+                .into());
+            }
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                return Err(format!("expected Text response, got {other:?}").into());
+            }
+        }
+
+        let search_top_ks = {
+            let guard = state
+                .lock()
+                .map_err(|err| format!("lexical state poisoned: {err}"))?;
+            guard.search_top_ks.clone()
+        };
+        if search_top_ks.as_slice() != [5] {
+            return Err(format!(
+                "expected searcher.search invoked with top_k=5, got {search_top_ks:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// LXE-09: structural dispatch routes through the domain producer port.
+    ///
+    /// The `FailClosedStructuralProducer` reports
+    /// `ParseTreeProducerUnavailable`, which the service maps to the stable
+    /// `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` wire code.
+    #[test]
+    fn structural_dispatch_routes_through_domain_port_and_returns_unavailable() -> TestResult {
+        let producer = Arc::new(RecordingStructuralProducer::new(
+            StructuralReadiness::ParseTreeProducerUnavailable,
+        ));
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { Symbol }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 4,
+                },
+            },
+        ));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" {
+            return Err(format!("expected STR_PRODUCER_PARSE_TREE_UNAVAILABLE, got {code}").into());
+        }
+        if producer.readiness_calls.load(Ordering::SeqCst) == 0 {
+            return Err("expected RecordingStructuralProducer.readiness to be consulted".into());
+        }
+        Ok(())
+    }
+
+    /// LXE-09: a producer reporting `GenerationNotReady` propagates as the
+    /// stable `STR_GENERATION_NOT_READY` wire code — the service contract
+    /// is preserved across the dispatcher boundary.
+    #[test]
+    fn structural_dispatch_propagates_generation_not_ready() -> TestResult {
+        let producer = Arc::new(RecordingStructuralProducer::new(
+            StructuralReadiness::GenerationNotReady,
+        ));
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { Symbol }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 4,
+                },
+            },
+        ));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_GENERATION_NOT_READY" {
+            return Err(format!("expected STR_GENERATION_NOT_READY, got {code}").into());
+        }
+        if producer.readiness_calls.load(Ordering::SeqCst) == 0 {
+            return Err("expected RecordingStructuralProducer.readiness to be consulted".into());
         }
         Ok(())
     }
