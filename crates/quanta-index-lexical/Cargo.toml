@@ -13,6 +13,7 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+ciborium = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 tantivy = { workspace = true }

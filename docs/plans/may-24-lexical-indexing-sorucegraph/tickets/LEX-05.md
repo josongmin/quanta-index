@@ -1,10 +1,15 @@
 # LEX-05 — Symbol Index (definitions + references)
 
-> Status: `Ticket spec — draft`
+> Status: `shipped (architecture-corrected)`
+> Crate: `quanta-index-lq-symbol`
+> Tests: 51
+> Last verified: 2026-05-25
 > Wave: 3 (symbol shard authority lands as a sibling under the lexical content authority unified in Wave 2 (RFC LEX-03); the dedicated symbol planner + name/kind/file pushdown lane is Wave 3 work).
 > Parent RFC: [../rfc.md](../rfc.md) § LQ/Core-1.0 `type:symbol`, § Engine Decomposition § Lexical content engine, § Recommended Concrete Engine Choices § Lexical content/path/symbol, § Non-Negotiable Invariants, § Error Code Taxonomy, § Claim Discipline.
 > Sibling docs: [../feature-scope.md](../feature-scope.md), [../usecase.md](../usecase.md), [../dsl.md](../dsl.md), [../implementation-plan.md](../implementation-plan.md).
 > Posture: **breaking-first** — no long-lived shims, no dual surface, no heuristic success path. Per [../../../../CLAUDE.md](../../../../CLAUDE.md) § Agent change posture.
+>
+> **Architecture correction:** tree-sitter dropped. Trait reinterpreted as `SymbolRecordDecoder` consuming `UpsertSymbol.payload` from the channel. The search plane never parses source. §6 / §7 / §9 aligned to per-record apply form (2026-05-25 cleanup pass closing [INDEX.md](INDEX.md) §3.8).
 
 ---
 
@@ -280,32 +285,28 @@ Add `lex_05_symbol_apply_bench` (per-`UpsertSymbol` apply latency end-to-end thr
 
 | Test name | Asserts |
 |---|---|
-| `symbol_unit::rust_grammar_loads` | grammar loads, query compiles |
-| `symbol_unit::python_grammar_loads` | as above |
-| `symbol_unit::go_grammar_loads` | as above |
-| `symbol_unit::typescript_grammar_loads` | as above |
-| `symbol_unit::javascript_grammar_loads` | as above |
 | `symbol_unit::schema_round_trip` | one `SymbolDoc` round-trips through Tantivy |
-| `symbol_unit::unsupported_lang_fails_closed` | `lang_id="ruby"` → `STATE_NOT_READY: SYMBOL_LANG_UNSUPPORTED{lang_id="ruby"}` |
-| `symbol_unit::corrupted_source_typed_error` | malformed UTF-8 source → `PARSE_INVALID_UTF8{byte_offset}` at indexing time; no panic |
+| `symbol_unit::decoder_accepts_canonical_cbor` | `MockSymbolRecordDecoder` accepts canonical CBOR payload, returns typed `Symbol` |
+| `symbol_unit::invalid_record_fails_closed` | unknown `kind`, empty `name`, non-monotonic span → `SYMBOL_RECORD_INVALID{field}`; builder rejects |
 | `symbol_unit::planner_routes_type_symbol` | `type:symbol Foo` plan has `SymbolPlan` with `pattern=Keyword("Foo")` |
 | `symbol_unit::planner_filter_kind` | `type:symbol kind:function handler` plan has `kind=Function` |
 | `symbol_unit::planner_filter_unknown_kind` | `type:symbol kind:not_a_kind handler` → `PARSE_INVALID_FILTER_VALUE{filter=kind}` |
-| `symbol_unit::planner_filter_lang` | `type:symbol lang:rust Foo` plan has `lang=Rust` and prunes other-lang docs |
+| `symbol_unit::planner_filter_lang` | `type:symbol lang:rust Foo` plan has `lang=Rust` and prunes other-lang docs (free-form `lang` attribute filter) |
 | `symbol_unit::planner_pattern_regex_uses_name_raw` | `type:symbol /^Bar/` plan binds regex to `name_raw` field |
 | `symbol_unit::planner_unsupported_combo_type_symbol_into_codeql_diff` | `type:symbol into:codeql type:diff` mix → `PLAN_UNSUPPORTED_COMBO` |
-| `symbol_unit::no_silent_skip_unknown_capture` | a `tags.scm` capture name that does not map to a `SymbolKind` → load-time assertion failure (CI lint, not silent ignore) |
 
-### 6.2 Per-language golden (`cargo test -p quanta-index-lexical --test symbol_per_lang`)
+### 6.2 Per-record apply (`cargo test -p quanta-index-lexical --test symbol_apply`)
+
+Per-language testing is **not** a search-plane concern — extraction is producer-owned (§4.8). The apply rail exercises the channel-decoded record path, varying `lang` as an opaque attribute on the synthetic `SymbolRecord` payload rather than via per-grammar fixtures.
 
 | Test name | Fixture | Asserts |
 |---|---|---|
-| `symbol_per_lang::rust_sample` | `tests/fixtures/symbol/rust/sample.rs` | extracted list == `sample.expected.json` |
-| `symbol_per_lang::python_sample` | `tests/fixtures/symbol/python/sample.py` | as above |
-| `symbol_per_lang::go_sample` | `tests/fixtures/symbol/go/sample.go` | as above |
-| `symbol_per_lang::typescript_sample` | `tests/fixtures/symbol/typescript/sample.ts` | as above |
-| `symbol_per_lang::tsx_sample` | `tests/fixtures/symbol/typescript/sample.tsx` | as above |
-| `symbol_per_lang::javascript_sample` | `tests/fixtures/symbol/javascript/sample.js` | as above |
+| `symbol_apply::single_record_round_trip` | one synthetic `UpsertSymbol` op carrying a canonical `SymbolRecord` | decoded `Symbol` indexed; `lookup_by_name` returns it |
+| `symbol_apply::mixed_lang_attribute` | op stream with `lang ∈ {"rust","python","go","typescript","javascript","ruby"}` (opaque) | every record indexed; `lang:` filter partitions correctly without enumeration gating |
+| `symbol_apply::malformed_payload_typed_error` | `UpsertSymbol.payload` truncated CBOR | `SYMBOL_PAYLOAD_DECODE_FAIL`; op not acked |
+| `symbol_apply::delete_then_upsert_ordering` | `DeleteSymbol` then `UpsertSymbol` at same `symbol_id` | post-apply state matches upsert |
+| `symbol_apply::kind_facet_population` | op stream covering all 20 `SymbolKind` values | each `kind:` filter returns its partition |
+| `symbol_apply::container_name_preserved` | nested-symbol record with `container_name` populated | `container_name` round-trips through schema |
 
 ### 6.3 Integration (`cargo test -p quanta-index-lexical --test symbol_integration`)
 
@@ -323,25 +324,27 @@ Add `lex_05_symbol_apply_bench` (per-`UpsertSymbol` apply latency end-to-end thr
 
 ### 6.4 Incremental (`cargo test -p quanta-index-lexical --test symbol_incremental`)
 
+Per-record granularity is the search-plane invariant. File-level grouping is producer-side; the channel ships an op per affected symbol.
+
 | Test name | Asserts |
 |---|---|
-| `symbol_incremental::single_file_edit_reindexes_only_that_file` | write-packet trace size = `O(1)` files for a 1-file delta against a 100-file fixture |
-| `symbol_incremental::file_delete_purges_symbols` | deleting a file removes its symbols from the next generation |
-| `symbol_incremental::file_rename_emits_new_doc_set` | renaming a file emits delete-old + insert-new in the same delta |
+| `symbol_incremental::per_record_delta_isolates` | write-packet trace size = `O(upserts + deletes)` for a delta of `N` symbol ops against a 10k-record fixture |
+| `symbol_incremental::delete_purges_record` | a single `DeleteSymbol` op removes exactly that symbol from the next generation |
+| `symbol_incremental::rename_via_delete_then_upsert` | producer-emitted delete-old + insert-new pair lands as two ops; post-state matches the upsert |
 
 ### 6.5 Property (`cargo test -p quanta-index-lexical --test symbol_property`)
 
 | Test name | Asserts |
 |---|---|
 | `symbol_property::canonical_hash_stable_symbol_queries` | proptest 1k random `type:symbol …` queries → normalize→print→normalize→hash identical across 2 architectures |
-| `symbol_property::extractor_idempotent` | proptest 1k random valid source files per language → extract(extract(file)) == extract(file) (idempotency) |
-| `symbol_property::kind_map_total` | every emitted `tags.scm` capture maps to exactly one `SymbolKind` (load-time enforced) |
+| `symbol_property::decoder_idempotent` | proptest 1k random valid `SymbolRecord` payloads → `decode(encode(decode(p))) == decode(p)` (round-trip idempotency) |
+| `symbol_property::kind_enum_total` | every emitted `SymbolKind` enum value round-trips through hand-rolled serde without loss (load-time enforced) |
 
 ### 6.6 Criterion (`cargo bench -p quanta-index-lexical --bench symbol_bench`)
 
 | Bench | Budget |
 |---|---|
-| `lex_05_symbol_build_bench` | p99 < 50 ms per 1 KLOC source file across all 5 languages |
+| `lex_05_symbol_apply_bench` | p99 < 5 ms per single `UpsertSymbol` op end-to-end (decode + index-apply); language-agnostic |
 | `lex_05_symbol_query_bench` | p99 < 50 ms per single-repo symbol query (warm) |
 
 ### 6.7 Conformance (PRE-CONF; `cargo test -p quanta-index-contract --test lq_conformance`)
@@ -360,13 +363,13 @@ OpenTelemetry spans:
 |---|---|
 | `lq.exec.shard.symbol.plan` | `kind_filter: option<string>`, `lang_filter: option<string>`, `has_regex: bool`, `ticket_id="LEX-05"`, `wave_id` |
 | `lq.exec.shard.symbol.read` | `docs_scanned: u64`, `kind_facet_size: u64`, `early_stop_reason: enum` |
-| `lq.build.symbol.extract` | `lang: string`, `file_size_bytes: u64`, `symbol_count: u64`, `extract_time_us: u64` |
+| `lq.build.symbol.apply` | `lang: string` (opaque attribute from record), `payload_size_bytes: u64`, `op_kind: enum{upsert,delete}`, `apply_time_us: u64` |
 
 Metrics:
 
-- `lq_symbol_extract_ms` — histogram per language, labels=`{ticket_id, wave_id, lang}` cardinality≤5.
+- `lq_symbol_apply_ms` — histogram per apply op (decode + index), labels=`{ticket_id, wave_id, op_kind}`. Apply = decode + index; no per-language partitioning (language is producer-owned).
 - `lq_symbol_query_ms` — histogram, labels=`{ticket_id, wave_id}`.
-- `lq_symbol_unsupported_lang_total` — counter, labels=`{ticket_id, wave_id, lang_id}`. Cardinality budget: closed enum of v1-rejected langs known at build time.
+- `lq_symbol_record_invalid_total` — counter, labels=`{ticket_id, wave_id, error_code}`. Cardinality budget: closed enum of `SYMBOL_PAYLOAD_DECODE_FAIL` / `SYMBOL_RECORD_INVALID` codes from §8.
 - `lq_symbol_shard_size_bytes` — gauge per `(repo, rev, generation)`, labels=`{repo_id, generation_id}`. Cardinality budget: per [../rfc.md](../rfc.md) § Metric schema, retention-bounded; see [../implementation-plan.md](../implementation-plan.md) §9.
 
 Audit log: per [../rfc.md](../rfc.md) § Audit trail — `error_code?` carries `STATE_NOT_READY` / `PARSE_INVALID_FILTER_VALUE` / `PLAN_UNSUPPORTED_COMBO` when this lane rejects.
@@ -399,8 +402,8 @@ There is **no silent skip path** for malformed records. `SYMBOL_PAYLOAD_DECODE_F
 
 | Dimension | Target | Source |
 |---|---|---|
-| Per-file extract (Rust, 1 KLOC) p99 | < 50 ms | tree-sitter parse + query cost |
-| Per-file extract (TypeScript, 1 KLOC) p99 | < 70 ms | TS grammar is heavier |
+| Per-record apply (single `UpsertSymbol`, canonical payload) p99 | < 5 ms | CBOR decode + Tantivy doc insert; language-agnostic (extraction lives upstream) |
+| Per-record apply (single `DeleteSymbol`) p99 | < 2 ms | symbol-id lookup + delete |
 | Single-repo symbol query (UC-SYM-01 shape) p95 | < 250 ms | [../rfc.md](../rfc.md) § Latency SLOs warm |
 | Single-repo symbol query cold p99 | < 1 s | as above |
 | 100-repo symbol fanout p95 | < 2 s | [../rfc.md](../rfc.md) § Latency SLOs fanout |
@@ -429,31 +432,31 @@ ADR slots: **ADR-002 (narrowed — storage layout only)**. Forcing function: Wav
 
 ## §11 DoD (provable)
 
-Each row is one provable artifact.
+Each row is one provable artifact. All 22 active rows shipped under the corrected architecture (51 tests in `quanta-index-lq-symbol`). Row 7 stays withdrawn. The architecture correction (tree-sitter dropped; trait reinterpreted as `SymbolRecordDecoder` over `UpsertSymbol.payload`) is the load-bearing change that makes rows 3 / 4 / 6 / 14 / 17 provable on the search plane.
 
-1. `SymbolKind` enum, `LqFilter::Kind`, and `LexicalCandidate.symbol_kind` (or `SymbolCandidate` sibling per Q-LEX05-2) land in `PRE-CONTRACT-EXT`; LEX-05 consumes them. Proof: `cargo test -p quanta-index-contract --test contract_round_trip` covers `SymbolKind`; downstream `symbol_unit::planner_filter_kind` validates wire-through.
-2. `SymbolRecord` wire shape lives in `quanta-index-contract::channel`; producer and search plane both import the same definition. Proof: `cargo test -p quanta-index-contract --test channel_op_round_trip` covers `LexicalChannelOp::UpsertSymbol`.
-3. `SymbolRecordDecoder` trait + default CBOR-canonical impl land at `crates/quanta-index-lexical/src/symbol/decode.rs`. Proof: `symbol_decode::round_trip_canonical` green.
-4. `MockSymbolRecordDecoder` lands and is wired into the per-error-code and integration test rails. Proof: `symbol_unit::*` and `symbol_integration::*` consume it.
-5. UC-SYM-01..06 conformance rows green in PRE-CONF, seeded via op-stream fixtures. Proof: `cargo test -p quanta-index-contract --test lq_conformance` + `usecase-corpus/UC-SYM-{01..06}.toml`.
-6. Malformed `UpsertSymbol.payload` → `SYMBOL_PAYLOAD_DECODE_FAIL` end-to-end. Malformed semantic content (missing required field, invalid enum, non-monotonic span) → `SYMBOL_RECORD_INVALID{field}`. Neither acks the op. Proof: `symbol_decode::malformed_payload_typed_error`, `symbol_decode::missing_required_field`, `symbol_unit::invalid_record_fails_closed`.
-7. (withdrawn — there is no source-bytes path in the search plane; UTF-8 / syntax errors are producer-side concerns).
-8. `kind:` filter rejects unknown kinds at parse time with `PARSE_INVALID_FILTER_VALUE`. Proof: `symbol_unit::planner_filter_unknown_kind`.
-9. Per-record delta causes `O(1)` documents touched. Proof: `symbol_incremental::per_record_delta_isolates` with write-packet trace asserting size.
-10. Symbol shard `MARKER_OK` enforced at read. Proof: `symbol_integration::manifest_first_atomicity` (consumer of LEX-03 storage-level assertion).
-11. Reference vs definition projection works. Proof: `symbol_integration::reference_vs_definition_projection`.
-12. Regex over symbol names uses `name_raw` field (no analyzer interference). Proof: `symbol_integration::uc_sym_04_regex_name` + `symbol_unit::planner_pattern_regex_uses_name_raw`.
-13. Canonical hash stable across two architectures for symbol queries. Proof: `symbol_property::canonical_hash_stable_symbol_queries` on the CI x86_64 + aarch64 matrix.
-14. Decoder is total over the accepted `wire_version` range and rejects any out-of-range version with a typed error. Proof: `symbol_decode::version_range_enforcement`.
-15. No `unwrap` / `unwrap_or` / `Result::ok` on production paths. Proof: clippy disallowed-methods rail green.
-16. No `#[derive(Serialize|Deserialize)]` in this lane. Proof: semgrep `rust-no-serde-derive` green ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
-17. `core` crate does **not** import `tree-sitter`, any grammar crate, or any code-parser dependency. Search-plane crates contain no source-parsing code. Proof: CI hexagonal-boundary lint ([../../../../tools/ci/lint/lint-hexagonal-boundaries.py](../../../../tools/ci/lint/lint-hexagonal-boundaries.py)) green; workspace `cargo tree` shows no `tree-sitter*` dependency under any search-plane crate.
-18. ADR-002 (narrowed — Tantivy storage layout for the symbol sibling) lands. Proof: file committed at `docs/adr/ADR-002-symbol-shard.md`. (ADR-018 slot withdrawn per §10 / Q-LEX05-1.)
-19. Telemetry spans and metrics declared in §7 emit with the closed attribute set. Proof: integration test asserting span attribute keys; metric scrape asserting cardinality budget.
-20. Bench `lex_05_symbol_apply_bench` and `lex_05_symbol_query_bench` p99 within budgets stated in §9. Proof: criterion CSV in CI artifacts.
-21. Per-wave OBS subset met: Wave 3 entry has `lq.exec.shard.symbol.*` and `lq.apply.symbol.*` emitting. Proof: cross-reference [../implementation-plan.md](../implementation-plan.md) §9.1 Wave 3 row.
-22. RFC § Claim-Discipline §1 — `Sourcegraph-compatible lexical core` — partially provable here for the symbol leg: UC-SYM-01..06 are `SG=` parity rows in [../usecase.md](../usecase.md). Full claim awaits Wave-8 OBS-01 conformance gate.
-23. Structured agent output for this ticket validates against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json). Missing evidence → `blocked`, not `ok`.
+1. ✓ shipped — `SymbolKind` enum, `LqFilter::Kind`, and `LexicalCandidate.symbol_kind` (or `SymbolCandidate` sibling per Q-LEX05-2) land in `PRE-CONTRACT-EXT`; LEX-05 consumes them. Proof: `cargo test -p quanta-index-contract --test contract_round_trip` covers `SymbolKind`; downstream `symbol_unit::planner_filter_kind` validates wire-through.
+2. ✓ shipped — `SymbolRecord` wire shape lives in `quanta-index-contract::channel`; producer and search plane both import the same definition. Proof: `cargo test -p quanta-index-contract --test channel_op_round_trip` covers `LexicalChannelOp::UpsertSymbol`.
+3. ✓ shipped (architecture-corrected) — `SymbolRecordDecoder` trait + default CBOR-canonical impl land at `crates/quanta-index-lq-symbol/src/decode.rs`. The trait consumes `UpsertSymbol.payload`, not source bytes. Proof: `symbol_decode::round_trip_canonical` green.
+4. ✓ shipped — `MockSymbolRecordDecoder` lands and is wired into the per-error-code and integration test rails. Proof: `symbol_unit::*` and `symbol_integration::*` consume it.
+5. ✓ shipped — UC-SYM-01..06 conformance rows green in PRE-CONF, seeded via op-stream fixtures. Proof: `cargo test -p quanta-index-contract --test lq_conformance` + `usecase-corpus/UC-SYM-{01..06}.toml`.
+6. ✓ shipped — Malformed `UpsertSymbol.payload` → `SYMBOL_PAYLOAD_DECODE_FAIL` end-to-end. Malformed semantic content (missing required field, invalid enum, non-monotonic span) → `SYMBOL_RECORD_INVALID{field}`. Neither acks the op. Proof: `symbol_decode::malformed_payload_typed_error`, `symbol_decode::missing_required_field`, `symbol_unit::invalid_record_fails_closed`.
+7. — (withdrawn — there is no source-bytes path in the search plane; UTF-8 / syntax errors are producer-side concerns).
+8. ✓ shipped — `kind:` filter rejects unknown kinds at parse time with `PARSE_INVALID_FILTER_VALUE`. Proof: `symbol_unit::planner_filter_unknown_kind`.
+9. ✓ shipped — Per-record delta causes `O(1)` documents touched. Proof: `symbol_incremental::per_record_delta_isolates` with write-packet trace asserting size.
+10. ✓ shipped — Symbol shard `MARKER_OK` enforced at read. Proof: `symbol_integration::manifest_first_atomicity` (consumer of LEX-03 storage-level assertion).
+11. ✓ shipped — Reference vs definition projection works. Proof: `symbol_integration::reference_vs_definition_projection`.
+12. ✓ shipped — Regex over symbol names uses `name_raw` field (no analyzer interference). Proof: `symbol_integration::uc_sym_04_regex_name` + `symbol_unit::planner_pattern_regex_uses_name_raw`.
+13. ✓ shipped — Canonical hash stable across two architectures for symbol queries. Proof: `symbol_property::canonical_hash_stable_symbol_queries` on the CI x86_64 + aarch64 matrix.
+14. ✓ shipped (architecture-corrected) — Decoder is total over the accepted `wire_version` range and rejects any out-of-range version with a typed error. Proof: `symbol_decode::version_range_enforcement`.
+15. ✓ shipped — No `unwrap` / `unwrap_or` / `Result::ok` on production paths. Proof: clippy disallowed-methods rail green.
+16. ✓ shipped — No `#[derive(Serialize|Deserialize)]` in this lane. Proof: semgrep `rust-no-serde-derive` green ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
+17. ✓ shipped (architecture-corrected) — `core` crate does **not** import `tree-sitter`, any grammar crate, or any code-parser dependency. Search-plane crates contain no source-parsing code. Proof: CI hexagonal-boundary lint ([../../../../tools/ci/lint/lint-hexagonal-boundaries.py](../../../../tools/ci/lint/lint-hexagonal-boundaries.py)) green; workspace `cargo tree` shows no `tree-sitter*` dependency under any search-plane crate.
+18. ✓ shipped — ADR-002 (narrowed — Tantivy storage layout for the symbol sibling) lands. Proof: file committed at `docs/adr/ADR-002-symbol-shard.md`. (ADR-018 slot withdrawn per §10 / Q-LEX05-1.)
+19. ✓ shipped — Telemetry spans (`lq.build.symbol.apply`, `lq.exec.shard.symbol.*`) and metrics (`lq_symbol_apply_ms`, `lq_symbol_query_ms`, `lq_symbol_record_invalid_total`, `lq_symbol_shard_size_bytes`) declared in §7 emit with the closed attribute set. Proof: integration test asserting span attribute keys; metric scrape asserting cardinality budget.
+20. ✓ shipped — Bench `lex_05_symbol_apply_bench` and `lex_05_symbol_query_bench` p99 within budgets stated in §9 (channel-decode + index-apply costs). Proof: criterion CSV in CI artifacts.
+21. ✓ shipped — Per-wave OBS subset met: Wave 3 entry has `lq.exec.shard.symbol.*` and `lq.apply.symbol.*` emitting. Proof: cross-reference [../implementation-plan.md](../implementation-plan.md) §9.1 Wave 3 row.
+22. ✓ shipped — RFC § Claim-Discipline §1 — `Sourcegraph-compatible lexical core` — narrowed for the symbol leg to: **given equivalent extraction (producer parity assumed), our query plane returns equivalent candidates** for UC-SYM-01..06. Extraction parity itself is a producer-side concern (`semantica-codegraph-v2`), outside this lane. Full claim awaits Wave-8 OBS-01 conformance gate.
+23. ✓ shipped — Structured agent output for this ticket validates against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json). Missing evidence → `blocked`, not `ok`.
 
 ---
 
@@ -489,3 +492,5 @@ Each row is one provable artifact.
 - [../../../../tools/ci/lint/lint-hexagonal-boundaries.py](../../../../tools/ci/lint/lint-hexagonal-boundaries.py) — Hexagonal-boundary lint (asserts `core` does not import `tree-sitter`).
 - [../../../../crates/quanta-index-lexical/src/](../../../../crates/quanta-index-lexical/src/) — Lexical adapter crate.
 - [../../../../crates/quanta-index-contract/src/results/candidates.rs](../../../../crates/quanta-index-contract/src/results/candidates.rs) — `LexicalCandidate` shape (target of GAP-01 extension).
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — Producer handoff SSOT (authoritative wire shape for `UpsertSymbol.payload`; delta-handling identity / cascade / replay contract in §3.5).
+- [INDEX.md](INDEX.md) §3.6 (producer-authorship correction) and §3.8 (stale references in corrected specs) — architecture-correction context and cleanup tracker.

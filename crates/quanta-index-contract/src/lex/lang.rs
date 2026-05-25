@@ -96,10 +96,7 @@ impl Visitor<'_> for LangIdVisitor {
         E: de::Error,
     {
         LangId::from_code_str(value).ok_or_else(|| {
-            de::Error::unknown_variant(
-                value,
-                &["Rust", "Python", "TypeScript", "JavaScript", "Go"],
-            )
+            de::Error::unknown_variant(value, &["Rust", "Python", "TypeScript", "JavaScript", "Go"])
         })
     }
 

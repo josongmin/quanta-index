@@ -6,16 +6,18 @@ use anyhow::Result;
 #[derive(Clone, Debug)]
 pub struct SearchdConfig {
     state_root: PathBuf,
-    socket_path: PathBuf,
+    query_socket_path: PathBuf,
+    control_socket_path: PathBuf,
 }
 
 impl SearchdConfig {
     #[must_use]
     pub fn from_state_root(state_root: PathBuf) -> Self {
-        let socket_path = state_root.join("search-plane").join("searchd.sock");
+        let socket_dir = state_root.join("search-plane");
         Self {
             state_root,
-            socket_path,
+            query_socket_path: socket_dir.join("query.sock"),
+            control_socket_path: socket_dir.join("control.sock"),
         }
     }
 
@@ -43,13 +45,24 @@ impl SearchdConfig {
     }
 
     #[must_use]
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
+    pub fn query_socket_path(&self) -> &Path {
+        &self.query_socket_path
     }
 
     #[must_use]
-    pub fn with_socket_override(mut self, socket: PathBuf) -> Self {
-        self.socket_path = socket;
+    pub fn control_socket_path(&self) -> &Path {
+        &self.control_socket_path
+    }
+
+    #[must_use]
+    pub fn socket_path(&self) -> &Path {
+        self.query_socket_path()
+    }
+
+    #[must_use]
+    pub fn with_socket_overrides(mut self, query_socket: PathBuf, control_socket: PathBuf) -> Self {
+        self.query_socket_path = query_socket;
+        self.control_socket_path = control_socket;
         self
     }
 }

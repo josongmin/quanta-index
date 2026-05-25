@@ -34,9 +34,43 @@
 //! - Same `(query, generation)` produces a byte-identical top-k result.
 //! - Caps surface [`errors::SemanticErrorCode::PlanLimitExceeded`]
 //!   carrying a [`errors::LimitDimension`] tag.
+//!
+//! ## Build patterns
+//!
+//! Both [`index::SemanticIndexBuilder`] and [`hnsw::HnswIndexBuilder`]
+//! support three build patterns, mirroring the lexical-adapter delta API
+//! (see also `docs/ssot/producer-handoff.md` §3.5.5 — cross-generation
+//! delta):
+//!
+//! 1. **Scratch / append**: construct via `new(...)`, call
+//!    `add_embedding(doc_id, embedding)` for each document, then
+//!    `finish()`. The append surface is intentionally NOT replay-safe;
+//!    re-issuing `add_embedding` for the same `doc_id` returns
+//!    [`errors::SemanticErrorCode::IndexCorrupted`]. Use this pattern
+//!    only when driving a fresh build from an authoritative snapshot.
+//!
+//! 2. **Upsert-driven** (replay-safe): construct via `new(...)`, call
+//!    `upsert_embedding(doc_id, embedding)` for each `(doc_id, vector)`
+//!    pair. Re-issuing the same upsert is a no-op at the wire level;
+//!    a different vector for an existing `doc_id` REPLACES the prior
+//!    entry. `remove_embedding(doc_id)` is the matching `DeleteChunk`
+//!    handler. Channel subscribers that may replay events after a crash
+//!    MUST use this pattern.
+//!
+//! 3. **Cross-generation incremental**: construct via
+//!    `from_prior(&prior, new_generation)` with the previous generation's
+//!    finished index. Apply any `upsert_embedding` / `remove_embedding`
+//!    deltas, then `finish()`. Carries forward every `(doc_id, vector)`
+//!    pair from the prior in ascending [`types::DocId`] order so gen N+1
+//!    inherits gen N's full corpus plus new deltas, rather than
+//!    rebuilding from scratch. The HNSW variant rebuilds the layered
+//!    graph deterministically per `(seed, prior.docs)`; note that graph
+//!    topology is path-dependent and the rebuilt graph may differ from
+//!    `prior`'s exact neighbour lists.
 
 pub mod cosine;
 pub mod errors;
+pub mod handle;
 pub mod hnsw;
 pub mod index;
 pub mod query;
@@ -45,6 +79,7 @@ pub mod types;
 
 pub use cosine::cosine_similarity;
 pub use errors::{LimitDimension, SemanticError, SemanticErrorCode};
+pub use handle::{SemanticHandleResolver, SemanticIndexHandleResolver};
 pub use hnsw::{
     HnswIndex, HnswIndexBuilder, HnswNode, HnswParams, MAX_EF as HNSW_MAX_EF,
     MAX_LEVEL as HNSW_MAX_LEVEL, MAX_M as HNSW_MAX_M, MIN_M as HNSW_MIN_M, query_hnsw,

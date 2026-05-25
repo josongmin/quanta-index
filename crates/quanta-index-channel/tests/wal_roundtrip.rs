@@ -87,13 +87,23 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
     require_eq(&evt1.seq.get(), &1, "evt1.seq")?;
     match evt1.op {
         LexicalChannelOp::FullBundle(b) => {
-            require_eq(&b.payload, &b"manifest-bytes".to_vec(), "evt1 payload")?
+            require_eq(&b.payload, &b"manifest-bytes".to_vec(), "evt1 payload")?;
         }
         LexicalChannelOp::UpsertChunk(_)
         | LexicalChannelOp::DeleteChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
         | LexicalChannelOp::DeleteSymbol(_)
-        | LexicalChannelOp::Seal(_) => {
+        | LexicalChannelOp::Seal(_)
+        | LexicalChannelOp::UpsertCommit(_)
+        | LexicalChannelOp::UpsertRef(_)
+        | LexicalChannelOp::UpsertTag(_)
+        | LexicalChannelOp::DeleteRef(_)
+        | LexicalChannelOp::DeleteTag(_)
+        | LexicalChannelOp::UpsertDirty(_)
+        | LexicalChannelOp::EvictDirty(_)
+        | LexicalChannelOp::UpsertParseTree(_)
+        | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected FullBundle at evt1, got {:?}", evt1.seq).into());
         }
     }
@@ -113,7 +123,17 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
         | LexicalChannelOp::DeleteChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
         | LexicalChannelOp::DeleteSymbol(_)
-        | LexicalChannelOp::Seal(_) => {
+        | LexicalChannelOp::Seal(_)
+        | LexicalChannelOp::UpsertCommit(_)
+        | LexicalChannelOp::UpsertRef(_)
+        | LexicalChannelOp::UpsertTag(_)
+        | LexicalChannelOp::DeleteRef(_)
+        | LexicalChannelOp::DeleteTag(_)
+        | LexicalChannelOp::UpsertDirty(_)
+        | LexicalChannelOp::EvictDirty(_)
+        | LexicalChannelOp::UpsertParseTree(_)
+        | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected UpsertChunk at evt2, got {:?}", evt2.seq).into());
         }
     }
@@ -132,7 +152,17 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
         | LexicalChannelOp::UpsertChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
         | LexicalChannelOp::DeleteSymbol(_)
-        | LexicalChannelOp::Seal(_) => {
+        | LexicalChannelOp::Seal(_)
+        | LexicalChannelOp::UpsertCommit(_)
+        | LexicalChannelOp::UpsertRef(_)
+        | LexicalChannelOp::UpsertTag(_)
+        | LexicalChannelOp::DeleteRef(_)
+        | LexicalChannelOp::DeleteTag(_)
+        | LexicalChannelOp::UpsertDirty(_)
+        | LexicalChannelOp::EvictDirty(_)
+        | LexicalChannelOp::UpsertParseTree(_)
+        | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected DeleteChunk at evt3, got {:?}", evt3.seq).into());
         }
     }

@@ -2,13 +2,18 @@
 
 | field | value |
 |---|---|
-| Status | spec |
+| Status | shipped |
+| Crate | `quanta-index-lq-scorer` |
+| Tests | 43 |
+| Last verified | 2026-05-25 |
 | Wave | 1 |
-| Owner crate(s) | `quanta-index-core` (port + policy), `quanta-index-lexical` (adapter impl, IDF persistence), `quanta-index-contract` (per-generation analyzer/scorer manifest carrier + `SearchExplanation` v2 score envelope) |
+| Owner crate(s) | `quanta-index-lq-scorer` (G-CONTROL-LOC resolved as standalone crate); consumes `quanta-index-core` ports + `quanta-index-contract` carriers |
 | Touches contract | yes — adds the per-generation `LexicalScorerManifest` carrier (additive); ties to PRE-CONTRACT-EXT GAP-05 (`SearchExplanation` v2 score envelope), [usecase.md §3](../usecase.md) |
 | Size | XL — per-field IDF + BM25 parameter freeze + score normalization + cross-instance reproducibility + golden score corpus |
 | Depends on | LEX-00 (canonical token stream + `AnalyzerId`), PRE-CONTRACT-EXT (typed score envelope), PRE-NORM (canonical AST), PRE-CONF (corpus runner) |
 | Blocks | LEX-03 (sibling shards each need their own IDF tables), LEX-05 (deterministic merge ties scores), LEX-06 (rerank layers on top of the normalized envelope), OBS-01 (cross-instance reproducibility CI step) |
+
+> BM25 per-field tuning (final `(k1, b)` table) and multi-process cross-instance reproducibility deferred to integration. See §12.
 
 ---
 
@@ -509,29 +514,29 @@ LEX-01 owns the per-query scorer cost slice of the RFC SLO budget.
 
 ## 11. DoD
 
-Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rule), each DoD row cites a provable artifact.
+Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rule), each DoD row cites a provable artifact. 19 rows; 17 shipped, 2 deferred to integration (BM25 per-field tuning, multi-process cross-instance reproducibility).
 
-| # | Item | Evidence artifact |
-|---|---|---|
-| 1 | `LexicalScorer` + `LexicalScorerManifestPort` traits ship in core | `crates/quanta-index-core/src/domains/lexical/outbound.rs`; `tests/scorer_types.rs::trait_objects_compile` green |
-| 2 | `Bm25Params` + `FieldId` types with hand-rolled serde | `crates/quanta-index-core/src/domains/lexical/scorer.rs`; semgrep `rust-no-serde-derive` green |
-| 3 | Pure BM25 formula | `tests/scorer_bm25.rs` 6 named tests green |
-| 4 | Score normalization | `tests/scorer_normalize.rs` 5 named tests green; envelope `[0,1]` invariant |
-| 5 | IDF table build + persist + load | `tests/scorer_idf_build.rs` + `tests/scorer_idf_persist.rs`; CBOR canonical encoding stable across runs |
-| 6 | `LexicalScorerManifest` round-trip | `tests/scorer_manifest.rs` 4 named tests green |
-| 7 | Tantivy adapter scorer integration | `crates/quanta-index-lexical/tests/scorer_integration.rs::scorer_returns_envelope_score` green |
-| 8 | Golden score corpus | `tests/golden_scores.rs::golden_corpus_matches_expected_scores`; fixture in `tests/fixtures/scorer/`; ~50 docs × ~20 queries |
-| 9 | `SearchExplanation.score_envelope` populated | `tests/scorer_explain.rs::explain_score_populates_envelope` green |
-| 10 | Determinism property | `tests/property_scorer.rs::same_input_same_output_1k` green; 1 000 cases |
-| 11 | Cross-instance reproducibility | `tests/cross_instance_reproducibility.rs::two_state_roots_same_envelope` green |
-| 12 | Bench harness | `benches/scorer_bench.rs` with 3 benches; baselines captured in ADR-010 |
-| 13 | UC-LEX-08, UC-OPS-05, UC-OPS-06, UC-OPS-07 green in PRE-CONF | conformance runner output |
-| 14 | RFC § Claim Discipline §8 partial leg provable (single-stage scorer determinism, single-instance scope) | structured agent output validates against `tools/ci/agent/agent_output.schema.json`; full §8 leg (merge-stage) lands in LEX-05 |
-| 15 | ADR-010 lands | `docs/adr/ADR-010-bm25-parameters.md`; pins `(k1, b)` per field; baseline bench numbers |
-| 16 | No silent fallback regression | clippy disallowed-methods green; semgrep green; code review checklist |
-| 17 | Performance envelope met | `bench_score_1k_candidates_3field` p99 ≤ 50 ms; captured in ADR-010 |
-| 18 | Lint rails green | clippy, fmt, lint-doc-paths, lint-hexagonal-boundaries, semgrep, deny, machete |
-| 19 | Disk-usage metric emits per generation | metric `quanta_lexical_scorer_idf_disk_bytes` present; histogram populated on first scorer manifest write |
+| # | Status | Item | Evidence artifact |
+|---|---|---|---|
+| 1 | ✓ shipped | `LexicalScorer` + `LexicalScorerManifestPort` traits ship in core | `crates/quanta-index-core/src/domains/lexical/outbound.rs`; `tests/scorer_types.rs::trait_objects_compile` green |
+| 2 | ✓ shipped | `Bm25Params` + `FieldId` types with hand-rolled serde | `crates/quanta-index-core/src/domains/lexical/scorer.rs`; semgrep `rust-no-serde-derive` green |
+| 3 | ✓ shipped | Pure BM25 formula | `tests/scorer_bm25.rs` 6 named tests green |
+| 4 | ✓ shipped | Score normalization | `tests/scorer_normalize.rs` 5 named tests green; envelope `[0,1]` invariant |
+| 5 | ✓ shipped | IDF table build + persist + load | `tests/scorer_idf_build.rs` + `tests/scorer_idf_persist.rs`; CBOR canonical encoding stable across runs |
+| 6 | ✓ shipped | `LexicalScorerManifest` round-trip | `tests/scorer_manifest.rs` 4 named tests green |
+| 7 | ✓ shipped | Tantivy adapter scorer integration | `crates/quanta-index-lq-scorer/tests/scorer_integration.rs::scorer_returns_envelope_score` green |
+| 8 | ✓ shipped | Golden score corpus | `tests/golden_scores.rs::golden_corpus_matches_expected_scores`; fixture in `tests/fixtures/scorer/`; ~50 docs × ~20 queries |
+| 9 | ✓ shipped | `SearchExplanation.score_envelope` populated | `tests/scorer_explain.rs::explain_score_populates_envelope` green |
+| 10 | ✓ shipped | Determinism property | `tests/property_scorer.rs::same_input_same_output_1k` green; 1 000 cases |
+| 11 | 🔜 deferred (see §12) | Cross-instance (multi-process) reproducibility | single-process determinism shipped; multi-process two-state-root test moves to integration once the searchd binary harness exists |
+| 12 | ✓ shipped | Bench harness | `benches/scorer_bench.rs` with 3 benches; baselines captured in ADR-010 |
+| 13 | ✓ shipped | UC-LEX-08, UC-OPS-05, UC-OPS-06, UC-OPS-07 green in PRE-CONF | conformance runner output |
+| 14 | ✓ shipped | RFC § Claim Discipline §8 partial leg provable (single-stage scorer determinism, single-instance scope) | structured agent output validates against `tools/ci/agent/agent_output.schema.json`; full §8 leg (merge-stage) lands in LEX-05 |
+| 15 | 🔜 deferred (see §12) | ADR-010 final BM25 per-field tuning | placeholder `(k1, b)` table shipped; final values pinned during integration once corpus measurements land |
+| 16 | ✓ shipped | No silent fallback regression | clippy disallowed-methods green; semgrep green; code review checklist |
+| 17 | ✓ shipped | Performance envelope met | `bench_score_1k_candidates_3field` p99 ≤ 50 ms; captured in ADR-010 |
+| 18 | ✓ shipped | Lint rails green | clippy, fmt, lint-doc-paths, lint-hexagonal-boundaries, semgrep, deny, machete |
+| 19 | ✓ shipped | Disk-usage metric emits per generation | metric `quanta_lexical_scorer_idf_disk_bytes` present; histogram populated on first scorer manifest write |
 
 ---
 
@@ -584,3 +589,8 @@ Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rul
 - LEX-05 — parallel executor + deterministic merge; consumes the score envelope as the first component of the merge tuple
 - LEX-06 — ranking + explain + lexical semantics; layers adjacency-link proximity boost on top of LEX-01's envelope; owns the IR-evaluation golden set per RFC § Claim Discipline §10
 - LEX-04 — incremental indexing kernel; persists `LexicalScorerManifest` alongside the per-generation manifest under the writer-coordinator's advisory lock
+
+### 13.5 Cross-repo SSOTs
+
+- Producer handoff: [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
+- Ticket index (downstream-migration follow-up tracked under §3.6): [INDEX.md](INDEX.md)

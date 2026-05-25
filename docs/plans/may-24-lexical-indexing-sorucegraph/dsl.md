@@ -5,6 +5,8 @@ Parent RFC: [rfc.md](rfc.md)
 Sibling planning docs (forward references, authored in parallel): `feature-scope.md`, `usecase.md`
 Owning grammar version: `LQ/Core-1.0` with extensions `LQ/History-1.1`, `LQ/Structural-1.2`, `LQ/Runtime-1.3`, `LQ/Bridge-1.4`.
 
+> **Architecture correction (2026-05-25)**: this DSL freeze pre-dates the producer-authorship ratification. The grammar itself is unaffected — search-plane parses query text, not source bytes — but readers of the LEX-05 / LEX-07 / STR-01 / RT-01 ticket scopes should reconcile via [tickets/INDEX.md § 3.6](tickets/INDEX.md) and [docs/ssot/producer-handoff.md](../../ssot/producer-handoff.md). The `LqCanonicalHashV1` placeholder name in § 11 is one downstream effect of that correction — see § 11.3 closure note.
+
 This document closes the reviewer P0 gaps left open by the parent RFC sections
 *Canonical Grammar Semantics*, *Pattern semantics*, *Boolean semantics*,
 *Filter semantics*, and *LQ Family*:
@@ -463,7 +465,7 @@ operator token.
 | `rev:`        | rev-spec               | `RevFilter{ spec: RevSpec }`                             | branch / tag / sha / range                                       |
 | `type:`       | enum                   | `TypeFilter{ kind }`                                     | exclusive; see §6.4                                              |
 | `select:`     | enum                   | `SelectFilter{ dim }`                                    | see §6.5                                                         |
-| `count:`      | integer or `all`       | `CountOption{ bound: Bounded(N) | All }`                 | cap on `Bounded`: 10_000                                         |
+| `count:`      | integer or `all`       | `CountOption{ bound: Bounded(N) | All }`                 | cap on `Bounded`: 10_000 — **DSL-GAP-1 closure**: this cap is authoritative per [tickets/INDEX.md § 3.4](tickets/INDEX.md); feature-scope.md § 7 lists a separate `count:all` hard ceiling at 100_000, which applies to the `All` arm only |
 | `case:`       | `yes` / `no`           | `CaseOption{ sensitive: bool }`                          | default per patterntype                                          |
 | `fork:`       | `yes` / `no` / `only`  | `ForkFilter{ mode }`                                     |                                                                  |
 | `archived:`   | `yes` / `no` / `only`  | `ArchivedFilter{ mode }`                                 |                                                                  |
@@ -479,31 +481,48 @@ operator token.
 
 Enumerated. Unknown -> `PARSE_INVALID_FILTER_VALUE{filter=lang}`.
 
+#### 6.3.1 v1 ship set (5 langs)
+
+**DSL-GAP-2 closure (2026-05-25)** per [tickets/INDEX.md § 3.4](tickets/INDEX.md), [tickets/LEX-00.md](tickets/LEX-00.md), and [docs/ssot/producer-handoff.md § 4.1](../../ssot/producer-handoff.md): the search side ships five langs in v1. Queries naming a ship-set lang are accepted and routed:
+
 ```
-rust, python, typescript, javascript, tsx, jsx, go, java, kotlin,
-scala, swift, cpp, c, csharp, objective-c, ruby, php, perl, lua,
-elixir, erlang, haskell, ocaml, fsharp, clojure, scheme, racket,
-r, julia, dart, zig, nim, crystal, d, fortran, ada, cobol, vb,
-shell, bash, zsh, fish, powershell, sql, html, css, scss, sass,
-less, vue, svelte, markdown, yaml, toml, json, json5, ini, xml,
-dockerfile, makefile, cmake, terraform, hcl, protobuf, thrift,
-graphql, solidity, vyper, move, cairo
+rust, python, typescript, javascript, go
 ```
 
-Alias resolution before canonicalization:
+Aliases for the v1 ship set (resolved at parse time):
 
 ```
 js   -> javascript
 ts   -> typescript
 py   -> python
+```
+
+#### 6.3.2 Reserved (parser-accepts, normalizer rejects) — 55 langs
+
+The remaining identifiers below are reserved as valid `LangId` variants for forward compatibility but are **not** in the v1 ship set. They parse, then surface a typed `NormalizerUnknownLang` rejection per [docs/ssot/producer-handoff.md § 4.2](../../ssot/producer-handoff.md). This split prevents queries from silently widening across un-shipped grammars while preserving wire compatibility with producer payloads that carry the same `LangId` enum.
+
+```
+tsx, jsx, java, kotlin, scala, swift, cpp, c, csharp, objective-c,
+ruby, php, perl, lua, elixir, erlang, haskell, ocaml, fsharp, clojure,
+scheme, racket, r, julia, dart, zig, nim, crystal, d, fortran, ada,
+cobol, vb, shell, bash, zsh, fish, powershell, sql, html, css, scss,
+sass, less, vue, svelte, markdown, yaml, toml, json, json5, ini, xml,
+dockerfile, makefile, cmake, terraform, hcl, protobuf, thrift, graphql,
+solidity, vyper, move, cairo
+```
+
+Reserved-set aliases (parse-time, then normalizer rejection):
+
+```
 rb   -> ruby
 cs   -> csharp
 md   -> markdown
 yml  -> yaml
 ```
 
-This list is normative for `LQ/Core-1.0`. Additions require a documented
-DSL minor version bump.
+Promoting a reserved lang into the ship set requires the LangId expansion handshake per [docs/ssot/producer-handoff.md § 4.3](../../ssot/producer-handoff.md): producer-side ADR + coordinated search-side PR + `wire_version` bump. The producer CANNOT unilaterally widen the ship set on the wire.
+
+This list is normative for `LQ/Core-1.0`. Additions to the **reserved** set require a documented DSL minor version bump; promotions from reserved to **ship set** require the handshake above.
 
 ### 6.4 `type:` values
 
@@ -861,6 +880,8 @@ the RFC owns the final name). Carriers must:
 - include the digest bytes
 - include a creation timestamp (UTC)
 - be `Eq + Hash + Serialize + Deserialize`
+
+**DSL-GAP-3 closure (2026-05-25)** per [tickets/INDEX.md § 3.4](tickets/INDEX.md): the `LqCanonicalHashV1` name is provisional and will be renamed when PRE-CONTRACT-EXT integration lands ([tickets/PRE-CONTRACT-EXT.md](tickets/PRE-CONTRACT-EXT.md) owns the final contract-crate name and the `LexicalErrorCode` extension that this hash type rides alongside). Until then, the placeholder name is the canonical identifier in DSL freeze documents; references in code and other docs MUST track the rename in lockstep with the PRE-CONTRACT-EXT bump (no long-lived alias per CLAUDE.md § Agent change posture).
 
 ### 11.4 Stability guarantee
 

@@ -23,26 +23,74 @@ fmt-check:
 rust-check:
     {{cargo}} check --workspace --all-targets --all-features --locked
 
+# Local edit/compile loop without integration tests, examples, or benches.
+rust-check-fast:
+    {{cargo}} check --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
+
+rust-check-daemon:
+    {{cargo}} check -p quanta-index-searchd-runtime --all-features --locked
+
+# Local build loop without integration tests or benches.
+rust-build-fast:
+    {{cargo}} build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
+
+rust-build-daemon:
+    {{cargo}} build -p quanta-index-searchd-runtime --all-features --locked
+
+# Full compile rail for every Rust target, including integration tests and benches.
+rust-build-all-targets:
+    {{cargo}} build --workspace --all-targets --all-features --locked
+
+rust-timings-fast:
+    {{cargo}} build --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"
+
+rust-timings-daemon:
+    {{cargo}} build -p quanta-index-searchd-runtime --all-features --locked --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"
+
+rust-timings-all-targets:
+    {{cargo}} build --workspace --all-targets --all-features --locked --timings
+    source scripts/quanta-index-env.sh && python3 tools/ci/timing/summarize_cargo_timings.py "$CARGO_TARGET_DIR/cargo-timings/cargo-timing.html"
+
 rust-clippy:
     {{cargo}} clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 rust-test:
     {{cargo}} test --workspace --all-features --locked
 
+# Local test loop that keeps unit and binary coverage but skips integration/E2E.
+rust-test-fast:
+    {{cargo}} test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
+
 rust-test-unit:
-    {{cargo}} test --workspace --lib --bins --all-features --locked
+    {{cargo}} test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
 
 rust-test-integration:
-    {{cargo}} test -p quanta-index-core --test policy_contracts --all-features --locked
-    {{cargo}} test -p quanta-index-control --test control_plane --all-features --locked
-    {{cargo}} test -p quanta-index-searchd --test bootstrap --all-features --locked
+    {{cargo}} test -p quanta-index-contract --test ipc_query_result_v2_contract --all-features --locked
+    {{cargo}} test -p quanta-index-contract --test lex_scaffold --all-features --locked
+    {{cargo}} test -p quanta-index-core --test hybrid_policy --all-features --locked
+    {{cargo}} test -p quanta-index-core --test semantic_policy --all-features --locked
+    {{cargo}} test -p quanta-index-channel --test hellgate --all-features --locked
+    {{cargo}} test -p quanta-index-channel --test wal_roundtrip --all-features --locked
+    {{cargo}} test -p quanta-index-lexical --test tantivy_smoke --all-features --locked
+    {{cargo}} test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
+    {{cargo}} test -p quanta-index-repomap --test owner_surface --all-features --locked
+
+rust-test-cli-smoke:
+    {{cargo}} test -p quanta-index-searchctl --test cli_smoke --all-features --locked
+    {{cargo}} test -p quanta-index-conformance --test cli_smoke --all-features --locked
 
 rust-test-e2e:
-    {{cargo}} test -p quanta-index-searchd --test serve_smoke --all-features --locked
+    {{cargo}} test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
+    {{cargo}} test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
+    {{cargo}} test -p quanta-index-searchd-runtime --test explain --all-features --locked
+    {{cargo}} test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
 
 rust-test-pyramid:
     @just rust-test-unit
     @just rust-test-integration
+    @just rust-test-cli-smoke
     @just rust-test-e2e
 
 rust-doc:
@@ -161,7 +209,7 @@ verify-rust:
     @just rust-policy
     @just rust-machete
     @just rust-bench-build
-    @just rust-test-pyramid
+    @just rust-test
     @just rust-doc
 
 # Heavy correctness rail. Requires nightly toolchain + cargo-careful/miri/etc.

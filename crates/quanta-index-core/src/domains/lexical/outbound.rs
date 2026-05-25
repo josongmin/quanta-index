@@ -44,4 +44,18 @@ pub trait LexicalIndexOpenPort: Send + Sync {
 /// cache management.
 pub trait LexicalSearcher: Send + Sync {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Return symbol-domain matches only for the query within the opened
+    /// generation. Implementations must not leak chunk docs through this
+    /// surface.
+    fn search_symbols(
+        &self,
+        query: &LqQuery,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Return every lexical match for the query within the opened generation.
+    /// Callers use this for exact scope materialization before downstream
+    /// semantic/hybrid narrowing.
+    fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError>;
 }

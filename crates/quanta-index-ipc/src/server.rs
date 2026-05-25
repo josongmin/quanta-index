@@ -2,7 +2,7 @@
 //!
 //! The server accepts connections sequentially (phase-1 rule: at-most-one
 //! in-flight request per connection), decodes a single envelope per frame,
-//! routes through the [`QueryDispatcher`] supplied by the composition root,
+//! routes through the [`IpcDispatcher`] supplied by the composition root,
 //! and writes the response back on the same connection.
 //!
 //! Connection-fatal failures (framing, oversized, CBOR decode) close the
@@ -19,8 +19,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use quanta_index_contract::{
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneIpcRequest, SearchPlaneIpcRequestEnvelope, SearchPlaneIpcResponse,
-    SearchPlaneIpcResponseEnvelope,
+    SearchPlaneIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponseEnvelope,
 };
 
 use crate::codec::{IpcError, decode_request, decode_response, encode_request, encode_response};
@@ -30,8 +32,75 @@ use crate::codec::{IpcError, decode_request, decode_response, encode_request, en
 /// Receives a fully-parsed request payload and returns a fully-typed response
 /// payload. Domain errors (e.g. `NOT_READY`) MUST be surfaced as
 /// [`SearchPlaneIpcResponse::Error`] — never panic.
-pub trait QueryDispatcher: Send + Sync {
-    fn dispatch(&self, request: SearchPlaneIpcRequest) -> SearchPlaneIpcResponse;
+pub trait IpcDispatcher<Request, Response>: Send + Sync {
+    fn dispatch(&self, request: Request) -> Response;
+}
+
+pub trait RequestEnvelope<Request>: serde::de::DeserializeOwned + Send + Sync + 'static {
+    fn into_parts(self) -> (u64, Request);
+}
+
+pub trait ResponseEnvelope<Response>: serde::Serialize + Send + Sync + 'static {
+    fn from_parts(request_id: u64, payload: Response) -> Self;
+}
+
+impl RequestEnvelope<SearchPlaneIpcRequest> for SearchPlaneIpcRequestEnvelope {
+    fn into_parts(self) -> (u64, SearchPlaneIpcRequest) {
+        (self.request_id, self.payload)
+    }
+}
+
+impl ResponseEnvelope<SearchPlaneIpcResponse> for SearchPlaneIpcResponseEnvelope {
+    fn from_parts(request_id: u64, payload: SearchPlaneIpcResponse) -> Self {
+        Self {
+            request_id,
+            payload,
+        }
+    }
+}
+
+impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
+    for SearchPlaneQueryIpcRequestEnvelope
+{
+    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneQueryIpcRequest) {
+        (self.request_id, self.payload)
+    }
+}
+
+impl ResponseEnvelope<quanta_index_contract::SearchPlaneQueryIpcResponse>
+    for SearchPlaneQueryIpcResponseEnvelope
+{
+    fn from_parts(
+        request_id: u64,
+        payload: quanta_index_contract::SearchPlaneQueryIpcResponse,
+    ) -> Self {
+        Self {
+            request_id,
+            payload,
+        }
+    }
+}
+
+impl RequestEnvelope<quanta_index_contract::SearchPlaneControlIpcRequest>
+    for SearchPlaneControlIpcRequestEnvelope
+{
+    fn into_parts(self) -> (u64, quanta_index_contract::SearchPlaneControlIpcRequest) {
+        (self.request_id, self.payload)
+    }
+}
+
+impl ResponseEnvelope<quanta_index_contract::SearchPlaneControlIpcResponse>
+    for SearchPlaneControlIpcResponseEnvelope
+{
+    fn from_parts(
+        request_id: u64,
+        payload: quanta_index_contract::SearchPlaneControlIpcResponse,
+    ) -> Self {
+        Self {
+            request_id,
+            payload,
+        }
+    }
 }
 
 /// Synchronous `AF_UNIX` stream server.
@@ -90,16 +159,24 @@ impl UdsServer {
     /// handled inline (phase-1: single-flight per connection); the listener is
     /// non-blocking, so an empty accept queue sleeps `accept_idle` before
     /// retrying.
-    pub fn run<D: QueryDispatcher + ?Sized>(
+    pub fn run<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
         &self,
         dispatcher: &Arc<D>,
         accept_idle: Duration,
-    ) -> Result<(), IpcError> {
+    ) -> Result<(), IpcError>
+    where
+        RequestEnvelopeT: RequestEnvelope<Request>,
+        ResponseEnvelopeT: ResponseEnvelope<Response>,
+        D: IpcDispatcher<Request, Response> + ?Sized,
+    {
         while !self.shutdown.load(Ordering::Acquire) {
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     let dispatcher = Arc::clone(dispatcher);
-                    handle_connection(stream, dispatcher.as_ref());
+                    handle_connection::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+                        stream,
+                        dispatcher.as_ref(),
+                    );
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(accept_idle);
@@ -137,7 +214,14 @@ impl ShutdownHandle {
 /// otherwise stall every other client.
 const CONNECTION_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn handle_connection<D: QueryDispatcher + ?Sized>(mut stream: UnixStream, dispatcher: &D) {
+fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+    mut stream: UnixStream,
+    dispatcher: &D,
+) where
+    RequestEnvelopeT: RequestEnvelope<Request>,
+    ResponseEnvelopeT: ResponseEnvelope<Response>,
+    D: IpcDispatcher<Request, Response> + ?Sized,
+{
     // Each connection may carry multiple sequential requests until close.
     if stream.set_nonblocking(false).is_err() {
         // Cannot operate the connection in blocking mode here; drop it.
@@ -155,16 +239,14 @@ fn handle_connection<D: QueryDispatcher + ?Sized>(mut stream: UnixStream, dispat
         return;
     }
     loop {
-        let request = match decode_request(&mut stream) {
+        let request = match decode_request::<RequestEnvelopeT, _>(&mut stream) {
             Ok(env) => env,
             Err(IpcError::Truncated) => return, // peer closed cleanly
             Err(_other_err) => return,          // framing / oversize / decode → close
         };
-        let response_payload = dispatcher.dispatch(request.payload);
-        let response = SearchPlaneIpcResponseEnvelope {
-            request_id: request.request_id,
-            payload: response_payload,
-        };
+        let (request_id, request_payload) = request.into_parts();
+        let response_payload = dispatcher.dispatch(request_payload);
+        let response = ResponseEnvelopeT::from_parts(request_id, response_payload);
         let Ok(frame) = encode_response(&response) else {
             return;
         };
@@ -176,13 +258,17 @@ fn handle_connection<D: QueryDispatcher + ?Sized>(mut stream: UnixStream, dispat
 }
 
 /// One-shot client: open a stream, send `request`, read one response.
-pub fn send_request(
+pub fn send_request<RequestEnvelopeT, ResponseEnvelopeT>(
     socket: &Path,
-    request: &SearchPlaneIpcRequestEnvelope,
-) -> Result<SearchPlaneIpcResponseEnvelope, IpcError> {
+    request: &RequestEnvelopeT,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
     let mut stream = UnixStream::connect(socket).map_err(IpcError::Io)?;
     let frame = encode_request(request)?;
     stream.write_all(&frame).map_err(IpcError::Io)?;
-    let response = decode_response(&mut stream)?;
+    let response = decode_response::<ResponseEnvelopeT, _>(&mut stream)?;
     Ok(response)
 }

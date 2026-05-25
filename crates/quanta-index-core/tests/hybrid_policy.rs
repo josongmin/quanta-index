@@ -31,6 +31,13 @@ fn g(n: u64) -> ManifestGeneration {
     ManifestGeneration::new(n)
 }
 
+fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
+    match result {
+        Err(CoreError::Typed { code, .. }) => code,
+        other => format!("unexpected result: {other:?}"),
+    }
+}
+
 #[test]
 fn joint_readiness_both_ahead_is_ok() -> TestResult {
     HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(5)), Some(g(5)))?;
@@ -54,6 +61,35 @@ fn joint_readiness_sem_behind_is_not_ready() {
 fn joint_readiness_both_unsealed_is_not_ready() {
     let result = HybridOrchestratorPolicy::validate_joint_readiness(g(1), None, None);
     assert!(matches!(result, Err(CoreError::NotReady(_))));
+}
+
+#[test]
+fn hybrid_top_k_zero_is_invalid() {
+    assert_eq!(
+        typed_code_or_debug(HybridOrchestratorPolicy::validate_top_k(0)),
+        "HYB_TOP_K_INVALID"
+    );
+}
+
+#[test]
+fn hybrid_top_k_above_ceiling_is_invalid() {
+    assert_eq!(
+        typed_code_or_debug(HybridOrchestratorPolicy::validate_top_k(
+            quanta_index_core::SemanticPolicy::max_top_k() + 1,
+        )),
+        "HYB_TOP_K_INVALID"
+    );
+}
+
+#[test]
+fn hybrid_overfetch_applies_floor_and_ceiling() {
+    assert_eq!(HybridOrchestratorPolicy::over_fetch_top_k(1), 100);
+    assert_eq!(HybridOrchestratorPolicy::over_fetch_top_k(50), 100);
+    assert_eq!(HybridOrchestratorPolicy::over_fetch_top_k(500), 500);
+    assert_eq!(
+        HybridOrchestratorPolicy::over_fetch_top_k(20_000),
+        quanta_index_core::SemanticPolicy::max_top_k()
+    );
 }
 
 #[test]

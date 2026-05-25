@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum CoreError {
     #[error("invalid contract: {0}")]
     InvalidContract(String),
+    #[error("typed failure {code}: {message}")]
+    Typed { code: String, message: String },
     #[error("not ready: {0}")]
     NotReady(String),
     #[error("not implemented: {0}")]

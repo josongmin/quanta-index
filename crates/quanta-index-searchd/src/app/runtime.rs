@@ -3,63 +3,67 @@
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
-use quanta_index_channel::{open_lexical_subscriber, open_semantic_subscriber};
+use quanta_index_channel::{LexicalWalSubscriber, SemanticWalSubscriber};
+use quanta_index_contract::{
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse,
+};
 use quanta_index_core::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
 };
-use quanta_index_lexical::LexicalAdapter;
-use quanta_index_repomap::RepoMapGenerationStore;
-use quanta_index_semantic::SemanticAdapter;
+use quanta_index_ipc::IpcDispatcher;
+use quanta_index_search_plane::{
+    ActivationCatalog, ChannelDispatcher, Ledger, SearchPlaneControlDispatcher,
+    SearchPlaneDispatcher,
+};
 
 use crate::app::config::SearchdConfig;
-use crate::app::dispatcher::ChannelDispatcher;
-use crate::app::query::SearchPlaneDispatcher;
-use crate::app::server::QueryServer;
-use crate::runtime::Ledger;
+use crate::app::ipc_dispatcher::{SearchPlaneControlIpcAdapter, SearchPlaneQueryIpcAdapter};
+use crate::app::server::{SearchPlaneControlServer, SearchPlaneQueryServer};
+
+pub struct SearchdRuntimeParts {
+    pub lex_sub: LexicalWalSubscriber,
+    pub sem_sub: SemanticWalSubscriber,
+    pub lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+    pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+    pub sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
+    pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+    pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
+    pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
+    pub activation_catalog: Arc<ActivationCatalog>,
+}
 
 /// Composed runtime: subscribers, adapters, ledger, dispatcher, query server.
 pub struct SearchdRuntime {
     pub config: SearchdConfig,
     pub dispatcher: ChannelDispatcher,
-    pub query_server: QueryServer,
-    pub repo_map_store: Arc<RepoMapGenerationStore>,
+    pub query_server: SearchPlaneQueryServer<
+        dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
+    >,
+    pub control_server: SearchPlaneControlServer<
+        dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
+    >,
+    pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
 }
 
 impl SearchdRuntime {
-    /// Build all components from the resolved config.
-    pub fn build(config: SearchdConfig) -> Result<Self> {
-        let state_root = config.state_root().to_path_buf();
-        let lex_sub = open_lexical_subscriber(&state_root)?;
-        let sem_sub = open_semantic_subscriber(&state_root)?;
-
-        let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
-            state_root.join("indexes/lexical"),
-        ));
-        let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::new());
-        let repo_map_store = Arc::new(
-            RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
-                .map_err(anyhow::Error::from)?,
-        );
+    /// Assemble the runtime from externally-supplied subscribers and ports.
+    pub fn assemble(config: SearchdConfig, parts: SearchdRuntimeParts) -> Result<Self> {
+        let SearchdRuntimeParts {
+            lex_sub,
+            sem_sub,
+            lex_build_port,
+            lex_open_port,
+            sem_build_port,
+            sem_open_port,
+            repo_map_query_port,
+            repo_map_bundle_ingest_port,
+            repo_map_generation_activate_port,
+            activation_catalog,
+        } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-
-        // Upcast the concrete adapters to their domain port trait objects. The
-        // composition root is the only place that names the concrete adapter
-        // types; downstream collaborators depend on the ports only.
-        let lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync> =
-            Arc::clone(&lex_adapter) as _;
-        let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter as _;
-        let sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync> =
-            Arc::clone(&sem_adapter) as _;
-        let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter as _;
-        let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> =
-            Arc::clone(&repo_map_store) as _;
-        let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
-            Arc::clone(&repo_map_store) as _;
-        let repo_map_generation_activate_port: Arc<
-            dyn RepoMapGenerationActivatePort + Send + Sync,
-        > = Arc::clone(&repo_map_store) as _;
-
         let dispatcher = ChannelDispatcher::new(
             lex_sub,
             sem_sub,
@@ -68,22 +72,43 @@ impl SearchdRuntime {
             Arc::clone(&ledger),
         );
 
-        let plane_dispatcher = Arc::new(SearchPlaneDispatcher::new(
+        let query_dispatcher = Arc::new(SearchPlaneDispatcher::new(
             lex_open_port,
             sem_open_port,
+            Arc::clone(&repo_map_query_port),
+            Arc::clone(&ledger),
+            activation_catalog.clone(),
+        ));
+        let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
-            repo_map_query_port,
-            Arc::clone(&ledger),
+            activation_catalog,
         ));
-        let query_server = QueryServer::bind(config.socket_path(), plane_dispatcher)
-            .map_err(anyhow::Error::from)?;
+        let query_adapter: Arc<
+            dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
+        > = Arc::new(SearchPlaneQueryIpcAdapter::new(query_dispatcher));
+        let query_server = SearchPlaneQueryServer::bind(
+            "quanta-index-query-uds",
+            config.query_socket_path(),
+            query_adapter,
+        )
+        .map_err(anyhow::Error::from)?;
+        let control_adapter: Arc<
+            dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
+        > = Arc::new(SearchPlaneControlIpcAdapter::new(control_dispatcher));
+        let control_server = SearchPlaneControlServer::bind(
+            "quanta-index-control-uds",
+            config.control_socket_path(),
+            control_adapter,
+        )
+        .map_err(anyhow::Error::from)?;
 
         Ok(Self {
             config,
             dispatcher,
             query_server,
-            repo_map_store,
+            control_server,
+            repo_map_query_port,
         })
     }
 }

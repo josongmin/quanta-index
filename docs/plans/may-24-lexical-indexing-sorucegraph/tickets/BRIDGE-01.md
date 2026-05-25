@@ -1,7 +1,13 @@
 # BRIDGE-01 — Sourcegraph ↔ LQ Bridge Translator + Producer-Bridge Surface
 
+> Status: `shipped`
+> Crate: `quanta-index-lq-bridge`
+> Tests: 70
+> Last verified: 2026-05-25
 > Wave 8 ticket. Source: [rfc.md § BRIDGE-01](../rfc.md), [rfc.md § Claim Discipline](../rfc.md) (claim 8–10 Sourcegraph subset claim), [feature-scope.md § 1.4 Bridge](../feature-scope.md), [feature-scope.md § 1.5 Bridge directives](../feature-scope.md), [usecase.md § UC-BR-01..04](../usecase.md), [dsl.md § 9 Directive grammar](../dsl.md), [implementation-plan.md § 5.16 BRIDGE-01](../implementation-plan.md), [implementation-plan.md Appendix A — FS-GAP-2](../implementation-plan.md).
 > Posture: **breaking-first**. No long-lived shims. No silent fallback. No silent widening of subset claim.
+>
+> Shipped Sourcegraph→LQ one-way translator over 14 `SgFilter` variants. Bucket table (adopted / normalized / refused) is the canonical subset-claim evidence. Sourcegraph reference pin: `sg-5.5.0`.
 
 ---
 
@@ -319,23 +325,23 @@ Anti-perf: there is no opt-in to silently shrink the candidate set to fit a down
 
 ## 11. Definition of Done (provable)
 
-Each item is provable via a concrete artifact path. Missing evidence = `blocked`, not `ok`, per [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) and [CLAUDE.md § Claude Supplements](../../../../CLAUDE.md).
+Each item is provable via a concrete artifact path. Missing evidence = `blocked`, not `ok`, per [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) and [CLAUDE.md § Claude Supplements](../../../../CLAUDE.md). All 15 rows shipped (70 tests in `quanta-index-lq-bridge`). Sourcegraph anchor pin: `sg-5.5.0`.
 
-1. **`SourcegraphToLqTranslator::translate` shipped.** Provable by: `crates/quanta-index-bridge/src/sg2lq.rs` exists; `cargo test -p quanta-index-bridge` green.
-2. **Subset table locked.** Provable by: §6.1 table in this ticket plus matching test in `crates/quanta-index-bridge/tests/sg_subset_table.rs`; every row corresponds to a green or expected-failure test.
-3. **`BridgeCandidatePacket` round-trips contract validator.** Provable by: `cargo test -p quanta-index-contract --test bridge_candidate_packet_roundtrip` green; 10k property iterations on x86_64 + aarch64.
-4. **CodeQL invocation builder accepts.** Provable by: integration test in `crates/quanta-index-bridge/tests/codeql_route_mock.rs` green with `into:codeql` + mock sink.
-5. **UC-BR-01..04 promoted to green.** Provable by: `cargo test -p quanta-index-contract --test lq_conformance --filter UC-BR-` green; corpus rows in `tools/ci/conformance/lq/bridge/` exist and pass.
-6. **AC-13 returns `PLAN_UNSUPPORTED_COMBO`.** Provable by: `tools/ci/conformance/lq/bridge/AC-13.toml` exists; `cargo test --filter AC-13` green.
-7. **Bridge error set §8.1 verbatim in both RFC and feature-scope.md.** Provable by: `crates/quanta-index-bridge/tests/error_taxonomy_lock.rs` green (reads both docs, asserts the set).
-8. **Sourcegraph pin recorded.** Provable by: [feature-scope.md § 5.0 Anchor pin](../feature-scope.md) subsection exists with concrete release tag + Zoekt commit hash + ISO date; `tools/ci/lint/lint-sg-pin.py` green.
-9. **Negative tests for refused constructs pass.** Provable by: §6.3 list — one golden file per row in `tools/ci/conformance/lq/bridge/refused/` with expected `BRIDGE_UNSUPPORTED_*` code.
-10. **p99 translate ≤ 1 ms.** Provable by: criterion output `bridge_01_translate_p99` p99 ≤ 1000 µs on x86_64 CI runner; bench artifact uploaded.
-11. **OTel span `lq.bridge` emits attributes per §7.1.** Provable by: `tools/ci/lint/lint-span-schema.py` green (cardinality + attribute set check) — see OBS-01 §6.3.
-12. **No proc-macro serde derives in `quanta-index-bridge`.** Provable by: semgrep rule `rust-no-serde-derive` ([tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)) green.
-13. **Cross-instance reproducibility step covers bridge envelope.** Provable by: CI step `cross-instance-reproducibility` runs the bridge corpus and asserts byte-identical CBOR.
-14. **ADR-008 (or successor) recorded for routing decision.** Provable by: `docs/adr/ADR-008-sourcegraph-routing.md` exists with the lock from Step 5.8.
-15. **RFC § Claim Discipline item 1 ("Sourcegraph-compatible lexical core") is now provable.** Provable by: every `SG=` and `SG~` row in [usecase.md](../usecase.md) green; subset table §6.1 complete; parity drift report from [implementation-plan.md § Glossary](../implementation-plan.md) is empty or all entries explicitly accepted via RFC amendment commits.
+1. ✓ shipped — **`SourcegraphToLqTranslator::translate` shipped** (one-way Sourcegraph→LQ over 14 `SgFilter` variants). Provable by: `crates/quanta-index-lq-bridge/src/sg2lq.rs` exists; `cargo test -p quanta-index-lq-bridge` green.
+2. ✓ shipped — **Subset table locked** (adopted / normalized / refused bucket table). Provable by: §6.1 table in this ticket plus matching test in `crates/quanta-index-lq-bridge/tests/sg_subset_table.rs`; every row corresponds to a green or expected-failure test.
+3. ✓ shipped — **`BridgeCandidatePacket` round-trips contract validator.** Provable by: `cargo test -p quanta-index-contract --test bridge_candidate_packet_roundtrip` green; 10k property iterations on x86_64 + aarch64.
+4. ✓ shipped — **CodeQL invocation builder accepts.** Provable by: integration test in `crates/quanta-index-lq-bridge/tests/codeql_route_mock.rs` green with `into:codeql` + mock sink.
+5. ✓ shipped — **UC-BR-01..04 promoted to green.** Provable by: `cargo test -p quanta-index-contract --test lq_conformance --filter UC-BR-` green; corpus rows in `tools/ci/conformance/lq/bridge/` exist and pass.
+6. ✓ shipped — **AC-13 returns `PLAN_UNSUPPORTED_COMBO`.** Provable by: `tools/ci/conformance/lq/bridge/AC-13.toml` exists; `cargo test --filter AC-13` green.
+7. ✓ shipped — **Bridge error set §8.1 verbatim in both RFC and feature-scope.md.** Provable by: `crates/quanta-index-lq-bridge/tests/error_taxonomy_lock.rs` green (reads both docs, asserts the set).
+8. ✓ shipped — **Sourcegraph pin recorded** (`sg-5.5.0`). Provable by: [feature-scope.md § 5.0 Anchor pin](../feature-scope.md) subsection exists with concrete release tag + Zoekt commit hash + ISO date; `tools/ci/lint/lint-sg-pin.py` green.
+9. ✓ shipped — **Negative tests for refused constructs pass.** Provable by: §6.3 list — one golden file per row in `tools/ci/conformance/lq/bridge/refused/` with expected `BRIDGE_UNSUPPORTED_*` code.
+10. ✓ shipped — **p99 translate ≤ 1 ms.** Provable by: criterion output `bridge_01_translate_p99` p99 ≤ 1000 µs on x86_64 CI runner; bench artifact uploaded.
+11. ✓ shipped — **OTel span `lq.bridge` emits attributes per §7.1.** Provable by: `tools/ci/lint/lint-span-schema.py` green (cardinality + attribute set check) — see OBS-01 §6.3.
+12. ✓ shipped — **No proc-macro serde derives in `quanta-index-lq-bridge`.** Provable by: semgrep rule `rust-no-serde-derive` ([tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)) green.
+13. ✓ shipped — **Cross-instance reproducibility step covers bridge envelope.** Provable by: CI step `cross-instance-reproducibility` runs the bridge corpus and asserts byte-identical CBOR.
+14. ✓ shipped — **ADR-008 (or successor) recorded for routing decision.** Provable by: `docs/adr/ADR-008-sourcegraph-routing.md` exists with the lock from Step 5.8.
+15. ✓ shipped — **RFC § Claim Discipline item 1 ("Sourcegraph-compatible lexical core") is now provable.** Provable by: every `SG=` and `SG~` row in [usecase.md](../usecase.md) green; subset table §6.1 complete; parity drift report from [implementation-plan.md § Glossary](../implementation-plan.md) is empty or all entries explicitly accepted via RFC amendment commits.
 
 ## 12. Open questions
 
@@ -363,5 +369,7 @@ Each item is provable via a concrete artifact path. Missing evidence = `blocked`
 - [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — structured agent output schema.
 - [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive`.
 - [tools/ci/lint/lint-doc-paths.py](../../../../tools/ci/lint/lint-doc-paths.py) — doc path linter.
+- [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT.
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6).
 
 > End of BRIDGE-01.

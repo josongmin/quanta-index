@@ -869,6 +869,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "proptest",
+ "quanta-index-lq-norm",
  "serde",
  "serde_json",
 ]
@@ -898,6 +899,7 @@ dependencies = [
 name = "quanta-index-lexical"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
  "tantivy",
@@ -910,6 +912,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "proptest",
+ "quanta-index-contract",
  "serde",
 ]
 
@@ -1060,7 +1063,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta-index-search-plane"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ciborium",
+ "quanta-index-channel",
+ "quanta-index-contract",
+ "quanta-index-core",
+ "quanta-index-lq-bridge",
+ "quanta-index-lq-norm",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "quanta-index-searchctl"
+version = "0.1.0"
+dependencies = [
+ "quanta-index-contract",
+ "quanta-index-ipc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "quanta-index-searchd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quanta-index-channel",
+ "quanta-index-contract",
+ "quanta-index-core",
+ "quanta-index-ipc",
+ "quanta-index-search-plane",
+ "tokio",
+]
+
+[[package]]
+name = "quanta-index-searchd-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1070,10 +1111,12 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-ipc",
  "quanta-index-lexical",
+ "quanta-index-lq-bridge",
  "quanta-index-repomap",
+ "quanta-index-search-plane",
+ "quanta-index-searchd",
  "quanta-index-semantic",
  "tempfile",
- "tokio",
 ]
 
 [[package]]

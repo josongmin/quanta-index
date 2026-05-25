@@ -39,7 +39,10 @@ impl fmt::Display for CommitShaParseError {
                 )
             }
             Self::NonHexChar { position } => {
-                write!(formatter, "CommitSha hex has non-hex char at position {position}")
+                write!(
+                    formatter,
+                    "CommitSha hex has non-hex char at position {position}"
+                )
             }
         }
     }
@@ -73,25 +76,35 @@ impl CommitSha {
     /// alternate form; failure surfaces a typed [`CommitShaParseError`].
     pub fn from_hex(value: &str) -> Result<Self, CommitShaParseError> {
         if value.len() != COMMIT_SHA_HEX_LEN {
-            return Err(CommitShaParseError::BadLength { observed: value.len() });
+            return Err(CommitShaParseError::BadLength {
+                observed: value.len(),
+            });
         }
         let mut bytes = [0u8; COMMIT_SHA_BYTE_LEN];
         let raw = value.as_bytes();
         let mut idx = 0usize;
         while idx < COMMIT_SHA_BYTE_LEN {
             let Some(hi_idx) = idx.checked_mul(2) else {
-                return Err(CommitShaParseError::BadLength { observed: value.len() });
+                return Err(CommitShaParseError::BadLength {
+                    observed: value.len(),
+                });
             };
             let Some(lo_idx) = hi_idx.checked_add(1) else {
-                return Err(CommitShaParseError::BadLength { observed: value.len() });
+                return Err(CommitShaParseError::BadLength {
+                    observed: value.len(),
+                });
             };
             // SAFETY-equivalent comment: indexing is bounded by the explicit
             // length check above; we surface a typed error rather than slicing.
             let Some(&hi) = raw.get(hi_idx) else {
-                return Err(CommitShaParseError::BadLength { observed: value.len() });
+                return Err(CommitShaParseError::BadLength {
+                    observed: value.len(),
+                });
             };
             let Some(&lo) = raw.get(lo_idx) else {
-                return Err(CommitShaParseError::BadLength { observed: value.len() });
+                return Err(CommitShaParseError::BadLength {
+                    observed: value.len(),
+                });
             };
             let Some(hi_v) = decode_nibble(hi) else {
                 return Err(CommitShaParseError::NonHexChar { position: hi_idx });
@@ -100,7 +113,9 @@ impl CommitSha {
                 return Err(CommitShaParseError::NonHexChar { position: lo_idx });
             };
             let Some(byte_ref) = bytes.get_mut(idx) else {
-                return Err(CommitShaParseError::BadLength { observed: value.len() });
+                return Err(CommitShaParseError::BadLength {
+                    observed: value.len(),
+                });
             };
             // `hi_v << 4` cannot overflow: `hi_v < 16`, shift is 4, result
             // fits in u8.
@@ -340,8 +355,7 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, COMMIT_RECORD_FIELDS)),
             }
         }
-        let wire_version =
-            wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
+        let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
         let sha = sha.ok_or_else(|| de::Error::missing_field("sha"))?;
         let parents = parents.ok_or_else(|| de::Error::missing_field("parents"))?;
         let applied_at_ms =

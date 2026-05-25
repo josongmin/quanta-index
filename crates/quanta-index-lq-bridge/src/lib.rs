@@ -1,21 +1,23 @@
 #![forbid(unsafe_code)]
 
-//! BRIDGE-01 — Sourcegraph → LQ translator (one-way).
+//! BRIDGE-01 — Sourcegraph → LQ translator plus bridge packet export helpers.
 //!
 //! This crate is the `sg2lq` surface from
 //! [BRIDGE-01](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md).
 //! It accepts a Sourcegraph-syntax query string, lowers the
-//! documented subset into a typed [`LqDirective`] tree, and emits a
-//! [`BridgeCandidate`] envelope stamped with [`TRANSLATOR_VERSION`].
+//! documented subset into a typed [`LqDirective`] tree, emits a
+//! [`BridgeCandidate`] envelope stamped with [`TRANSLATOR_VERSION`],
+//! and can export active bridge packets for downstream CodeQL-facing
+//! consumers.
 //!
 //! ## Scope lock
 //!
 //! * One-way: Sourcegraph → LQ. The reverse direction is **explicitly
 //!   out of scope** (RFC § Claim Discipline item 4 / § Compatibility
 //!   Rules: `Sourcegraph query ⊂ LQ`, not bijective).
-//! * `CodeQL` bridge / sink wiring is a SEPARATE ticket. This crate
-//!   does not embed an LQ executor, a sink router, or an `OTel`
-//!   emitter.
+//! * This crate owns Sourcegraph translation plus bridge packet
+//!   shaping. It does **not** embed an LQ executor, a sink router, or
+//!   an `OTel` emitter.
 //! * Subset table buckets (adopted / normalized / refused) are codified
 //!   in [`crate::translator`].
 //!
@@ -40,12 +42,14 @@
 
 pub mod candidate;
 pub mod errors;
+pub mod packet;
 pub mod syntax;
 pub mod translator;
 pub mod version;
 
 pub use candidate::BridgeCandidate;
 pub use errors::{BridgeError, BridgeErrorCode};
+pub use packet::export_bridge_candidate_packet;
 pub use syntax::{SgFilter, SgQuery, parse_sourcegraph};
 pub use translator::{LqDirective, translate};
 pub use version::{SUPPORTED_SG_VERSION, SourcegraphVersionTag, TRANSLATOR_VERSION};

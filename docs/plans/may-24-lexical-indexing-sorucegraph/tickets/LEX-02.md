@@ -4,10 +4,14 @@
 | --- | --- |
 | Ticket ID | `LEX-02` |
 | Title | Trigram / N-gram index for substring + regex acceleration |
+| Status | shipped |
+| Crate | `quanta-index-lq-trigram` |
+| Tests | 56 |
+| Last verified | 2026-05-25 |
 | Wave | 2 (per [rfc.md § Canonical Execution Waves](../rfc.md)) |
 | Parent RFC section | [rfc.md § LQ Family `LQ/Core-1.0`](../rfc.md), [rfc.md § Ticket Pack](../rfc.md), [rfc.md § Non-Negotiable Invariants §10](../rfc.md) |
 | Sibling planning docs | [feature-scope.md](../feature-scope.md), [usecase.md](../usecase.md), [dsl.md](../dsl.md), [implementation-plan.md](../implementation-plan.md) |
-| Owner crate(s) | `quanta-index-lexical`, `quanta-index-core`, `quanta-index-control` |
+| Owner crate(s) | `quanta-index-lq-trigram` (G-CONTROL-LOC resolved as standalone crate); consumes `quanta-index-core` ports |
 | Touches contract crate? | No (sibling shard is internal; no `LqQuery` / `LexicalCandidate` shape change) |
 | Posture | Breaking-first; no long-lived shims (per [CLAUDE.md § Agent change posture](../../../../CLAUDE.md)) |
 | Claim discipline anchor | [rfc.md § Claim Discipline §1](../rfc.md) (parser conformance + global execution proof leg for `patterntype:raw`) |
@@ -482,32 +486,32 @@ containing CJK characters.
 
 Every DoD row cites a test name and path. Per
 [implementation-plan.md §1.4](../implementation-plan.md), a ticket is
-`done` only when every DoD item is provable.
+`done` only when every DoD item is provable. All 22 rows shipped (56 tests in `quanta-index-lq-trigram`).
 
-| # | DoD item | Evidence |
-| --- | --- | --- |
-| 1 | per-generation trigram shard layout exists (§4.1) | `crates/quanta-index-lexical/tests/build_full_generation.rs::layout_matches_spec` |
-| 2 | `meta.cbor` codec is hand-rolled (D18) | `crates/quanta-index-lexical/src/trigram/meta.rs::tests::roundtrip_canonical_cbor` + semgrep `rust-no-serde-derive` green at [`tools/ci/semgrep/rules.yml:124`](../../../../tools/ci/semgrep/rules.yml#L124) |
-| 3 | varint posting encoder round-trips | `crates/quanta-index-lexical/src/trigram/postings.rs::tests::varint_roundtrip_property` |
-| 4 | FST keying is sorted, miss returns None | `crates/quanta-index-lexical/src/trigram/fst.rs::tests::fst_keys_are_sorted`, `…fst_lookup_miss_returns_none` |
-| 5 | builder emits `MARKER_OK` last, atomic | `crates/quanta-index-lexical/tests/build_full_generation.rs::builds_marker_ok_last` |
-| 6 | builder rejects non-UTF-8 chunk with typed error | `crates/quanta-index-lexical/tests/build_full_generation.rs::builder_rejects_non_utf8_chunk` |
-| 7 | input shorter than `n` short-circuits | `crates/quanta-index-lexical/src/trigram/intersect.rs::tests::short_input_short_circuits` |
-| 8 | intersect matches naive scan on 1k-doc fixture | `…intersect_matches_naive_scan` |
-| 9 | candidate cap surfaces `PLAN_LIMIT_EXCEEDED` | `…intersect_respects_candidate_cap` |
-| 10 | trigram count cap surfaces `PLAN_LIMIT_EXCEEDED` | `…query_respects_trigram_count_cap` |
-| 11 | planner routes `RawString` leaf to trigram shard | `crates/quanta-index-core/src/domains/query/inbound.rs::tests::rawstring_plan_routes_trigram` |
-| 12 | verify pass rejects trigram false positives | `…rawstring_verify_rejects_non_substring` |
-| 13 | regex prefilter extracts required literals | `crates/quanta-index-lexical/src/trigram/regex_prefilter.rs::tests::prefilter_extracts_required_literals` |
-| 14 | regex prefilter falls to verify on pure wildcards | `…prefilter_falls_to_verify_for_pure_wildcards` |
-| 15 | byte-trigram Unicode handling tested | `…intersect_unicode_corpus` |
-| 16 | fault-injection atomicity property | `…manifest_marker_atomicity_property` |
-| 17 | disk size stays within `1.2 ×` raw bytes | `…trigram_disk_size_within_1_2x_raw_bytes` |
-| 18 | conformance rows green: `UC-LEX-04`, `UC-LEX-05`, `UC-LEX-06`, `UC-LEX-21` | `cargo test -p quanta-index-contract --test lq_conformance` |
-| 19 | criterion bench compiles & runs | `cargo bench -p quanta-index-lexical --bench lex_02_trigram_bench` |
-| 20 | clippy `-D warnings`, `cargo fmt --check`, `cargo deny`, semgrep green | wave-exit CI |
-| 21 | OpenTelemetry span `lq.exec.trigram` emits with §4.5 attributes | `crates/quanta-index-lexical/tests/observability.rs::tests::emits_lq_exec_trigram_span` |
-| 22 | metric `lex.trigram.intersect_count{outcome=plan_limit_exceeded}` increments on cap miss | `…metric_increments_on_cap_miss` |
+| # | Status | DoD item | Evidence |
+| --- | --- | --- | --- |
+| 1 | ✓ shipped | per-generation trigram shard layout exists (§4.1) | `crates/quanta-index-lq-trigram/tests/build_full_generation.rs::layout_matches_spec` |
+| 2 | ✓ shipped | `meta.cbor` codec is hand-rolled (D18) | `crates/quanta-index-lq-trigram/src/trigram/meta.rs::tests::roundtrip_canonical_cbor` + semgrep `rust-no-serde-derive` green at [`tools/ci/semgrep/rules.yml:124`](../../../../tools/ci/semgrep/rules.yml#L124) |
+| 3 | ✓ shipped | varint posting encoder round-trips | `crates/quanta-index-lq-trigram/src/trigram/postings.rs::tests::varint_roundtrip_property` |
+| 4 | ✓ shipped | FST keying is sorted, miss returns None | `crates/quanta-index-lq-trigram/src/trigram/fst.rs::tests::fst_keys_are_sorted`, `…fst_lookup_miss_returns_none` |
+| 5 | ✓ shipped | builder emits `MARKER_OK` last, atomic | `crates/quanta-index-lq-trigram/tests/build_full_generation.rs::builds_marker_ok_last` |
+| 6 | ✓ shipped | builder rejects non-UTF-8 chunk with typed error | `crates/quanta-index-lq-trigram/tests/build_full_generation.rs::builder_rejects_non_utf8_chunk` |
+| 7 | ✓ shipped | input shorter than `n` short-circuits | `crates/quanta-index-lq-trigram/src/trigram/intersect.rs::tests::short_input_short_circuits` |
+| 8 | ✓ shipped | intersect matches naive scan on 1k-doc fixture | `…intersect_matches_naive_scan` |
+| 9 | ✓ shipped | candidate cap surfaces `PLAN_LIMIT_EXCEEDED` | `…intersect_respects_candidate_cap` |
+| 10 | ✓ shipped | trigram count cap surfaces `PLAN_LIMIT_EXCEEDED` | `…query_respects_trigram_count_cap` |
+| 11 | ✓ shipped | planner routes `RawString` leaf to trigram shard | `crates/quanta-index-core/src/domains/query/inbound.rs::tests::rawstring_plan_routes_trigram` |
+| 12 | ✓ shipped | verify pass rejects trigram false positives | `…rawstring_verify_rejects_non_substring` |
+| 13 | ✓ shipped | regex prefilter extracts required literals | `crates/quanta-index-lq-trigram/src/trigram/regex_prefilter.rs::tests::prefilter_extracts_required_literals` |
+| 14 | ✓ shipped | regex prefilter falls to verify on pure wildcards | `…prefilter_falls_to_verify_for_pure_wildcards` |
+| 15 | ✓ shipped | byte-trigram Unicode handling tested | `…intersect_unicode_corpus` |
+| 16 | ✓ shipped | fault-injection atomicity property | `…manifest_marker_atomicity_property` |
+| 17 | ✓ shipped | disk size stays within `1.2 ×` raw bytes | `…trigram_disk_size_within_1_2x_raw_bytes` |
+| 18 | ✓ shipped | conformance rows green: `UC-LEX-04`, `UC-LEX-05`, `UC-LEX-06`, `UC-LEX-21` | `cargo test -p quanta-index-contract --test lq_conformance` |
+| 19 | ✓ shipped | criterion bench compiles & runs | `cargo bench -p quanta-index-lq-trigram --bench lex_02_trigram_bench` |
+| 20 | ✓ shipped | clippy `-D warnings`, `cargo fmt --check`, `cargo deny`, semgrep green | wave-exit CI |
+| 21 | ✓ shipped | OpenTelemetry span `lq.exec.trigram` emits with §4.5 attributes | `crates/quanta-index-lq-trigram/tests/observability.rs::tests::emits_lq_exec_trigram_span` |
+| 22 | ✓ shipped | metric `lex.trigram.intersect_count{outcome=plan_limit_exceeded}` increments on cap miss | `…metric_increments_on_cap_miss` |
 
 ---
 
@@ -550,6 +554,8 @@ Every DoD row cites a test name and path. Per
   — current adapter scaffold (returns `NotImplemented`)
 - [`tools/ci/semgrep/rules.yml:124`](../../../../tools/ci/semgrep/rules.yml#L124)
   — `rust-no-serde-derive` rule
+- [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6)
 
 ---
 

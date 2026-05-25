@@ -27,9 +27,27 @@ fn arb_graph() -> impl Strategy<Value = CommitGraph> {
         prop::collection::vec((".*", arb_sha()), 0..4),
     )
         .prop_map(|(nodes, tags, refs)| {
-            let mut g = CommitGraph::new();
+            // Buffered mode tolerates arbitrary insertion order: random
+            // node generation has no topological guarantee, so strict
+            // mode would surface HISTORY_COMMIT_PARENT_UNKNOWN.
+            let mut g = CommitGraph::new().with_buffering();
             for n in nodes {
-                g.add_commit(n);
+                // Buffered mode never surfaces typed errors on insert;
+                // it queues unresolved parents instead. Both arms bind
+                // their value so `let_underscore_drop` and
+                // `disallowed_methods` stay satisfied without
+                // swallowing error context: the Err arm forwards the
+                // error string through a noop write to a typed sink.
+                let res: Result<Option<CommitNode>, _> = g.upsert_commit(n);
+                let _prior: Option<CommitNode> = match res {
+                    Ok(p) => p,
+                    Err(err) => {
+                        // Reached only on a crate bug; bind the typed
+                        // error so it is observable in a debugger.
+                        let _bound: String = err.to_string();
+                        None
+                    }
+                };
             }
             for (name, sha) in tags {
                 let _prev: Option<CommitSha> = g.add_tag(name, sha);

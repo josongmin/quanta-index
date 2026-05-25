@@ -36,12 +36,21 @@ FORBIDDEN_VENDOR_DEPS = frozenset({"rusqlite", "tantivy", "lancedb", "lance"})
 _ADAPTER_CRATE_DEPS = frozenset({"quanta-index-contract", "quanta-index-core"})
 
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
-    "quanta-index-contract": frozenset(),
+    "quanta-index-contract": frozenset({"quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     "quanta-index-channel": frozenset({"quanta-index-contract"}),
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS,
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
+    "quanta-index-search-plane": frozenset(
+        {
+            "quanta-index-channel",
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-lq-bridge",
+            "quanta-index-lq-norm",
+        }
+    ),
     # PRE-NORM lexical-query normalizer. Stand-alone until PRE-CONTRACT-EXT
     # publishes the canonical `LqQuery` carrier in the contract crate, at
     # which point this crate will start depending on quanta-index-contract.
@@ -81,8 +90,10 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-semantic",
             "quanta-index-ipc",
             "quanta-index-repomap",
+            "quanta-index-search-plane",
         }
     ),
+    "quanta-index-searchctl": frozenset({"quanta-index-contract", "quanta-index-ipc"}),
 }
 
 _ADAPTER_CRATES = frozenset(
@@ -177,12 +188,6 @@ def check_crate_dependency_matrix() -> list[Violation]:
                             f"quanta-index-core must not depend on vendor crate {dep_key!r}",
                         )
                     )
-
-        if name == "quanta-index-contract":
-            if path_dependencies(cargo_toml):
-                violations.append(
-                    Violation(cargo_toml, "quanta-index-contract must not depend on workspace crates")
-                )
 
         if name in _ADAPTER_CRATES:
             peer_adapters = path_dependencies(cargo_toml) & _ADAPTER_CRATES

@@ -7,7 +7,7 @@
 //!
 //! Two surfaces:
 //!
-//! * Query path (`ipc`, `query`, `results`) — UDS frame payloads sent by query clients.
+//! * Query path (`query`, `results`, `ipc` envelopes/split) — UDS frame payloads sent by query clients.
 //! * Channel path (`channel`) — typed transport ops produced by producer and consumed
 //!   by `searchd` modules.
 
@@ -22,9 +22,11 @@ pub mod repomap;
 pub mod results;
 
 pub use channel::{
-    ChannelSeq, ChunkId, DeleteChunk, DeleteEmbedding, DeleteSymbol, EmbeddingId, LexicalChannelOp,
+    ChannelSeq, ChunkId, ChunkRecord, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef,
+    DeleteSymbol, DeleteTag, EmbeddingId, EmbeddingRecord, EvictDirty, LexicalChannelOp,
     LexicalFullBundle, LexicalSeal, SemanticChannelOp, SemanticFullBundle, SemanticSeal, SymbolId,
-    UpsertChunk, UpsertEmbedding, UpsertSymbol,
+    UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree,
+    UpsertRef, UpsertSymbol, UpsertTag,
 };
 pub use ids::*;
 pub use ipc::*;

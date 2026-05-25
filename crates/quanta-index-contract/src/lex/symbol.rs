@@ -476,8 +476,7 @@ impl<'de> Visitor<'de> for SymbolRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, SYMBOL_RECORD_FIELDS)),
             }
         }
-        let wire_version =
-            wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
+        let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
         let name = name.ok_or_else(|| de::Error::missing_field("name"))?;
         let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
         let span = span.ok_or_else(|| de::Error::missing_field("span"))?;
@@ -485,8 +484,7 @@ impl<'de> Visitor<'de> for SymbolRecordVisitor {
         let parent = parent.ok_or_else(|| de::Error::missing_field("parent"))?;
         let container_name =
             container_name.ok_or_else(|| de::Error::missing_field("container_name"))?;
-        let relationship =
-            relationship.ok_or_else(|| de::Error::missing_field("relationship"))?;
+        let relationship = relationship.ok_or_else(|| de::Error::missing_field("relationship"))?;
         Ok(SymbolRecord {
             wire_version,
             name: name.into_boxed_str(),

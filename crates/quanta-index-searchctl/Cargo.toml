@@ -1,0 +1,17 @@
+[package]
+name = "quanta-index-searchctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

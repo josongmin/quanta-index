@@ -1,31 +1,74 @@
 //! UDS query server wrapper that owns the [`UdsServer`] and runs it in a
 //! background thread on demand.
 
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_ipc::{IpcError, QueryDispatcher, ShutdownHandle as IpcShutdownHandle, UdsServer};
-
-use crate::app::query::SearchPlaneDispatcher;
+use quanta_index_contract::{
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope,
+};
+use quanta_index_ipc::{
+    IpcDispatcher, IpcError, RequestEnvelope, ResponseEnvelope,
+    ShutdownHandle as IpcShutdownHandle, UdsServer,
+};
 
 /// Composed query server. Holds the bound [`UdsServer`] and a handle to the
 /// dispatcher; spawning a serving thread is opt-in via [`Self::spawn`].
-pub struct QueryServer {
+pub struct QueryServer<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>
+where
+    RequestEnvelopeT: RequestEnvelope<Request>,
+    ResponseEnvelopeT: ResponseEnvelope<Response>,
+    D: IpcDispatcher<Request, Response> + ?Sized,
+{
     server: UdsServer,
-    dispatcher: Arc<SearchPlaneDispatcher>,
+    dispatcher: Arc<D>,
+    thread_name: String,
+    marker: PhantomData<fn(RequestEnvelopeT, Request, ResponseEnvelopeT, Response)>,
 }
 
-impl QueryServer {
+pub type SearchPlaneQueryServer<D> = QueryServer<
+    SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneQueryIpcResponse,
+    D,
+>;
+
+pub type SearchPlaneControlServer<D> = QueryServer<
+    SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneControlIpcResponse,
+    D,
+>;
+
+impl<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>
+    QueryServer<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>
+where
+    RequestEnvelopeT: RequestEnvelope<Request>,
+    ResponseEnvelopeT: ResponseEnvelope<Response>,
+    D: IpcDispatcher<Request, Response> + ?Sized + 'static,
+{
     /// Bind a server to `socket_path`.
     pub fn bind(
+        thread_name: impl Into<String>,
         socket_path: &Path,
-        dispatcher: Arc<SearchPlaneDispatcher>,
+        dispatcher: Arc<D>,
     ) -> Result<Self, IpcError> {
         let server = UdsServer::bind(socket_path)?;
-        Ok(Self { server, dispatcher })
+        Ok(Self {
+            server,
+            dispatcher,
+            thread_name: thread_name.into(),
+            marker: PhantomData,
+        })
     }
 
     /// Path the listener is bound to.
@@ -43,11 +86,20 @@ impl QueryServer {
     /// Spawn a thread that runs the accept loop until shutdown is triggered.
     /// Returns the join handle for the caller to wait on.
     pub fn spawn(self, accept_idle: Duration) -> Result<JoinHandle<Result<(), IpcError>>> {
-        let dispatcher: Arc<dyn QueryDispatcher> = self.dispatcher;
-        let server = self.server;
+        let Self {
+            server,
+            dispatcher,
+            thread_name,
+            marker: _,
+        } = self;
         let handle = std::thread::Builder::new()
-            .name("quanta-index-uds".to_string())
-            .spawn(move || server.run(&dispatcher, accept_idle))?;
+            .name(thread_name)
+            .spawn(move || {
+                server.run::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
+                    &dispatcher,
+                    accept_idle,
+                )
+            })?;
         Ok(handle)
     }
 }

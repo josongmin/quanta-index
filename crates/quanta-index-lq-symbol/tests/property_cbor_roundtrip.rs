@@ -147,4 +147,154 @@ proptest! {
         }
         prop_assert_eq!(seen, total);
     }
+
+    // ── delta-handling: upsert / remove / from_prior invariants ────────
+
+    #[test]
+    fn upsert_is_idempotent_on_replay(
+        generation in 1u64..=10_000u64,
+        symbols in corpus_strategy(),
+    ) {
+        let Ok(mut b1) = SymbolIndexBuilder::new(generation) else {
+            return Ok(());
+        };
+        let Ok(mut b2) = SymbolIndexBuilder::new(generation) else {
+            return Ok(());
+        };
+        // b1: upsert each once. b2: upsert each twice (replay).
+        for s in &symbols {
+            if b1.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        for s in &symbols {
+            if b2.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+            if b2.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        prop_assert_eq!(b1.len(), b2.len());
+
+        let Ok(i1) = b1.finish() else { return Ok(()); };
+        let Ok(i2) = b2.finish() else { return Ok(()); };
+        prop_assert_eq!(i1.len(), i2.len());
+
+        // Byte-identical CBOR — the strongest form of equivalence.
+        let mut buf1: Vec<u8> = Vec::new();
+        let mut buf2: Vec<u8> = Vec::new();
+        if i1.serialize_cbor(&mut buf1).is_err() { return Ok(()); }
+        if i2.serialize_cbor(&mut buf2).is_err() { return Ok(()); }
+        prop_assert_eq!(buf1, buf2);
+    }
+
+    #[test]
+    fn upsert_then_remove_returns_to_empty(
+        generation in 1u64..=10_000u64,
+        symbols in corpus_strategy(),
+    ) {
+        let Ok(mut b) = SymbolIndexBuilder::new(generation) else {
+            return Ok(());
+        };
+        // Dedup by identity to know how many distinct upserts to make.
+        let mut distinct: Vec<Symbol> = Vec::new();
+        let mut seen: std::collections::BTreeSet<(DocId, String, SymbolKind, u32)> =
+            std::collections::BTreeSet::new();
+        for s in &symbols {
+            let id = (s.doc_id, s.name.as_ref().to_string(), s.kind, s.span.start());
+            if seen.insert(id) {
+                distinct.push(s.clone());
+            }
+        }
+        for s in &distinct {
+            if b.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        prop_assert_eq!(b.len(), distinct.len());
+        // Remove every distinct symbol by identity. Builder should hit zero.
+        for s in &distinct {
+            let id = (&s.doc_id, s.name.as_ref(), s.kind, s.span.start());
+            let Ok(removed) = b.remove_symbol(id) else {
+                return Ok(());
+            };
+            prop_assert!(removed, "first remove must succeed");
+        }
+        prop_assert_eq!(b.len(), 0usize);
+        // Second pass must be idempotent (all return false).
+        for s in &distinct {
+            let id = (&s.doc_id, s.name.as_ref(), s.kind, s.span.start());
+            let Ok(removed) = b.remove_symbol(id) else {
+                return Ok(());
+            };
+            prop_assert!(!removed, "second remove must be idempotent");
+        }
+    }
+
+    #[test]
+    fn remove_doc_zeroes_target_doc(
+        generation in 1u64..=10_000u64,
+        symbols in corpus_strategy(),
+        victim_doc in 0u64..=1_000u64,
+    ) {
+        let Ok(mut b) = SymbolIndexBuilder::new(generation) else {
+            return Ok(());
+        };
+        for s in &symbols {
+            if b.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        let before_len = b.len();
+        let Ok(removed) = b.remove_doc(DocId(victim_doc)) else {
+            return Ok(());
+        };
+        prop_assert!(removed <= before_len);
+        let Ok(idx) = b.finish() else {
+            return Ok(());
+        };
+        // After remove_doc, no symbol with that doc should appear anywhere.
+        prop_assert!(idx.lookup_by_doc(DocId(victim_doc)).is_empty());
+    }
+
+    #[test]
+    fn from_prior_equivalence_then_replay_is_idempotent(
+        gen_a in 1u64..=5_000u64,
+        symbols in corpus_strategy(),
+    ) {
+        let Ok(mut b) = SymbolIndexBuilder::new(gen_a) else {
+            return Ok(());
+        };
+        for s in &symbols {
+            if b.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        let Ok(prior) = b.finish() else { return Ok(()); };
+
+        let new_gen = gen_a.saturating_add(1);
+        let Ok(next_a) = SymbolIndexBuilder::from_prior(&prior, new_gen) else {
+            return Ok(());
+        };
+        let Ok(mut next_b) = SymbolIndexBuilder::from_prior(&prior, new_gen) else {
+            return Ok(());
+        };
+        // next_b replays the same upserts on top. Must not grow.
+        for s in prior.symbols() {
+            if next_b.upsert_symbol(s.clone()).is_err() {
+                return Ok(());
+            }
+        }
+        prop_assert_eq!(next_a.len(), next_b.len());
+        prop_assert_eq!(next_a.len(), prior.len());
+
+        let Ok(idx_a) = next_a.finish() else { return Ok(()); };
+        let Ok(idx_b) = next_b.finish() else { return Ok(()); };
+        let mut buf_a: Vec<u8> = Vec::new();
+        let mut buf_b: Vec<u8> = Vec::new();
+        if idx_a.serialize_cbor(&mut buf_a).is_err() { return Ok(()); }
+        if idx_b.serialize_cbor(&mut buf_b).is_err() { return Ok(()); }
+        prop_assert_eq!(buf_a, buf_b);
+    }
 }

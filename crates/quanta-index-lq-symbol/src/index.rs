@@ -8,6 +8,18 @@
 //! Determinism: `BTreeMap` keys yield sorted iteration order; CBOR encoding
 //! is byte-identical across runs with the same insertion sequence.
 //!
+//! ## Idempotent upsert / delete / `from_prior`
+//!
+//! [`SymbolIndexBuilder`] supports replay-safe mutations driven by the
+//! producer channel subscriber pattern. A symbol's **identity** is the
+//! tuple `(doc_id, name, kind, span.byte_start)`; two `Symbol` values with
+//! the same identity are duplicates. [`SymbolIndexBuilder::upsert_symbol`]
+//! replaces by identity, [`SymbolIndexBuilder::remove_symbol`] removes by
+//! identity, and [`SymbolIndexBuilder::remove_doc`] cascades removal across
+//! every symbol belonging to a doc (used by `DeleteChunk` cascade).
+//! [`SymbolIndexBuilder::from_prior`] seeds a fresh builder for a new
+//! generation from the prior generation's finished [`SymbolIndex`].
+//!
 //! D18 — every wire shape is hand-rolled serde; no proc-macro derives.
 
 use std::collections::BTreeMap;
@@ -16,6 +28,16 @@ use std::io::{Read, Write};
 use crate::errors::{SymbolError, SymbolErrorCode};
 use crate::symbol_kind::SymbolKind;
 use crate::types::{DocId, Symbol};
+
+/// Identity tuple for a [`Symbol`]: `(doc_id, name, kind, span.byte_start)`.
+///
+/// Two `Symbol` values with the same identity are duplicates; producer-emitted
+/// re-upsert replaces the prior copy.
+type SymbolIdentity = (DocId, Box<str>, SymbolKind, u32);
+
+fn identity_of(sym: &Symbol) -> SymbolIdentity {
+    (sym.doc_id, sym.name.clone(), sym.kind, sym.span.start())
+}
 
 /// Authoritative per-generation symbol-index state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,9 +252,16 @@ impl<'de> serde::Deserialize<'de> for SymbolIndex {
 }
 
 /// Deterministic per-generation symbol-index builder.
+///
+/// Supports idempotent upsert and delete by symbol identity
+/// `(doc_id, name, kind, span.byte_start)`. The builder keeps an internal
+/// identity-to-position map so duplicate upserts run in `O(log n)` and
+/// removals stay consistent across the `by_name`, `by_kind`, and `by_doc`
+/// posting tables that [`SymbolIndex`] rebuilds at finish-time.
 pub struct SymbolIndexBuilder {
     generation: u64,
     symbols: Vec<Symbol>,
+    by_identity: BTreeMap<SymbolIdentity, usize>,
 }
 
 impl SymbolIndexBuilder {
@@ -250,6 +279,47 @@ impl SymbolIndexBuilder {
         Ok(Self {
             generation,
             symbols: Vec::new(),
+            by_identity: BTreeMap::new(),
+        })
+    }
+
+    /// Seed a fresh builder for `new_generation` from a prior finished
+    /// [`SymbolIndex`].
+    ///
+    /// The builder's `generation` becomes `new_generation` (must be
+    /// non-zero); the symbol list and identity map are cloned from
+    /// `prior.symbols()` in order. The resulting builder supports the same
+    /// upsert / remove operations as a fresh builder; finishing produces
+    /// a [`SymbolIndex`] tagged with `new_generation`.
+    pub fn from_prior(prior: &SymbolIndex, new_generation: u64) -> Result<Self, SymbolError> {
+        if new_generation == 0 {
+            return Err(SymbolError::new(
+                SymbolErrorCode::InvalidDocument,
+                "new_generation must be non-zero",
+            ));
+        }
+        let mut by_identity: BTreeMap<SymbolIdentity, usize> = BTreeMap::new();
+        let mut symbols: Vec<Symbol> = Vec::with_capacity(prior.symbols.len());
+        for s in &prior.symbols {
+            let id = identity_of(s);
+            if by_identity.contains_key(&id) {
+                // Prior index had a duplicate identity — corruption.
+                return Err(SymbolError::new(
+                    SymbolErrorCode::IndexCorrupted,
+                    format!(
+                        "prior index contained duplicate symbol identity: doc={} name={} kind={} start={}",
+                        id.0, id.1, id.2, id.3,
+                    ),
+                ));
+            }
+            let pos = symbols.len();
+            symbols.push(s.clone());
+            let _prior = by_identity.insert(id, pos);
+        }
+        Ok(Self {
+            generation: new_generation,
+            symbols,
+            by_identity,
         })
     }
 
@@ -271,19 +341,137 @@ impl SymbolIndexBuilder {
         self.symbols.is_empty()
     }
 
-    /// Add a symbol to the staged list. Caller is responsible for
-    /// providing a valid `Symbol` (the public constructor enforces
-    /// `ByteSpan` invariants).
+    /// Add a symbol to the staged list (append-only).
+    ///
+    /// This is the historical append API and remains append-only for
+    /// backwards compatibility with producers that pre-deduplicate. **For
+    /// replay-safe pipelines use [`Self::upsert_symbol`]**, which replaces
+    /// by identity rather than letting duplicates accumulate.
     pub fn add_symbol(&mut self, sym: Symbol) {
+        let id = identity_of(&sym);
+        let pos = self.symbols.len();
         self.symbols.push(sym);
+        // Keep the identity map consistent so later upserts/removes still
+        // resolve. If the caller appends two symbols with the same
+        // identity, the identity map points at the most recent one; the
+        // older copy stays in the symbols list (matching the append
+        // contract) but is no longer reachable via identity-keyed
+        // mutators. Producers that need delta safety should call
+        // `upsert_symbol` instead.
+        let _prior = self.by_identity.insert(id, pos);
     }
 
     /// Bulk-add `symbols`. Equivalent to repeated
     /// [`Self::add_symbol`].
     pub fn extend(&mut self, symbols: impl IntoIterator<Item = Symbol>) {
         for s in symbols {
-            self.symbols.push(s);
+            self.add_symbol(s);
         }
+    }
+
+    /// Replace any prior symbol with the same identity. If no prior symbol
+    /// matches, appends. Idempotent: re-applying the same `Symbol` leaves
+    /// state unchanged.
+    ///
+    /// Returns `Result<(), SymbolError>` to match the rest of the mutator
+    /// surface (`remove_symbol`, `remove_doc`, `from_prior`). The current
+    /// implementation always succeeds; reserving the failure channel keeps
+    /// the API stable when future validation (e.g. identity-domain checks)
+    /// lands.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "stable mutator surface — sibling methods may surface SymbolError; reserve the channel"
+    )]
+    pub fn upsert_symbol(&mut self, sym: Symbol) -> Result<(), SymbolError> {
+        self.upsert_in_place(sym);
+        Ok(())
+    }
+
+    fn upsert_in_place(&mut self, sym: Symbol) {
+        let id = identity_of(&sym);
+        if let Some(&pos) = self.by_identity.get(&id) {
+            if let Some(slot) = self.symbols.get_mut(pos) {
+                *slot = sym;
+                return;
+            }
+            // Identity map points past the symbol list — drop the stale
+            // entry and append. Self-healing because the identity map is
+            // an internal authority and not a contract surface.
+            let _stale = self.by_identity.remove(&id);
+        }
+        let pos = self.symbols.len();
+        self.symbols.push(sym);
+        let _prior = self.by_identity.insert(id, pos);
+    }
+
+    /// Remove the symbol matching `identity`. Returns `true` if a symbol
+    /// was removed, `false` if no symbol with that identity was present.
+    /// Idempotent: repeated calls with the same identity return `false`
+    /// after the first successful removal.
+    pub fn remove_symbol(
+        &mut self,
+        identity: (&DocId, &str, SymbolKind, u32),
+    ) -> Result<bool, SymbolError> {
+        let key: SymbolIdentity = (*identity.0, identity.1.into(), identity.2, identity.3);
+        let Some(pos) = self.by_identity.remove(&key) else {
+            return Ok(false);
+        };
+        self.remove_at(pos)?;
+        Ok(true)
+    }
+
+    /// Remove every symbol belonging to `doc_id`. Returns the number of
+    /// symbols removed. Idempotent: calling on an empty doc returns `0`.
+    pub fn remove_doc(&mut self, doc_id: DocId) -> Result<usize, SymbolError> {
+        // Collect identities first so we don't mutate while iterating the
+        // identity map. Range over `(doc_id, ..)` would require a
+        // synthetic upper bound — explicit collect is simpler and the
+        // cost is bounded by symbol count.
+        let victims: Vec<SymbolIdentity> = self
+            .by_identity
+            .iter()
+            .filter(|(id, _)| id.0 == doc_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let n = victims.len();
+        for id in victims {
+            let Some(pos) = self.by_identity.remove(&id) else {
+                continue;
+            };
+            self.remove_at(pos)?;
+        }
+        Ok(n)
+    }
+
+    fn remove_at(&mut self, pos: usize) -> Result<(), SymbolError> {
+        if pos >= self.symbols.len() {
+            return Err(SymbolError::new(
+                SymbolErrorCode::IndexCorrupted,
+                format!(
+                    "remove_at out of range: pos={pos} len={}",
+                    self.symbols.len()
+                ),
+            ));
+        }
+        let last = self.symbols.len().saturating_sub(1);
+        if pos == last {
+            let _dropped = self.symbols.pop();
+            return Ok(());
+        }
+        // swap_remove keeps the cost O(1) but moves the tail symbol into
+        // `pos`. Repoint that symbol's identity to its new position.
+        let _dropped = self.symbols.swap_remove(pos);
+        let moved_id = match self.symbols.get(pos) {
+            Some(s) => identity_of(s),
+            None => {
+                return Err(SymbolError::new(
+                    SymbolErrorCode::IndexCorrupted,
+                    "swap_remove left empty slot",
+                ));
+            }
+        };
+        let _prior = self.by_identity.insert(moved_id, pos);
+        Ok(())
     }
 
     /// Finalise the builder into a [`SymbolIndex`]. Rebuilds the per-name
@@ -315,14 +503,21 @@ mod tests {
         Symbol::new(name, kind, DocId(doc), span, LangId::Rust, None)
     }
 
+    fn sym_at(name: &str, kind: SymbolKind, doc: u64, start: u32, end: u32) -> Symbol {
+        let Ok(span) = ByteSpan::new(start, end) else {
+            std::process::abort();
+        };
+        Symbol::new(name, kind, DocId(doc), span, LangId::Rust, None)
+    }
+
     fn fixture() -> SymbolIndex {
         let Ok(mut b) = SymbolIndexBuilder::new(1) else {
             std::process::abort();
         };
-        b.add_symbol(sym("foo", SymbolKind::Function, 1));
-        b.add_symbol(sym("bar", SymbolKind::Function, 1));
-        b.add_symbol(sym("Baz", SymbolKind::Struct, 2));
-        b.add_symbol(sym("foo", SymbolKind::Method, 3));
+        b.add_symbol(sym_at("foo", SymbolKind::Function, 1, 0, 3));
+        b.add_symbol(sym_at("bar", SymbolKind::Function, 1, 10, 13));
+        b.add_symbol(sym_at("Baz", SymbolKind::Struct, 2, 0, 3));
+        b.add_symbol(sym_at("foo", SymbolKind::Method, 3, 0, 3));
         let Ok(i) = b.finish() else {
             std::process::abort();
         };
@@ -460,6 +655,243 @@ mod tests {
         match SymbolIndex::deserialize_cbor(t) {
             Ok(_) => assert!(false, "must fail"),
             Err(e) => assert_eq!(e.code, SymbolErrorCode::IndexDeserialize),
+        }
+    }
+
+    // ── delta-handling: upsert / remove / from_prior ──────────────────
+
+    #[test]
+    fn upsert_replaces_by_identity() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        // Insert a Symbol, then re-upsert one with the same identity but a
+        // longer span. The replacement wins; the identity map keeps len=1.
+        let Ok(span_a) = ByteSpan::new(0, 3) else {
+            std::process::abort();
+        };
+        let Ok(span_b) = ByteSpan::new(0, 9) else {
+            std::process::abort();
+        };
+        let s_a = Symbol::new(
+            "foo",
+            SymbolKind::Function,
+            DocId(1),
+            span_a,
+            LangId::Rust,
+            None,
+        );
+        let s_b = Symbol::new(
+            "foo",
+            SymbolKind::Function,
+            DocId(1),
+            span_b,
+            LangId::Rust,
+            None,
+        );
+        if let Err(e) = b.upsert_symbol(s_a) {
+            assert!(false, "{e}");
+            return;
+        }
+        if let Err(e) = b.upsert_symbol(s_b) {
+            assert!(false, "{e}");
+            return;
+        }
+        assert_eq!(b.len(), 1, "upsert must not grow when identity matches");
+
+        // Confirm the replacement (different content) wins.
+        let Ok(idx) = b.finish() else {
+            std::process::abort();
+        };
+        let hits = idx.lookup_by_name("foo");
+        assert_eq!(hits.len(), 1);
+        let Some(got) = hits.first() else {
+            assert!(false, "no hit");
+            return;
+        };
+        assert_eq!(got.span, span_b);
+    }
+
+    #[test]
+    fn upsert_dup_no_growth() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        let s = sym("foo", SymbolKind::Function, 1);
+        for _ in 0..5 {
+            if let Err(e) = b.upsert_symbol(s.clone()) {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn upsert_different_identity_appends() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        if let Err(e) = b.upsert_symbol(sym_at("foo", SymbolKind::Function, 1, 0, 3)) {
+            assert!(false, "{e}");
+            return;
+        }
+        if let Err(e) = b.upsert_symbol(sym_at("foo", SymbolKind::Function, 1, 10, 13)) {
+            assert!(false, "{e}");
+            return;
+        }
+        assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn remove_symbol_idempotent() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        b.add_symbol(sym_at("foo", SymbolKind::Function, 1, 0, 3));
+        b.add_symbol(sym_at("bar", SymbolKind::Function, 2, 5, 8));
+        let id = (&DocId(1), "foo", SymbolKind::Function, 0u32);
+        match b.remove_symbol(id) {
+            Ok(true) => {}
+            Ok(false) => {
+                assert!(false, "first remove must return true");
+                return;
+            }
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        // Idempotency: repeat returns false.
+        match b.remove_symbol(id) {
+            Ok(false) => {}
+            Ok(true) => {
+                assert!(false, "second remove must return false");
+                return;
+            }
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        assert_eq!(b.len(), 1);
+        let Ok(idx) = b.finish() else {
+            std::process::abort();
+        };
+        assert!(idx.lookup_by_name("foo").is_empty());
+        assert_eq!(idx.lookup_by_name("bar").len(), 1);
+    }
+
+    #[test]
+    fn remove_doc_cascades_to_all_indices() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        b.add_symbol(sym_at("foo", SymbolKind::Function, 1, 0, 3));
+        b.add_symbol(sym_at("bar", SymbolKind::Method, 1, 10, 13));
+        b.add_symbol(sym_at("Baz", SymbolKind::Struct, 1, 20, 23));
+        b.add_symbol(sym_at("survivor", SymbolKind::Function, 2, 0, 8));
+        let n = match b.remove_doc(DocId(1)) {
+            Ok(n) => n,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        assert_eq!(n, 3);
+        let Ok(idx) = b.finish() else {
+            std::process::abort();
+        };
+        // by_name: only "survivor" should resolve.
+        assert!(idx.lookup_by_name("foo").is_empty());
+        assert!(idx.lookup_by_name("bar").is_empty());
+        assert!(idx.lookup_by_name("Baz").is_empty());
+        assert_eq!(idx.lookup_by_name("survivor").len(), 1);
+        // by_kind: Method and Struct should be gone, Function only has survivor.
+        assert_eq!(idx.lookup_by_kind(SymbolKind::Function).len(), 1);
+        assert!(idx.lookup_by_kind(SymbolKind::Method).is_empty());
+        assert!(idx.lookup_by_kind(SymbolKind::Struct).is_empty());
+        // by_doc: doc 1 has nothing, doc 2 has 1.
+        assert!(idx.lookup_by_doc(DocId(1)).is_empty());
+        assert_eq!(idx.lookup_by_doc(DocId(2)).len(), 1);
+    }
+
+    #[test]
+    fn remove_doc_idempotent_on_unknown_doc() {
+        let Ok(mut b) = SymbolIndexBuilder::new(1) else {
+            std::process::abort();
+        };
+        b.add_symbol(sym_at("foo", SymbolKind::Function, 1, 0, 3));
+        let n = match b.remove_doc(DocId(99)) {
+            Ok(n) => n,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        assert_eq!(n, 0);
+        assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn from_prior_preserves_state() {
+        let i = fixture();
+        let g1 = i.generation();
+        let total = i.len();
+        let new_gen = g1.saturating_add(1);
+        let Ok(b) = SymbolIndexBuilder::from_prior(&i, new_gen) else {
+            std::process::abort();
+        };
+        assert_eq!(b.generation(), new_gen);
+        assert_eq!(b.len(), total);
+        let Ok(rebuilt) = b.finish() else {
+            std::process::abort();
+        };
+        assert_eq!(rebuilt.generation(), new_gen);
+        assert_eq!(rebuilt.len(), total);
+        // Every lookup the original satisfies, the rebuilt index satisfies.
+        for s in i.symbols() {
+            let hits = rebuilt.lookup_by_name(s.name.as_ref());
+            assert!(hits.contains(&s));
+        }
+    }
+
+    #[test]
+    fn from_prior_then_remove_drops_only_target() {
+        let i = fixture();
+        let total = i.len();
+        let Ok(mut b) = SymbolIndexBuilder::from_prior(&i, 2) else {
+            std::process::abort();
+        };
+        // Drop the (doc=2, "Baz", Struct, 0) symbol; that's exactly 1.
+        let id = (&DocId(2), "Baz", SymbolKind::Struct, 0u32);
+        match b.remove_symbol(id) {
+            Ok(true) => {}
+            Ok(false) => {
+                assert!(false, "must have removed");
+                return;
+            }
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        assert_eq!(b.len(), total.saturating_sub(1));
+        let Ok(idx) = b.finish() else {
+            std::process::abort();
+        };
+        assert!(idx.lookup_by_name("Baz").is_empty());
+        // Unrelated symbols survive.
+        assert!(!idx.lookup_by_name("foo").is_empty());
+        assert!(!idx.lookup_by_name("bar").is_empty());
+    }
+
+    #[test]
+    fn from_prior_rejects_zero_new_generation() {
+        let i = fixture();
+        match SymbolIndexBuilder::from_prior(&i, 0) {
+            Ok(_) => assert!(false, "must reject new_generation=0"),
+            Err(e) => assert_eq!(e.code, SymbolErrorCode::InvalidDocument),
         }
     }
 }

@@ -32,6 +32,6 @@ pub mod tokenizer;
 pub use ast::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf,
     LqMetaVar, LqNormalizedQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect,
-    LqStructuralBlock, LqStructuralNode, LqType, LqVisibility, LqYesNoOnly,
+    LqStructuralBlock, LqStructuralNode, LqType, LqVisibility, LqYesNoOnly, SemanticVectorRef,
 };
 pub use errors::{LqParseError, LqParseErrorCode, LqSpan};

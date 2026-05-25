@@ -201,8 +201,7 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, PARSE_TREE_RECORD_FIELDS)),
             }
         }
-        let wire_version =
-            wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
+        let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
         let lang = lang.ok_or_else(|| de::Error::missing_field("lang"))?;
         let root = root.ok_or_else(|| de::Error::missing_field("root"))?;
         let source_hash = source_hash.ok_or_else(|| de::Error::missing_field("source_hash"))?;

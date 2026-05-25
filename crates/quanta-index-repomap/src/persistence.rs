@@ -9,12 +9,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::RepoMapSnapshotV1;
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private persistence module still needs sibling-module visibility"
+)]
 #[derive(Clone, Debug)]
 pub(crate) struct RepoMapSnapshotPersistence {
     snapshots_dir: PathBuf,
     activations_dir: PathBuf,
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private persistence module still needs sibling-module visibility"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RepoMapActivationRecordV1 {
     pub(crate) repo_id: String,
@@ -198,9 +206,11 @@ fn encode_component(value: &str) -> String {
 }
 
 fn hex_char(nibble: u8) -> char {
-    match nibble {
-        0..=9 => char::from(b'0' + nibble),
-        10..=15 => char::from(b'A' + (nibble - 10)),
-        _ => '0',
-    }
+    const HEX_DIGITS: [char; 16] = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+    ];
+    HEX_DIGITS
+        .get(usize::from(nibble))
+        .copied()
+        .map_or('0', std::convert::identity)
 }

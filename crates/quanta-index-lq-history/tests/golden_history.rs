@@ -14,6 +14,13 @@ fn sha(byte: u8) -> CommitSha {
     CommitSha::from_bytes([byte; 20])
 }
 
+/// Strict-mode upsert helper that fails the test on a typed error.
+fn ups(g: &mut CommitGraph, node: CommitNode) {
+    if let Err(e) = g.upsert_commit(node) {
+        assert!(false, "upsert_commit: {e}");
+    }
+}
+
 /// Build the canonical fixture graph:
 ///
 /// ```text
@@ -26,22 +33,42 @@ fn sha(byte: u8) -> CommitSha {
 fn fixture() -> CommitGraph {
     let mut g = CommitGraph::new();
     // 1: root
-    g.add_commit(CommitNode::new(sha(1), Vec::new(), AppliedAtMs::new(100)));
+    ups(
+        &mut g,
+        CommitNode::new(sha(1), Vec::new(), AppliedAtMs::new(100)),
+    );
     // 2..4: linear main
-    g.add_commit(CommitNode::new(sha(2), vec![sha(1)], AppliedAtMs::new(200)));
-    g.add_commit(CommitNode::new(sha(3), vec![sha(2)], AppliedAtMs::new(300)));
-    g.add_commit(CommitNode::new(sha(4), vec![sha(3)], AppliedAtMs::new(400)));
+    ups(
+        &mut g,
+        CommitNode::new(sha(2), vec![sha(1)], AppliedAtMs::new(200)),
+    );
+    ups(
+        &mut g,
+        CommitNode::new(sha(3), vec![sha(2)], AppliedAtMs::new(300)),
+    );
+    ups(
+        &mut g,
+        CommitNode::new(sha(4), vec![sha(3)], AppliedAtMs::new(400)),
+    );
     // 5..6: feature branch off sha(1)
-    g.add_commit(CommitNode::new(sha(5), vec![sha(1)], AppliedAtMs::new(500)));
-    g.add_commit(CommitNode::new(sha(6), vec![sha(5)], AppliedAtMs::new(600)));
+    ups(
+        &mut g,
+        CommitNode::new(sha(5), vec![sha(1)], AppliedAtMs::new(500)),
+    );
+    ups(
+        &mut g,
+        CommitNode::new(sha(6), vec![sha(5)], AppliedAtMs::new(600)),
+    );
     // 7: merge of 4 and 6
-    g.add_commit(CommitNode::new(
-        sha(7),
-        vec![sha(4), sha(6)],
-        AppliedAtMs::new(700),
-    ));
+    ups(
+        &mut g,
+        CommitNode::new(sha(7), vec![sha(4), sha(6)], AppliedAtMs::new(700)),
+    );
     // 8: child of merge
-    g.add_commit(CommitNode::new(sha(8), vec![sha(7)], AppliedAtMs::new(800)));
+    ups(
+        &mut g,
+        CommitNode::new(sha(8), vec![sha(7)], AppliedAtMs::new(800)),
+    );
     // Refs and tags
     let _prev_ref: Option<CommitSha> = g.add_ref("main", sha(8));
     let _prev_tag: Option<CommitSha> = g.add_tag("v1.0", sha(4));

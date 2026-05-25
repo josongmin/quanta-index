@@ -42,10 +42,9 @@ where
     let bytes = encode(value)?;
     let decoded: T = decode(&bytes)?;
     if &decoded != value {
-        return Err(format!(
-            "round-trip mismatch: original={value:?}, decoded={decoded:?}",
-        )
-        .into());
+        return Err(
+            format!("round-trip mismatch: original={value:?}, decoded={decoded:?}",).into(),
+        );
     }
     Ok(())
 }
@@ -65,7 +64,7 @@ fn lang_id_has_five_variants() -> TestRes {
 #[test]
 fn lang_id_code_strings_unique() -> TestRes {
     let mut seen: Vec<&'static str> = Vec::new();
-    for variant in LangId::ALL.iter().copied() {
+    for variant in LangId::ALL {
         let code = variant.as_code_str();
         if seen.contains(&code) {
             return Err(format!("duplicate code_str: {code}").into());
@@ -77,10 +76,10 @@ fn lang_id_code_strings_unique() -> TestRes {
 
 #[test]
 fn lang_id_from_code_str_roundtrips_every_variant() -> TestRes {
-    for variant in LangId::ALL.iter().copied() {
+    for variant in LangId::ALL {
         let code = variant.as_code_str();
         let parsed = LangId::from_code_str(code);
-        if parsed != Some(variant) {
+        if parsed != Some(*variant) {
             return Err(format!("from_code_str({code}) != Some({variant:?})").into());
         }
     }
@@ -99,8 +98,8 @@ fn lang_id_from_code_str_rejects_unknown() -> TestRes {
 
 #[test]
 fn lang_id_cbor_roundtrip_every_variant() -> TestRes {
-    for variant in LangId::ALL.iter().copied() {
-        roundtrip_eq(&variant)?;
+    for variant in LangId::ALL {
+        roundtrip_eq(variant)?;
     }
     Ok(())
 }
@@ -135,7 +134,7 @@ fn lexical_error_code_all_is_at_least_30() -> TestRes {
 #[test]
 fn lexical_error_code_code_strings_unique() -> TestRes {
     let mut seen: Vec<&'static str> = Vec::with_capacity(LexicalErrorCode::ALL.len());
-    for variant in LexicalErrorCode::ALL.iter().copied() {
+    for variant in LexicalErrorCode::ALL {
         let code = variant.as_code_str();
         if seen.contains(&code) {
             return Err(format!("duplicate code_str: {code}").into());
@@ -148,7 +147,7 @@ fn lexical_error_code_code_strings_unique() -> TestRes {
 #[test]
 fn lexical_error_code_all_codes_screaming_snake_case() -> TestRes {
     // Per-char check: only A-Z, 0-9, '_' allowed; must be non-empty.
-    for variant in LexicalErrorCode::ALL.iter().copied() {
+    for variant in LexicalErrorCode::ALL {
         let code = variant.as_code_str();
         if code.is_empty() {
             return Err(format!("variant {variant:?} has empty code_str").into());
@@ -168,10 +167,10 @@ fn lexical_error_code_all_codes_screaming_snake_case() -> TestRes {
 
 #[test]
 fn lexical_error_code_from_code_str_roundtrips() -> TestRes {
-    for variant in LexicalErrorCode::ALL.iter().copied() {
+    for variant in LexicalErrorCode::ALL {
         let code = variant.as_code_str();
         let parsed = LexicalErrorCode::from_code_str(code);
-        if parsed != Some(variant) {
+        if parsed != Some(*variant) {
             return Err(format!("from_code_str({code}) != Some({variant:?})").into());
         }
     }
@@ -180,8 +179,8 @@ fn lexical_error_code_from_code_str_roundtrips() -> TestRes {
 
 #[test]
 fn lexical_error_code_cbor_roundtrip_every_variant() -> TestRes {
-    for variant in LexicalErrorCode::ALL.iter().copied() {
-        roundtrip_eq(&variant)?;
+    for variant in LexicalErrorCode::ALL {
+        roundtrip_eq(variant)?;
     }
     Ok(())
 }
@@ -241,8 +240,8 @@ fn symbol_kind_from_code_str_roundtrips() -> TestRes {
 
 #[test]
 fn symbol_kind_cbor_roundtrip_every_variant() -> TestRes {
-    for variant in SymbolKind::ALL.iter().copied() {
-        roundtrip_eq(&variant)?;
+    for variant in SymbolKind::ALL {
+        roundtrip_eq(variant)?;
     }
     Ok(())
 }
@@ -250,14 +249,10 @@ fn symbol_kind_cbor_roundtrip_every_variant() -> TestRes {
 #[test]
 fn symbol_relationship_two_variants_and_roundtrip() -> TestRes {
     if SymbolRelationship::ALL.len() != 2 {
-        return Err(format!(
-            "expected 2 variants, got {}",
-            SymbolRelationship::ALL.len()
-        )
-        .into());
+        return Err(format!("expected 2 variants, got {}", SymbolRelationship::ALL.len()).into());
     }
-    for variant in SymbolRelationship::ALL.iter().copied() {
-        roundtrip_eq(&variant)?;
+    for variant in SymbolRelationship::ALL {
+        roundtrip_eq(variant)?;
     }
     Ok(())
 }
@@ -402,9 +397,7 @@ fn commit_record_cbor_rejects_missing_field() -> TestRes {
         &ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("sha".into()),
-                ciborium::Value::Text(
-                    "0123456789abcdef0123456789abcdef01234567".into(),
-                ),
+                ciborium::Value::Text("0123456789abcdef0123456789abcdef01234567".into()),
             ),
             (
                 ciborium::Value::Text("parents".into()),

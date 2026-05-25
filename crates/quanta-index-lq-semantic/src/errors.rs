@@ -39,6 +39,15 @@ pub enum SemanticErrorCode {
     /// [`crate::hnsw::HnswParams::validate`] when `m`, `ef_construction`,
     /// or `ef_search` falls outside the documented bounds.
     SemHnswParamsInvalid,
+    /// A `LqExpr::SemanticVector { vector_ref: SemanticVectorRef::Handle(h) }`
+    /// query resolved against an active-generation embedding store that
+    /// contains no entry for `h`. Per [ADR-026 Option B] handles are
+    /// equivalent to `embedding_id` (and via `producer-handoff.md`
+    /// §3.5.1 wire-identity, to the active corpus's [`crate::types::DocId`]);
+    /// the resolver fails closed rather than degrading to an empty
+    /// result. The unresolved handle is carried in
+    /// [`SemanticError::detail`]. See `producer-handoff.md` §6.5.
+    SemHandleNotFound,
     /// A per-query or per-corpus cap was exceeded. Carrier is always
     /// paired with a [`LimitDimension`] tag describing which cap fired.
     PlanLimitExceeded,
@@ -60,6 +69,7 @@ impl SemanticErrorCode {
             Self::SemMetricUnsupported => "SEM_METRIC_UNSUPPORTED",
             Self::SemAnnNondeterministic => "SEM_ANN_NONDETERMINISTIC",
             Self::SemHnswParamsInvalid => "SEM_HNSW_PARAMS_INVALID",
+            Self::SemHandleNotFound => "SEM_HANDLE_NOT_FOUND",
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
             Self::IndexDeserialize => "INDEX_DESERIALIZE",
             Self::IndexCorrupted => "INDEX_CORRUPTED",
@@ -76,6 +86,7 @@ impl SemanticErrorCode {
             "SEM_METRIC_UNSUPPORTED" => Self::SemMetricUnsupported,
             "SEM_ANN_NONDETERMINISTIC" => Self::SemAnnNondeterministic,
             "SEM_HNSW_PARAMS_INVALID" => Self::SemHnswParamsInvalid,
+            "SEM_HANDLE_NOT_FOUND" => Self::SemHandleNotFound,
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             "INDEX_DESERIALIZE" => Self::IndexDeserialize,
             "INDEX_CORRUPTED" => Self::IndexCorrupted,
@@ -227,6 +238,23 @@ impl SemanticError {
             detail: detail.into(),
         }
     }
+
+    /// Construct a [`SemanticErrorCode::SemHandleNotFound`] error
+    /// carrying the unresolved handle string in [`Self::detail`].
+    ///
+    /// Used by [`crate::handle::SemanticHandleResolver`] when a
+    /// `SemanticVectorRef::Handle` query resolves against the active
+    /// embedding store and no entry is found for `handle`. Per
+    /// `producer-handoff.md` §6.5 the search-plane fails closed rather
+    /// than substituting an empty result.
+    #[must_use]
+    pub fn handle_not_found(handle: impl Into<Box<str>>) -> Self {
+        Self {
+            code: SemanticErrorCode::SemHandleNotFound,
+            dimension: None,
+            detail: handle.into(),
+        }
+    }
 }
 
 impl fmt::Display for SemanticError {
@@ -329,6 +357,7 @@ mod tests {
         SemanticErrorCode::SemMetricUnsupported,
         SemanticErrorCode::SemAnnNondeterministic,
         SemanticErrorCode::SemHnswParamsInvalid,
+        SemanticErrorCode::SemHandleNotFound,
         SemanticErrorCode::PlanLimitExceeded,
         SemanticErrorCode::IndexDeserialize,
         SemanticErrorCode::IndexCorrupted,
@@ -436,6 +465,47 @@ mod tests {
     #[test]
     fn error_serde_roundtrip_with_dimension() {
         let e = SemanticError::plan_limit(LimitDimension::TopK, "k=10001");
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(err) = ciborium::ser::into_writer(&e, &mut buf) {
+            assert!(false, "{err}");
+            return;
+        }
+        match ciborium::de::from_reader::<SemanticError, _>(buf.as_slice()) {
+            Ok(got) => assert_eq!(got, e),
+            Err(err) => assert!(false, "{err}"),
+        }
+    }
+
+    #[test]
+    fn handle_not_found_code_present_and_unique() {
+        // ADR-026 Option B / INDEX.md §5 item #10 — `SEM_HANDLE_NOT_FOUND`
+        // must be representable, round-trip, and not collide with any
+        // existing code.
+        match SemanticErrorCode::from_code_str("SEM_HANDLE_NOT_FOUND") {
+            Some(c) => assert_eq!(c, SemanticErrorCode::SemHandleNotFound),
+            None => assert!(false, "missing SEM_HANDLE_NOT_FOUND"),
+        }
+        assert_eq!(
+            SemanticErrorCode::SemHandleNotFound.as_code_str(),
+            "SEM_HANDLE_NOT_FOUND"
+        );
+        // Ensure it lives in ALL_CODES (otherwise `code_strs_unique` and
+        // `code_strs_roundtrip` would miss it).
+        let in_all = ALL_CODES.contains(&SemanticErrorCode::SemHandleNotFound);
+        assert!(in_all, "SemHandleNotFound missing from ALL_CODES");
+    }
+
+    #[test]
+    fn handle_not_found_constructor_shape() {
+        let e = SemanticError::handle_not_found("h-abc-123");
+        assert_eq!(e.code, SemanticErrorCode::SemHandleNotFound);
+        assert_eq!(e.dimension, None);
+        assert_eq!(e.detail.as_ref(), "h-abc-123");
+    }
+
+    #[test]
+    fn handle_not_found_serde_roundtrip() {
+        let e = SemanticError::handle_not_found("missing-handle");
         let mut buf: Vec<u8> = Vec::new();
         if let Err(err) = ciborium::ser::into_writer(&e, &mut buf) {
             assert!(false, "{err}");

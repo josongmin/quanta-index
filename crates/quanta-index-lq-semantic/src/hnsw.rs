@@ -405,6 +405,11 @@ impl HnswIndexBuilder {
 
     /// Insert `(doc_id, embedding)` into the layered graph. Fails
     /// closed on dim mismatch and on duplicate ids.
+    ///
+    /// **Not replay-safe.** Re-issuing `add_embedding` for the same
+    /// `doc_id` returns [`SemanticErrorCode::IndexCorrupted`]. Channel
+    /// subscribers that may replay events after a crash MUST use
+    /// [`Self::upsert_embedding`] instead.
     pub fn add_embedding(
         &mut self,
         doc_id: DocId,
@@ -426,6 +431,108 @@ impl HnswIndexBuilder {
                 format!("duplicate doc {doc_id}"),
             ));
         }
+        self.insert_new_node(doc_id, embedding)
+    }
+
+    /// Idempotent upsert of a document's embedding into the layered
+    /// graph.
+    ///
+    /// If `doc_id` is already present, REMOVE the prior node first
+    /// (along with every neighbour back-reference) then re-insert the
+    /// new vector. Re-applying the same `(doc_id, embedding)` after
+    /// itself is a no-op at the wire level provided the graph was
+    /// quiescent on the first call: same `SipHash` seed → same level
+    /// assignment → byte-identical graph reconstruction.
+    ///
+    /// Fails closed on dim mismatch with
+    /// [`SemanticErrorCode::SemDimMismatch`].
+    pub fn upsert_embedding(
+        &mut self,
+        doc_id: DocId,
+        embedding: &Embedding,
+    ) -> Result<(), SemanticError> {
+        if embedding.dim() != self.dim {
+            return Err(SemanticError::new(
+                SemanticErrorCode::SemDimMismatch,
+                format!(
+                    "embedding dim {} != builder dim {} for doc {doc_id}",
+                    embedding.dim(),
+                    self.dim
+                ),
+            ));
+        }
+        if self.nodes.contains_key(&doc_id) {
+            let _existed: bool = self.remove_node_internal(doc_id);
+        }
+        self.insert_new_node(doc_id, embedding)
+    }
+
+    /// Idempotent removal of a document from the layered graph.
+    ///
+    /// Returns `Ok(true)` if `doc_id` was present and removed; `Ok(false)`
+    /// if `doc_id` was not present (no-op). The `false` case is NOT an
+    /// error: channel-replay tolerance per the producer/search-plane
+    /// contract treats redundant deletes as idempotent.
+    ///
+    /// Removal purges every back-reference from neighbour nodes' layer
+    /// lists so the graph stays bidirectionally consistent. If the
+    /// removed doc was the entry point, the next-highest surviving node
+    /// (lowest [`DocId`] at the new top level) is elected as the new
+    /// entry.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "API stability: leave Result room for future builder caps per spec"
+    )]
+    pub fn remove_embedding(&mut self, doc_id: DocId) -> Result<bool, SemanticError> {
+        Ok(self.remove_node_internal(doc_id))
+    }
+
+    /// Seed a fresh builder for `new_generation` from a prior finished
+    /// [`HnswIndex`].
+    ///
+    /// The builder's `generation` becomes `new_generation` (must be
+    /// non-zero); `dim` and `params` are inherited from `prior`. Every
+    /// `(doc_id, vector)` pair in `prior.iter()` is re-inserted into a
+    /// fresh graph in ascending [`DocId`] order. Because level
+    /// assignment is a pure function of `(seed, doc_id)`, the resulting
+    /// builder is deterministic per `(seed, prior.docs)`.
+    ///
+    /// **Note on graph topology**: this rebuild does NOT necessarily
+    /// reproduce `prior`'s exact neighbour lists. HNSW graph shape is
+    /// path-dependent on insertion order, and `from_prior` insertion
+    /// order is the sorted-DocId order, which may differ from the
+    /// original build order. The reconstructed graph remains a valid
+    /// HNSW with the same docs and params; subsequent deltas applied via
+    /// [`Self::upsert_embedding`] / [`Self::remove_embedding`] /
+    /// [`Self::finish`] produce a byte-identical artifact across two
+    /// calls of `from_prior` against the same prior.
+    ///
+    /// Rejects `new_generation == 0` with
+    /// [`SemanticErrorCode::IndexCorrupted`].
+    pub fn from_prior(prior: &HnswIndex, new_generation: u64) -> Result<Self, SemanticError> {
+        if new_generation == 0 {
+            return Err(SemanticError::new(
+                SemanticErrorCode::IndexCorrupted,
+                "new_generation must be non-zero",
+            ));
+        }
+        let mut next = Self::new(new_generation, prior.dim, prior.params)?;
+        for (doc_id, node) in &prior.nodes {
+            let emb = Embedding::new(node.vector.clone())?;
+            next.insert_new_node(*doc_id, &emb)?;
+        }
+        Ok(next)
+    }
+
+    /// Core insert path (no duplicate-check / no remove-prior). Used by
+    /// [`Self::add_embedding`], [`Self::upsert_embedding`], and
+    /// [`Self::from_prior`]. Assumes `embedding.dim() == self.dim` and
+    /// the node is NOT already present.
+    fn insert_new_node(
+        &mut self,
+        doc_id: DocId,
+        embedding: &Embedding,
+    ) -> Result<(), SemanticError> {
         let new_level = assign_level(&self.params, doc_id);
         let levels_count = usize::try_from(new_level.saturating_add(1)).map_err(|e| {
             SemanticError::new(
@@ -503,6 +610,64 @@ impl HnswIndexBuilder {
             self.entry = Some(doc_id);
         }
         Ok(())
+    }
+
+    /// Internal helper shared by [`Self::upsert_embedding`] and
+    /// [`Self::remove_embedding`]. Returns `true` if the doc existed.
+    ///
+    /// Purges the node from `self.nodes` and `self.levels`, and removes
+    /// every back-reference from neighbour nodes' per-layer lists. If
+    /// the removed doc was the entry point, re-elects a new entry as
+    /// the surviving node with the highest `levels` value, breaking
+    /// ties by ascending [`DocId`]. The graph stays bidirectionally
+    /// consistent on every removal so subsequent searches do not chase
+    /// a dangling reference.
+    fn remove_node_internal(&mut self, doc_id: DocId) -> bool {
+        let Some(removed_node) = self.nodes.remove(&doc_id) else {
+            return false;
+        };
+        let _removed_level: Option<u32> = self.levels.remove(&doc_id);
+
+        // Purge back-references. The neighbour set at every layer of
+        // the removed node tells us exactly which other nodes might
+        // still carry `doc_id` in their per-layer lists.
+        for (lvl_us, neighbours) in removed_node.levels.iter().enumerate() {
+            for nb in neighbours {
+                if let Some(other) = self.nodes.get_mut(nb)
+                    && let Some(olist) = other.levels.get_mut(lvl_us)
+                    && let Ok(pos) = olist.binary_search(&doc_id)
+                {
+                    let _evicted: DocId = olist.remove(pos);
+                }
+            }
+        }
+
+        // Re-elect entry point if needed.
+        if self.entry == Some(doc_id) {
+            // Find the node with the highest recorded level, tiebreak
+            // by smallest DocId. Iterating `self.levels` (a `BTreeMap`)
+            // gives us ascending DocId order so the first occurrence
+            // of the max level wins the tiebreak by construction.
+            let mut best: Option<(DocId, u32)> = None;
+            for (id, lvl) in &self.levels {
+                match best {
+                    None => best = Some((*id, *lvl)),
+                    Some((_, bl)) => {
+                        if *lvl > bl {
+                            best = Some((*id, *lvl));
+                        }
+                    }
+                }
+            }
+            if let Some((id, lvl)) = best {
+                self.entry = Some(id);
+                self.top_level = lvl;
+            } else {
+                self.entry = None;
+                self.top_level = 0;
+            }
+        }
+        true
     }
 
     /// Greedy single-step descent: from `start`, walk to the nearest
@@ -1771,5 +1936,287 @@ mod tests {
             }
         };
         assert_eq!(a, b);
+    }
+
+    // ─────────────────────── Round-6 delta API tests ───────────────────────
+
+    fn serialize_hnsw(idx: &super::HnswIndex) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        if ciborium::ser::into_writer(idx, &mut buf).is_err() {
+            std::process::abort();
+        }
+        buf
+    }
+
+    #[test]
+    fn hnsw_upsert_replaces_existing_doc() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        let v1 = emb(vec![1.0_f32, 0.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &v1).is_err() {
+            assert!(false, "upsert 1");
+            return;
+        }
+        let v2 = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &v2).is_err() {
+            assert!(false, "upsert 2");
+            return;
+        }
+        let idx = b.finish();
+        assert_eq!(idx.corpus_size(), 1);
+        // Query the new vector — should find DocId(1) as nearest with
+        // similarity ~1.0.
+        let q = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        match query_hnsw(&idx, &q, 1) {
+            Ok(out) => {
+                let Some(top) = out.first() else {
+                    assert!(false, "empty result");
+                    return;
+                };
+                assert_eq!(top.doc_id, DocId(1));
+                assert!((top.score - 1.0_f32).abs() < 1e-5);
+            }
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn hnsw_upsert_same_embedding_is_idempotent() {
+        let Ok(mut a) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "a");
+            return;
+        };
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "b");
+            return;
+        };
+        let e = emb(vec![0.5_f32, 0.5_f32, 0.5_f32]);
+        if a.upsert_embedding(DocId(3), &e).is_err() {
+            assert!(false, "a upsert");
+            return;
+        }
+        if b.upsert_embedding(DocId(3), &e).is_err() {
+            assert!(false, "b upsert 1");
+            return;
+        }
+        if b.upsert_embedding(DocId(3), &e).is_err() {
+            assert!(false, "b upsert 2");
+            return;
+        }
+        assert_eq!(serialize_hnsw(&a.finish()), serialize_hnsw(&b.finish()));
+    }
+
+    #[test]
+    fn hnsw_upsert_dim_mismatch_returns_typed() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 0.0_f32]);
+        match b.upsert_embedding(DocId(1), &e) {
+            Ok(()) => assert!(false, "must reject"),
+            Err(err) => assert_eq!(err.code, SemanticErrorCode::SemDimMismatch),
+        }
+    }
+
+    #[test]
+    fn hnsw_remove_existing_doc_returns_true() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        let e1 = emb(vec![1.0_f32, 0.0_f32, 0.0_f32]);
+        let e2 = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        if b.add_embedding(DocId(1), &e1).is_err() || b.add_embedding(DocId(2), &e2).is_err() {
+            assert!(false, "inserts");
+            return;
+        }
+        match b.remove_embedding(DocId(1)) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "should have existed"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        match b.remove_embedding(DocId(1)) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "second remove must be no-op"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        let idx = b.finish();
+        // Query the second doc — should still be findable.
+        let q = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        match query_hnsw(&idx, &q, 5) {
+            Ok(out) => {
+                let ids: Vec<DocId> = out.iter().map(|r| r.doc_id).collect();
+                assert!(ids.contains(&DocId(2)));
+                assert!(!ids.contains(&DocId(1)));
+            }
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn hnsw_remove_nonexistent_doc_returns_false() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        match b.remove_embedding(DocId(42)) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "must report false"),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn hnsw_remove_clears_entry_when_only_node() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 0.0_f32, 0.0_f32]);
+        if b.add_embedding(DocId(1), &e).is_err() {
+            assert!(false, "insert");
+            return;
+        }
+        let Ok(removed) = b.remove_embedding(DocId(1)) else {
+            assert!(false, "remove");
+            return;
+        };
+        assert!(removed, "remove must report true");
+        let idx = b.finish();
+        assert!(idx.is_empty());
+        assert!(idx.entry().is_none());
+        assert_eq!(idx.top_level(), 0);
+    }
+
+    #[test]
+    fn hnsw_from_prior_preserves_all_docs() {
+        let prior = small_corpus();
+        let next_b = match HnswIndexBuilder::from_prior(&prior, 8) {
+            Ok(b) => b,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        let next = next_b.finish();
+        assert_eq!(next.generation(), 8);
+        assert_eq!(next.dim(), prior.dim());
+        assert_eq!(next.corpus_size(), prior.corpus_size());
+        // Every doc in prior must be queryable by self-similarity.
+        for (doc, node) in prior.iter() {
+            let q = emb(node.vector.clone());
+            match query_hnsw(&next, &q, 1) {
+                Ok(out) => {
+                    let Some(top) = out.first() else {
+                        assert!(false, "empty result for doc {doc}");
+                        return;
+                    };
+                    assert_eq!(top.doc_id, doc);
+                }
+                Err(e) => assert!(false, "{e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn hnsw_from_prior_then_remove_drops_only_target() {
+        let prior = small_corpus();
+        let Ok(mut b) = HnswIndexBuilder::from_prior(&prior, 8) else {
+            assert!(false, "from_prior");
+            return;
+        };
+        let Ok(removed) = b.remove_embedding(DocId(2)) else {
+            assert!(false, "remove");
+            return;
+        };
+        assert!(removed, "remove must report true");
+        let out = b.finish();
+        assert_eq!(out.corpus_size(), prior.corpus_size().saturating_sub(1));
+        let q = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        match query_hnsw(&out, &q, 10) {
+            Ok(hits) => {
+                for r in hits {
+                    assert!(r.doc_id != DocId(2));
+                }
+            }
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn hnsw_from_prior_with_upsert_replaces() {
+        let prior = small_corpus();
+        let Ok(mut b) = HnswIndexBuilder::from_prior(&prior, 8) else {
+            assert!(false, "from_prior");
+            return;
+        };
+        let e = emb(vec![0.0_f32, 1.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &e).is_err() {
+            assert!(false, "upsert");
+            return;
+        }
+        let out = b.finish();
+        match query_hnsw(&out, &e, 1) {
+            Ok(hits) => {
+                let Some(top) = hits.first() else {
+                    assert!(false, "empty");
+                    return;
+                };
+                assert_eq!(top.doc_id, DocId(1));
+                assert!((top.score - 1.0_f32).abs() < 1e-5);
+            }
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn hnsw_from_prior_with_same_seed_is_deterministic() {
+        let prior = small_corpus();
+        let Ok(a) = HnswIndexBuilder::from_prior(&prior, 8) else {
+            assert!(false, "a");
+            return;
+        };
+        let Ok(b) = HnswIndexBuilder::from_prior(&prior, 8) else {
+            assert!(false, "b");
+            return;
+        };
+        assert_eq!(serialize_hnsw(&a.finish()), serialize_hnsw(&b.finish()));
+    }
+
+    #[test]
+    fn hnsw_from_prior_rejects_zero_generation() {
+        let prior = small_corpus();
+        match HnswIndexBuilder::from_prior(&prior, 0) {
+            Ok(_) => assert!(false, "must reject"),
+            Err(e) => assert_eq!(e.code, SemanticErrorCode::IndexCorrupted),
+        }
+    }
+
+    #[test]
+    fn hnsw_upsert_then_remove_equals_empty() {
+        let Ok(mut b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "build");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 0.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &e).is_err() {
+            assert!(false, "upsert");
+            return;
+        }
+        let Ok(removed) = b.remove_embedding(DocId(1)) else {
+            assert!(false, "remove");
+            return;
+        };
+        assert!(removed, "remove must report true");
+        let after = b.finish();
+        let Ok(empty_b) = HnswIndexBuilder::new(7, 3, HnswParams::DEFAULTS) else {
+            assert!(false, "empty");
+            return;
+        };
+        let empty = empty_b.finish();
+        assert_eq!(serialize_hnsw(&after), serialize_hnsw(&empty));
     }
 }

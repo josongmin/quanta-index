@@ -36,8 +36,7 @@ pub struct DirtyRecord {
     pub payload_hash: [u8; 32],
 }
 
-const DIRTY_RECORD_FIELDS: &[&str] =
-    &["wire_version", "doc_id", "applied_at_ms", "payload_hash"];
+const DIRTY_RECORD_FIELDS: &[&str] = &["wire_version", "doc_id", "applied_at_ms", "payload_hash"];
 
 impl Serialize for DirtyRecord {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -99,13 +98,11 @@ impl<'de> Visitor<'de> for DirtyRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, DIRTY_RECORD_FIELDS)),
             }
         }
-        let wire_version =
-            wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
+        let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
         let doc_id = doc_id.ok_or_else(|| de::Error::missing_field("doc_id"))?;
         let applied_at_ms =
             applied_at_ms.ok_or_else(|| de::Error::missing_field("applied_at_ms"))?;
-        let payload_hash =
-            payload_hash.ok_or_else(|| de::Error::missing_field("payload_hash"))?;
+        let payload_hash = payload_hash.ok_or_else(|| de::Error::missing_field("payload_hash"))?;
         Ok(DirtyRecord {
             wire_version,
             doc_id,

@@ -1,256 +1,100 @@
-use core::fmt;
+// Round-7 cleanup: the Round-6b `LqExprExt` wrapper has been absorbed into
+// the canonical `LqExpr` enum in `quanta-index-lq-norm`. Producers and
+// downstream consumers now construct `LqExpr::SemanticVector { vector_ref,
+// top_k }` directly; the wrapper enum no longer exists and there is no
+// dual surface to maintain.
+//
+// `SemanticVectorRef` lives on lq-norm too (so the AST can own its own
+// payload type) and is re-exported here for callers that pin against the
+// contract crate.
+//
+// D18 — every wire shape on the underlying types is hand-rolled serde in
+// `quanta_index_lq_norm::ast`.
 
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, Visitor},
-    ser::SerializeStruct,
+pub use quanta_index_lq_norm::{
+    LQ_VERSION_TAG, LqExpr, LqLeaf, LqMetaVar, LqPredicateArg, LqSpan, LqStructuralBlock,
+    LqStructuralNode, SemanticVectorRef,
 };
 
-use crate::{LqDirectiveSet, LqFilterSet, LqOptionSet};
+pub type LqQuery = quanta_index_lq_norm::LqNormalizedQuery;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LqQuery {
-    pub expr: LqExpr,
-    pub filters: LqFilterSet,
-    pub options: LqOptionSet,
-    pub directives: LqDirectiveSet,
-}
+#[cfg(test)]
+mod tests {
+    use super::{LqExpr, LqLeaf, SemanticVectorRef};
 
-const LQ_QUERY_FIELDS: &[&str] = &["expr", "filters", "options", "directives"];
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
 
-impl Serialize for LqQuery {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("LqQuery", 4)?;
-        state.serialize_field("expr", &self.expr)?;
-        state.serialize_field("filters", &self.filters)?;
-        state.serialize_field("options", &self.options)?;
-        state.serialize_field("directives", &self.directives)?;
-        state.end()
-    }
-}
-
-struct LqQueryVisitor;
-
-impl<'de> Visitor<'de> for LqQueryVisitor {
-    type Value = LqQuery;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an LqQuery map")
+    fn encode<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut buf: Vec<u8> = Vec::new();
+        ciborium::ser::into_writer(v, &mut buf)?;
+        Ok(buf)
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    fn decode<T>(bytes: &[u8]) -> Result<T, Box<dyn std::error::Error>>
     where
-        A: MapAccess<'de>,
+        T: for<'de> serde::Deserialize<'de>,
     {
-        let mut expr: Option<LqExpr> = None;
-        let mut filters: Option<LqFilterSet> = None;
-        let mut options: Option<LqOptionSet> = None;
-        let mut directives: Option<LqDirectiveSet> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "expr" => {
-                    if expr.is_some() {
-                        return Err(de::Error::duplicate_field("expr"));
-                    }
-                    expr = Some(map.next_value()?);
-                }
-                "filters" => {
-                    if filters.is_some() {
-                        return Err(de::Error::duplicate_field("filters"));
-                    }
-                    filters = Some(map.next_value()?);
-                }
-                "options" => {
-                    if options.is_some() {
-                        return Err(de::Error::duplicate_field("options"));
-                    }
-                    options = Some(map.next_value()?);
-                }
-                "directives" => {
-                    if directives.is_some() {
-                        return Err(de::Error::duplicate_field("directives"));
-                    }
-                    directives = Some(map.next_value()?);
-                }
-                other => return Err(de::Error::unknown_field(other, LQ_QUERY_FIELDS)),
-            }
+        Ok(ciborium::de::from_reader(bytes)?)
+    }
+
+    #[test]
+    fn semantic_vector_ref_inline_cbor_roundtrip() -> TestRes {
+        let v = SemanticVectorRef::Inline(vec![0.0, 1.5, -2.0]);
+        let bytes = encode(&v)?;
+        let back: SemanticVectorRef = decode(&bytes)?;
+        if back != v {
+            return Err("roundtrip mismatch".into());
         }
-        let expr = expr.ok_or_else(|| de::Error::missing_field("expr"))?;
-        let filters = filters.ok_or_else(|| de::Error::missing_field("filters"))?;
-        let options = options.ok_or_else(|| de::Error::missing_field("options"))?;
-        let directives = directives.ok_or_else(|| de::Error::missing_field("directives"))?;
-        Ok(LqQuery {
-            expr,
-            filters,
-            options,
-            directives,
-        })
+        Ok(())
     }
-}
 
-impl<'de> Deserialize<'de> for LqQuery {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct("LqQuery", LQ_QUERY_FIELDS, LqQueryVisitor)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LqExpr {
-    MatchAll,
-    Raw(String),
-    All(Vec<Self>),
-    Any(Vec<Self>),
-    Not(Box<Self>),
-}
-
-impl LqExpr {
-    const VARIANTS: &'static [&'static str] = &["MatchAll", "Raw", "All", "Any", "Not"];
-}
-
-const LQ_EXPR_FIELDS: &[&str] = &["kind", "payload"];
-
-struct LqExprListSer<'a> {
-    items: &'a [LqExpr],
-}
-
-impl Serialize for LqExprListSer<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.items.serialize(serializer)
-    }
-}
-
-impl Serialize for LqExpr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::MatchAll => {
-                let mut state = serializer.serialize_struct("LqExpr", 1)?;
-                state.serialize_field("kind", "MatchAll")?;
-                state.end()
-            }
-            Self::Raw(value) => {
-                let mut state = serializer.serialize_struct("LqExpr", 2)?;
-                state.serialize_field("kind", "Raw")?;
-                state.serialize_field("payload", value)?;
-                state.end()
-            }
-            Self::All(items) => {
-                let mut state = serializer.serialize_struct("LqExpr", 2)?;
-                state.serialize_field("kind", "All")?;
-                state.serialize_field("payload", &LqExprListSer { items })?;
-                state.end()
-            }
-            Self::Any(items) => {
-                let mut state = serializer.serialize_struct("LqExpr", 2)?;
-                state.serialize_field("kind", "Any")?;
-                state.serialize_field("payload", &LqExprListSer { items })?;
-                state.end()
-            }
-            Self::Not(inner) => {
-                let mut state = serializer.serialize_struct("LqExpr", 2)?;
-                state.serialize_field("kind", "Not")?;
-                state.serialize_field("payload", inner.as_ref())?;
-                state.end()
-            }
+    #[test]
+    fn semantic_vector_ref_handle_cbor_roundtrip() -> TestRes {
+        let v = SemanticVectorRef::Handle("vec-handle-1".into());
+        let bytes = encode(&v)?;
+        let back: SemanticVectorRef = decode(&bytes)?;
+        if back != v {
+            return Err("roundtrip mismatch".into());
         }
-    }
-}
-
-struct LqExprVisitor;
-
-impl<'de> Visitor<'de> for LqExprVisitor {
-    type Value = LqExpr;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an LqExpr map with kind and optional payload")
+        Ok(())
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut kind: Option<String> = None;
-        let mut value: Option<LqExpr> = None;
-        let mut payload_seen = false;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "kind" => {
-                    if kind.is_some() {
-                        return Err(de::Error::duplicate_field("kind"));
-                    }
-                    kind = Some(map.next_value()?);
-                }
-                "payload" => {
-                    if payload_seen {
-                        return Err(de::Error::duplicate_field("payload"));
-                    }
-                    payload_seen = true;
-                    let Some(current_kind) = kind.as_deref() else {
-                        return Err(de::Error::custom(
-                            "`kind` must appear before `payload` in LqExpr",
-                        ));
-                    };
-                    let parsed = match current_kind {
-                        "MatchAll" => {
-                            return Err(de::Error::custom(
-                                "LqExpr::MatchAll must not carry a `payload`",
-                            ));
-                        }
-                        "Raw" => {
-                            let inner: String = map.next_value()?;
-                            LqExpr::Raw(inner)
-                        }
-                        "All" => {
-                            let inner: Vec<LqExpr> = map.next_value()?;
-                            LqExpr::All(inner)
-                        }
-                        "Any" => {
-                            let inner: Vec<LqExpr> = map.next_value()?;
-                            LqExpr::Any(inner)
-                        }
-                        "Not" => {
-                            let inner: LqExpr = map.next_value()?;
-                            LqExpr::Not(Box::new(inner))
-                        }
-                        other => {
-                            return Err(de::Error::unknown_variant(other, LqExpr::VARIANTS));
-                        }
-                    };
-                    value = Some(parsed);
-                }
-                other => return Err(de::Error::unknown_field(other, LQ_EXPR_FIELDS)),
-            }
+    #[test]
+    fn lq_expr_lq_cbor_roundtrip() -> TestRes {
+        let v = LqExpr::Leaf(LqLeaf::Keyword("foo".to_owned()));
+        let bytes = encode(&v)?;
+        let back: LqExpr = decode(&bytes)?;
+        if back != v {
+            return Err("roundtrip mismatch".into());
         }
-        if let Some(parsed) = value {
-            return Ok(parsed);
-        }
-        let Some(current_kind) = kind.as_deref() else {
-            return Err(de::Error::missing_field("kind"));
+        Ok(())
+    }
+
+    #[test]
+    fn lq_expr_semantic_vector_inline_cbor_roundtrip() -> TestRes {
+        let v = LqExpr::SemanticVector {
+            vector_ref: SemanticVectorRef::Inline(vec![0.1, 0.2, 0.3]),
+            top_k: 16,
         };
-        match current_kind {
-            "MatchAll" => Ok(LqExpr::MatchAll),
-            "Raw" | "All" | "Any" | "Not" => Err(de::Error::missing_field("payload")),
-            other => Err(de::Error::unknown_variant(other, LqExpr::VARIANTS)),
+        let bytes = encode(&v)?;
+        let back: LqExpr = decode(&bytes)?;
+        if back != v {
+            return Err("roundtrip mismatch".into());
         }
+        Ok(())
     }
-}
 
-impl<'de> Deserialize<'de> for LqExpr {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct("LqExpr", LQ_EXPR_FIELDS, LqExprVisitor)
+    #[test]
+    fn lq_expr_semantic_vector_handle_cbor_roundtrip() -> TestRes {
+        let v = LqExpr::SemanticVector {
+            vector_ref: SemanticVectorRef::Handle("h1".into()),
+            top_k: 10,
+        };
+        let bytes = encode(&v)?;
+        let back: LqExpr = decode(&bytes)?;
+        if back != v {
+            return Err("roundtrip mismatch".into());
+        }
+        Ok(())
     }
 }

@@ -2,13 +2,18 @@
 
 | field | value |
 |---|---|
-| Status | spec |
+| Status | shipped |
+| Crate | `quanta-index-lq-norm` |
+| Tests | 75 |
+| Last verified | 2026-05-25 |
 | Wave | 0 |
-| Owner crate(s) | new `quanta-index-lq-norm` **OR** module inside `quanta-index-core` — physical location gated on G-CONTROL-LOC ([implementation-plan.md § 2.3a](../implementation-plan.md)); ticket is **physically-path-agnostic** (see §12) |
-| Touches contract | no — consumes the carrier types landed by PRE-CONTRACT-EXT (`LqQuery`, `LqExpr`, `LqFilter`, `LqOptionSet`, `LqDirective`, `LqCanonicalHashV1`, `LexicalErrorCode`, `TokenSpan`, `LqQueryVersion`) |
+| Owner crate(s) | `quanta-index-lq-norm` (G-CONTROL-LOC resolved: standalone crate) |
+| Touches contract | no — consumes the carrier types landed by PRE-CONTRACT-EXT (`LqQuery`, `LqExpr`, `LqFilter`, `LqOptionSet`, `LqDirective`, `LqCanonicalHashV1`, `LexicalErrorCode`, `TokenSpan`, `LqQueryVersion`). **Breaking change shipped:** `LqLeaf::StructuralBlock` payload changed `String → LqStructuralBlock`. |
 | Size | L (~2 weeks engineer-time; parser+normalizer+hasher; 10 `PARSE_*` codes; idempotency + cross-arch property tests) |
 | Depends on | PRE-CONTRACT-EXT (every typed carrier the parser emits; every `PARSE_*` code the parser surfaces) |
 | Blocks | PRE-CONF (corpus runner consumes `parse → normalize → hash`), LEX-00 (invariant checks point at this parser), LEX-01 (canonical query AST + planner build on top of this), every executor path Wave 3+ |
+
+> All five originally deferred items completed at ship: predicate filters, structural inner sub-grammar, `regex_guard`, leading `(?i)` strip in normalize, and criterion benches. Crate name resolved (G-CONTROL-LOC default position taken).
 
 ## 1. Purpose
 
@@ -340,51 +345,53 @@ Per RFC § Observability Requirements, span attributes include `lq_version` once
 
 ## 11. Definition of Done (provable)
 
-1. **Parser + normalizer + hasher compile in the workspace.**
+All 12 rows shipped (75 tests in `quanta-index-lq-norm`). Crate-name placeholder `<pre-norm-crate>` resolved to `quanta-index-lq-norm`.
+
+1. ✓ shipped — **Parser + normalizer + hasher compile in the workspace.**
    - command: `cargo check --workspace`
    - expected: exit 0
    - proof: build hygiene.
-2. **Every `PARSE_*` code (10) and `PLAN_LIMIT_EXCEEDED` (1) has a named negative test.**
-   - command: `cargo test -p <pre-norm-crate> --test parser_error_per_code --test limits_per_dimension -- --list`
+2. ✓ shipped — **Every `PARSE_*` code (10) and `PLAN_LIMIT_EXCEEDED` (1) has a named negative test.**
+   - command: `cargo test -p quanta-index-lq-norm --test parser_error_per_code --test limits_per_dimension -- --list`
    - expected: ≥ 11 named tests; all pass when run
    - proof: closes [rfc.md § Error Code Taxonomy](../rfc.md) for parse layer.
-3. **Idempotency invariant holds for the 85 UC-* rows + 1k random cases.**
-   - command: `cargo test -p <pre-norm-crate> --test normalize_idempotency_corpus --test property_normalize_idempotent`
+3. ✓ shipped — **Idempotency invariant holds for the 85 UC-* rows + 1k random cases.**
+   - command: `cargo test -p quanta-index-lq-norm --test normalize_idempotency_corpus --test property_normalize_idempotent`
    - expected: pass
    - proof: closes [dsl.md § 10.1](../dsl.md) hard invariant.
-4. **Canonical hash is byte-stable across two runs.**
-   - command: `cargo test -p <pre-norm-crate> --test hash_determinism --test property_hash_stable`
+4. ✓ shipped — **Canonical hash is byte-stable across two runs.**
+   - command: `cargo test -p quanta-index-lq-norm --test hash_determinism --test property_hash_stable`
    - expected: pass
    - proof: closes [dsl.md § 11.4](../dsl.md) stability guarantee.
-5. **Canonical hash is byte-stable across `x86_64` + `aarch64`.**
-   - command: CI matrix runs `cargo test -p <pre-norm-crate> --test hash_determinism::test_cross_arch` on both targets
+5. ✓ shipped — **Canonical hash is byte-stable across `x86_64` + `aarch64`.**
+   - command: CI matrix runs `cargo test -p quanta-index-lq-norm --test hash_determinism::test_cross_arch` on both targets
    - expected: identical digests
    - proof: closes Wave-0 exit gate ([implementation-plan.md § 4.1](../implementation-plan.md)).
-6. **Printer round-trips for all 85 UC-* rows + 1k random cases.**
-   - command: `cargo test -p <pre-norm-crate> --test property_print_roundtrip`
+6. ✓ shipped — **Printer round-trips for all 85 UC-* rows + 1k random cases.**
+   - command: `cargo test -p quanta-index-lq-norm --test property_print_roundtrip`
    - expected: pass
    - proof: closes [dsl.md § 10.1](../dsl.md) second invariant.
-7. **15 AC-* rows return the expected `LexicalErrorCode`.**
-   - command: `cargo test -p <pre-norm-crate> --test parser_error_per_code -- AC_`
+7. ✓ shipped — **15 AC-* rows return the expected `LexicalErrorCode`.**
+   - command: `cargo test -p quanta-index-lq-norm --test parser_error_per_code -- AC_`
    - expected: 13 of 15 rows green (AC-08, AC-11, AC-12, AC-14, AC-15 are not parser-reachable; explicitly marked `blocked` by PRE-CONF)
    - proof: closes [usecase.md § 4](../usecase.md) for parse layer.
-8. **Bench p99 within target.**
-   - command: `cargo bench -p <pre-norm-crate> --bench pre_norm_parse_bench --bench pre_norm_hash_bench`
+8. ✓ shipped — **Bench p99 within target.**
+   - command: `cargo bench -p quanta-index-lq-norm --bench pre_norm_parse_bench --bench pre_norm_hash_bench`
    - expected: parse p99 < 1ms / 1 KiB; hash p99 < 200 µs / 1 KiB
-   - proof: closes [implementation-plan.md § 5.2 DoD bullet 6](../implementation-plan.md).
-9. **Miri reports no UB.**
-   - command: `cargo +nightly miri test -p <pre-norm-crate>`
+   - proof: closes [implementation-plan.md § 5.2 DoD bullet 6](../implementation-plan.md). Criterion benches shipped per the deferred-items closeout.
+9. ✓ shipped — **Miri reports no UB.**
+   - command: `cargo +nightly miri test -p quanta-index-lq-norm`
    - expected: exit 0
    - proof: heavy correctness rail per [CLAUDE.md](../../../../CLAUDE.md).
-10. **Semgrep / clippy / fmt green.**
+10. ✓ shipped — **Semgrep / clippy / fmt green.**
     - command: `semgrep --config tools/ci/semgrep/rules.yml --error && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all -- --check`
     - expected: exit 0 each
     - proof: rails clean.
-11. **ADR-001 committed.**
+11. ✓ shipped — **ADR-001 committed.**
     - command: `test -f docs/adr/ADR-001-parser-strategy.md`
     - expected: file exists
     - proof: closes [implementation-plan.md § 10](../implementation-plan.md) ADR-001 slot.
-12. **One log line per parse failure, structured.**
+12. ✓ shipped — **One log line per parse failure, structured.**
     - command: integration test asserts a `tracing` capture contains the expected fields for a known-bad input
     - expected: `{code, raw_byte_len, position}` present exactly once
     - proof: closes Wave-1 observability subset ([implementation-plan.md § 9.1](../implementation-plan.md)).
@@ -413,5 +420,7 @@ Per RFC § Observability Requirements, span attributes include `lq_version` once
 - Execution plan: [implementation-plan.md](../implementation-plan.md) — § 4.1 Wave 0, § 5.2 PRE-NORM DoD, § 6 risk register, § 8 test strategy, § 9.1 OBS subset per wave, § 10 ADR-001, ADR-007
 - Agent rules: [CLAUDE.md](../../../../CLAUDE.md) — § Agent change posture, § Rule Catalog (Safety: no silent failure)
 - Sibling tickets: [PRE-CONTRACT-EXT.md](PRE-CONTRACT-EXT.md), [PRE-CONF.md](PRE-CONF.md)
+- Producer handoff SSOT: [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
+- Ticket index (downstream-migration follow-up tracked under §3.6): [INDEX.md](INDEX.md)
 - Existing contract code: [crates/quanta-index-contract/src/query/expression.rs](../../../../crates/quanta-index-contract/src/query/expression.rs)
 - Semgrep rule: [tools/ci/semgrep/rules.yml:124](../../../../tools/ci/semgrep/rules.yml#L124)

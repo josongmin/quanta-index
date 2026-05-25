@@ -2,27 +2,42 @@
 //! candidate previously returned by a lexical query.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "test polling paths still use explicit Result fallback checks"
+)]
+#![expect(
+    clippy::let_underscore_untyped,
+    reason = "publisher ops intentionally discard ack payloads in integration setup"
+)]
+#![expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "integration response checks intentionally collapse non-target variants"
+)]
 
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_channel::{BundleChannelPublisher, open_lexical_publisher};
 use quanta_index_contract::{
-    ChunkId, GenerationPin, LexicalCandidate, LexicalChannelOp, LqDirectiveSet, LqExpr,
-    LqFilterSet, LqOptionSet, LqQuery, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneExplainQueryRequest, SearchPlaneIpcRequest, SearchPlaneIpcRequestEnvelope,
-    SearchPlaneIpcResponse, SearchPlaneLexicalQueryRequest, UpsertChunk,
+    ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
+    RepoId, RepoRelativePath, RevisionId, SearchPlaneExplainQueryRequest,
+    SearchPlaneLexicalTextQueryRequestV2, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchQuerySyntaxV1, UpsertChunk,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SearchdConfig;
-use quanta_index_searchd::app::runtime::SearchdRuntime;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd_runtime::build_runtime;
 
 type TestResult = Result<(), Box<dyn Error>>;
+static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn repo() -> RepoId {
     RepoId::new("repo-exp")
@@ -36,19 +51,46 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(11)
 }
 
-fn unique_socket_path() -> std::path::PathBuf {
+fn chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let record = ChunkRecord {
+        repo_relative_path: RepoRelativePath::new(""),
+        language: String::new().into_boxed_str(),
+        start_line: 0,
+        end_line: 0,
+        snippet: text.to_string().into_boxed_str(),
+    };
+    let mut buf = Vec::new();
+    ciborium::into_writer(&record, &mut buf)
+        .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
+    Ok(buf)
+}
+
+fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("qi-explain-{pid}-{nanos}.sock"))
+    let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
+    let query =
+        std::env::temp_dir().join(format!("qi-explain-query-{pid}-{nanos}-{sequence}.sock"));
+    let control =
+        std::env::temp_dir().join(format!("qi-explain-control-{pid}-{nanos}-{sequence}.sock"));
+    (query, control)
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
-    cfg = SearchdConfig::with_socket_override(cfg, unique_socket_path());
+    let (query_socket, control_socket) = unique_socket_paths();
+    cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     cfg
+}
+
+fn send_query_request(
+    socket: &Path,
+    request: &SearchPlaneQueryIpcRequestEnvelope,
+) -> Result<SearchPlaneQueryIpcResponseEnvelope, quanta_index_ipc::IpcError> {
+    send_request(socket, request)
 }
 
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
@@ -65,21 +107,14 @@ where
     false
 }
 
-fn make_lq(expr: LqExpr) -> LqQuery {
-    LqQuery {
-        expr,
-        filters: LqFilterSet::default(),
-        options: LqOptionSet::default(),
-        directives: LqDirectiveSet::default(),
-    }
-}
-
-fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneIpcRequestEnvelope {
-    SearchPlaneIpcRequestEnvelope {
+fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneQueryIpcRequestEnvelope {
+    SearchPlaneQueryIpcRequestEnvelope {
         request_id: 1,
-        payload: SearchPlaneIpcRequest::Lexical(SearchPlaneLexicalQueryRequest {
-            query: make_lq(LqExpr::Raw(needle.to_string())),
+        payload: SearchPlaneQueryIpcRequest::Lexical(SearchPlaneLexicalTextQueryRequestV2 {
+            syntax: SearchQuerySyntaxV1::Sourcegraph,
+            query_text: needle.to_string(),
             generation: Some(pin),
+            generation_selector: None,
         }),
     }
 }
@@ -87,10 +122,10 @@ fn lex_query(needle: &str, pin: GenerationPin) -> SearchPlaneIpcRequestEnvelope 
 fn explain_request(
     pin: GenerationPin,
     candidate: LexicalCandidate,
-) -> SearchPlaneIpcRequestEnvelope {
-    SearchPlaneIpcRequestEnvelope {
+) -> SearchPlaneQueryIpcRequestEnvelope {
+    SearchPlaneQueryIpcRequestEnvelope {
         request_id: 2,
-        payload: SearchPlaneIpcRequest::Explain(SearchPlaneExplainQueryRequest {
+        payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
             generation: pin,
             candidate,
         }),
@@ -109,13 +144,13 @@ fn explain_reports_present_candidate() -> TestResult {
             revision_id: revision(),
             generation: generation(),
             chunk_id: ChunkId::new("explain-c1"),
-            payload: b"quick brown fox jumps".to_vec(),
+            payload: chunk_payload("quick brown fox jumps")?,
         }))?;
         let _ = publisher.seal(repo(), revision(), generation())?;
     }
 
     let config = build_config(state_root);
-    let runtime = SearchdRuntime::build(config)?;
+    let runtime = build_runtime(config)?;
     let socket = runtime.query_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
@@ -129,9 +164,9 @@ fn explain_reports_present_candidate() -> TestResult {
         drop(join.join());
         return Err("socket never appeared".into());
     }
-    if !wait_until(Duration::from_secs(2), || {
-        send_request(&socket, &lex_query("quick", pin.clone()))
-            .map(|r| !matches!(r.payload, SearchPlaneIpcResponse::Error(_)))
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &lex_query("quick", pin.clone()))
+            .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
         shutdown.store(true, Ordering::Release);
@@ -139,9 +174,9 @@ fn explain_reports_present_candidate() -> TestResult {
         return Err("dispatcher never sealed".into());
     }
 
-    let lex_resp = send_request(&socket, &lex_query("quick", pin.clone()))?;
+    let lex_resp = send_query_request(&socket, &lex_query("quick", pin.clone()))?;
     let candidate = match lex_resp.payload {
-        SearchPlaneIpcResponse::Lexical(lex) => lex
+        SearchPlaneQueryIpcResponse::Lexical(lex) => lex
             .results
             .into_iter()
             .next()
@@ -158,9 +193,9 @@ fn explain_reports_present_candidate() -> TestResult {
         return Err(format!("expected explain-c1, got {}", candidate.candidate_id).into());
     }
 
-    let explain_resp = send_request(&socket, &explain_request(pin.clone(), candidate.clone()))?;
+    let explain_resp = send_query_request(&socket, &explain_request(pin, candidate))?;
     let explanation = match explain_resp.payload {
-        SearchPlaneIpcResponse::Explain(exp) => exp.explanation,
+        SearchPlaneQueryIpcResponse::Explain(exp) => exp.explanation,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -206,13 +241,13 @@ fn explain_rejects_generation_mismatch() -> TestResult {
             revision_id: revision(),
             generation: generation(),
             chunk_id: ChunkId::new("c-mismatch"),
-            payload: b"alpha bravo charlie".to_vec(),
+            payload: chunk_payload("alpha bravo charlie")?,
         }))?;
         let _ = publisher.seal(repo(), revision(), generation())?;
     }
 
     let config = build_config(state_root);
-    let runtime = SearchdRuntime::build(config)?;
+    let runtime = build_runtime(config)?;
     let socket = runtime.query_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
@@ -226,9 +261,9 @@ fn explain_rejects_generation_mismatch() -> TestResult {
         drop(join.join());
         return Err("socket never appeared".into());
     }
-    if !wait_until(Duration::from_secs(2), || {
-        send_request(&socket, &lex_query("alpha", pin.clone()))
-            .map(|r| !matches!(r.payload, SearchPlaneIpcResponse::Error(_)))
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &lex_query("alpha", pin.clone()))
+            .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
         shutdown.store(true, Ordering::Release);
@@ -248,9 +283,9 @@ fn explain_rejects_generation_mismatch() -> TestResult {
         score: 1.0,
         snippet: "alpha bravo charlie".to_string(),
     };
-    let resp = send_request(&socket, &explain_request(pin, stale_candidate))?;
+    let resp = send_query_request(&socket, &explain_request(pin, stale_candidate))?;
     let err = match resp.payload {
-        SearchPlaneIpcResponse::Error(e) => e,
+        SearchPlaneQueryIpcResponse::Error(e) => e,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());

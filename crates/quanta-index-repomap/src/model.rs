@@ -26,6 +26,20 @@ pub struct RepoMapEntryV1 {
     pub projection_authority_digest: String,
     pub projection_status: String,
     pub redaction_state: String,
+    #[serde(default)]
+    pub search_text: String,
+    #[serde(default)]
+    pub source_symbol_count: u32,
+    #[serde(default)]
+    pub source_chunk_token_total: u32,
+    #[serde(default)]
+    pub source_call_incoming_edges: u32,
+    #[serde(default)]
+    pub source_call_outgoing_edges: u32,
+    #[serde(default)]
+    pub source_import_incoming_edges: u32,
+    #[serde(default)]
+    pub source_import_outgoing_edges: u32,
 }
 
 impl RepoMapEntryV1 {

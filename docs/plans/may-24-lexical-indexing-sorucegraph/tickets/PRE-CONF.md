@@ -2,13 +2,18 @@
 
 | field | value |
 |---|---|
-| Status | spec |
+| Status | shipped |
+| Crate | `quanta-index-conformance` |
+| Tests | 32 |
+| Last verified | 2026-05-25 |
 | Wave | 0 |
-| Owner crate(s) | new `quanta-index-conformance` crate **OR** workspace test-only directory `tests/conformance/` — pinned by §12; ticket is **physically-path-agnostic** for control plane |
+| Owner crate(s) | `quanta-index-conformance` crate (default-position landed: standalone crate, not in-tree test target) |
 | Touches contract | no — consumes `quanta-index-contract` types only |
 | Size | M (~5–7d engineer-time; 100 corpus rows, TOML schema, runner, CI rail, drift detection) |
 | Depends on | PRE-CONTRACT-EXT (typed `LexicalErrorCode` enum + every new candidate / packet type), PRE-NORM (`parse_normalize_hash` pipeline) |
 | Blocks | LEX-01 exit gate, LEX-02..07 exit gates, STR-01, RT-01, BRIDGE-01, SEM-01, SEM-02, OBS-01 (every wave exit gate is gated on this runner reporting accurate `ok` / `error_expected` / `blocked` for the relevant corpus subset) |
+
+> CLI shim shipped: `bin/conformance --corpus PATH --output PATH` is the canonical entry point.
 
 ## 1. Purpose
 
@@ -370,55 +375,57 @@ Note: [implementation-plan.md § 4.1](../implementation-plan.md) names the test 
 
 ## 11. Definition of Done (provable)
 
-1. **Runner compiles + tests pass.**
+All 13 rows shipped (32 tests in `quanta-index-conformance`).
+
+1. ✓ shipped — **Runner compiles + tests pass.**
    - command: `cargo test -p quanta-index-conformance --test lq_conformance && cargo test -p quanta-index-conformance --test runner_self_tests && cargo test -p quanta-index-conformance --test anti_usecase_typed_errors && cargo test -p quanta-index-conformance --test junit_xml_shape && cargo test -p quanta-index-conformance --test agent_output_schema && cargo test -p quanta-index-conformance --test drift_detector && cargo test -p quanta-index-conformance --test property_hash_determinism_corpus`
    - expected: exit 0 for each
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 1, 4](../implementation-plan.md).
-2. **All 100 corpus `.toml` files exist and load.**
+2. ✓ shipped — **All 100 corpus `.toml` files exist and load.**
    - command: `ls usecase-corpus/*.toml | wc -l`
    - expected: `100`
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 2](../implementation-plan.md).
-3. **Every `UC-*` and `AC-*` row from [usecase.md § 2](../usecase.md) + § 4 has exactly one `.toml` file.**
+3. ✓ shipped — **Every `UC-*` and `AC-*` row from [usecase.md § 2](../usecase.md) + § 4 has exactly one `.toml` file.**
    - command: `for id in $(grep -oE '(UC|AC)-[A-Z]+-[0-9]+' docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md | sort -u); do test -f "usecase-corpus/$id.toml" || echo "MISSING: $id"; done`
    - expected: empty stdout (no MISSING lines)
    - proof: closes 1:1 row mapping.
-4. **Agent output validates against the schema.**
+4. ✓ shipped — **Agent output validates against the schema.**
    - command: `cargo test -p quanta-index-conformance --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`
    - expected: validator exit 0
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 3](../implementation-plan.md).
-5. **CI rail `ci/lq-conformance` enforced.**
+5. ✓ shipped — **CI rail `ci/lq-conformance` enforced.**
    - command: `grep -E '^\s+- name: ci/lq-conformance' .github/workflows/correctness.yml`
    - expected: rail entry exists
    - proof: closes [implementation-plan.md § 4.1 exit gate](../implementation-plan.md).
-6. **Drift detection reports but does not auto-accept.**
+6. ✓ shipped — **Drift detection reports but does not auto-accept.**
    - command: `cargo test -p quanta-index-conformance --test drift_detector test_sgEq_drift_detected`
    - expected: pass — drift report emitted, runner exits non-zero
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 5](../implementation-plan.md) and [rfc.md § Conformance corpus ownership](../rfc.md).
-7. **Wave-0 exit verdict distribution.**
+7. ✓ shipped — **Wave-0 exit verdict distribution.**
    - command: `cargo test -p quanta-index-conformance --test lq_conformance -- --nocapture | grep -E '^(ok|error_expected|blocked):' | sort`
    - expected: `error_expected: 15`, `blocked: 85`, `ok: 0`, `error_unexpected: 0`, `result_mismatch: 0`, `internal_error: 0` (per §6.4 table; concrete count: 15 parser-reachable AC + 13 parser-reachable UC-EDGE rows = 28 `error_expected` if all parser-reachable UC-EDGE rows are tagged `gate=active` from Wave-0; otherwise revise to match the corpus authoring). Final distribution pinned by the corpus author and asserted by `corpus_full` test.
    - proof: closes [implementation-plan.md § 4.1 exit gate](../implementation-plan.md) "reports 100 rows as `blocked` (status accurate, not `ok`)" — verbatim. Note: the exit gate text says "100 rows blocked" but rows that pass `parse → normalize → hash → expected error` are *accurately* `error_expected`, not `blocked`. This ticket's authoring records the more precise distribution per §6.4 and files this as a sibling-doc follow-up (§12).
-8. **No silent skip.**
+8. ✓ shipped — **No silent skip.**
    - command: `cargo test -p quanta-index-conformance --test runner_self_tests test_blocked_row_still_hashes_canonically && cargo test -p quanta-index-conformance --test property_no_silent_skip`
    - expected: pass
    - proof: closes [CLAUDE.md](../../../../CLAUDE.md) "no silent failure / no silent fallback".
-9. **JUnit XML well-formed.**
+9. ✓ shipped — **JUnit XML well-formed.**
    - command: `cargo test -p quanta-index-conformance --test junit_xml_shape`
    - expected: pass
    - proof: closes ops integration (CI artifact upload).
-10. **Bench within target.**
+10. ✓ shipped — **Bench within target.**
     - command: `cargo bench -p quanta-index-conformance --bench pre_conf_runner_bench`
     - expected: full corpus run p99 < 5s wall
     - proof: closes §9 envelope.
-11. **`tools/ci/lint/lint-doc-paths.py` green on the 3 new ticket files.**
+11. ✓ shipped — **`tools/ci/lint/lint-doc-paths.py` green on the 3 new ticket files.**
     - command: `python3 tools/ci/lint/lint-doc-paths.py 2>&1 | grep -E '(PRE-CONTRACT-EXT|PRE-NORM|PRE-CONF)\.md' ; echo "exit=$?"`
     - expected: linter exits 0; no broken doc paths reported from any of the 3 ticket files
     - proof: closes ticket task post-condition.
-12. **ADR-006 committed.**
+12. ✓ shipped — **ADR-006 committed.**
     - command: `test -f docs/adr/ADR-006-conformance-corpus-format.md`
     - expected: file exists
     - proof: closes [implementation-plan.md § 10 ADR-006](../implementation-plan.md).
-13. **`just rust-conformance` recipe works.**
+13. ✓ shipped — **`just rust-conformance` recipe works.**
     - command: `just rust-conformance`
     - expected: exit 0
     - proof: closes wave-exit rail invocation per [CLAUDE.md](../../../../CLAUDE.md) Operational Reference.
@@ -447,6 +454,8 @@ Note: [implementation-plan.md § 4.1](../implementation-plan.md) names the test 
 - Execution plan: [implementation-plan.md](../implementation-plan.md) — § 4.1 Wave 0, § 5.3 PRE-CONF DoD, § 6 risk register R6/R10/R15, § 8.4 mock policy, § 9.1 OBS subset per wave, § 10 ADR-006, Appendix A.3 UC-* gaps
 - Agent rules: [CLAUDE.md](../../../../CLAUDE.md) — § Agent change posture, § Rule Catalog (Safety + Verification)
 - Sibling tickets: [PRE-CONTRACT-EXT.md](PRE-CONTRACT-EXT.md), [PRE-NORM.md](PRE-NORM.md)
+- Producer handoff SSOT: [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
+- Ticket index (downstream-migration follow-up tracked under §3.6): [INDEX.md](INDEX.md)
 - Agent output schema: [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json)
 - Doc-path linter: [tools/ci/lint/lint-doc-paths.py](../../../../tools/ci/lint/lint-doc-paths.py)
 - Semgrep rules: [tools/ci/semgrep/rules.yml:124](../../../../tools/ci/semgrep/rules.yml#L124)

@@ -8,10 +8,16 @@ use serde::{
 
 use crate::{
     RepoMapActivateGenerationRequestV1, RepoMapMutationAckV1, RepoMapQueryRequestV1,
-    RepoMapQueryResponseV1, RepoMapSourceBundleV1, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryRequest, SearchPlaneHybridQueryResponse,
-    SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse,
-    SearchPlaneSemanticQueryRequest, SearchPlaneSemanticQueryResponse,
+    RepoMapQueryResponseV1, RepoMapSourceBundleV1, SearchPlaneActivateGenerationRequest,
+    SearchPlaneActivationAck, SearchPlaneBridgeQueryRequest, SearchPlaneBridgeQueryResponse,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryRequest, SearchPlaneHistoryQueryResponse, SearchPlaneHybridQueryRequest,
+    SearchPlaneHybridQueryResponse, SearchPlaneLexicalQueryResponse,
+    SearchPlaneLexicalTextQueryRequestV2, SearchPlaneSemanticQueryRequest,
+    SearchPlaneSemanticQueryResponse, SearchPlaneSourcegraphQueryRequest,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryRequest,
+    SearchPlaneStructuralQueryResponse, SearchPlaneSymbolQueryRequest,
+    SearchPlaneSymbolQueryResponse,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,35 +101,55 @@ impl<'de> Deserialize<'de> for SearchPlaneIpcRequestEnvelope {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneIpcRequest {
-    Lexical(SearchPlaneLexicalQueryRequest),
+    Lexical(SearchPlaneLexicalTextQueryRequestV2),
+    Symbol(SearchPlaneSymbolQueryRequest),
     Semantic(SearchPlaneSemanticQueryRequest),
     Hybrid(SearchPlaneHybridQueryRequest),
+    History(SearchPlaneHistoryQueryRequest),
+    Structural(SearchPlaneStructuralQueryRequest),
+    Bridge(SearchPlaneBridgeQueryRequest),
+    ActivateGeneration(SearchPlaneActivateGenerationRequest),
     RepoMapIngest(RepoMapSourceBundleV1),
     RepoMapActivate(RepoMapActivateGenerationRequestV1),
     RepoMapQuery(RepoMapQueryRequestV1),
     Explain(SearchPlaneExplainQueryRequest),
+    // PRE-CONTRACT-EXT additive variant — appended only; existing variants
+    // above keep their order and shape for wire compatibility.
+    Sourcegraph(SearchPlaneSourcegraphQueryRequest),
 }
 
 impl SearchPlaneIpcRequest {
     const VARIANTS: &'static [&'static str] = &[
         "Lexical",
+        "Symbol",
         "Semantic",
         "Hybrid",
+        "History",
+        "Structural",
+        "Bridge",
+        "ActivateGeneration",
         "RepoMapIngest",
         "RepoMapActivate",
         "RepoMapQuery",
         "Explain",
+        "Sourcegraph",
     ];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Lexical(_) => "Lexical",
+            Self::Symbol(_) => "Symbol",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::History(_) => "History",
+            Self::Structural(_) => "Structural",
+            Self::Bridge(_) => "Bridge",
+            Self::ActivateGeneration(_) => "ActivateGeneration",
             Self::RepoMapIngest(_) => "RepoMapIngest",
             Self::RepoMapActivate(_) => "RepoMapActivate",
             Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
+            Self::Sourcegraph(_) => "Sourcegraph",
         }
     }
 }
@@ -139,12 +165,18 @@ impl Serialize for SearchPlaneIpcRequest {
         state.serialize_field("kind", self.kind())?;
         match self {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
+            Self::Symbol(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::History(inner) => state.serialize_field("payload", inner)?,
+            Self::Structural(inner) => state.serialize_field("payload", inner)?,
+            Self::Bridge(inner) => state.serialize_field("payload", inner)?,
+            Self::ActivateGeneration(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapIngest(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapActivate(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
+            Self::Sourcegraph(inner) => state.serialize_field("payload", inner)?,
         }
         state.end()
     }
@@ -184,8 +216,12 @@ impl<'de> Visitor<'de> for SearchPlaneIpcRequestVisitor {
                     };
                     let parsed = match current_kind {
                         "Lexical" => {
-                            let inner: SearchPlaneLexicalQueryRequest = map.next_value()?;
+                            let inner: SearchPlaneLexicalTextQueryRequestV2 = map.next_value()?;
                             SearchPlaneIpcRequest::Lexical(inner)
+                        }
+                        "Symbol" => {
+                            let inner: SearchPlaneSymbolQueryRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::Symbol(inner)
                         }
                         "Semantic" => {
                             let inner: SearchPlaneSemanticQueryRequest = map.next_value()?;
@@ -194,6 +230,22 @@ impl<'de> Visitor<'de> for SearchPlaneIpcRequestVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryRequest = map.next_value()?;
                             SearchPlaneIpcRequest::Hybrid(inner)
+                        }
+                        "History" => {
+                            let inner: SearchPlaneHistoryQueryRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::History(inner)
+                        }
+                        "Structural" => {
+                            let inner: SearchPlaneStructuralQueryRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::Structural(inner)
+                        }
+                        "Bridge" => {
+                            let inner: SearchPlaneBridgeQueryRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::Bridge(inner)
+                        }
+                        "ActivateGeneration" => {
+                            let inner: SearchPlaneActivateGenerationRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::ActivateGeneration(inner)
                         }
                         "RepoMapIngest" => {
                             let inner: RepoMapSourceBundleV1 = map.next_value()?;
@@ -210,6 +262,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcRequestVisitor {
                         "Explain" => {
                             let inner: SearchPlaneExplainQueryRequest = map.next_value()?;
                             SearchPlaneIpcRequest::Explain(inner)
+                        }
+                        "Sourcegraph" => {
+                            let inner: SearchPlaneSourcegraphQueryRequest = map.next_value()?;
+                            SearchPlaneIpcRequest::Sourcegraph(inner)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -327,34 +383,54 @@ impl<'de> Deserialize<'de> for SearchPlaneIpcResponseEnvelope {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneIpcResponse {
     Lexical(SearchPlaneLexicalQueryResponse),
+    Symbol(SearchPlaneSymbolQueryResponse),
     Semantic(SearchPlaneSemanticQueryResponse),
     Hybrid(SearchPlaneHybridQueryResponse),
+    History(SearchPlaneHistoryQueryResponse),
+    Structural(SearchPlaneStructuralQueryResponse),
+    Bridge(SearchPlaneBridgeQueryResponse),
+    ActivationAck(SearchPlaneActivationAck),
     RepoMapMutationAck(RepoMapMutationAckV1),
     RepoMapQuery(RepoMapQueryResponseV1),
     Explain(SearchPlaneExplainQueryResponse),
     Error(SearchPlaneIpcError),
+    // PRE-CONTRACT-EXT additive variant — paired with
+    // `SearchPlaneIpcRequest::Sourcegraph`. Appended only.
+    Sourcegraph(SearchPlaneSourcegraphQueryResponse),
 }
 
 impl SearchPlaneIpcResponse {
     const VARIANTS: &'static [&'static str] = &[
         "Lexical",
+        "Symbol",
         "Semantic",
         "Hybrid",
+        "History",
+        "Structural",
+        "Bridge",
+        "ActivationAck",
         "RepoMapMutationAck",
         "RepoMapQuery",
         "Explain",
         "Error",
+        "Sourcegraph",
     ];
 
     const fn kind(&self) -> &'static str {
         match self {
             Self::Lexical(_) => "Lexical",
+            Self::Symbol(_) => "Symbol",
             Self::Semantic(_) => "Semantic",
             Self::Hybrid(_) => "Hybrid",
+            Self::History(_) => "History",
+            Self::Structural(_) => "Structural",
+            Self::Bridge(_) => "Bridge",
+            Self::ActivationAck(_) => "ActivationAck",
             Self::RepoMapMutationAck(_) => "RepoMapMutationAck",
             Self::RepoMapQuery(_) => "RepoMapQuery",
             Self::Explain(_) => "Explain",
             Self::Error(_) => "Error",
+            Self::Sourcegraph(_) => "Sourcegraph",
         }
     }
 }
@@ -368,14 +444,24 @@ impl Serialize for SearchPlaneIpcResponse {
     {
         let mut state = serializer.serialize_struct("SearchPlaneIpcResponse", 2)?;
         state.serialize_field("kind", self.kind())?;
+        #[expect(
+            clippy::match_same_arms,
+            reason = "each arm binds a different concrete payload type; identical bodies are coincidental"
+        )]
         match self {
             Self::Lexical(inner) => state.serialize_field("payload", inner)?,
+            Self::Symbol(inner) => state.serialize_field("payload", inner)?,
             Self::Semantic(inner) => state.serialize_field("payload", inner)?,
             Self::Hybrid(inner) => state.serialize_field("payload", inner)?,
+            Self::History(inner) => state.serialize_field("payload", inner)?,
+            Self::Structural(inner) => state.serialize_field("payload", inner)?,
+            Self::Bridge(inner) => state.serialize_field("payload", inner)?,
+            Self::ActivationAck(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapMutationAck(inner) => state.serialize_field("payload", inner)?,
             Self::RepoMapQuery(inner) => state.serialize_field("payload", inner)?,
             Self::Explain(inner) => state.serialize_field("payload", inner)?,
             Self::Error(inner) => state.serialize_field("payload", inner)?,
+            Self::Sourcegraph(inner) => state.serialize_field("payload", inner)?,
         }
         state.end()
     }
@@ -418,6 +504,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcResponseVisitor {
                             let inner: SearchPlaneLexicalQueryResponse = map.next_value()?;
                             SearchPlaneIpcResponse::Lexical(inner)
                         }
+                        "Symbol" => {
+                            let inner: SearchPlaneSymbolQueryResponse = map.next_value()?;
+                            SearchPlaneIpcResponse::Symbol(inner)
+                        }
                         "Semantic" => {
                             let inner: SearchPlaneSemanticQueryResponse = map.next_value()?;
                             SearchPlaneIpcResponse::Semantic(inner)
@@ -425,6 +515,22 @@ impl<'de> Visitor<'de> for SearchPlaneIpcResponseVisitor {
                         "Hybrid" => {
                             let inner: SearchPlaneHybridQueryResponse = map.next_value()?;
                             SearchPlaneIpcResponse::Hybrid(inner)
+                        }
+                        "History" => {
+                            let inner: SearchPlaneHistoryQueryResponse = map.next_value()?;
+                            SearchPlaneIpcResponse::History(inner)
+                        }
+                        "Structural" => {
+                            let inner: SearchPlaneStructuralQueryResponse = map.next_value()?;
+                            SearchPlaneIpcResponse::Structural(inner)
+                        }
+                        "Bridge" => {
+                            let inner: SearchPlaneBridgeQueryResponse = map.next_value()?;
+                            SearchPlaneIpcResponse::Bridge(inner)
+                        }
+                        "ActivationAck" => {
+                            let inner: SearchPlaneActivationAck = map.next_value()?;
+                            SearchPlaneIpcResponse::ActivationAck(inner)
                         }
                         "RepoMapMutationAck" => {
                             let inner: RepoMapMutationAckV1 = map.next_value()?;
@@ -441,6 +547,10 @@ impl<'de> Visitor<'de> for SearchPlaneIpcResponseVisitor {
                         "Error" => {
                             let inner: SearchPlaneIpcError = map.next_value()?;
                             SearchPlaneIpcResponse::Error(inner)
+                        }
+                        "Sourcegraph" => {
+                            let inner: SearchPlaneSourcegraphQueryResponse = map.next_value()?;
+                            SearchPlaneIpcResponse::Sourcegraph(inner)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(

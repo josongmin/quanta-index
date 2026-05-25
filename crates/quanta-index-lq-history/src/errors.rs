@@ -30,6 +30,13 @@ pub enum HistoryErrorCode {
     StateGenerationRegression,
     /// A constructor was called with a generation id of `0`.
     InvalidGeneration,
+    /// A commit insert referenced a parent SHA that was not present in
+    /// the commit graph. Surfaces in strict (non-buffered) upsert mode.
+    HistoryCommitParentUnknown,
+    /// An in-graph `remove_commit` was attempted on a commit that still
+    /// has children referencing it as parent. The conservative policy
+    /// refuses the removal rather than orphan-rooting the children.
+    HistoryCommitHasChildren,
 }
 
 impl HistoryErrorCode {
@@ -45,6 +52,8 @@ impl HistoryErrorCode {
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
             Self::StateGenerationRegression => "STATE_GENERATION_REGRESSION",
             Self::InvalidGeneration => "INVALID_GENERATION",
+            Self::HistoryCommitParentUnknown => "HISTORY_COMMIT_PARENT_UNKNOWN",
+            Self::HistoryCommitHasChildren => "HISTORY_COMMIT_HAS_CHILDREN",
         }
     }
 
@@ -60,6 +69,8 @@ impl HistoryErrorCode {
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             "STATE_GENERATION_REGRESSION" => Self::StateGenerationRegression,
             "INVALID_GENERATION" => Self::InvalidGeneration,
+            "HISTORY_COMMIT_PARENT_UNKNOWN" => Self::HistoryCommitParentUnknown,
+            "HISTORY_COMMIT_HAS_CHILDREN" => Self::HistoryCommitHasChildren,
             _ => return None,
         };
         Some(v)
@@ -226,6 +237,8 @@ mod tests {
         HistoryErrorCode::PlanLimitExceeded,
         HistoryErrorCode::StateGenerationRegression,
         HistoryErrorCode::InvalidGeneration,
+        HistoryErrorCode::HistoryCommitParentUnknown,
+        HistoryErrorCode::HistoryCommitHasChildren,
     ];
 
     const ALL_DIMS: &[LimitDimension] = &[

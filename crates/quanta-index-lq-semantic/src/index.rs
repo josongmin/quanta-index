@@ -385,6 +385,11 @@ impl SemanticIndexBuilder {
     /// typed [`SemanticErrorCode::SemDimMismatch`] error and rejects
     /// duplicate `doc_id` insertions with
     /// [`SemanticErrorCode::IndexCorrupted`].
+    ///
+    /// **Not replay-safe.** Re-issuing `add_embedding` for the same
+    /// `doc_id` returns [`SemanticErrorCode::IndexCorrupted`]. Channel
+    /// subscribers that may replay events after a crash MUST use
+    /// [`Self::upsert_embedding`] instead.
     pub fn add_embedding(
         &mut self,
         doc_id: DocId,
@@ -409,6 +414,86 @@ impl SemanticIndexBuilder {
         let v = embedding.as_slice().to_vec();
         let _prev = self.by_doc.insert(doc_id, v);
         Ok(())
+    }
+
+    /// Idempotent upsert of a document's embedding.
+    ///
+    /// If `doc_id` is already present in the builder, REPLACE its vector
+    /// with the new embedding's contents. Replay-safe: applying the same
+    /// `(doc_id, embedding)` pair any number of times yields a
+    /// byte-identical [`Self::finish`] output.
+    ///
+    /// Fails closed on dim mismatch with
+    /// [`SemanticErrorCode::SemDimMismatch`].
+    ///
+    /// See module-level docs and `docs/ssot/producer-handoff.md` §3.5.5
+    /// for the delta-handling contract this satisfies.
+    pub fn upsert_embedding(
+        &mut self,
+        doc_id: DocId,
+        embedding: &Embedding,
+    ) -> Result<(), SemanticError> {
+        if embedding.dim() != self.dim {
+            return Err(SemanticError::new(
+                SemanticErrorCode::SemDimMismatch,
+                format!(
+                    "embedding dim {} != builder dim {} for doc {doc_id}",
+                    embedding.dim(),
+                    self.dim
+                ),
+            ));
+        }
+        let v = embedding.as_slice().to_vec();
+        let _prev: Option<Vec<f32>> = self.by_doc.insert(doc_id, v);
+        Ok(())
+    }
+
+    /// Idempotent removal of a document.
+    ///
+    /// Returns `Ok(true)` if `doc_id` was present and removed; `Ok(false)`
+    /// if `doc_id` was not present (no-op). The `false` case is NOT an
+    /// error: channel-replay tolerance per the producer/search-plane
+    /// contract treats redundant deletes as idempotent.
+    ///
+    /// Returns a [`Result`] so future failure modes (e.g. builder caps)
+    /// can surface typed errors without an API break.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "API stability: leave Result room for future builder caps per spec"
+    )]
+    pub fn remove_embedding(&mut self, doc_id: DocId) -> Result<bool, SemanticError> {
+        Ok(self.by_doc.remove(&doc_id).is_some())
+    }
+
+    /// Seed a fresh builder for `new_generation` from a prior finished
+    /// [`SemanticIndex`].
+    ///
+    /// The builder's `generation` becomes `new_generation` (must be
+    /// non-zero); `dim` is inherited from `prior`. Every `(doc_id, vector)`
+    /// pair in `prior` is carried forward in ascending [`DocId`] order so
+    /// the resulting builder, after any subsequent
+    /// [`Self::upsert_embedding`] / [`Self::remove_embedding`] deltas,
+    /// finishes byte-identical to a scratch build of the equivalent
+    /// final-state ops at `new_generation`.
+    ///
+    /// Rejects `new_generation == 0` with
+    /// [`SemanticErrorCode::IndexCorrupted`].
+    pub fn from_prior(prior: &SemanticIndex, new_generation: u64) -> Result<Self, SemanticError> {
+        if new_generation == 0 {
+            return Err(SemanticError::new(
+                SemanticErrorCode::IndexCorrupted,
+                "new_generation must be non-zero",
+            ));
+        }
+        let mut by_doc: BTreeMap<DocId, Vec<f32>> = BTreeMap::new();
+        for (doc_id, vec) in &prior.by_doc {
+            let _prev: Option<Vec<f32>> = by_doc.insert(*doc_id, vec.clone());
+        }
+        Ok(Self {
+            generation: new_generation,
+            dim: prior.dim,
+            by_doc,
+        })
     }
 
     /// Finalise the builder into a [`SemanticIndex`]. The result has
@@ -617,5 +702,226 @@ mod tests {
             Ok(got) => assert_eq!(got, i),
             Err(e) => assert!(false, "{e}"),
         }
+    }
+
+    // ─────────────────────── Round-6 delta API tests ───────────────────────
+
+    fn serialize(idx: &SemanticIndex) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        if idx.serialize_cbor(&mut buf).is_err() {
+            std::process::abort();
+        }
+        buf
+    }
+
+    #[test]
+    fn upsert_embedding_replaces_existing_doc() {
+        let Ok(mut b) = SemanticIndexBuilder::new(1, 2) else {
+            assert!(false, "builder must construct");
+            return;
+        };
+        let v1 = emb(vec![1.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &v1).is_err() {
+            assert!(false, "first upsert");
+            return;
+        }
+        let v2 = emb(vec![0.0_f32, 1.0_f32]);
+        if b.upsert_embedding(DocId(1), &v2).is_err() {
+            assert!(false, "second upsert");
+            return;
+        }
+        let idx = b.finish();
+        let Some(stored) = idx.get(DocId(1)) else {
+            assert!(false, "doc 1 must exist");
+            return;
+        };
+        assert_eq!(stored, &[0.0_f32, 1.0_f32]);
+        assert_eq!(idx.corpus_size(), 1);
+    }
+
+    #[test]
+    fn upsert_same_embedding_is_idempotent() {
+        let Ok(mut a) = SemanticIndexBuilder::new(7, 3) else {
+            assert!(false, "build a");
+            return;
+        };
+        let Ok(mut b) = SemanticIndexBuilder::new(7, 3) else {
+            assert!(false, "build b");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 2.0_f32, 3.0_f32]);
+        if a.upsert_embedding(DocId(5), &e).is_err() {
+            assert!(false, "a upsert");
+            return;
+        }
+        // b applies the same upsert twice — must finish to byte-identical
+        // bytes as a single application in a.
+        if b.upsert_embedding(DocId(5), &e).is_err() {
+            assert!(false, "b upsert 1");
+            return;
+        }
+        if b.upsert_embedding(DocId(5), &e).is_err() {
+            assert!(false, "b upsert 2");
+            return;
+        }
+        assert_eq!(serialize(&a.finish()), serialize(&b.finish()));
+    }
+
+    #[test]
+    fn upsert_dim_mismatch_returns_typed() {
+        let Ok(mut b) = SemanticIndexBuilder::new(1, 4) else {
+            assert!(false, "build");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 2.0_f32]);
+        match b.upsert_embedding(DocId(1), &e) {
+            Ok(()) => assert!(false, "must reject"),
+            Err(err) => assert_eq!(err.code, SemanticErrorCode::SemDimMismatch),
+        }
+    }
+
+    #[test]
+    fn remove_existing_doc_returns_true() {
+        let Ok(mut b) = SemanticIndexBuilder::new(1, 2) else {
+            assert!(false, "build");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 0.0_f32]);
+        if b.upsert_embedding(DocId(1), &e).is_err() {
+            assert!(false, "upsert");
+            return;
+        }
+        match b.remove_embedding(DocId(1)) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "should have existed"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        // Removing again is a no-op.
+        match b.remove_embedding(DocId(1)) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "second remove must be no-op"),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn remove_nonexistent_doc_returns_false() {
+        let Ok(mut b) = SemanticIndexBuilder::new(1, 2) else {
+            assert!(false, "build");
+            return;
+        };
+        match b.remove_embedding(DocId(42)) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "must report false"),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn upsert_then_remove_equals_empty() {
+        let Ok(mut staged) = SemanticIndexBuilder::new(7, 2) else {
+            assert!(false, "build a");
+            return;
+        };
+        let e = emb(vec![1.0_f32, 0.0_f32]);
+        if staged.upsert_embedding(DocId(9), &e).is_err() {
+            assert!(false, "upsert");
+            return;
+        }
+        match staged.remove_embedding(DocId(9)) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "must remove"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        let after = staged.finish();
+        let Ok(empty_b) = SemanticIndexBuilder::new(7, 2) else {
+            assert!(false, "build b");
+            return;
+        };
+        let empty = empty_b.finish();
+        assert_eq!(serialize(&after), serialize(&empty));
+    }
+
+    #[test]
+    fn from_prior_preserves_all_docs() {
+        let i = fixture();
+        let next_b = match SemanticIndexBuilder::from_prior(&i, 2) {
+            Ok(b) => b,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        let next = next_b.finish();
+        assert_eq!(next.generation(), 2);
+        assert_eq!(next.dim(), i.dim());
+        assert_eq!(next.corpus_size(), i.corpus_size());
+        for (doc, vec) in i.iter() {
+            let Some(got) = next.get(doc) else {
+                assert!(false, "missing doc {doc}");
+                return;
+            };
+            assert_eq!(got, vec);
+        }
+    }
+
+    #[test]
+    fn from_prior_then_remove_drops_only_target() {
+        let i = fixture();
+        let Ok(mut b) = SemanticIndexBuilder::from_prior(&i, 2) else {
+            assert!(false, "from_prior");
+            return;
+        };
+        match b.remove_embedding(DocId(2)) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "doc 2 must exist"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        let out = b.finish();
+        assert!(out.get(DocId(1)).is_some());
+        assert!(out.get(DocId(2)).is_none());
+        assert!(out.get(DocId(3)).is_some());
+    }
+
+    #[test]
+    fn from_prior_with_upsert_replaces() {
+        let i = fixture();
+        let Ok(mut b) = SemanticIndexBuilder::from_prior(&i, 2) else {
+            assert!(false, "from_prior");
+            return;
+        };
+        let e = emb(vec![9.0_f32, 9.0_f32]);
+        if b.upsert_embedding(DocId(2), &e).is_err() {
+            assert!(false, "upsert");
+            return;
+        }
+        let out = b.finish();
+        let Some(v) = out.get(DocId(2)) else {
+            assert!(false, "doc 2 must exist");
+            return;
+        };
+        assert_eq!(v, &[9.0_f32, 9.0_f32]);
+    }
+
+    #[test]
+    fn from_prior_rejects_zero_generation() {
+        let i = fixture();
+        match SemanticIndexBuilder::from_prior(&i, 0) {
+            Ok(_) => assert!(false, "must reject"),
+            Err(e) => assert_eq!(e.code, SemanticErrorCode::IndexCorrupted),
+        }
+    }
+
+    #[test]
+    fn from_prior_zero_deltas_byte_identical() {
+        // from_prior with no deltas, finishing at the SAME generation, must
+        // produce a byte-identical encoding to the prior.
+        let i = fixture();
+        let Ok(b) = SemanticIndexBuilder::from_prior(&i, i.generation()) else {
+            assert!(false, "from_prior");
+            return;
+        };
+        let next = b.finish();
+        assert_eq!(serialize(&next), serialize(&i));
     }
 }

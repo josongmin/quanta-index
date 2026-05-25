@@ -235,18 +235,33 @@ mod tests {
         CommitSha::from_bytes([byte; 20])
     }
 
+    /// Strict-mode upsert helper that fails the test on a typed error.
+    fn ups(g: &mut CommitGraph, node: CommitNode) {
+        if let Err(e) = g.upsert_commit(node) {
+            assert!(false, "upsert_commit: {e}");
+        }
+    }
+
     fn diamond() -> CommitGraph {
         // 0 <- 1 <- 3
         //   \- 2 -/
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
-        g.add_commit(CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)));
-        g.add_commit(CommitNode::new(
-            sha(3),
-            vec![sha(1), sha(2)],
-            AppliedAtMs::new(3),
-        ));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(3), vec![sha(1), sha(2)], AppliedAtMs::new(3)),
+        );
         g
     }
 

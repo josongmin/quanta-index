@@ -7,7 +7,10 @@ members = [
     "crates/quanta-index-repomap",
     "crates/quanta-index-semantic",
     "crates/quanta-index-ipc",
+    "crates/quanta-index-search-plane",
     "crates/quanta-index-searchd",
+    "crates/quanta-index-searchd-runtime",
+    "crates/quanta-index-searchctl",
     "crates/quanta-index-lq-text-norm",
     "crates/quanta-index-lq-scorer",
     "crates/quanta-index-lq-norm",
@@ -116,6 +119,24 @@ thiserror = "1.0.69"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "net", "io-util", "macros", "signal", "sync", "time"] }
 unicode-normalization = "0.1"
+
+[profile.dev]
+# Keep backtraces useful while avoiding full DWARF rebuild churn on every edit.
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+# Dependency debug info is expensive and rarely needed during normal local loops.
+debug = false
+
+[profile.test]
+# Test compiles use the same local iteration path as `cargo check`, so keep
+# them incremental and avoid full debug info for every dependency rebuild.
+debug = 1
+incremental = true
+
+[profile.test.package."*"]
+debug = false
 
 [profile.release]
 panic = "abort"

@@ -76,8 +76,7 @@ impl RepoMapGenerationStore {
             );
             if !snapshots.contains_key(&key) {
                 return Err(CoreError::Storage(format!(
-                    "repomap activation persisted without snapshot for repo={} revision={} generation={}",
-                    repo_id, revision_id, manifest_generation
+                    "repomap activation persisted without snapshot for repo={repo_id} revision={revision_id} generation={manifest_generation}"
                 )));
             }
             let _prior = activated.insert((repo_id, revision_id), manifest_generation);
@@ -90,6 +89,16 @@ impl RepoMapGenerationStore {
     }
 
     pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundleV1) -> Result<(), CoreError> {
+        if bundle.authority_digest.trim().is_empty() {
+            return Err(CoreError::InvalidContract(
+                "repomap ingest: authority_digest must not be empty".to_string(),
+            ));
+        }
+        if bundle.file_indices.is_empty() {
+            return Err(CoreError::InvalidContract(
+                "repomap ingest: file_indices must not be empty".to_string(),
+            ));
+        }
         let snapshot = RepoMapMaterializer::materialize(bundle);
         self.insert_snapshot(snapshot)
     }
@@ -103,11 +112,13 @@ impl RepoMapGenerationStore {
             &snapshot.revision_id,
             snapshot.manifest_generation,
         );
-        let mut guard = self
-            .snapshots
-            .write()
-            .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-        let _prior = guard.insert(key, snapshot);
+        {
+            let mut guard = self
+                .snapshots
+                .write()
+                .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
+            let _prior = guard.insert(key, snapshot);
+        }
         Ok(())
     }
 
@@ -145,17 +156,18 @@ impl RepoMapGenerationStore {
                 request.manifest_generation.get(),
             )?;
         }
-        let mut activated = self
-            .activated
-            .write()
-            .map_err(|err| CoreError::Storage(format!("repomap activation map poisoned: {err}")))?;
-        let _prior = activated.insert(
-            (
-                request.repo_id.as_str().to_string(),
-                request.revision_id.as_str().to_string(),
-            ),
-            request.manifest_generation.get(),
-        );
+        {
+            let mut activated = self.activated.write().map_err(|err| {
+                CoreError::Storage(format!("repomap activation map poisoned: {err}"))
+            })?;
+            let _prior = activated.insert(
+                (
+                    request.repo_id.as_str().to_string(),
+                    request.revision_id.as_str().to_string(),
+                ),
+                request.manifest_generation.get(),
+            );
+        }
         Ok(())
     }
 
@@ -163,24 +175,27 @@ impl RepoMapGenerationStore {
         &self,
         request: &RepoMapQueryRequestV1,
     ) -> Result<RepoMapQueryResponseV1, CoreError> {
+        self.ensure_generation_activated(request)?;
         let key = RepoMapStoreKeyV1::new(
             &request.repo_id,
             &request.revision_id,
             request.manifest_generation,
         );
-        let guard = self
-            .snapshots
-            .read()
-            .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
-        let snapshot = guard.get(&key).ok_or_else(|| {
-            CoreError::NotFound(format!(
-                "repomap snapshot missing for repo={} revision={} generation={}",
-                request.repo_id.as_str(),
-                request.revision_id.as_str(),
-                request.manifest_generation.get()
-            ))
-        })?;
-        RepoMapQueryEngine::query(snapshot, request)
+        let snapshot = {
+            let guard = self
+                .snapshots
+                .read()
+                .map_err(|err| CoreError::Storage(format!("repomap store poisoned: {err}")))?;
+            guard.get(&key).cloned().ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "repomap snapshot missing for repo={} revision={} generation={}",
+                    request.repo_id.as_str(),
+                    request.revision_id.as_str(),
+                    request.manifest_generation.get()
+                ))
+            })?
+        };
+        RepoMapQueryEngine::query(&snapshot, request)
     }
 
     #[must_use]
@@ -193,8 +208,40 @@ impl RepoMapGenerationStore {
             repo_id.as_str().to_string(),
             revision_id.as_str().to_string(),
         );
-        let guard = self.activated.read().ok()?;
-        guard.get(&key).copied()
+        self.activated
+            .read()
+            .map_or_else(|_| None, |guard| guard.get(&key).copied())
+    }
+
+    fn ensure_generation_activated(
+        &self,
+        request: &RepoMapQueryRequestV1,
+    ) -> Result<(), CoreError> {
+        let key = (
+            request.repo_id.as_str().to_string(),
+            request.revision_id.as_str().to_string(),
+        );
+        let guard = self
+            .activated
+            .read()
+            .map_err(|err| CoreError::Storage(format!("repomap activation map poisoned: {err}")))?;
+        match guard.get(&key) {
+            Some(active_generation) if *active_generation == request.manifest_generation.get() => {
+                Ok(())
+            }
+            Some(active_generation) => Err(CoreError::NotFound(format!(
+                "repomap query: requested generation {} is not the activated generation {} for repo={} revision={}",
+                request.manifest_generation.get(),
+                active_generation,
+                request.repo_id.as_str(),
+                request.revision_id.as_str()
+            ))),
+            None => Err(CoreError::NotFound(format!(
+                "repomap query: no activated generation for repo={} revision={}",
+                request.repo_id.as_str(),
+                request.revision_id.as_str()
+            ))),
+        }
     }
 }
 

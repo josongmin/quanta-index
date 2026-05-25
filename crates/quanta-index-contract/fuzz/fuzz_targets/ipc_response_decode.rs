@@ -5,7 +5,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use quanta_index_contract::ipc::{
+use quanta_index_contract::{
     SearchPlaneExplainQueryResponse, SearchPlaneHybridQueryResponse,
     SearchPlaneLexicalQueryResponse, SearchPlaneSemanticQueryResponse,
 };

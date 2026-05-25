@@ -41,7 +41,7 @@ Default ordering is `score desc, repo_id asc, repo_relative_path asc, start_line
 
 ### Engine columns
 
-`L` lexical content, `P` path, `S` symbol, `H` history (commit/diff), `T` structural (tree-sitter), `R` runtime metadata catalog, `B` CodeQL bridge.
+`L` lexical content, `P` path, `S` symbol, `H` history (commit/diff), `T` structural (tree-sitter), `R` runtime metadata catalog, `B` CodeQL bridge, `M` semantic vector (cosine ANN over per-generation Lance shard), `Y` hybrid fusion (lexical + semantic via `hybrid(...)` directive).
 
 ### Parity column
 
@@ -69,6 +69,12 @@ Default ordering is `score desc, repo_id asc, repo_relative_path asc, start_line
 | `CANCELLED` | client cancellation observed cleanly |
 | `BRIDGE_REJECTED` | downstream bridge (e.g. CodeQL) refused the candidate packet |
 | `NOT_IMPLEMENTED` | grammar accepts, planner explicitly typed-not-yet (cutover discipline) |
+| `PLAN_LIMIT_EXCEEDED` | planner-side bound exceeded (`{TopK}`, `{history-revisions}`, `{parent-depth}`, ...); payload names the dimension |
+| `SEM_DIM_MISMATCH` | semantic query-vector dimension does not match the per-generation embedding dimension `D` |
+| `SEM_INVALID_VECTOR` | semantic query vector is zero-norm, contains NaN, or contains non-finite components |
+| `HYB_GEN_MISMATCH` | hybrid sub-queries (lex / sem) resolve to different `PublishedGenerationSet`s; cross-generation fusion is forbidden |
+| `HYB_TOP_K_INVALID` | hybrid `top_k = 0` or `top_k > 10_000` |
+| `HYB_INVALID_WEIGHTS` | hybrid weights sum to 0, are negative, or contain NaN / Inf |
 
 ---
 
@@ -87,7 +93,7 @@ Default ordering is `score desc, repo_id asc, repo_relative_path asc, start_line
 
 ## 2. Usecase Catalog
 
-> 70 usecases across categories A–I. IDs are stable identifiers for the golden-file conformance corpus (§6).
+> 124 usecases across categories A–I (with semantic / hybrid sub-categories G2 / G3 introduced when `SEM-01` / `SEM-02` filed back their corpus rows). IDs are stable identifiers for the golden-file conformance corpus (§6).
 
 ### A. Lexical content (keyword / phrase / regex)
 
@@ -157,6 +163,11 @@ Default ordering is `score desc, repo_id asc, repo_relative_path asc, start_line
 | `UC-HIST-06` | Diff touched file | `P2` | `type:diff file:src/lib.rs` | `multi`, recency desc | type, file | H,P | diff catalog filtered by path | `SG=` |
 | `UC-HIST-07` | Combined diff query | `P3` | `type:diff author:alice diff.added:unwrap` | `multi` | type, author, diff.added | H | single composed plan; no per-query git scan | `SG=` |
 | `UC-HIST-08` | Range diff | `P4` | `type:diff rev:main...feature` | `multi` | type, rev | H | range resolved via revision catalog at indexing time | `SG=` |
+| `UC-HIST-09` | `parent:` depth-bounded walk | `P2` | `type:commit parent:abc123` | `multi`, recency desc | type, parent | H | commit-DAG cache walk from named commit; depth bounded by `HISTORY_PARENT_DEPTH_MAX = 64`; over-cap surfaces `error:PLAN_LIMIT_EXCEEDED{parent-depth}`; unknown ref → `error:HISTORY_REF_NOT_FOUND` (per LEX-07 §5.6) | `Q+` |
+| `UC-HIST-10` | `merge:` filter (merge-result-only) | `P4` | `type:commit merge:yes` | `multi`, recency desc | type, merge | H | filters to `is_merge == true` rows; **ambiguity lock**: diff scope is the merge commit's own result only, not the merged-in side (per LEX-07 §5.7). `merge:only` is alias-of-yes; `merge:no` excludes merge commits | `SG~` |
+| `UC-HIST-11` | `tag:` resolve | `P2` | `type:commit tag:v1.*` | `multi`, recency desc | type, tag | H | tag pattern (RE2) resolved through tag→commit map; unknown tag → `error:HISTORY_REF_NOT_FOUND`; regex over NFA cap → `error:EXEC_REGEX_COMPILE_EXPLOSION` (per LEX-07 §5.8) | `Q+` |
+| `UC-HIST-12` | `revisions:` enumeration (two-dot + three-dot) | `P4` | `type:commit revisions:main..feature` (also: `revisions:main...feature`) | `multi`, recency desc | type, revisions | H | DAG range arithmetic: `a..b` returns commits reachable from `b` not from `a`; `a...b` returns symmetric difference (per `dsl.md §6.6`); range size > `HISTORY_REVISIONS_MAX = 10_000` → `error:PLAN_LIMIT_EXCEEDED{history-revisions}`; either endpoint unknown → `error:HISTORY_REF_NOT_FOUND` (per LEX-07 §5.9) | `Q+` |
+| `UC-HIST-13` | `since.time:` filter with RFC3339 timestamp | `P2` | `type:commit since.time:2024-01-15T00:00:00Z` | `multi`, recency desc | type, since.time | H | comparator runs against producer-supplied `applied_at_ms` carried in the write-packet trace, **not** wall-clock at request time (per LEX-07 §2.3 / §5.10); `since:<RFC3339-or-duration>` parse-canonicalizes to `since.time:`; trace missing → `error:HISTORY_TRACE_INCOMPLETE` | `Q+` |
 
 ### E. Structural
 
@@ -191,6 +202,54 @@ Default ordering is `score desc, repo_id asc, repo_relative_path asc, start_line
 | `UC-BR-02` | `scope:results` | `P3` | `repo:r1 dangerous_fn scope:results into:codeql` | bridge packet scoped to prior result set | directive | B | bridge consumes the lexical candidate set, not raw query text | `Q+` |
 | `UC-BR-03` | `with:lexical` | `P3` | `with:lexical into:codeql /strcpy\(/` | bridge packet | directive | L,B | composition: explicit `with:lexical` selects upstream engine for the bridge | `Q+` |
 | `UC-BR-04` | Bridge CodeQL parse fail | `P3` | `into:codeql:malformed-qls-payload Iterator` | `error:BRIDGE_REJECTED` | directive | B | bridge surfaces typed `BRIDGE_REJECTED` with downstream message; no silent skip | `Q+` |
+
+### G2. Semantic vector
+
+> 12 rows from `SEM-01` (Wave 6). Engine column `M` denotes the semantic-vector adapter (per-generation Lance shard, cosine ANN). `LqExpr::SemanticVector { vector_ref, top_k }` is constructible only through the typed contract surface at MVP — no DSL surface (`patterntype:semantic` reserved; see SEM-01 §3.3 / Q-DSL-1). Status: `pending` until `SEM-01` ships. Golden queries are written in pseudo-typed form `sem_vec(v, top_k=k)` where `v` is the inline query vector.
+
+| ID | Title | Persona | Golden query | Result shape | Filters | Engines | Acceptance | Parity |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `UC-SEM-01` | Basic cosine nearest-neighbor | `P5` | `sem_vec(v_q, top_k=3)` against a 100-doc shard | `multi`, exactly 3, score desc by cosine, ties broken by merge tuple | top_k | M | top-k ANN call against per-generation Lance shard; each `LexicalCandidate.score ∈ [-1.0, 1.0]` (cosine); deterministic ordering per merge tuple (per SEM-01 §5.6) | `Q+` |
+| `UC-SEM-02` | Mixed-lang corpus | `P5` | `sem_vec(v_q, top_k=10)` against a shard with documents in 3 languages | `multi`, exactly 10, score desc | top_k | M | semantic engine is language-agnostic (producer embeds; search plane is pure ANN consumer per SEM-01 §2.2); language filter requires `hybrid(...)` pushdown — out of SEM-01 scope | `Q+` |
+| `UC-SEM-03` | Empty query vector → typed error | `P3` | `sem_vec([], top_k=1)` | `error:SEM_INVALID_VECTOR` | – | M | zero-length vector rejected at AST construction (per SEM-01 §5.3); no silent fallback to "everything matches" | `Q+` |
+| `UC-SEM-04` | Dim mismatch → `SEM_DIM_MISMATCH` | `P3` | `sem_vec(v_q, top_k=5)` where `dim(v_q) = 256`, manifest-pinned `D = 384` | `error:SEM_DIM_MISMATCH` | – | M | dim validated against per-generation manifest pin (per SEM-01 §3.2 / §8); rejection happens before ANN call; fail-closed | `Q+` |
+| `UC-SEM-05` | Top-k = 0 → empty result | `P5` | `sem_vec(v_q, top_k=0)` | `empty`, generation still bound | top_k | M | **clarification vs SEM-01 §5.6**: per the task spec, `top_k=0` yields an empty result, not an error. The result envelope is well-typed `SearchPlaneLexicalQueryResponse { results: [] }`; no `PARSE_INVALID_FILTER_VALUE` raised | `Q+` |
+| `UC-SEM-06` | Top-k > MAX (10_000) → `PLAN_LIMIT_EXCEEDED{TopK}` | `P6` | `sem_vec(v_q, top_k=10_001)` | `error:PLAN_LIMIT_EXCEEDED` (dimension `TopK`) | top_k | M | upper bound matches DSL §13 `count:` ceiling; payload carries `{dimension: TopK, limit: 10000}` (per SEM-01 §5.6 step 4 / §8) | `Q+` |
+| `UC-SEM-07` | Zero-norm vector → `SEM_INVALID_VECTOR` | `P3` | `sem_vec([0.0; D], top_k=5)` | `error:SEM_INVALID_VECTOR` | – | M | zero-norm vector cannot be cosine-normalized; rejected at validation (cosine is undefined for zero vector); fail-closed per SEM-01 §5.3 | `Q+` |
+| `UC-SEM-08` | NaN vector → `SEM_INVALID_VECTOR` | `P3` | `sem_vec(v_q with NaN component, top_k=5)` | `error:SEM_INVALID_VECTOR` | – | M | any non-finite component (NaN, +inf, -inf) rejected at write **and** at search entry (defense-in-depth per SEM-01 §5.3 / §5.4); no silent NaN propagation | `Q+` |
+| `UC-SEM-09` | HNSW deterministic re-run | `P6` | same `(v_q, top_k=10, generation_pin)` run twice on the same instance | byte-identical `results` order across runs | top_k | M | ANN backend RNG seed pinned per-generation in manifest (per SEM-01 §4.4); cross-instance reproducibility test guards seed contract; nondeterminism surfaces operator alarm `SEM_ANN_NONDETERMINISTIC` | `Q+` |
+| `UC-SEM-10` | Corpus > 100k with default ANN (HNSW) — serves | `P6` | `sem_vec(v_q, top_k=100)` against a > 100k-doc shard | `multi`, exactly 100 | top_k | M | **status promotion**: formerly fail-closed at 100k boundary, now serves with HNSW per ADR-017 (deterministic ANN variant above the exact-NN cutoff); per SEM-01 R-ANN-DET mitigation | `Q+` |
+| `UC-SEM-11` | Cosine identity = 1.0 (self-query) | `P5` | `sem_vec(v, top_k=1)` against a shard that contains `(doc_id, v)` | `single`, score ≈ 1.0 within `f32` epsilon `1e-6` | top_k | M | cosine self-similarity property test (per SEM-01 §5.3 step 1 proptest); first hit is the planted `doc_id` | `Q+` |
+| `UC-SEM-12` | Opposite vector = -1.0 (cosine semantics) | `P5` | `sem_vec(-v, top_k=1)` against a shard that contains `(doc_id, v)` | `single`, score ≈ -1.0 within `f32` epsilon `1e-6` | top_k | M | cosine of antipodal unit vectors is exactly `-1.0`; verifies score range is `[-1.0, 1.0]` (not 0..1) per SEM-01 §4.2 | `Q+` |
+
+### G3. Hybrid fusion
+
+> 22 rows from `SEM-02` (Wave 7). Engine column `Y` denotes the hybrid fusion stage; sub-queries dispatch to `L` (lexical) and `M` (semantic). The `hybrid(lex, sem)` directive is the **only** way to combine lexical and semantic AST — a bare AST mix surfaces `PARSE_UNSUPPORTED_COMBO` (per SEM-01 §4.3 / SEM-02 §4.8). Default strategy `rrf`, default weights `{lex:0.5, sem:0.5}`, default `k_rrf_constant = 60` (ADR-019). Top-k of fusion is NOT the union of each engine's top-k — see SEM-02 §4.6 worked example reproduced in UC-HYB-09. Status: `pending` until `SEM-02` ships.
+
+| ID | Title | Persona | Golden query | Result shape | Filters | Engines | Acceptance | Parity |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `UC-HYB-01` | RRF default — bare hybrid | `P1` | `hybrid(Iterator, sem_vec(v))` | `multi`, fused order per RRF | – | L, M, Y | default `strategy=rrf`, default weights `{0.5, 0.5}`, `k_rrf_constant=60`; over-fetch `max(top_k, 100)` per sub-query (per SEM-02 §3.3 / §4.7) | `Q+` |
+| `UC-HYB-02` | RRF with explicit symmetric weights | `P3` | `hybrid(unsafe, sem_vec(v), weights={lex=0.5, sem=0.5}, strategy=rrf)` | `multi`, identical to UC-HYB-01 for symmetric case | – | L, M, Y | explicit weights round-trip through parser; printer canonicalizes; result equivalent to default | `Q+` |
+| `UC-HYB-03` | RRF lex-biased weights | `P3` | `hybrid(unsafe, sem_vec(v), weights={lex=0.7, sem=0.3}, strategy=rrf)` | `multi`, lex-side rank dominates fusion | – | L, M, Y | weights L1-normalized internally; lex-side `1/(60+rank)` term gets 0.7 multiplier | `Q+` |
+| `UC-HYB-04` | RRF sem-biased weights | `P3` | `hybrid(panic!, sem_vec(v), weights={lex=0.3, sem=0.7}, strategy=rrf)` | `multi`, sem-side rank dominates fusion | – | L, M, Y | symmetric to UC-HYB-03; sem-side multiplier 0.7 | `Q+` |
+| `UC-HYB-05` | RRF with shared `repo:` pushdown | `P3` | `repo:r1 hybrid(unwrap, sem_vec(v))` | `multi`, both sub-plans pinned to `r1` | repo | L, M, Y | lexical-universe filter pushes down to both sub-queries; assertion via `SearchExplanation.engines_routed` (per SEM-02 §2.5 / §5.3); incomplete pushdown → `HYB_PUSHDOWN_INCOMPLETE` | `Q+` |
+| `UC-HYB-06` | RRF with shared `rev:` pushdown | `P2` | `rev:main hybrid(panic!, sem_vec(v))` | `multi`, both sub-plans pinned to `main` | rev | L, M, Y | same pushdown invariant as UC-HYB-05; rev resolution single point of truth | `Q+` |
+| `UC-HYB-07` | RRF with shared `lang:` pushdown | `P5` | `lang:rust hybrid(Iterator, sem_vec(v))` | `multi`, both sub-plans pinned to `rust` | lang | L, M, Y | same pushdown invariant; semantic sibling must also honor `lang:` (semantic shards carry language metadata for filter pushdown) | `Q+` |
+| `UC-HYB-08` | RRF top-k over-fetch policy | `P6` | `hybrid(Iterator, sem_vec(v), top_k=50)` | `multi`, exactly 50; internal over-fetch = 100 per sub-query | top_k | L, M, Y | over-fetch `max(top_k, 100) = 100`; bounded by 10_000 cap; metric `hybrid.fusion.over_fetch_ratio` emitted (per SEM-02 §4.7 / §5.8) | `Q+` |
+| `UC-HYB-09` | RRF worked example — top-k ≠ union | `P4` | per SEM-02 §4.6 (lexical top-3 {A,B,C}; semantic top-3 {D,A,E}; weights `{0.5,0.5}`; fused `top_k=5`) | `multi`, exact order `[A, D, B, C, E]` with documented fused scores | – | L, M, Y | doc D appears at rank 2 in fused output despite not being in lexical top-3 — the load-bearing top-k-of-fusion-≠-union property (per SEM-02 §4.6); tie between C and E broken by `candidate_id ASC` | `Q+` |
+| `UC-HYB-10` | RRF cross-instance determinism | `P6` | same `hybrid(...)` query, same generation pin, two instances | byte-identical CBOR envelope including `SearchExplanation.HybridContribution` | – | L, M, Y | tuple-tiebreak fully total per SEM-02 §4.5: `(fused_score DESC, lex_score DESC NULL_LAST, sem_score DESC NULL_LAST, repo_id ASC, manifest_generation ASC, repo_relative_path ASC, start_line ASC, candidate_id ASC)` | `Q+` |
+| `UC-HYB-11` | Weighted strategy — symmetric weights | `P3` | `hybrid(Iterator, sem_vec(v), weights={lex=0.5, sem=0.5}, strategy=weighted)` | `multi`, L1-normalize-within-engine score blend | – | L, M, Y | each engine's top-k scores L1-normalize to sum to 1.0 before weighting (per SEM-02 Q-WEIGHT-NORMALIZE); fused score = `0.5 * lex_norm + 0.5 * sem_norm` | `Q+` |
+| `UC-HYB-12` | Weighted strategy — lex-biased | `P3` | `hybrid(Iterator, sem_vec(v), weights={lex=0.8, sem=0.2}, strategy=weighted)` | `multi`, lex-side score dominates | – | L, M, Y | per-engine L1-normalize; weighted blend `0.8 * lex_norm + 0.2 * sem_norm` | `Q+` |
+| `UC-HYB-13` | Weighted strategy — sem-biased | `P3` | `hybrid(Iterator, sem_vec(v), weights={lex=0.2, sem=0.8}, strategy=weighted)` | `multi`, sem-side score dominates | – | L, M, Y | symmetric to UC-HYB-12 | `Q+` |
+| `UC-HYB-14` | Weighted strategy — empty lex side fallback | `P3` | `hybrid(<lex returns 0 hits>, sem_vec(v), strategy=weighted)` | `multi`, fused = sem-only weighted top-k | – | L, M, Y | empty lex sub-query is valid; fused output reduces to the weighted sem stream (per SEM-02 §5.5 step 2 / §6.1 UC-HYB-12 in source spec) | `Q+` |
+| `UC-HYB-15` | Weighted strategy — explain wire shape | `P4` | `hybrid(Iterator, sem_vec(v), strategy=weighted)` with `explain=true` | `multi` + `SearchExplanation` populated with `HybridContribution` per row | – | L, M, Y | each entry carries `{lex_rank, lex_score, sem_rank, sem_score, fused_score}` (per SEM-02 §4.1 / §5.9) | `Q+` |
+| `UC-HYB-16` | Weighted strategy — `k_rrf_constant` irrelevant | `P6` | `hybrid(Iterator, sem_vec(v), strategy=weighted)` (no `k_rrf_constant` honored) | `multi`, identical to UC-HYB-11 regardless of `k_rrf_constant` config | – | L, M, Y | weighted-score path does not consult `k_rrf_constant`; defensive test guards against accidental coupling | `Q+` |
+| `UC-HYB-17` | Edge: empty lex side (RRF) | `P3` | `hybrid(<lex returns 0 hits>, sem_vec(v))` | `multi`, fused = sem-only RRF top-k | – | L, M, Y | RRF over empty lex top-k yields each candidate's contribution from sem side only (`1/(60+sem_rank)`); generation still bound | `Q+` |
+| `UC-HYB-18` | Edge: empty sem side (RRF) | `P3` | `hybrid(Iterator, sem_vec(v))` where sem sub-query returns 0 hits | `multi`, fused = lex-only RRF top-k | – | L, M, Y | symmetric to UC-HYB-17 | `Q+` |
+| `UC-HYB-19` | Edge: generation mismatch | `P6` | hybrid where lex sub-plan resolves to gen `G_a` and sem sub-plan to `G_b ≠ G_a` | `error:HYB_GEN_MISMATCH` | – | Y | cross-generation fusion forbidden (per SEM-02 §3.4); semantic doc identity must align with lexical doc identity per RFC §`Semantic derivative model` | `Q+` |
+| `UC-HYB-20` | Edge: top_k = 0 | `P5` | `hybrid(Iterator, sem_vec(v), top_k=0)` | `error:HYB_TOP_K_INVALID` | top_k | Y | parser rejects at AST construction (per SEM-02 §8) | `Q+` |
+| `UC-HYB-21` | Edge: top_k > MAX_TOP_K (10_000) | `P5` | `hybrid(Iterator, sem_vec(v), top_k=10_001)` | `error:HYB_TOP_K_INVALID` | top_k | Y | matches DSL §13 `count:` ceiling; payload notes `limit=10000` (per SEM-02 §8) | `Q+` |
+| `UC-HYB-22` | Edge: invalid weights | `P5` | `hybrid(Iterator, sem_vec(v), weights={lex=-0.1, sem=0.5})` (also: `{lex=0.0, sem=0.0}`, `{lex=NaN, sem=0.5}`) | `error:HYB_INVALID_WEIGHTS` | – | Y | parser rejects negative, zero-sum, or non-finite weights with `reason ∈ {NEGATIVE, ZERO_SUM, NON_FINITE}` (per SEM-02 §3.3 / §8) | `Q+` |
 
 ### H. Cross-cutting / edge
 
@@ -238,8 +297,13 @@ Every `ok` row above must serialize as `SearchPlaneLexicalQueryResponse`. Error 
 
 Usecases that **cannot be expressed in the current LQ family without extension**:
 
-- `UC-RT-08` (`dirty:`) — RFC §LQ/Runtime-1.3 lists `dirty:` but the runtime metadata catalog does not yet have an apply-changes outbox surface in the search plane. Conformance row stays in the corpus; the gating wave is `RT-01`.
-- `UC-BR-01..04` — bridge tier (`LQ/Bridge-1.4`) is intentionally Wave-6; conformance rows must run in `pending` state until `BRIDGE-01` lands.
+- `UC-SEM-01..12` — semantic-vector category (`LQ/Semantic`); rows hold `pending` status until `SEM-01` lands the vector adapter + planner route. Per §G2 preamble.
+- `UC-HYB-01..22` — hybrid-fusion category (`LQ/Hybrid`); rows hold `pending` status until `SEM-02` lands `LqDirective::Hybrid` parser + planner pushdown + RRF / WeightedScore fusion stage. Per §G3 preamble.
+
+Status promotions (no longer `pending`):
+
+- `UC-RT-08` (`dirty:`) — formerly gated on `RT-01`; promoted to `ok` after `RT-01` shipped the apply-changes outbox surface in the runtime metadata catalog.
+- `UC-BR-01..04` — formerly gated on `BRIDGE-01`; promoted to `ok` after `BRIDGE-01` shipped the bridge candidate packet contract and the `with:lexical` / `into:codeql` directive path.
 
 ---
 
@@ -287,9 +351,12 @@ Rows = LQ tier feature families. Columns = personas. `*` = primary user, `.` = o
 | Predicate filters (`UC-PRED-01..07`) |   | `.` | `*` | `.` |   | `*` |
 | Symbol search (`UC-SYM-01..06`) | `*` | `.` | `*` | `*` | `.` |   |
 | History (`UC-HIST-01..08`) |   | `*` | `.` | `*` |   | `.` |
+| History extensions (`UC-HIST-09..13` — `parent:`/`merge:`/`tag:`/`revisions:`/`since.time:`) |   | `*` |   | `*` |   | `.` |
 | Structural (`UC-STR-01..07`) | `.` |   | `*` | `*` |   |   |
 | Runtime metadata (`UC-RT-01..08`) |   | `*` |   |   |   | `*` |
 | Bridge (`UC-BR-01..04`) |   |   | `*` |   |   |   |
+| Semantic vector (`UC-SEM-01..12`) |   | `.` | `*` |   | `*` | `*` |
+| Hybrid fusion (`UC-HYB-01..22`) | `.` | `.` | `*` | `*` | `*` | `*` |
 | Edge / errors (`UC-EDGE-01..10`) | `.` | `.` | `.` | `.` | `.` | `*` |
 | Ops / automation (`UC-OPS-01..07`) |   | `.` |   |   |   | `*` |
 
@@ -394,12 +461,14 @@ The following Sourcegraph surface area is **deliberately excluded** from this co
 | A. Lexical content | 28 |
 | B. Predicate filters | 7 |
 | C. Symbol | 6 |
-| D. History | 8 |
+| D. History | 13 |
 | E. Structural | 7 |
 | F. Runtime metadata | 8 |
 | G. Bridge | 4 |
+| G2. Semantic vector | 12 |
+| G3. Hybrid fusion | 22 |
 | H. Cross-cutting / edge | 10 |
 | I. Operator / automation | 7 |
-| **Usecase total** | **85** |
+| **Usecase total** | **124** |
 | Anti-usecase (`AC-*`) | 15 |
-| **Conformance corpus total** | **100** |
+| **Conformance corpus total** | **139** |

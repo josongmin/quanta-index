@@ -27,6 +27,13 @@ mod tests {
         CommitSha::from_bytes([byte; 20])
     }
 
+    /// Strict-mode upsert helper that fails the test on a typed error.
+    fn ups(g: &mut CommitGraph, node: CommitNode) {
+        if let Err(e) = g.upsert_commit(node) {
+            assert!(false, "upsert_commit: {e}");
+        }
+    }
+
     #[test]
     fn empty_graph_returns_empty() {
         let g = CommitGraph::new();
@@ -36,23 +43,40 @@ mod tests {
     #[test]
     fn graph_with_no_merges_returns_empty() {
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
-        g.add_commit(CommitNode::new(sha(2), vec![sha(1)], AppliedAtMs::new(2)));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), vec![sha(1)], AppliedAtMs::new(2)),
+        );
         assert!(merge_commits(&g).is_empty());
     }
 
     #[test]
     fn graph_with_one_merge() {
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
-        g.add_commit(CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)));
-        g.add_commit(CommitNode::new(
-            sha(3),
-            vec![sha(1), sha(2)],
-            AppliedAtMs::new(3),
-        ));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(3), vec![sha(1), sha(2)], AppliedAtMs::new(3)),
+        );
         let got = merge_commits(&g);
         assert_eq!(got, vec![sha(3)]);
     }
@@ -60,21 +84,28 @@ mod tests {
     #[test]
     fn graph_with_multiple_merges_sorted() {
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
-        g.add_commit(CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)),
+        );
         // Two merges intentionally inserted in non-ascending sha order to
         // exercise sorted output.
-        g.add_commit(CommitNode::new(
-            sha(9),
-            vec![sha(1), sha(2)],
-            AppliedAtMs::new(9),
-        ));
-        g.add_commit(CommitNode::new(
-            sha(5),
-            vec![sha(1), sha(2), sha(0)],
-            AppliedAtMs::new(5),
-        ));
+        ups(
+            &mut g,
+            CommitNode::new(sha(9), vec![sha(1), sha(2)], AppliedAtMs::new(9)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(5), vec![sha(1), sha(2), sha(0)], AppliedAtMs::new(5)),
+        );
         let got = merge_commits(&g);
         // CommitGraph stores nodes in BTreeMap order, so sha(5) precedes sha(9).
         assert_eq!(got, vec![sha(5), sha(9)]);

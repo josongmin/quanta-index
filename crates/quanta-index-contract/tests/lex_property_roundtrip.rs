@@ -61,8 +61,12 @@ fn prop_symbol_relationship() -> impl Strategy<Value = SymbolRelationship> {
 
 fn prop_lexical_error_code() -> impl Strategy<Value = LexicalErrorCode> {
     // Sample one of the 84 variants by index.
-    (0usize..LexicalErrorCode::ALL.len())
-        .prop_map(|idx| LexicalErrorCode::ALL.get(idx).copied().unwrap_or(LexicalErrorCode::SyntaxError))
+    (0usize..LexicalErrorCode::ALL.len()).prop_map(|idx| {
+        LexicalErrorCode::ALL
+            .get(idx)
+            .copied()
+            .unwrap_or(LexicalErrorCode::SyntaxError)
+    })
 }
 
 fn prop_commit_sha() -> impl Strategy<Value = CommitSha> {
@@ -77,13 +81,15 @@ fn prop_symbol_span() -> impl Strategy<Value = SymbolSpan> {
         any::<u32>(),
         any::<u32>(),
     )
-        .prop_map(|(path, byte_start, byte_end, line_start, line_end)| SymbolSpan {
-            path: path.into_boxed_str(),
-            byte_start,
-            byte_end,
-            line_start,
-            line_end,
-        })
+        .prop_map(
+            |(path, byte_start, byte_end, line_start, line_end)| SymbolSpan {
+                path: path.into_boxed_str(),
+                byte_start,
+                byte_end,
+                line_start,
+                line_end,
+            },
+        )
 }
 
 fn prop_symbol_record() -> impl Strategy<Value = SymbolRecord> {
@@ -98,24 +104,17 @@ fn prop_symbol_record() -> impl Strategy<Value = SymbolRecord> {
         prop_symbol_relationship(),
     )
         .prop_map(
-            |(
-                wire_version,
-                name,
-                kind,
-                span,
-                lang,
-                parent,
-                container_name,
-                relationship,
-            )| SymbolRecord {
-                wire_version,
-                name: name.into_boxed_str(),
-                kind,
-                span,
-                lang,
-                parent: parent.map(String::into_boxed_str),
-                container_name: container_name.map(String::into_boxed_str),
-                relationship,
+            |(wire_version, name, kind, span, lang, parent, container_name, relationship)| {
+                SymbolRecord {
+                    wire_version,
+                    name: name.into_boxed_str(),
+                    kind,
+                    span,
+                    lang,
+                    parent: parent.map(String::into_boxed_str),
+                    container_name: container_name.map(String::into_boxed_str),
+                    relationship,
+                }
             },
         )
 }
@@ -158,34 +157,28 @@ fn prop_commit_record() -> impl Strategy<Value = CommitRecord> {
 }
 
 fn prop_dirty_record() -> impl Strategy<Value = DirtyRecord> {
-    (
-        any::<u32>(),
-        ".{0,16}",
-        any::<u64>(),
-        any::<[u8; 32]>(),
+    (any::<u32>(), ".{0,16}", any::<u64>(), any::<[u8; 32]>()).prop_map(
+        |(wire_version, doc_id, applied_at_ms, payload_hash)| DirtyRecord {
+            wire_version,
+            doc_id: ChunkId::new(doc_id),
+            applied_at_ms,
+            payload_hash,
+        },
     )
-        .prop_map(
-            |(wire_version, doc_id, applied_at_ms, payload_hash)| DirtyRecord {
-                wire_version,
-                doc_id: ChunkId::new(doc_id),
-                applied_at_ms,
-                payload_hash,
-            },
-        )
 }
 
 fn prop_parse_node() -> impl Strategy<Value = ParseNode> {
     // Bounded recursive node. Leaves at depth 0; up to 3 children at each
     // level; total depth capped at 3 to keep CBOR encode work small (256
     // cases x recursive trees would blow up otherwise).
-    let leaf = (".{1,16}", any::<u32>(), any::<u32>()).prop_map(
-        |(kind, byte_start, byte_end)| ParseNode {
+    let leaf = (".{1,16}", any::<u32>(), any::<u32>()).prop_map(|(kind, byte_start, byte_end)| {
+        ParseNode {
             kind: kind.into_boxed_str(),
             byte_start,
             byte_end,
             children: Vec::new(),
-        },
-    );
+        }
+    });
     leaf.prop_recursive(3, 16, 3, |inner| {
         (".{1,16}", any::<u32>(), any::<u32>(), prop_vec(inner, 0..3)).prop_map(
             |(kind, byte_start, byte_end, children)| ParseNode {
@@ -238,11 +231,13 @@ fn prop_search_explanation() -> impl Strategy<Value = SearchExplanation> {
         any::<[u8; 32]>(),
         ".{0,16}",
     )
-        .prop_map(|(contributions, ranker_weights_hash, strategy)| SearchExplanation {
-            contributions,
-            ranker_weights_hash,
-            strategy: strategy.into_boxed_str(),
-        })
+        .prop_map(
+            |(contributions, ranker_weights_hash, strategy)| SearchExplanation {
+                contributions,
+                ranker_weights_hash,
+                strategy: strategy.into_boxed_str(),
+            },
+        )
 }
 
 // ---- proptest tests -----------------------------------------------------
@@ -252,67 +247,67 @@ proptest! {
 
     #[test]
     fn lang_id_cbor_roundtrip_property(lang in prop_lang_id()) {
-        let decoded = cbor_roundtrip(&lang).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&lang).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, lang);
     }
 
     #[test]
     fn symbol_kind_cbor_roundtrip_property(kind in prop_symbol_kind()) {
-        let decoded = cbor_roundtrip(&kind).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&kind).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, kind);
     }
 
     #[test]
     fn symbol_relationship_cbor_roundtrip_property(rel in prop_symbol_relationship()) {
-        let decoded = cbor_roundtrip(&rel).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rel).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rel);
     }
 
     #[test]
     fn lexical_error_code_cbor_roundtrip_property(code in prop_lexical_error_code()) {
-        let decoded = cbor_roundtrip(&code).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&code).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, code);
     }
 
     #[test]
     fn commit_sha_cbor_roundtrip_property(sha in prop_commit_sha()) {
-        let decoded = cbor_roundtrip(&sha).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&sha).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, sha);
     }
 
     #[test]
     fn symbol_span_cbor_roundtrip_property(span in prop_symbol_span()) {
-        let decoded = cbor_roundtrip(&span).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&span).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, span);
     }
 
     #[test]
     fn symbol_record_cbor_roundtrip_property(rec in prop_symbol_record()) {
-        let decoded = cbor_roundtrip(&rec).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rec).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rec);
     }
 
     #[test]
     fn commit_record_cbor_roundtrip_property(rec in prop_commit_record()) {
-        let decoded = cbor_roundtrip(&rec).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rec).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rec);
     }
 
     #[test]
     fn dirty_record_cbor_roundtrip_property(rec in prop_dirty_record()) {
-        let decoded = cbor_roundtrip(&rec).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rec).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rec);
     }
 
     #[test]
     fn parse_tree_record_cbor_roundtrip_property(rec in prop_parse_tree_record()) {
-        let decoded = cbor_roundtrip(&rec).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rec).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rec);
     }
 
     #[test]
     fn search_explanation_cbor_roundtrip_property(rec in prop_search_explanation()) {
-        let decoded = cbor_roundtrip(&rec).map_err(|e| TestCaseError::fail(e))?;
+        let decoded = cbor_roundtrip(&rec).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, rec);
     }
 }

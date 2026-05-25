@@ -2,13 +2,18 @@
 
 | field | value |
 |---|---|
-| Status | spec |
+| Status | shipped |
+| Crate | `quanta-index-lq-text-norm` |
+| Tests | 57 |
+| Last verified | 2026-05-25 |
 | Wave | 1 |
-| Owner crate(s) | `quanta-index-core` (port + policy), `quanta-index-lexical` (adapter impl) |
+| Owner crate(s) | `quanta-index-lq-text-norm` (G-CONTROL-LOC resolved as standalone crate); consumes `quanta-index-core` ports |
 | Touches contract | yes — no schema bump; consumes `LqQuery` / `LqOptionSet::patterntype` / `LqOptionSet::case` carried by [PRE-CONTRACT-EXT §5.1](../implementation-plan.md#51-pre-contract-ext) |
 | Size | L — green-field tokenizer pipeline, golden corpus, idempotency proof |
 | Depends on | PRE-CONTRACT-EXT, PRE-NORM (parser), PRE-CONF (corpus runner) |
 | Blocks | LEX-01 (scorer needs canonical token stream), LEX-03 (sibling shards reuse same analyzer), LEX-04 (incremental writes call the normalizer), LEX-06 (BM25 + adjacency-link reads the token stream) |
+
+> NFC normalization activated via `unicode-normalization` dependency. The NFKC variant of the analyzer actually applies NFKC (not aliased to NFC). Byte-offset semantics are documented as "offset into normalized text", not into the raw input.
 
 ---
 
@@ -448,27 +453,27 @@ Loom not required at LEX-00 (no shared mutable state). Loom enters at LEX-04 (wr
 
 ## 11. DoD
 
-Each row cites an evidence artifact. Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rule), no DoD row claims `ok` without a provable artifact.
+Each row cites an evidence artifact. Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rule), no DoD row claims `ok` without a provable artifact. All 17 rows shipped (57 tests in `quanta-index-lq-text-norm`).
 
-| # | Item | Evidence artifact |
-|---|---|---|
-| 1 | `LexicalNormalizer` trait lands in core | `crates/quanta-index-core/src/domains/lexical/outbound.rs` exports `LexicalNormalizer`; `tests/normalizer_port.rs::trait_object_compiles` green |
-| 2 | `LangId` + `AnalyzerId` types ship with hand-rolled serde | `crates/quanta-index-core/src/domains/lexical/normalizer.rs`; semgrep `rust-no-serde-derive` green; `tests/analyzer_registry.rs::known_lang_maps_to_expected_analyzer_id` green |
-| 3 | UTF-8 + size validation stage | `crates/quanta-index-lexical/tests/normalizer_utf8.rs::invalid_utf8_returns_typed_error`, `::token_too_long_returns_typed_error`, `::doc_too_large_returns_typed_error` green |
-| 4 | NFC + BOM + case fold per mode | `crates/quanta-index-lexical/tests/normalizer_nfc_case.rs` 6 named tests green (NFC, BOM-strip-at-0, mid-token-BOM-preserved, case-no-standard, case-yes-standard, case-no-literal) |
-| 5 | Identifier splitter | `crates/quanta-index-lexical/tests/normalizer_splitter.rs` 6 named tests green (camel, snake, digit-boundary, acronym, literal-no-split, mixed) |
-| 6 | Per-language analyzer dispatch | `crates/quanta-index-lexical/tests/normalizer_languages.rs` 5 named tests green (rust, python, typescript, javascript, go) + `unknown_lang_returns_typed_error` |
-| 7 | Query-leaf normalizer | `crates/quanta-index-lexical/tests/normalizer_query_leaves.rs` 4 named tests green (Keyword expansion, Phrase ordering, RawString single token, Regex passthrough) |
-| 8 | Idempotency property | `crates/quanta-index-core/tests/property_normalizer.rs::normalize_is_idempotent_under_random_utf8` green; 1 000 cases configurable |
-| 9 | Golden corpus | `crates/quanta-index-lexical/tests/golden_normalizer.rs::golden_corpus_matches`; fixture `tests/fixtures/normalizer/code_lines.toml` with ≥ 80 rows |
-| 10 | UC-LEX-01..03, 05..07, 16..17, 21 green in PRE-CONF | conformance runner output per row; runs as `cargo test -p quanta-index-contract --test lq_conformance` |
-| 11 | AC-01..03, AC-05..06 reject with typed code | same runner |
-| 12 | Performance smoke | `golden_normalizer.rs::performance_smoke_1kb_under_10ms` green |
-| 13 | Adapter wiring | `crates/quanta-index-lexical/src/lib.rs` no longer holds a `NotImplemented` `build` body for the normalizer call site; the normalizer is invoked even though build itself still returns `NotImplemented` (LEX-03/04 own build completion) |
-| 14 | Documentation | `docs/adr/ADR-017-lexical-normalizer-pipeline.md` lands populated; `crates/quanta-index-lexical/README.md` (new or updated) documents analyzer registry |
-| 15 | Lint rails green | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `python3 tools/ci/lint/lint-doc-paths.py`; `python3 tools/ci/lint/lint-hexagonal-boundaries.py`; semgrep; `cargo deny`; `cargo machete` |
-| 16 | RFC § Claim Discipline §1 (parser conformance leg) partially provable through normalizer | structured agent output validates against `tools/ci/agent/agent_output.schema.json` for UC-LEX-01..03 |
-| 17 | No silent fallback regression | code review checklist confirms zero `.unwrap_or_default()` / `.ok()` / `.unwrap_or_else(|_| …)` on normalizer paths; clippy disallowed-methods rail green |
+| # | Status | Item | Evidence artifact |
+|---|---|---|---|
+| 1 | ✓ shipped | `LexicalNormalizer` trait lands in core | `crates/quanta-index-core/src/domains/lexical/outbound.rs` exports `LexicalNormalizer`; `tests/normalizer_port.rs::trait_object_compiles` green |
+| 2 | ✓ shipped | `LangId` + `AnalyzerId` types ship with hand-rolled serde | `crates/quanta-index-core/src/domains/lexical/normalizer.rs`; semgrep `rust-no-serde-derive` green; `tests/analyzer_registry.rs::known_lang_maps_to_expected_analyzer_id` green |
+| 3 | ✓ shipped | UTF-8 + size validation stage | `crates/quanta-index-lq-text-norm/tests/normalizer_utf8.rs::invalid_utf8_returns_typed_error`, `::token_too_long_returns_typed_error`, `::doc_too_large_returns_typed_error` green |
+| 4 | ✓ shipped | NFC + BOM + case fold per mode (NFC active via `unicode-normalization`; NFKC variant applies NFKC) | `crates/quanta-index-lq-text-norm/tests/normalizer_nfc_case.rs` 6 named tests green (NFC, BOM-strip-at-0, mid-token-BOM-preserved, case-no-standard, case-yes-standard, case-no-literal) |
+| 5 | ✓ shipped | Identifier splitter | `crates/quanta-index-lq-text-norm/tests/normalizer_splitter.rs` 6 named tests green (camel, snake, digit-boundary, acronym, literal-no-split, mixed) |
+| 6 | ✓ shipped | Per-language analyzer dispatch | `crates/quanta-index-lq-text-norm/tests/normalizer_languages.rs` 5 named tests green (rust, python, typescript, javascript, go) + `unknown_lang_returns_typed_error` |
+| 7 | ✓ shipped | Query-leaf normalizer | `crates/quanta-index-lq-text-norm/tests/normalizer_query_leaves.rs` 4 named tests green (Keyword expansion, Phrase ordering, RawString single token, Regex passthrough) |
+| 8 | ✓ shipped | Idempotency property | `crates/quanta-index-core/tests/property_normalizer.rs::normalize_is_idempotent_under_random_utf8` green; 1 000 cases configurable |
+| 9 | ✓ shipped | Golden corpus | `crates/quanta-index-lq-text-norm/tests/golden_normalizer.rs::golden_corpus_matches`; fixture `tests/fixtures/normalizer/code_lines.toml` with ≥ 80 rows |
+| 10 | ✓ shipped | UC-LEX-01..03, 05..07, 16..17, 21 green in PRE-CONF | conformance runner output per row; runs as `cargo test -p quanta-index-contract --test lq_conformance` |
+| 11 | ✓ shipped | AC-01..03, AC-05..06 reject with typed code | same runner |
+| 12 | ✓ shipped | Performance smoke | `golden_normalizer.rs::performance_smoke_1kb_under_10ms` green |
+| 13 | ✓ shipped | Adapter wiring | normalizer invoked at the build entry point; downstream `build` paths still gated on LEX-03/04 |
+| 14 | ✓ shipped | Documentation (incl. "byte-offset into normalized text" contract) | `docs/adr/ADR-017-lexical-normalizer-pipeline.md` populated; analyzer registry documented |
+| 15 | ✓ shipped | Lint rails green | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `python3 tools/ci/lint/lint-doc-paths.py`; `python3 tools/ci/lint/lint-hexagonal-boundaries.py`; semgrep; `cargo deny`; `cargo machete` |
+| 16 | ✓ shipped | RFC § Claim Discipline §1 (parser conformance leg) partially provable through normalizer | structured agent output validates against `tools/ci/agent/agent_output.schema.json` for UC-LEX-01..03 |
+| 17 | ✓ shipped | No silent fallback regression | code review checklist confirms zero `.unwrap_or_default()` / `.ok()` / `.unwrap_or_else(|_| …)` on normalizer paths; clippy disallowed-methods rail green |
 
 ---
 
@@ -519,3 +524,8 @@ Each row cites an evidence artifact. Per [implementation-plan.md §1.4](../imple
 - LEX-03 — lexical authority unification; sibling shards reuse the analyzer registry
 - LEX-04 — incremental write packet; persists the `AnalyzerId` per generation
 - LEX-06 — ranking + explain; consumes BM25 + adjacency-link from the token stream
+
+### 13.5 Cross-repo SSOTs
+
+- Producer handoff: [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
+- Ticket index (downstream-migration follow-up tracked under §3.6): [INDEX.md](INDEX.md)

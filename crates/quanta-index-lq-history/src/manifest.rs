@@ -65,6 +65,31 @@ impl ManifestLedger {
         &self.applied_packets
     }
 
+    /// Idempotent removal of an applied write packet by its trace hash.
+    ///
+    /// Returns `Ok(true)` when the hash was present and removed,
+    /// `Ok(false)` when no entry matched. Generation is intentionally
+    /// **not** rolled back; the caller is responsible for reconciling
+    /// `current_gen` with the linearization tail when reverting.
+    ///
+    /// Use case: revert / rollback flows that need to drop a write
+    /// packet from the ledger while keeping the linearization point
+    /// monotonic for the rest of the system.
+    ///
+    /// The `Result` return preserves a typed-failure shape consistent
+    /// with the rest of the [`ManifestLedger`] API even though the
+    /// current implementation has no failure path; future invariants
+    /// (e.g., refusing removal during an in-flight apply) will surface
+    /// via `HistoryError` without changing the signature.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "API parity with ManifestLedger::apply; future invariants (e.g., refuse-while-applying) will surface typed errors here without breaking callers"
+    )]
+    pub fn remove_packet(&mut self, hash: [u8; 32]) -> Result<bool, HistoryError> {
+        let removed = self.applied_packets.remove(&hash);
+        Ok(removed.is_some())
+    }
+
     /// Linearization point. See module docs for the decision table.
     pub fn apply(&mut self, packet: &WritePacket) -> Result<ApplyOutcome, HistoryError> {
         let trace = packet.trace_record()?;
@@ -348,6 +373,76 @@ mod tests {
         }
         assert_eq!(led.current_gen(), mg(4));
         assert_eq!(led.applied_packets().len(), 3);
+    }
+
+    #[test]
+    fn remove_packet_present_returns_true() {
+        let mut led = ManifestLedger::new(mg(1));
+        let p = WritePacket::new("alice", AppliedAtMs::new(0), mg(1), mg(2), vec![1]);
+        match led.apply(&p) {
+            Ok(_) => {}
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        let hash = match p.hash() {
+            Ok(h) => h,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        match led.remove_packet(hash) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "must remove existing packet"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        assert!(led.applied_packets().is_empty());
+        // Generation deliberately NOT rolled back.
+        assert_eq!(led.current_gen(), mg(2));
+    }
+
+    #[test]
+    fn remove_packet_absent_returns_false_no_error() {
+        let mut led = ManifestLedger::new(mg(1));
+        let bogus = [0u8; 32];
+        match led.remove_packet(bogus) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "must not claim removal"),
+            Err(e) => assert!(false, "{e}"),
+        }
+    }
+
+    #[test]
+    fn remove_packet_is_idempotent() {
+        let mut led = ManifestLedger::new(mg(1));
+        let p = WritePacket::new("alice", AppliedAtMs::new(0), mg(1), mg(2), vec![1]);
+        match led.apply(&p) {
+            Ok(_) => {}
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        }
+        let hash = match p.hash() {
+            Ok(h) => h,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        match led.remove_packet(hash) {
+            Ok(true) => {}
+            Ok(false) => assert!(false, "first remove must succeed"),
+            Err(e) => assert!(false, "{e}"),
+        }
+        // Second call: idempotent no-op.
+        match led.remove_packet(hash) {
+            Ok(false) => {}
+            Ok(true) => assert!(false, "second remove must be no-op"),
+            Err(e) => assert!(false, "{e}"),
+        }
     }
 
     #[test]

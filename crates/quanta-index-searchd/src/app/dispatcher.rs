@@ -137,6 +137,7 @@ fn record_observed(
         ChannelTrack::Lexical => guard.set_lexical_last_seen(seq),
         ChannelTrack::Semantic => guard.set_semantic_last_seen(seq),
     }
+    drop(guard);
     Ok(())
 }
 

@@ -2,8 +2,6 @@
 
 use std::io::{ErrorKind, Read};
 
-use quanta_index_contract::{SearchPlaneIpcRequestEnvelope, SearchPlaneIpcResponseEnvelope};
-
 /// Maximum CBOR body size accepted on the wire.
 pub const MAX_FRAME_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -58,21 +56,27 @@ impl std::error::Error for IpcError {
     }
 }
 
-pub fn encode_request(envelope: &SearchPlaneIpcRequestEnvelope) -> Result<Vec<u8>, IpcError> {
+pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
     encode_frame(envelope)
 }
 
-pub fn encode_response(envelope: &SearchPlaneIpcResponseEnvelope) -> Result<Vec<u8>, IpcError> {
+pub fn encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
     encode_frame(envelope)
 }
 
-pub fn decode_request<R: Read>(reader: &mut R) -> Result<SearchPlaneIpcRequestEnvelope, IpcError> {
+pub fn decode_request<T, R>(reader: &mut R) -> Result<T, IpcError>
+where
+    T: serde::de::DeserializeOwned,
+    R: Read,
+{
     decode_frame(reader)
 }
 
-pub fn decode_response<R: Read>(
-    reader: &mut R,
-) -> Result<SearchPlaneIpcResponseEnvelope, IpcError> {
+pub fn decode_response<T, R>(reader: &mut R) -> Result<T, IpcError>
+where
+    T: serde::de::DeserializeOwned,
+    R: Read,
+{
     decode_frame(reader)
 }
 

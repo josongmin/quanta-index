@@ -4,13 +4,19 @@
 | --- | --- |
 | Ticket ID | `LEX-03` |
 | Title | Phrase position index for adjacency / phrase queries |
+| Status | shipped |
+| Crate | `quanta-index-lq-positions` |
+| Tests | 72 |
+| Last verified | 2026-05-25 |
 | Wave | 2 (per [rfc.md § Canonical Execution Waves](../rfc.md)) |
 | Parent RFC section | [rfc.md § LQ Family `LQ/Core-1.0`](../rfc.md), [rfc.md § Pattern semantics](../rfc.md), [rfc.md § Ticket Pack](../rfc.md) |
 | Sibling planning docs | [feature-scope.md](../feature-scope.md), [usecase.md](../usecase.md), [dsl.md](../dsl.md), [implementation-plan.md](../implementation-plan.md) |
-| Owner crate(s) | `quanta-index-lexical`, `quanta-index-core`, `quanta-index-control` |
-| Touches contract crate? | No (sibling shard is internal; no `LqQuery` / `LexicalCandidate` shape change) |
+| Owner crate(s) | `quanta-index-lq-positions` (G-CONTROL-LOC resolved as standalone crate); consumes `quanta-index-core` ports |
+| Touches contract crate? | No (sibling shard is internal; no `LqQuery` / `LexicalCandidate` shape change). **Breaking change shipped:** `add_token` signature changed to `Result<(), PositionsError>`. |
 | Posture | Breaking-first; no long-lived shims (per [CLAUDE.md § Agent change posture](../../../../CLAUDE.md)) |
 | Claim discipline anchor | [rfc.md § Claim Discipline §1](../rfc.md) (parser conformance + global execution proof leg for phrase / adjacency) |
+
+> Four new PLAN_LIMIT caps shipped: `PhraseLen`, `AdjacencyScanDepth`, `PositionsPerCell`, `DocsPerTerm`. `add_token` returns `Result<(), PositionsError>` (was infallible) — breaking-first.
 
 ---
 
@@ -490,35 +496,35 @@ Positions are recorded **after** the LEX-00 normalizer pipeline. Consequences:
 
 ## §11 DoD (provable)
 
-Every DoD row cites a test name and path.
+Every DoD row cites a test name and path. All 25 rows shipped (72 tests in `quanta-index-lq-positions`). Four new PLAN_LIMIT caps (PhraseLen / AdjacencyScanDepth / PositionsPerCell / DocsPerTerm) ship with row-level coverage.
 
-| # | DoD item | Evidence |
-| --- | --- | --- |
-| 1 | per-generation position shard layout exists (§4.1) | `crates/quanta-index-lexical/tests/build_positions.rs::layout_matches_spec` |
-| 2 | `meta.cbor` codec hand-rolled (D18) | `crates/quanta-index-lexical/src/positions/meta.rs::tests::roundtrip_canonical_cbor` + semgrep `rust-no-serde-derive` green at [`tools/ci/semgrep/rules.yml:124`](../../../../tools/ci/semgrep/rules.yml#L124) |
-| 3 | nested varint posting round-trips | `crates/quanta-index-lexical/src/positions/postings.rs::tests::nested_varint_roundtrip_property` |
-| 4 | terms.fst with triple payload is stable | `crates/quanta-index-lexical/src/positions/fst.rs::tests::fst_payload_stable_under_rebuild` |
-| 5 | builder emits `MARKER_OK` last, atomic | `crates/quanta-index-lexical/tests/build_positions.rs::builds_marker_ok_last` |
-| 6 | `meta.cbor` records `normalizer_version`; mismatch fails closed | `crates/quanta-index-lexical/tests/build_positions.rs::normalizer_version_recorded` |
-| 7 | single-token phrase reduces via normalizer | `crates/quanta-index-lexical/src/positions/intersect.rs::tests::phrase_single_token_reduces_to_keyword` |
-| 8 | phrase match equivalent to naive scan | `…::tests::phrase_match_naive_equivalence` |
-| 9 | phrase rejects non-contiguous matches | `…::tests::phrase_match_rejects_non_contiguous` |
-| 10 | common-token phrase ("the quick brown fox") matches | `…::tests::phrase_match_common_tokens` |
-| 11 | phrase length cap surfaces `PLAN_LIMIT_EXCEEDED` | `…::tests::phrase_length_cap_fails_closed` |
-| 12 | adjacency scan depth cap surfaces `PLAN_LIMIT_EXCEEDED` | `…::tests::adjacency_scan_depth_cap` |
-| 13 | per-(term, doc) position cap at build | `…::tests::builder_caps_per_doc_position_list` |
-| 14 | per-term position cap at build | `…::tests::builder_caps_per_term_positions` |
-| 15 | planner routes `Phrase` leaf to position shard | `crates/quanta-index-core/src/domains/query/inbound.rs::tests::phrase_plan_routes_position_shard` |
-| 16 | `AdjacencyLink` emits evidence for ranker | `…::tests::adjacency_link_emits_evidence_for_ranker` |
-| 17 | cross-chunk phrase returns empty (documented) | `…::tests::phrase_does_not_span_chunk_boundary` |
-| 18 | fault-injection atomicity property | `…::tests::manifest_marker_atomicity_property` |
-| 19 | disk size stays within `0.6 ×` raw bytes | `…::tests::position_disk_size_within_0_6x_raw_bytes` |
-| 20 | conformance rows green: `UC-LEX-02`, `UC-LEX-03`, `UC-LEX-22` | `cargo test -p quanta-index-contract --test lq_conformance` |
-| 21 | criterion bench compiles & runs | `cargo bench -p quanta-index-lexical --bench lex_03_position_bench` |
-| 22 | clippy `-D warnings`, `cargo fmt --check`, `cargo deny`, semgrep green | wave-exit CI |
-| 23 | OpenTelemetry span `lq.exec.positions` emits with §4.6 attributes | `crates/quanta-index-lexical/tests/observability.rs::tests::emits_lq_exec_positions_span` |
-| 24 | metric `lex.position.phrase_match_count{outcome=plan_limit_exceeded}` increments on cap miss | `…::tests::metric_increments_on_cap_miss` |
-| 25 | no stopword filter behavior (negative test asserts every token has positions, including the `the` row) | `…::tests::no_stopword_filter` |
+| # | Status | DoD item | Evidence |
+| --- | --- | --- | --- |
+| 1 | ✓ shipped | per-generation position shard layout exists (§4.1) | `crates/quanta-index-lq-positions/tests/build_positions.rs::layout_matches_spec` |
+| 2 | ✓ shipped | `meta.cbor` codec hand-rolled (D18) | `crates/quanta-index-lq-positions/src/positions/meta.rs::tests::roundtrip_canonical_cbor` + semgrep `rust-no-serde-derive` green at [`tools/ci/semgrep/rules.yml:124`](../../../../tools/ci/semgrep/rules.yml#L124) |
+| 3 | ✓ shipped | nested varint posting round-trips | `crates/quanta-index-lq-positions/src/positions/postings.rs::tests::nested_varint_roundtrip_property` |
+| 4 | ✓ shipped | terms.fst with triple payload is stable | `crates/quanta-index-lq-positions/src/positions/fst.rs::tests::fst_payload_stable_under_rebuild` |
+| 5 | ✓ shipped | builder emits `MARKER_OK` last, atomic | `crates/quanta-index-lq-positions/tests/build_positions.rs::builds_marker_ok_last` |
+| 6 | ✓ shipped | `meta.cbor` records `normalizer_version`; mismatch fails closed | `crates/quanta-index-lq-positions/tests/build_positions.rs::normalizer_version_recorded` |
+| 7 | ✓ shipped | single-token phrase reduces via normalizer | `crates/quanta-index-lq-positions/src/positions/intersect.rs::tests::phrase_single_token_reduces_to_keyword` |
+| 8 | ✓ shipped | phrase match equivalent to naive scan | `…::tests::phrase_match_naive_equivalence` |
+| 9 | ✓ shipped | phrase rejects non-contiguous matches | `…::tests::phrase_match_rejects_non_contiguous` |
+| 10 | ✓ shipped | common-token phrase ("the quick brown fox") matches | `…::tests::phrase_match_common_tokens` |
+| 11 | ✓ shipped | phrase length cap surfaces `PLAN_LIMIT_EXCEEDED{PhraseLen}` | `…::tests::phrase_length_cap_fails_closed` |
+| 12 | ✓ shipped | adjacency scan depth cap surfaces `PLAN_LIMIT_EXCEEDED{AdjacencyScanDepth}` | `…::tests::adjacency_scan_depth_cap` |
+| 13 | ✓ shipped | per-(term, doc) position cap at build (`PositionsPerCell`) | `…::tests::builder_caps_per_doc_position_list` |
+| 14 | ✓ shipped | per-term position cap at build (`DocsPerTerm`) | `…::tests::builder_caps_per_term_positions` |
+| 15 | ✓ shipped | planner routes `Phrase` leaf to position shard | `crates/quanta-index-core/src/domains/query/inbound.rs::tests::phrase_plan_routes_position_shard` |
+| 16 | ✓ shipped | `AdjacencyLink` emits evidence for ranker | `…::tests::adjacency_link_emits_evidence_for_ranker` |
+| 17 | ✓ shipped | cross-chunk phrase returns empty (documented) | `…::tests::phrase_does_not_span_chunk_boundary` |
+| 18 | ✓ shipped | fault-injection atomicity property | `…::tests::manifest_marker_atomicity_property` |
+| 19 | ✓ shipped | disk size stays within `0.6 ×` raw bytes | `…::tests::position_disk_size_within_0_6x_raw_bytes` |
+| 20 | ✓ shipped | conformance rows green: `UC-LEX-02`, `UC-LEX-03`, `UC-LEX-22` | `cargo test -p quanta-index-contract --test lq_conformance` |
+| 21 | ✓ shipped | criterion bench compiles & runs | `cargo bench -p quanta-index-lq-positions --bench lex_03_position_bench` |
+| 22 | ✓ shipped | clippy `-D warnings`, `cargo fmt --check`, `cargo deny`, semgrep green | wave-exit CI |
+| 23 | ✓ shipped | OpenTelemetry span `lq.exec.positions` emits with §4.6 attributes | `crates/quanta-index-lq-positions/tests/observability.rs::tests::emits_lq_exec_positions_span` |
+| 24 | ✓ shipped | metric `lex.position.phrase_match_count{outcome=plan_limit_exceeded}` increments on cap miss | `…::tests::metric_increments_on_cap_miss` |
+| 25 | ✓ shipped | no stopword filter behavior (negative test asserts every token has positions, including the `the` row) | `…::tests::no_stopword_filter` |
 
 ---
 
@@ -565,6 +571,8 @@ Every DoD row cites a test name and path.
   — `rust-no-serde-derive` rule
 - [LEX-02.md](LEX-02.md) — Wave-2 sibling (trigram / regex prefilter); shares
   generation manifest and `MARKER_OK` invariant
+- [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6)
 
 ---
 

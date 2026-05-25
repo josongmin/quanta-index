@@ -146,6 +146,14 @@ Status of the op set above:
   surface; integration cutover blocks on the producer side accepting these
   op shapes.
 
+Delta-handling semantics for every `Upsert*` / `Delete*` op above — identity
+rules per record type, cascade graph on delete, replay safety, in-generation
+last-write-wins, cross-generation `FullBundle` vs `from_prior(...)` delta
+modes, and topological ordering for the history track — are locked in
+[producer-handoff.md §3.5](producer-handoff.md). The op enum here is the wire
+catalogue; §3.5 is the authoritative producer emission contract that
+search-side builders are idempotent under.
+
 ### 3.2 Factory surface (in `quanta-index-channel`)
 
 ```rust

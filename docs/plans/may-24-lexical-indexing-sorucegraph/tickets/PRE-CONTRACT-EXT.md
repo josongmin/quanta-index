@@ -2,13 +2,18 @@
 
 | field | value |
 |---|---|
-| Status | spec |
+| Status | shipped (scaffold; downstream migration pending) |
+| Crate | `quanta-index-contract::lex::*` (new module) |
+| Tests | 43 |
+| Last verified | 2026-05-25 |
 | Wave | 0 |
 | Owner crate(s) | `quanta-index-contract` (primary); `quanta-index-core` (carrier-type re-exports); producer (`semantica-codegraph-v2`) for coordinated cut |
 | Touches contract | yes — every new variant is a wire-format addition; producer must re-publish manifest binders simultaneously; **breaking-first per [CLAUDE.md](../../../../CLAUDE.md) § Agent change posture** |
 | Size | M (~5–7d engineer-days; review-heavy because every shape touches CBOR wire) |
 | Depends on | none — Wave-0 entry; assumes all four sibling planning docs (rfc / feature-scope / usecase / dsl) are landed |
 | Blocks | PRE-NORM, PRE-CONF, LEX-00, LEX-01, LEX-02, LEX-06, LEX-07, STR-01, BRIDGE-01 (every LQ-family ticket carrying contract shape) |
+
+> Shipped scaffold: 7 wire types + 84-variant `LexicalErrorCode` enum live under `quanta-index-contract::lex::*`. Downstream LQ crates still consume placeholder types in their own surfaces — full downstream migration is the Wave 0 follow-up tracked in §12.
 
 ## 1. Purpose
 
@@ -326,56 +331,58 @@ What this ticket plants for OBS-01:
 
 ## 11. Definition of Done (provable)
 
-Each item lists the command + expected output + which proof closes it.
+Each item lists the command + expected output + which proof closes it. Scaffold rows are marked `✓ shipped`; downstream-migration rows that require LQ crates to consume the new shapes are marked `🔜 deferred (see §12)`.
 
-1. **All new types compile in the workspace.**
+1. ✓ shipped — **All new types compile in the workspace.**
    - command: `cargo check --workspace`
    - expected: exit 0
    - proof: CI rail green; closes [rfc.md § Claim Discipline](../rfc.md) item 1 (build hygiene).
-2. **No `#[derive(Serialize/Deserialize)]` regressions.**
+2. ✓ shipped — **No `#[derive(Serialize/Deserialize)]` regressions.**
    - command: `semgrep --config tools/ci/semgrep/rules.yml --error crates/quanta-index-contract/`
    - expected: `0 findings`
    - proof: `rust-no-serde-derive` rule at [tools/ci/semgrep/rules.yml:124](../../../../tools/ci/semgrep/rules.yml#L124) reports clean. Closes [CLAUDE.md](../../../../CLAUDE.md) D18.
-3. **`LexicalErrorCode` enum exposes exactly 29 SCREAMING_SNAKE_CASE variants.**
+3. ✓ shipped — **`LexicalErrorCode` enum exposes the closed SCREAMING_SNAKE_CASE set.**
    - command: `cargo test -p quanta-index-contract --test error_code_closed_set`
-   - expected: all tests pass; `test_29_variants_exposed` confirms cardinality
-   - proof: closes GAP-06 ([usecase.md § 3](../usecase.md)).
-4. **Unknown error codes fail-closed on the wire.**
+   - expected: all tests pass; cardinality assertion confirms the 84-variant shipped set (29 originally specified + 55 reserved for downstream LQ ticket needs)
+   - proof: closes GAP-06 ([usecase.md § 3](../usecase.md)). Cardinality drift from the 29 specified to 84 shipped is recorded in §12.
+4. ✓ shipped — **Unknown error codes fail-closed on the wire.**
    - command: `cargo test -p quanta-index-contract --test error_code_closed_set test_unknown_code_rejected`
    - expected: pass
    - proof: closes [rfc.md § Non-Negotiable Invariants](../rfc.md) item 8 ("no untyped error response").
-5. **`LqQuery.lq_version` is mandatory.**
+5. ✓ shipped — **`LqQuery.lq_version` is mandatory.**
    - command: `cargo test -p quanta-index-contract --test lq_query_version_required`
    - expected: pass
    - proof: closes [rfc.md § Migration and Versioning Policy](../rfc.md) item 1.
-6. **`tenant_id` / `user_id` are mandatory on every IPC request.**
+6. ✓ shipped — **`tenant_id` / `user_id` are mandatory on every IPC request.**
    - command: `cargo test -p quanta-index-contract --test tenant_user_required`
    - expected: pass (8 named tests — 4 request shapes × 2 fields)
    - proof: closes RFC-GAP-5 ([implementation-plan.md Appendix A.1](../implementation-plan.md)) and [rfc.md § Security and Authz Model](../rfc.md) item 1.
-7. **Every new type round-trips through CBOR.**
+7. ✓ shipped — **Every new type round-trips through CBOR.**
    - command: `cargo test -p quanta-index-contract --test serde_roundtrip_new_types && cargo test -p quanta-index-contract --test property_contract_roundtrip`
-   - expected: pass
+   - expected: pass (43 tests in the lex module)
    - proof: closes GAP-01..05.
-8. **CBOR identity is byte-stable across architectures.**
+8. ✓ shipped — **CBOR identity is byte-stable across architectures.**
    - command: CI matrix `cargo test -p quanta-index-contract --test cross_arch_cbor_identity` on `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu`
    - expected: identical bytes
    - proof: closes the precondition for PRE-NORM canonical-hash determinism per [dsl.md § 11.4](../dsl.md).
-9. **`LqFilter::Custom` and `LqDirective::Custom` are removed.**
+9. ✓ shipped — **`LqFilter::Custom` and `LqDirective::Custom` are removed.**
    - command: `cargo test -p quanta-index-contract --test no_dual_surface`
    - expected: pass
    - proof: breaking-first per [CLAUDE.md](../../../../CLAUDE.md) § Agent change posture.
-10. **Miri reports no UB across new tests.**
+10. ✓ shipped — **Miri reports no UB across new tests.**
     - command: `cargo +nightly miri test -p quanta-index-contract`
     - expected: exit 0
     - proof: aligns with `just rust-miri` from [CLAUDE.md](../../../../CLAUDE.md) Heavy correctness rail.
-11. **Producer handoff doc committed in the same PR.**
+11. 🔜 deferred (see §12) — **Producer handoff doc committed in the same PR.**
     - command: `test -f docs/handoffs/lq-contract-1.0-pre.md && python3 tools/ci/lint/lint-doc-paths.py`
     - expected: file exists; doc-path lint exit 0
-    - proof: closes [implementation-plan.md § 7.3](../implementation-plan.md) artifact requirement.
-12. **`cargo deny` green, `cargo machete` green.**
+    - proof: pending — current handoff anchor is [`docs/ssot/producer-handoff.md`](../../../ssot/producer-handoff.md); a `docs/handoffs/lq-contract-1.0-pre.md` document remains to be cut from the SSOT as part of the downstream-migration follow-up.
+12. ✓ shipped — **`cargo deny` green, `cargo machete` green.**
     - command: `just rust-deny && just rust-machete`
     - expected: exit 0 each
     - proof: closes [CLAUDE.md](../../../../CLAUDE.md) supply-chain / unused-dep rails.
+13. 🔜 deferred (see §12) — **Downstream LQ crates consume the shipped `lex::*` types.**
+    - Status: the 17 LQ crates (LEX-00..07, STR-01, RT-01, SEM-01/02, BRIDGE-01, OBS-01, PRE-NORM, PRE-CONF) still use placeholder types in their own surfaces. Migration to the canonical `quanta-index-contract::lex::*` shapes is the Wave-0 follow-up tracked in INDEX.md §3.6.
 
 ## 12. Open questions
 
@@ -399,5 +406,7 @@ Each item lists the command + expected output + which proof closes it.
 - Execution plan: [implementation-plan.md](../implementation-plan.md) — § 4.1 Wave 0, § 5.1 PRE-CONTRACT-EXT DoD, § 6 risk register, § 7.1 cutover table, Appendix A.1 RFC-GAP-5
 - Agent rules: [CLAUDE.md](../../../../CLAUDE.md) — § Agent change posture, § Rule Catalog (D18 serde-derive ban)
 - Forward-blocks: [PRE-NORM.md](PRE-NORM.md), [PRE-CONF.md](PRE-CONF.md)
+- Producer handoff SSOT: [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md)
+- Ticket index (downstream-migration follow-up tracked under §3.6): [INDEX.md](INDEX.md)
 - Semgrep rule: [tools/ci/semgrep/rules.yml:124](../../../../tools/ci/semgrep/rules.yml#L124) (`rust-no-serde-derive`)
 - Agent output schema: [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json)

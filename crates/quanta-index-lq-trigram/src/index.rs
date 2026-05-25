@@ -145,6 +145,25 @@ impl TrigramIndex {
         self.by_trigram.iter().map(|(k, v)| (*k, v.as_slice()))
     }
 
+    /// Return every trigram that references `doc_id` in the index, in
+    /// sorted order.
+    ///
+    /// Used by [`crate::builder::TrigramIndexBuilder::from_prior`] to
+    /// reconstruct the reverse `(doc_id → trigrams)` map for cross-
+    /// generation incremental builds. The current implementation scans
+    /// every posting list (O(P log) where P is total postings); a future
+    /// optimization may persist the reverse map directly on disk.
+    #[must_use]
+    pub fn iter_by_doc(&self, doc_id: DocId) -> Vec<Trigram> {
+        let mut out: Vec<Trigram> = Vec::new();
+        for (tri, postings) in &self.by_trigram {
+            if postings.binary_search(&doc_id).is_ok() {
+                out.push(*tri);
+            }
+        }
+        out
+    }
+
     /// Serialize as canonical CBOR.
     pub fn serialize_cbor<W: Write>(&self, writer: W) -> Result<(), TrigramError> {
         ciborium::ser::into_writer(self, writer).map_err(|e| {
@@ -459,6 +478,22 @@ mod tests {
         let idx = fixture();
         let empty: Vec<DocId> = Vec::new();
         assert_eq!(idx.lookup(*b"QQQ").to_vec(), empty);
+    }
+
+    #[test]
+    fn iter_by_doc_returns_only_that_docs_trigrams() {
+        let idx = fixture();
+        // doc 2's content is "xyzabc" → trigrams xyz, yza, zab, abc.
+        let mut tris = idx.iter_by_doc(DocId(2));
+        tris.sort_unstable();
+        assert_eq!(tris, vec![*b"abc", *b"xyz", *b"yza", *b"zab"]);
+    }
+
+    #[test]
+    fn iter_by_doc_returns_empty_for_unknown_doc() {
+        let idx = fixture();
+        let tris = idx.iter_by_doc(DocId(99));
+        assert!(tris.is_empty());
     }
 
     #[test]

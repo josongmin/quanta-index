@@ -11,8 +11,6 @@
 
 pub mod app;
 pub mod cli;
-pub mod runtime;
 
-pub use app::{ChannelDispatcher, QueryServer, SearchdConfig, SearchdRuntime, run};
+pub use app::{QueryServer, SearchdConfig, SearchdRuntime, drive};
 pub use cli::SearchdCommand;
-pub use runtime::Ledger;

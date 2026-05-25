@@ -16,8 +16,9 @@ use crate::tokenizer::Token;
 /// `Off` leaves `lowered` exactly as the tokenizer produced it (which is
 /// already ASCII-lowered today). `Lower` re-applies ASCII lowercase as a
 /// belt-and-braces idempotent step. `NfkcLower` applies Unicode NFKC
-/// (compatibility composition) and then lowercases — so the ligature
-/// `ﬁ` (U+FB01) folds to `fi` and `Ⅻ` (U+216B) folds to `xii`.
+/// (compatibility composition), then lowercases, then re-normalizes to NFKC
+/// so case mapping cannot leave combining marks in a non-canonical order —
+/// the ligature `ﬁ` (U+FB01) folds to `fi` and `Ⅻ` (U+216B) folds to `xii`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CaseFold {
     Off,
@@ -85,9 +86,9 @@ impl<'de> serde::Deserialize<'de> for CaseFold {
 /// reflects the fold. `surface`, `kind`, and byte offsets are preserved.
 ///
 /// `NfkcLower` applies NFKC compatibility composition first, then
-/// lowercases the result. Idempotent because NFKC and lowercase are
-/// each idempotent and NFKC stabilizes the codepoint set before the
-/// case fold runs.
+/// lowercases the result, then re-applies NFKC. The trailing
+/// normalization re-canonicalizes combining-mark order after case
+/// mapping so a second fold sees the same byte sequence.
 #[must_use]
 pub fn fold_case(token: &Token, mode: CaseFold) -> Token {
     let new_lowered: Box<str> = match mode {
@@ -95,7 +96,11 @@ pub fn fold_case(token: &Token, mode: CaseFold) -> Token {
         CaseFold::Lower => token.lowered.to_lowercase().into_boxed_str(),
         CaseFold::NfkcLower => {
             let nfkc: String = token.lowered.nfkc().collect();
-            nfkc.to_lowercase().into_boxed_str()
+            // Lowercasing can introduce decomposed combining sequences; run the
+            // compatibility normalization again so repeated folds stay
+            // byte-identical.
+            let lowered = nfkc.to_lowercase();
+            lowered.nfkc().collect::<String>().into_boxed_str()
         }
     };
     Token {
@@ -180,6 +185,15 @@ mod tests {
         let tok = t("\u{FB01}", "\u{FB01}");
         let a = fold_case(&tok, CaseFold::NfkcLower);
         let b = fold_case(&a, CaseFold::NfkcLower);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fold_nfkc_lower_restabilizes_combining_mark_order_after_lowercase() {
+        let tok = t("\u{2160}\u{307}\u{316}", "\u{2160}\u{307}\u{316}");
+        let a = fold_case(&tok, CaseFold::NfkcLower);
+        let b = fold_case(&a, CaseFold::NfkcLower);
+        assert_eq!(&*a.lowered, "i\u{316}\u{307}");
         assert_eq!(a, b);
     }
 

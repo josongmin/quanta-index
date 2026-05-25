@@ -1,4 +1,6 @@
-use quanta_index_contract::{SearchPlaneLexicalQueryRequest, SearchPlaneLexicalQueryResponse};
+use quanta_index_contract::{
+    SearchPlaneLexicalQueryResponse, SearchPlaneLexicalTextQueryRequestV2,
+};
 
 use crate::error::CoreError;
 
@@ -6,6 +8,6 @@ use crate::error::CoreError;
 pub trait LexicalQueryPort: Send + Sync {
     fn lexical_query(
         &self,
-        request: SearchPlaneLexicalQueryRequest,
+        request: SearchPlaneLexicalTextQueryRequestV2,
     ) -> Result<SearchPlaneLexicalQueryResponse, CoreError>;
 }

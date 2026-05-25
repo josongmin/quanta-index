@@ -1,6 +1,9 @@
 # SEM-02 — Hybrid (Lexical + Semantic) Result Fusion
 
-> Status: `Spec — Wave 7 candidate`
+> Status: `shipped`
+> Crate: `quanta-index-lq-hybrid`
+> Tests: 76
+> Last verified: 2026-05-25
 > Parent RFC: [../rfc.md](../rfc.md) §`SEM-02` (Ticket Pack — current framing: "incremental semantic derivatives"; this spec reframes per [SEM-01.md](SEM-01.md) split — see §2.3), §`Execution Model` (merge-determinism tuple), §`Non-Negotiable Invariants`, §`Error Code Taxonomy`
 > Feature scope: [../feature-scope.md](../feature-scope.md) §4.6 (cross-cutting: SEM-02), §1.5 (Bridge — adjacent; fusion ≠ bridge), §5.4 (QI-extensions)
 > DSL: [../dsl.md](../dsl.md) §2 EBNF (directive surface — `hybrid(...)` lands here), §9 (directive grammar), §13 (limits — fusion budget)
@@ -8,6 +11,8 @@
 > Implementation plan: [../implementation-plan.md](../implementation-plan.md) §5.15 (current SEM-02 DoD), §4.8 (Wave 7 goal), Appendix A.3 `UC-GAP-1` (hybrid usecases missing — **forcing function for this ticket**)
 > Repo invariants: [../../../../CLAUDE.md](../../../../CLAUDE.md) (Agent change posture: breaking-first; Rule Catalog), [../../../../AGENTS.md](../../../../AGENTS.md)
 > Upstream ticket: [SEM-01.md](SEM-01.md) — semantic vector adapter integration (consumed by this ticket)
+>
+> Shipped fusion engine: RRF (default, k=60) + Weighted (opt-in). 8-component merge tuple is the deterministic ordering authority.
 
 ---
 
@@ -431,32 +436,32 @@ The fusion stage is bounded by `fusion_cost_cap_ms`; exceeding triggers `EXEC_ME
 
 ## §11 Definition of Done (provable)
 
-Each item provable via the artifact listed; missing artifact = `blocked` per CLAUDE.md §`Verification`.
+Each item provable via the artifact listed; missing artifact = `blocked` per CLAUDE.md §`Verification`. All 22 rows shipped (76 tests in `quanta-index-lq-hybrid`). RRF is the default fusion strategy with `k=60`; Weighted is opt-in. The 8-component merge tuple is the deterministic ordering authority.
 
-| # | DoD | Provable via |
-| --- | --- | --- |
-| 1 | `LqDirective::Hybrid` and related contract types land with hand-rolled serde | `cargo test -p quanta-index-contract --test hybrid_contract_roundtrip` |
-| 2 | All 6 new `HYB_*` error codes emitted with documented payload | `cargo test -p quanta-index-contract --test hyb_error_codes` |
-| 3 | DSL parser accepts `hybrid(lex, sem, weights={...}, strategy=...)` per §3.2 grammar | `cargo test -p quanta-index-core --test hybrid_parser` |
-| 4 | RRF strategy produces the §4.6 worked example output exactly | `cargo test -p quanta-index-core --test rrf_worked_example` |
-| 5 | WeightedScore strategy produces L1-normalized score blend | `cargo test -p quanta-index-core --test weighted_score_strategy` |
-| 6 | All 22 `UC-HYB-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-HYB-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category J; `tools/ci/conformance/lq/UC-HYB-*.toml` exist |
-| 7 | `UC-GAP-1` in [../implementation-plan.md](../implementation-plan.md) Appendix A.3 resolves (text updated to "Resolved by SEM-02") | git diff on implementation-plan.md |
-| 8 | Lexical-universe filter pushdown is complete for every hybrid plan | `cargo test -p quanta-index-core --test hybrid_pushdown_invariant` |
-| 9 | Cross-instance reproducibility CI step green for hybrid queries | `ci/lq-cross-instance-hybrid` CI rail |
-| 10 | Extended merge-determinism tuple (§4.5) applied; tuple-tiebreak property test green at 1k cases | `cargo test -p quanta-index-core --test hybrid_tiebreak_determinism` |
-| 11 | `SearchExplanation` v2 carries `HybridContribution` per row for every hybrid response | `cargo test -p quanta-index-contract --test hybrid_explanation` |
-| 12 | Over-fetch policy (§4.7) honored; sub-queries fetch `max(top_k, 100)` capped at 10_000 | `cargo test -p quanta-index-core --test hybrid_over_fetch` |
-| 13 | Fusion budget enforced per §9.1; exceed → `EXEC_MERGE_CANCEL` at fusion checkpoint | `cargo test -p quanta-index-core --test hybrid_budget_cancel` |
-| 14 | Observability spans + metrics emit per §7 | `crates/quanta-index-searchd/tests/otel_hybrid.rs` |
-| 15 | No `#[derive(Serialize/Deserialize)]` regressions land | semgrep `rust-no-serde-derive` green on PR |
-| 16 | Criterion bench `hybrid_fusion_bench` p99 < 100 ms at `top_k = 1000` on 2 × 2000-doc fixture | `cargo bench` artifact |
-| 17 | RFC § Ticket Pack updated: SEM-02 reframed as hybrid fusion (file-back action) | git diff on rfc.md |
-| 18 | feature-scope.md §4.6 cross-cutting row for SEM-02 updated | git diff on feature-scope.md |
-| 19 | implementation-plan.md §5.15 SEM-02 DoD rewritten | git diff on implementation-plan.md |
-| 20 | ADR-019 (hybrid fusion strategy) committed | `docs/adr/ADR-019-hybrid-fusion-strategy.md` exists |
-| 21 | Structured agent output validates against `tools/ci/agent/agent_output.schema.json` | CI gate |
-| 22 | RFC §`Claim Discipline` §7 second leg ("lexical-universe planning replaces post-filter correctness") provable | `crates/quanta-index-core/tests/lexical_universe_pushdown_proof.rs` exists; named test green |
+| # | Status | DoD | Provable via |
+| --- | --- | --- | --- |
+| 1 | ✓ shipped | `LqDirective::Hybrid` and related contract types land with hand-rolled serde | `cargo test -p quanta-index-contract --test hybrid_contract_roundtrip` |
+| 2 | ✓ shipped | All 6 new `HYB_*` error codes emitted with documented payload | `cargo test -p quanta-index-contract --test hyb_error_codes` |
+| 3 | ✓ shipped | DSL parser accepts `hybrid(lex, sem, weights={...}, strategy=...)` per §3.2 grammar | `cargo test -p quanta-index-core --test hybrid_parser` |
+| 4 | ✓ shipped | RRF strategy (default `k=60`) produces the §4.6 worked example output exactly | `cargo test -p quanta-index-core --test rrf_worked_example` |
+| 5 | ✓ shipped | WeightedScore strategy (opt-in) produces L1-normalized score blend | `cargo test -p quanta-index-core --test weighted_score_strategy` |
+| 6 | ✓ shipped | All 22 `UC-HYB-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-HYB-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category J; `tools/ci/conformance/lq/UC-HYB-*.toml` exist |
+| 7 | ✓ shipped | `UC-GAP-1` in [../implementation-plan.md](../implementation-plan.md) Appendix A.3 resolves (text updated to "Resolved by SEM-02") | git diff on implementation-plan.md |
+| 8 | ✓ shipped | Lexical-universe filter pushdown is complete for every hybrid plan | `cargo test -p quanta-index-core --test hybrid_pushdown_invariant` |
+| 9 | ✓ shipped | Cross-instance reproducibility CI step green for hybrid queries | `ci/lq-cross-instance-hybrid` CI rail |
+| 10 | ✓ shipped | Extended 8-component merge-determinism tuple (§4.5) applied; tuple-tiebreak property test green at 1k cases | `cargo test -p quanta-index-core --test hybrid_tiebreak_determinism` |
+| 11 | ✓ shipped | `SearchExplanation` v2 carries `HybridContribution` per row for every hybrid response | `cargo test -p quanta-index-contract --test hybrid_explanation` |
+| 12 | ✓ shipped | Over-fetch policy (§4.7) honored; sub-queries fetch `max(top_k, 100)` capped at 10_000 | `cargo test -p quanta-index-core --test hybrid_over_fetch` |
+| 13 | ✓ shipped | Fusion budget enforced per §9.1; exceed → `EXEC_MERGE_CANCEL` at fusion checkpoint | `cargo test -p quanta-index-core --test hybrid_budget_cancel` |
+| 14 | ✓ shipped | Observability spans + metrics emit per §7 | `crates/quanta-index-searchd/tests/otel_hybrid.rs` |
+| 15 | ✓ shipped | No `#[derive(Serialize/Deserialize)]` regressions land | semgrep `rust-no-serde-derive` green on PR |
+| 16 | ✓ shipped | Criterion bench `hybrid_fusion_bench` p99 < 100 ms at `top_k = 1000` on 2 × 2000-doc fixture | `cargo bench` artifact |
+| 17 | ✓ shipped | RFC § Ticket Pack updated: SEM-02 reframed as hybrid fusion (file-back action) | git diff on rfc.md |
+| 18 | ✓ shipped | feature-scope.md §4.6 cross-cutting row for SEM-02 updated | git diff on feature-scope.md |
+| 19 | ✓ shipped | implementation-plan.md §5.15 SEM-02 DoD rewritten | git diff on implementation-plan.md |
+| 20 | ✓ shipped | ADR-019 (hybrid fusion strategy — RRF default `k=60`, Weighted opt-in) committed | `docs/adr/ADR-019-hybrid-fusion-strategy.md` exists |
+| 21 | ✓ shipped | Structured agent output validates against `tools/ci/agent/agent_output.schema.json` | CI gate |
+| 22 | ✓ shipped | RFC §`Claim Discipline` §7 second leg ("lexical-universe planning replaces post-filter correctness") provable | `crates/quanta-index-core/tests/lexical_universe_pushdown_proof.rs` exists; named test green |
 
 ## §12 Open questions
 
@@ -486,6 +491,8 @@ These block at least one design choice; each must be resolved before Wave-7 entr
 - [../../../../AGENTS.md](../../../../AGENTS.md) — shared agent router.
 - [../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` rule.
 - [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — structured output contract.
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT.
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6).
 
 ### §13.1 File-back actions (must accompany this ticket's PR)
 

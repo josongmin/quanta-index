@@ -58,7 +58,7 @@ fn canonicalize_regex_inline_flags_expr(
     saw_leading_i: &mut bool,
 ) -> Result<(), LqParseError> {
     match expr {
-        LqExpr::Empty => Ok(()),
+        LqExpr::Empty | LqExpr::SemanticVector { .. } => Ok(()),
         LqExpr::Leaf(l) => canonicalize_regex_inline_flags_leaf(l, saw_leading_i),
         LqExpr::Not(inner) => canonicalize_regex_inline_flags_expr(inner, saw_leading_i),
         LqExpr::All(children) | LqExpr::Any(children) => {
@@ -174,6 +174,10 @@ fn normalize_expr(expr: LqExpr, case: Option<LqCase>) -> Result<LqExpr, LqParseE
         }
         LqExpr::All(children) => normalize_n_ary(children, case, /*is_all=*/ true),
         LqExpr::Any(children) => normalize_n_ary(children, case, /*is_all=*/ false),
+        // SemanticVector is a programmatic-only leaf — no DSL string form in
+        // v1 (dsl.md), case-folding is meaningless on raw embeddings, and the
+        // vector content is hash-bearing. Pass through unchanged.
+        sv @ LqExpr::SemanticVector { .. } => Ok(sv),
     }
 }
 
@@ -198,7 +202,8 @@ fn normalize_n_ary(
             | LqExpr::Any(_)
             | LqExpr::Empty
             | LqExpr::Leaf(_)
-            | LqExpr::Not(_)) => flat.push(kept),
+            | LqExpr::Not(_)
+            | LqExpr::SemanticVector { .. }) => flat.push(kept),
         }
     }
     // 3. Drop Empty children (commutative identity).
@@ -301,6 +306,39 @@ fn write_expr_key(out: &mut String, e: &LqExpr) {
                 write_expr_key(out, c);
             }
             out.push(')');
+        }
+        LqExpr::SemanticVector { vector_ref, top_k } => {
+            out.push_str("SV(");
+            write_semantic_vector_ref_key(out, vector_ref);
+            // Display-stable form; canonical_key is engineering-only.
+            let s = format!(",k={top_k}");
+            out.push_str(&s);
+            out.push(')');
+        }
+    }
+}
+
+fn write_semantic_vector_ref_key(out: &mut String, vr: &crate::ast::SemanticVectorRef) {
+    match vr {
+        crate::ast::SemanticVectorRef::Inline(vector) => {
+            out.push_str("IN[");
+            let len = format!("{}", vector.len());
+            out.push_str(&len);
+            out.push(';');
+            for (i, x) in vector.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                // Use bit-pattern hex for byte-stable ordering; canonical_key
+                // is engineering-only (not on the wire or in the hash).
+                let bits = format!("{:08x}", x.to_bits());
+                out.push_str(&bits);
+            }
+            out.push(']');
+        }
+        crate::ast::SemanticVectorRef::Handle(h) => {
+            out.push_str("HA:");
+            out.push_str(h);
         }
     }
 }
@@ -660,5 +698,191 @@ mod tests {
                 "got {e}"
             ),
         }
+    }
+
+    // ---- Step (round-7): SemanticVector pass-through tests ----
+
+    #[test]
+    fn semantic_vector_inline_passes_through_normalizer_unchanged() {
+        let sv = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Inline(vec![0.1, 0.2, 0.3]),
+            top_k: 16,
+        };
+        let q = LqNormalizedQuery {
+            lq_version: crate::ast::LQ_VERSION_TAG,
+            expr: sv.clone(),
+            filters: Vec::new(),
+            directives: Vec::new(),
+            options: LqOptions::defaults(),
+            source_span: crate::errors::LqSpan::new(0, 0),
+        };
+        let out = match normalize(q) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "normalize failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(out.expr, sv);
+    }
+
+    #[test]
+    fn semantic_vector_handle_passes_through_normalizer_unchanged() {
+        let sv = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Handle("vec-h-1".into()),
+            top_k: 5,
+        };
+        let q = LqNormalizedQuery {
+            lq_version: crate::ast::LQ_VERSION_TAG,
+            expr: sv.clone(),
+            filters: Vec::new(),
+            directives: Vec::new(),
+            options: LqOptions {
+                pattern_type: crate::ast::LqPatternType::Standard,
+                case: Some(LqCase::Insensitive),
+                count: None,
+            },
+            source_span: crate::errors::LqSpan::new(0, 0),
+        };
+        // Even with case:no, the semantic-vector leaf must not be folded.
+        let out = match normalize(q) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "normalize failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(out.expr, sv);
+    }
+
+    #[test]
+    fn semantic_vector_inside_all_is_preserved_and_flattening_skips_it() {
+        let sv = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Handle("h2".into()),
+            top_k: 8,
+        };
+        // AND[ All[Leaf(foo), Leaf(bar)], SV ] should flatten the inner All but
+        // leave SV as a sibling.
+        let inner_all = LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("foo".to_owned())),
+            LqExpr::Leaf(LqLeaf::Keyword("bar".to_owned())),
+        ]);
+        let q = LqNormalizedQuery {
+            lq_version: crate::ast::LQ_VERSION_TAG,
+            expr: LqExpr::All(vec![inner_all, sv.clone()]),
+            filters: Vec::new(),
+            directives: Vec::new(),
+            options: LqOptions::defaults(),
+            source_span: crate::errors::LqSpan::new(0, 0),
+        };
+        let out = match normalize(q) {
+            Ok(q) => q,
+            Err(e) => {
+                assert!(false, "normalize failed: {e}");
+                return;
+            }
+        };
+        match out.expr {
+            LqExpr::All(children) => {
+                assert_eq!(children.len(), 3, "expected 3 children, got {children:?}");
+                assert!(
+                    children.contains(&sv),
+                    "SV leaf must survive normalize: {children:?}"
+                );
+            }
+            other => assert!(false, "expected All, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn semantic_vector_handle_cbor_canonical_hash_is_deterministic() {
+        let sv1 = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Handle("h-stable".into()),
+            top_k: 4,
+        };
+        let q1 = LqNormalizedQuery {
+            lq_version: crate::ast::LQ_VERSION_TAG,
+            expr: sv1,
+            filters: Vec::new(),
+            directives: Vec::new(),
+            options: LqOptions::defaults(),
+            source_span: crate::errors::LqSpan::new(0, 0),
+        };
+        let h1 = match crate::hasher::canonical_hash(&q1) {
+            Ok(h) => h,
+            Err(e) => {
+                assert!(false, "hash1 failed: {e}");
+                return;
+            }
+        };
+        let h2 = match crate::hasher::canonical_hash(&q1) {
+            Ok(h) => h,
+            Err(e) => {
+                assert!(false, "hash2 failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(h1, h2);
+
+        // Distinct handle ⇒ distinct hash.
+        let sv2 = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Handle("h-other".into()),
+            top_k: 4,
+        };
+        let q2 = LqNormalizedQuery {
+            lq_version: crate::ast::LQ_VERSION_TAG,
+            expr: sv2,
+            ..q1
+        };
+        let h3 = match crate::hasher::canonical_hash(&q2) {
+            Ok(h) => h,
+            Err(e) => {
+                assert!(false, "hash3 failed: {e}");
+                return;
+            }
+        };
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn semantic_vector_cbor_roundtrip_inline() {
+        let sv = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Inline(vec![1.0_f32, 2.0, -3.5]),
+            top_k: 5,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(e) = ciborium::ser::into_writer(&sv, &mut buf) {
+            assert!(false, "encode failed: {e}");
+            return;
+        }
+        let back: LqExpr = match ciborium::de::from_reader(buf.as_slice()) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "decode failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(back, sv);
+    }
+
+    #[test]
+    fn semantic_vector_cbor_roundtrip_handle() {
+        let sv = LqExpr::SemanticVector {
+            vector_ref: crate::ast::SemanticVectorRef::Handle("h1".into()),
+            top_k: 10,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        if let Err(e) = ciborium::ser::into_writer(&sv, &mut buf) {
+            assert!(false, "encode failed: {e}");
+            return;
+        }
+        let back: LqExpr = match ciborium::de::from_reader(buf.as_slice()) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "decode failed: {e}");
+                return;
+            }
+        };
+        assert_eq!(back, sv);
     }
 }

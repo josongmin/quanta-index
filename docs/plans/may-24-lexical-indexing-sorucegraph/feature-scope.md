@@ -4,6 +4,8 @@
 > Parent: [rfc.md](rfc.md)
 > Companion: [search-plane-implementation-tickets.md](../search-plane-implementation-tickets.md), [storage-architecture-endgame-implementation](../../ssot/may-23-storage-architecture-endgame-implementation.md)
 > Authority posture: **breaking-first**. Features without a Claim Gate are not claimable. RFC text is not duplicated here — this doc adds the scope catalog, the cross-reference matrix, the Sourcegraph delta, the authority chain, the scale targets, the lifecycle states, and the open questions the RFC defers.
+>
+> **Architecture correction (2026-05-25)**: scope rows for LEX-05 / LEX-07 / STR-01 / RT-01 were originally authored assuming the search plane parses source bytes, walks git, or accepts a separate `apply_changes` IPC. The producer-authorship rule was ratified after that authoring — see [tickets/INDEX.md § 3.6](tickets/INDEX.md) for the full correction table and [docs/ssot/producer-handoff.md](../../ssot/producer-handoff.md) for the op catalogue. Truth-source rows below still name the producer correctly; engine-owner rows that mention "tree-sitter" or "git-walk" should be read as "producer-emitted parse tree / commit record decoded over the channel".
 
 ## 0. How to read this doc
 
@@ -258,12 +260,20 @@ Engine owner for all rows: **bridge engine** (candidate export packet + downstre
 
 #### 1.5.2 Error semantics when bridge target rejects
 
-| Condition | Required response | Source |
+**FS-GAP-2 closure (2026-05-25)** per [tickets/INDEX.md § 3.4](tickets/INDEX.md) and [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md): the canonical bridge error set is locked to the five codes below plus the legacy three. The lock is mirrored verbatim in [rfc.md § Error Code Taxonomy § `BRIDGE_*`](rfc.md) so the two docs cannot drift.
+
+| Condition | Canonical code | Source |
 |---|---|---|
-| candidate set exceeds downstream capacity | typed `CoreError::InvalidContract { code: "BRIDGE_CANDIDATE_OVERFLOW" }` | RFC § Non-Negotiable Invariants (no silent widening) |
-| downstream target unreachable / timeout | typed `CoreError::NotReady { code: "BRIDGE_TARGET_UNAVAILABLE" }` | RFC § Non-Negotiable Invariants (fail-closed) |
-| downstream rejects candidate identity provenance | typed `CoreError::InvalidContract { code: "BRIDGE_PROVENANCE_REJECTED" }` | RFC § Bridge engine § responsibility (preserve repo/rev/file/symbol candidate identity) |
-| candidate set empty | typed `CoreError::NotFound` (not empty Ok per fail-closed policy) | repo-wide convention (`CoreError::NotReady` for absent-authority, `NotFound` for empty-with-authority-present) |
+| Sourcegraph filter name has no LQ projection | `BRIDGE_UNSUPPORTED_FILTER` | [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) |
+| Sourcegraph directive (`index:no`, fuzzy `~`, generic `@`, empty input) refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` | [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) |
+| Sourcegraph filter resolves to ≥ 2 LQ targets (defensive fail-closed) | `BRIDGE_AMBIGUOUS_FILTER` | [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) |
+| producer's translator version disagrees with consumer's expected skew window | `BRIDGE_VERSION_PIN` | [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) (renamed from `BRIDGE_TRANSLATOR_VERSION_SKEW`) |
+| SG syntax was parser-accepted by SG-side but the translator produced no LQ AST (defensive — translator-internal bugs) | `BRIDGE_TRANSLATE_FAIL` | [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) |
+| downstream sink (e.g. CodeQL) refused the candidate packet | `BRIDGE_SINK_REJECTED` | [rfc.md § Error Code Taxonomy § `BRIDGE_*`](rfc.md) |
+| candidate packet failed contract-crate validation | `BRIDGE_CANDIDATE_FORMAT_INVALID` | [rfc.md § Error Code Taxonomy § `BRIDGE_*`](rfc.md) |
+| candidate set empty | `CoreError::NotFound` (not empty Ok per fail-closed policy) | repo-wide convention (`CoreError::NotReady` for absent-authority, `NotFound` for empty-with-authority-present) |
+
+> Historical note: prior versions of this row listed `BRIDGE_CANDIDATE_OVERFLOW`, `BRIDGE_TARGET_UNAVAILABLE`, `BRIDGE_PROVENANCE_REJECTED`. Those names are superseded by the canonical set; the corresponding conditions surface under `BRIDGE_SINK_REJECTED` (overflow / target / provenance carried in `reason`) per the BRIDGE-01 lock.
 
 ---
 
@@ -503,11 +513,20 @@ For each family, one paragraph covering: who provides truth, who validates at wr
 
 ## 7. Scale & capacity scope
 
-Targets, not contracts. Operators tune per deployment. All targets refer to the search-plane process (single node, Phase 1).
+Targets, not contracts. Operators tune per deployment.
+
+**FS-GAP-3 closure (2026-05-25)** per [tickets/INDEX.md § 3.4](tickets/INDEX.md): two repo targets exist and serve different scopes — the per-process Phase-1 target and the per-cluster SLO target. Both are documented here; the RFC's 100,000-repo number is the cluster SLO ceiling, this doc's 10,000-repo number is the single-process Phase-1 ceiling.
+
+| Scope | Target | Source |
+|---|---|---|
+| max repos per **single search-plane process** (Phase 1) | 10,000 | this doc — single-node catalog read fanout, no horizontal sharding |
+| max repos per **cluster** (Phase 4+ horizontal scaling SLO) | 100,000 | [rfc.md § Capacity and SLO Targets](rfc.md) — cluster-level ceiling assuming N-process fanout |
+
+The 10:1 ratio is the implied minimum horizontal-shard count once the cluster target is in scope. Phase 1 ships single-process only; the cluster target becomes claimable only when horizontal scaling lands (Phase 4+), per RFC § Claim Discipline. **No silent reconciliation**: the targets are different by design, not in conflict.
 
 | Dimension | Initial target | Notes |
 |---|---|---|
-| max repos per cluster | 10,000 | catalog SQLite read fanout; horizontal scaling Phase 4+ |
+| max repos per cluster | 10,000 (process) / 100,000 (cluster) | see scope table above |
 | max branches/refs per repo | 1,000 | revision catalog row count |
 | max files per branch | 1,000,000 | manifest row count; per-file delta is steady-state path |
 | max chunks per file | 10,000 | chunk row count per file in lexical content index |

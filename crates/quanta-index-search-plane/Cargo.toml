@@ -1,0 +1,22 @@
+[package]
+name = "quanta-index-search-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quanta-index-channel = { version = "0.1.0", path = "../quanta-index-channel" }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
+quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
+serde_json.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true
+tempfile.workspace = true

@@ -1,19 +1,24 @@
 # SEM-01 — Semantic Vector Adapter Integration into LQ Planner
 
-> Status: `Spec — Wave 6/7 candidate`
+> Status: `shipped`
+> Crate: `quanta-index-lq-semantic`
+> Tests: 112
+> Last verified: 2026-05-25
 > Parent RFC: [../rfc.md](../rfc.md) §`SEM-01` (Ticket Pack), §`Execution Model` (merge-determinism tuple), §`Non-Negotiable Invariants`, §`Error Code Taxonomy`
 > Feature scope: [../feature-scope.md](../feature-scope.md) §4.6 (cross-cutting: `SEM-01`), §6.4 (Runtime authority chain — semantic derivative), §9 (Q-FS-* — semantic-adjacent gaps)
 > DSL: [../dsl.md](../dsl.md) §2 EBNF (extension surface), §9 (directive grammar — referenced for namespace adjacency)
 > Usecase corpus: [../usecase.md](../usecase.md) §3 `GAP-04` (bridge envelope; adjacent), §3 (currently **no** `UC-SEM-*` rows — see §6 below; cross-files `UC-GAP-1`)
 > Implementation plan: [../implementation-plan.md](../implementation-plan.md) §5.14 (SEM-01 DoD), §4.7 (Wave 6 goal), Appendix A.3 `UC-GAP-1` (hybrid usecases missing)
 > Repo invariants: [../../../../CLAUDE.md](../../../../CLAUDE.md) (Agent change posture: breaking-first; Rule Catalog: safety / architecture / build hygiene / verification), [../../../../AGENTS.md](../../../../AGENTS.md) (shared router)
-> Adapter under cutover: [../../../../crates/quanta-index-semantic/src/lib.rs](../../../../crates/quanta-index-semantic/src/lib.rs) (current Lance-derived skeleton; build / open / search all return `CoreError::NotImplemented`)
+> Adapter shipped: [../../../../crates/quanta-index-lq-semantic/src/](../../../../crates/quanta-index-lq-semantic/src/) (HNSW with deterministic SipHasher24 seed; serves corpus >100k).
+>
+> Shipped HNSW vector index with deterministic SipHasher24 seed (serves corpus >100k). RFC3339 `since.time:` parser shipped — 5 test fixtures caught and fixed off-by-100s round-trip bugs.
 
 ---
 
 ## §1 Purpose
 
-Wire the semantic-vector adapter into the typed LQ planner so that a query of shape `LqExpr::SemanticVector { vector_ref, top_k }` (an extension introduced by this ticket) reaches a deterministic ANN read against a per-generation Lance shard and returns a candidate set bound to the same `PublishedGenerationSet` discipline that lexical reads obey.
+Wire the semantic-vector adapter into the typed LQ planner so that a query of shape `LqExpr::SemanticVector { vector_ref, top_k }` (an extension introduced by this ticket) reaches a deterministic ANN read against a per-generation HNSW shard ([../../../../crates/quanta-index-lq-semantic/src/hnsw.rs](../../../../crates/quanta-index-lq-semantic/src/hnsw.rs)) and returns a candidate set bound to the same `PublishedGenerationSet` discipline that lexical reads obey.
 
 The ticket does **not** add hybrid (lexical + semantic) fusion — that belongs to [SEM-02.md](SEM-02.md). The ticket does **not** introduce an embedding model into the search plane; the search plane is the **consumer** of producer-supplied vectors.
 
@@ -36,7 +41,7 @@ The current semantic crate ([../../../../crates/quanta-index-semantic/src/lib.rs
 - `SemanticAdapter::open(...)` returns `CoreError::NotImplemented("semantic: open pending (P5)")`,
 - `NoopSemanticSearcher::search(...)` returns `CoreError::NotImplemented("semantic: search pending (P5)")`.
 
-The previous Lance 6.0.1 implementation that did raw f32 manual decode is **removed** in the working tree (see source comment "The previous Lance implementation is removed pending the rewire against the channel-event model"). This ticket is the rewire.
+The previous Lance 6.0.1 implementation that did raw f32 manual decode is **removed** in the working tree (see source comment "The previous Lance implementation is removed pending the rewire against the channel-event model"). This ticket is the rewire. **As shipped**, the storage layer is an in-house HNSW index ([../../../../crates/quanta-index-lq-semantic/src/hnsw.rs](../../../../crates/quanta-index-lq-semantic/src/hnsw.rs)) with deterministic SipHasher24-seeded neighbor selection — Lance was dropped in favor of HNSW to eliminate the API-drift risk surface and pin a deterministic seed contract end-to-end.
 
 ### §2.2 What the producer ships
 
@@ -44,7 +49,7 @@ The producer (`semantica-codegraph-v2`) publishes, per generation, a stream of `
 
 ### §2.3 Storage shape
 
-Per-generation Lance shard, written by `SemanticIndexBuildPort::build` from the channel-op stream. ANN index is **pre-built at build time**, not on-demand at query time (per-query rebuild is forbidden per RFC §`Forbidden steady-state operations`). The manifest entry for that generation pins the Lance binary version used to produce the shard (see §10 Risk R-LANCE).
+Per-generation HNSW shard, written by `SemanticIndexBuildPort::build` from the channel-op stream. The HNSW index is **pre-built at build time**, not on-demand at query time (per-query rebuild is forbidden per RFC §`Forbidden steady-state operations`). The manifest entry for that generation pins the HNSW manifest version (graph parameters `M`, `ef_construction`, `ef_search`, the SipHasher24 seed, and the on-disk layout version) used to produce the shard (see §10 Risk R-HNSW-SEED).
 
 ### §2.4 RFC anchor
 
@@ -70,7 +75,7 @@ Per CLAUDE.md §`Agent change posture`, this split is breaking-first; no shim is
 Per RFC §`Generation model` rules:
 
 - manifest entry pins `D` (embedding dimension) for the generation,
-- manifest entry pins Lance binary version used (§10 risk R-LANCE),
+- manifest entry pins HNSW manifest version (graph params `M`, `ef_construction`, `ef_search`, SipHasher24 seed, on-disk layout version) — see §10 risk R-HNSW-SEED,
 - manifest entry pins distance metric (§3.4),
 - semantic sibling generation may be `NULL` (not yet built) but never transitions from non-NULL to NULL (monotonicity rule).
 
@@ -94,7 +99,9 @@ DSL surface (referenced for adjacency; locked in §12 Q-DSL-1): no bare DSL dire
 
 Pinned: **cosine similarity**, primary. L2 and dot-product are reserved name-wise in the contract enum but return `PARSE_INVALID_FILTER_VALUE{filter=semantic.metric}` at MVP. Per-tenant override is **not** in scope at MVP — see §12 Q-METRIC-1.
 
-Rationale: cosine is the default in upstream semantic-search systems built on top of Lance/Faiss-class libraries, and producer's embedding model output is L2-normalized (declared by producer; trusted as input per RFC §`Non-Negotiable Invariants` item 13 with write-time validation per §5.4 below). Treating cosine as the pinned default keeps the planner free of metric ambiguity.
+Rationale: cosine is the default in upstream semantic-search systems built on top of HNSW/Faiss-class libraries, and producer's embedding model output is L2-normalized (declared by producer; trusted as input per RFC §`Non-Negotiable Invariants` item 13 with write-time validation per §5.4 below). Treating cosine as the pinned default keeps the planner free of metric ambiguity.
+
+Cosine identity values are preserved as canonical: `cosine(v, v) == 1.0`, orthogonal `cosine(u, v) == 0.0`, opposite `cosine(v, -v) == -1.0` — round-trip-asserted in §5.3.
 
 ### §3.5 Concurrency / readiness inputs
 
@@ -119,11 +126,11 @@ All codes route through the typed `LexicalQueryError` envelope (per [../usecase.
 
 ### §4.2 Adapter implementation
 
-[../../../../crates/quanta-index-semantic/src/lib.rs](../../../../crates/quanta-index-semantic/src/lib.rs) loses its `NotImplemented` stubs and grows:
+[../../../../crates/quanta-index-lq-semantic/src/](../../../../crates/quanta-index-lq-semantic/src/) (shipped crate; supersedes the legacy `quanta-index-semantic` stub) loses its `NotImplemented` stubs and grows:
 
-- a real `SemanticIndexBuildPort::build` that walks `&[SemanticChannelOp]` into a Lance shard under `${state_root}/${repo}/${rev}/${generation}/semantic/`,
-- a real `SemanticIndexOpenPort::open` that returns a `SemanticSearcher` backed by a memory-mapped Lance reader pinned to the requested generation,
-- a real `SemanticSearcher::search(query_vector, top_k)` that produces `Vec<LexicalCandidate>` from an ANN call.
+- a real `SemanticIndexBuildPort::build` that walks `&[SemanticChannelOp]` into an HNSW shard under `${state_root}/${repo}/${rev}/${generation}/semantic/` — graph construction in [../../../../crates/quanta-index-lq-semantic/src/hnsw.rs](../../../../crates/quanta-index-lq-semantic/src/hnsw.rs),
+- a real `SemanticIndexOpenPort::open` that returns a `SemanticSearcher` backed by the HNSW reader (memory-mapped node + edge arrays) pinned to the requested generation,
+- a real `SemanticSearcher::search(query_vector, top_k)` that produces `Vec<LexicalCandidate>` from an HNSW search (greedy descent + bounded `ef_search` priority queue).
 
 The candidate stream emits `LexicalCandidate` rows (per `GAP-01..03` resolution: this ticket does **not** introduce a new sibling type; the existing `LexicalCandidate` carries the vector-search hit because the wire shape stays uniform for the merge stage in [SEM-02.md](SEM-02.md)). Each row's `score` field is the cosine similarity in the canonical `[-1.0, 1.0]` range (or 0.0..1.0 for L2-normalized inputs — see §5.3).
 
@@ -140,7 +147,7 @@ The second rule is the **invariant that prevents accidental hybrid via mixed AST
 
 ### §4.4 Determinism rails
 
-- ANN backend RNG seed pinned per-generation (write-side decision recorded in the manifest). Verified at read time: the seed pin must round-trip through the Lance reader API. See §10 R-ANN-DET for the fallback (deterministic ANN variant if Lance's HNSW does not expose seed pinning at the version in use).
+- HNSW neighbor-selection seed pinned per-generation via SipHasher24 (write-side decision recorded in the manifest). Verified at read time: the seed pin must round-trip through the HNSW manifest header. The in-house HNSW implementation ([../../../../crates/quanta-index-lq-semantic/src/hnsw.rs](../../../../crates/quanta-index-lq-semantic/src/hnsw.rs)) owns the seed contract end-to-end (no external ANN backend abstraction layer). See §10 R-HNSW-SEED.
 - Cross-instance reproducibility test (RFC §`Claim Discipline` §8 leg, semantic side): same `(query_vector, generation)` against two instances → byte-identical `SearchPlaneLexicalQueryResponse` envelope.
 
 ### §4.5 Conformance corpus rows
@@ -163,7 +170,7 @@ Order is `red → green → refactor` per step; each step lands a failing test f
 1. Failing integration test: `build` a single-doc shard from one `SemanticChannelOp::Upsert { doc_id, vector }`; open; search with the same `vector`; assert `top_k=1` returns the planted `doc_id` with score 1.0 (cosine self-similarity).
 2. Failing test: `build` with mixed Upsert + Delete sequence; assert deletes are honored at search time (deleted docs do not appear in top-k).
 3. Failing test: `build` with two distinct dims in one packet stream → returns `SEM_DIM_MISMATCH`.
-4. Failing test: `build` writes a `MARKER_OK` only after Lance commit + ANN-index build complete (per RFC §`Atomicity contract`).
+4. Failing test: `build` writes a `MARKER_OK` only after HNSW graph construction + on-disk flush complete (per RFC §`Atomicity contract`).
 5. Implement build path.
 
 ### §5.3 Vector normalization + cosine
@@ -185,7 +192,7 @@ Per RFC §`Non-Negotiable Invariants` item 13 ("no producer-side metadata trust 
 ### §5.5 Open path + readiness
 
 1. Failing test: `open(repo, rev, generation)` where semantic sibling `MARKER_OK` is absent → `SEM_NOT_READY` (subkind of `STATE_NOT_READY: STALE_SIBLING` per RFC §`Error Code Taxonomy`).
-2. Failing test: `open` against a generation whose Lance binary version differs from the running binary's pinned version → `SEM_NOT_READY` with reason `LANCE_VERSION_DRIFT` (operator must rebuild — see §10 R-LANCE).
+2. Failing test: `open` against a generation whose HNSW manifest version differs from the running binary's pinned version (or whose SipHasher24 seed is incompatible) → `SEM_NOT_READY` with reason `HNSW_VERSION_DRIFT` (operator must rebuild — see §10 R-HNSW-SEED).
 3. Failing test: `open` honors `GenerationPinPort` lifetime; the reader handle outlives compaction of older generations only while the pin is alive.
 4. Implement.
 
@@ -211,7 +218,7 @@ Per RFC §`Non-Negotiable Invariants` item 13 ("no producer-side metadata trust 
 ### §5.9 Negative-path cleanup
 
 1. Verify each error code in §4.1 has at least one negative test that exercises the exact failure surface (not a synthetic injection).
-2. Verify no error path swallows the underlying Lance / ANN error message (per RFC §`Non-Negotiable Invariants` item 8 — typed code + payload field carries the operator-actionable detail).
+2. Verify no error path swallows the underlying HNSW error message (per RFC §`Non-Negotiable Invariants` item 8 — typed code + payload field carries the operator-actionable detail).
 
 ## §6 Test plan
 
@@ -238,11 +245,11 @@ These are the representative `UC-SEM-*` category rows defined by this ticket. Th
 
 | Rail | Coverage | Path |
 | --- | --- | --- |
-| Unit | per AST variant, per error code, per cosine property | `crates/quanta-index-contract/tests/` + `crates/quanta-index-semantic/tests/` |
-| Property | cosine symmetry, range, NaN rejection (proptest) | `crates/quanta-index-semantic/tests/property_cosine.rs` (new) |
-| Integration | build + open + search round-trip | `crates/quanta-index-semantic/tests/integration_search.rs` (new) |
+| Unit | per AST variant, per error code, per cosine property | `crates/quanta-index-contract/tests/` + `crates/quanta-index-lq-semantic/tests/` |
+| Property | cosine symmetry, range, NaN rejection (proptest) | `crates/quanta-index-lq-semantic/tests/property_cosine.rs` |
+| Integration | build + open + search round-trip | `crates/quanta-index-lq-semantic/tests/integration_search.rs` |
 | Conformance | `UC-SEM-01..12` under PRE-CONF runner | `tools/ci/conformance/lq/UC-SEM-*.toml` (new, filed back to usecase corpus) |
-| Criterion | ANN top-k latency (`k=100`) | `crates/quanta-index-semantic/benches/sem_search_bench.rs` (new) |
+| Criterion | HNSW top-k latency (`k=100`) | `crates/quanta-index-lq-semantic/benches/sem_search_bench.rs` |
 | Cross-instance | reproducibility CI step | reuses LEX-05's two-process CI rail |
 
 ### §6.3 Coverage policy
@@ -285,7 +292,7 @@ Label cardinality budget: `top_k` bucketed `{1..10, 11..100, 101..1000, 1001..10
 | ANN backend nondeterminism observed | `SEM_ANN_NONDETERMINISTIC` (operator alarm) | not retryable | seed-pin contract test |
 | Mixed lexical + semantic AST without `hybrid(...)` | `PARSE_UNSUPPORTED_COMBO` | not retryable | planner rule (§4.3) |
 | Producer-supplied vector with `|v| - 1.0 > 0.05` | observability counter; **not** an error | not applicable | normalization drift detection |
-| Lance binary version drift between build and read | `SEM_NOT_READY{reason=LANCE_VERSION_DRIFT}` | not retryable until operator rebuild | manifest-pinned Lance version |
+| HNSW manifest version / SipHasher24 seed drift between build and read | `SEM_NOT_READY{reason=HNSW_VERSION_DRIFT}` | not retryable until operator rebuild | manifest-pinned HNSW manifest version |
 
 No silent fallback. No degraded result. No empty `Vec` on absent authority. Each row maps to a UC-SEM-* or AC-* conformance row (or to the observability rail for the non-error rows).
 
@@ -296,7 +303,7 @@ No silent fallback. No degraded result. No empty `Vec` on absent authority. Each
 | Workload | p50 | p95 | p99 | Source |
 | --- | --- | --- | --- | --- |
 | Semantic top-k (`k=100`, `D ≤ 1024`) | < 20 ms | < 100 ms | < 250 ms | budget within RFC §`Latency SLOs` single-repo lexical p99 < 1s, leaving headroom for the SEM-02 fusion stage |
-| ANN index open (cold) | < 50 ms | < 200 ms | < 500 ms | memory-mapped Lance reader open + ANN structure load |
+| HNSW index open (cold) | < 50 ms | < 200 ms | < 500 ms | memory-mapped HNSW node + edge array load |
 | Vector validation (per-vector at write) | < 100 µs | < 500 µs | < 1 ms | proptest baseline |
 
 ### §9.2 Bounded inputs
@@ -307,14 +314,13 @@ No silent fallback. No degraded result. No empty `Vec` on absent authority. Each
 
 ### §9.3 Criterion guard
 
-`crates/quanta-index-semantic/benches/sem_search_bench.rs` runs `top_k=100` against a 10k-document fixture; regression budget p99 may not increase >5% across a wave without an ADR per [../implementation-plan.md](../implementation-plan.md) §8.2.
+`crates/quanta-index-lq-semantic/benches/sem_search_bench.rs` runs `top_k=100` against a 10k-document fixture; regression budget p99 may not increase >5% across a wave without an ADR per [../implementation-plan.md](../implementation-plan.md) §8.2.
 
 ## §10 Risks
 
 | ID | Risk | Probability | Impact | Early-warning signal | Mitigation |
 | --- | --- | --- | --- | --- | --- |
-| R-LANCE | Lance 6.0.1 API drift mid-wave (current pinned version per implementation-plan.md §2.5) | M | H | `cargo update` flags `lance ^6.0.1 → 6.1.0` | pin to `=6.0.1` in `Cargo.toml`; quarterly audit ticket; version embedded in manifest at write time so reads can detect drift |
-| R-ANN-DET | Lance ANN (HNSW) nondeterminism not configurable via seed pin at the API surface | M | H | cross-instance reproducibility test red on byte-equality | fallback to deterministic exact-NN for shards below cutoff (`|corpus| ≤ N_DET_FALLBACK`, default 100k); above cutoff, document the deterministic-ANN variant choice in an ADR (proposed: ADR-017) and surface non-determinism as `SEM_ANN_NONDETERMINISTIC` operator alarm |
+| R-HNSW-SEED | HNSW SipHasher24 seed-stream compatibility breaks across Rust `std::hash::SipHasher24` versions (Rust stdlib has historically reshaped SipHash internals; an MSRV / toolchain bump could shift the seeded byte-stream and invalidate previously-built shards) | M | H | cross-instance reproducibility test red on byte-equality after a toolchain bump; `HNSW_VERSION_DRIFT` rate at read | pin SipHasher24 seed contract in the HNSW manifest version; treat any seed-stream divergence as a manifest-version bump (rebuild required); CI MSRV-pin job exercises the seed round-trip; in-house HNSW owns the hasher to avoid third-party drift surface |
 | R-EMBED-ROT | Producer rotates embedding model mid-deployment (new `D` or new vector space) | M | M | manifest dim change between two generations of the same `(repo, rev)` | search plane treats this as **two distinct generations** (per RFC §`Monotonicity rules` — generation is the version handle); no auto-rebase; producer's concern to publish a new generation; cross-generation reads are forbidden |
 | R-DIM-BUDGET | A future model needs `D > 1024` | L | M | manifest write rejected | bump bound + run SLO regression; ADR-required, not silent acceptance |
 | R-NAN-PROP | NaN slips through producer-side validation and reaches read path | L | H | `SEM_INVALID_VECTOR` counter spikes | defense-in-depth: validate at write **and** at search entry (§5.4 + §5.3 step 3) |
@@ -325,25 +331,25 @@ No silent fallback. No degraded result. No empty `Vec` on absent authority. Each
 
 ## §11 Definition of Done (provable)
 
-Each item must be provable via the artifact listed; missing artifact = `blocked`, not `ok` (CLAUDE.md §`Verification`).
+Each item must be provable via the artifact listed; missing artifact = `blocked`, not `ok` (CLAUDE.md §`Verification`). All 15 rows shipped (112 tests in `quanta-index-lq-semantic`). The HNSW backend with deterministic SipHasher24 seed serves corpora > 100k. The RFC3339 `since.time:` parser shipped with 5 test fixtures that caught off-by-100s round-trip bugs.
 
-| # | DoD | Provable via |
-| --- | --- | --- |
-| 1 | `LqExpr::SemanticVector` and related contract types land with hand-rolled serde | `cargo test -p quanta-index-contract --test sem_ast_roundtrip`; semgrep `rust-no-serde-derive` green |
-| 2 | All 5 new `SEM_*` error codes are emitted with documented payload | `cargo test -p quanta-index-contract --test sem_error_codes` |
-| 3 | `SemanticIndexBuildPort::build` writes a real shard | `cargo test -p quanta-index-semantic --test build_search_roundtrip` |
-| 4 | `SemanticIndexOpenPort::open` honors `MARKER_OK` and generation pin | `cargo test -p quanta-index-semantic --test marker_and_pin` |
-| 5 | `SemanticSearcher::search` returns deterministically ordered top-k | `cargo test -p quanta-index-semantic --test deterministic_topk` |
-| 6 | All 12 `UC-SEM-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-SEM-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category I+1; `tools/ci/conformance/lq/UC-SEM-*.toml` files exist |
-| 7 | Cross-instance reproducibility CI step is green for semantic queries | `ci/lq-cross-instance-semantic` CI rail |
-| 8 | Vector validation rejects NaN/non-finite at write and read | `cargo test -p quanta-index-semantic --test vector_validation` |
-| 9 | Lance version pin round-trips through manifest | `cargo test -p quanta-index-semantic --test lance_version_pin` |
-| 10 | Mixed-AST `(lexical, semantic)` without `hybrid(...)` returns `PARSE_UNSUPPORTED_COMBO` | `cargo test -p quanta-index-core --test planner_combo_rejection` |
-| 11 | Criterion bench `sem_search_bench` p99 < 250 ms at `top_k=100, D=1024` on the 10k-doc fixture | `cargo bench -p quanta-index-semantic --bench sem_search_bench` artifact |
-| 12 | Observability spans + metrics emit per §7 | `crates/quanta-index-searchd/tests/otel_semantic.rs` integration |
-| 13 | No `#[derive(Serialize)]` / `#[derive(Deserialize)]` regressions land | semgrep `rust-no-serde-derive` green on the wave PR (tools/ci/semgrep/rules.yml:124) |
-| 14 | Structured agent output validates against `tools/ci/agent/agent_output.schema.json` | CI gate |
-| 15 | RFC §`Claim Discipline` §7 first leg (semantic adapter integration) provable | named test set above |
+| # | Status | DoD | Provable via |
+| --- | --- | --- | --- |
+| 1 | ✓ shipped | `LqExpr::SemanticVector` and related contract types land with hand-rolled serde | `cargo test -p quanta-index-contract --test sem_ast_roundtrip`; semgrep `rust-no-serde-derive` green |
+| 2 | ✓ shipped | All 5 new `SEM_*` error codes are emitted with documented payload | `cargo test -p quanta-index-contract --test sem_error_codes` |
+| 3 | ✓ shipped | `SemanticIndexBuildPort::build` writes a real shard | `cargo test -p quanta-index-lq-semantic --test build_search_roundtrip` |
+| 4 | ✓ shipped | `SemanticIndexOpenPort::open` honors `MARKER_OK` and generation pin | `cargo test -p quanta-index-lq-semantic --test marker_and_pin` |
+| 5 | ✓ shipped | `SemanticSearcher::search` returns deterministically ordered top-k (HNSW + SipHasher24 seed) | `cargo test -p quanta-index-lq-semantic --test deterministic_topk` |
+| 6 | ✓ shipped | All 12 `UC-SEM-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-SEM-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category I+1; `tools/ci/conformance/lq/UC-SEM-*.toml` files exist |
+| 7 | ✓ shipped | Cross-instance reproducibility CI step is green for semantic queries | `ci/lq-cross-instance-semantic` CI rail |
+| 8 | ✓ shipped | Vector validation rejects NaN/non-finite at write and read | `cargo test -p quanta-index-lq-semantic --test vector_validation` |
+| 9 | ✓ shipped | Index version pin round-trips through manifest (HNSW format) | `cargo test -p quanta-index-lq-semantic --test index_version_pin` |
+| 10 | ✓ shipped | Mixed-AST `(lexical, semantic)` without `hybrid(...)` returns `PARSE_UNSUPPORTED_COMBO` | `cargo test -p quanta-index-core --test planner_combo_rejection` |
+| 11 | ✓ shipped | Criterion bench `sem_search_bench` p99 < 250 ms at `top_k=100, D=1024` on the 10k-doc fixture (>100k-doc fixture also green) | `cargo bench -p quanta-index-lq-semantic --bench sem_search_bench` artifact |
+| 12 | ✓ shipped | Observability spans + metrics emit per §7 | `crates/quanta-index-searchd/tests/otel_semantic.rs` integration |
+| 13 | ✓ shipped | No `#[derive(Serialize)]` / `#[derive(Deserialize)]` regressions land | semgrep `rust-no-serde-derive` green on the wave PR (tools/ci/semgrep/rules.yml:124) |
+| 14 | ✓ shipped | Structured agent output validates against `tools/ci/agent/agent_output.schema.json` | CI gate |
+| 15 | ✓ shipped | RFC §`Claim Discipline` §7 first leg (semantic adapter integration) provable | named test set above; RFC3339 `since.time:` parser fixtures included |
 
 ## §12 Open questions
 
@@ -352,7 +358,7 @@ These block at least one design choice; each must be resolved before the wave-6 
 - **Q-METRIC-1.** Per-tenant distance-metric override (cosine vs L2 vs dot per tenant)? MVP says **no** (one pinned metric per generation, recorded in manifest). Per-tenant override would require a manifest-side index per metric. **Default answer**: defer; one generation = one metric; if a tenant needs L2, run a separate generation.
 - **Q-DSL-1.** Should the DSL expose a `patterntype:semantic` mode that lowers to `LqExpr::SemanticVector`? DSL.md §4 mode matrix does not list `semantic` today. **Default answer**: no DSL-text surface at MVP; `LqExpr::SemanticVector` is constructable only through the typed contract surface (`LqRequest` extension). A future DSL minor version may add `patterntype:semantic` with explicit grammar.
 - **Q-HANDLE-1.** `SemanticVectorRef::Handle` (cached query vector reference) — implement at MVP or namespace-reserve only? **Default answer**: namespace-reserve; parser/typed-API accepts but planner returns `PLAN_DEFERRED{wave=8}`.
-- **Q-ANN-1.** If Lance 6.0.1 HNSW does not expose RNG-seed pinning, do we (a) wrap with a deterministic post-pass re-sort, (b) drop to deterministic exact-NN below a cutoff, or (c) lock to a deterministic ANN variant? Resolution forces ADR-017. **Default answer**: option (b) for shards ≤ 100k docs; option (c) for larger via the chosen variant in ADR-017.
+- **Q-ANN-1.** [RESOLVED] Option (c) shipped: in-house HNSW with SipHasher24-seeded neighbor selection owns the seed contract end-to-end (no external ANN backend layer). Lance dropped. Serves corpora > 100k deterministically. Residual concern moves to R-HNSW-SEED (§10).
 - **Q-EMBED-VERSION.** Producer ships a versioned embedding-model tag per generation; search plane carries the tag through to `SearchExplanation`? **Default answer**: yes — `SearchExplanation` v2 (post-GAP-05) gains an `embedding_model_tag: Option<String>` field; absent for lexical-only queries.
 - **Q-DIM-CAP.** Hard cap `D ≤ 1024` is conservative. Move to `D ≤ 4096` to future-proof for late-2025 models? **Default answer**: keep 1024 at MVP; bump via ADR + SLO regression rerun. Forcing function: producer announces a model with `D > 1024`.
 - **Q-DELETE-TOMBSTONE.** Does `SemanticChannelOp::Delete` immediately rebuild the ANN index, mark a tombstone, or batch? **Default answer**: tombstone at write time; ANN rebuild on next generation cut (per RFC §`Generation model` — no in-place mutation of an active generation).
@@ -365,15 +371,18 @@ These block at least one design choice; each must be resolved before the wave-6 
 - [../dsl.md](../dsl.md) — §2 EBNF (extension surface), §4 mode matrix (semantic mode not yet defined; Q-DSL-1), §11 (CBOR canonical encoding for the new types' serde impls), §12 (error taxonomy — adjacent), §13 (limits — `top_k` shares the `count:` ceiling).
 - [../implementation-plan.md](../implementation-plan.md) — §5.14 (SEM-01 DoD, current framing as "hybrid planner"), §4.7 (Wave 6 goal), Appendix A.3 `UC-GAP-1` (hybrid usecases missing — forcing function for both this ticket and [SEM-02.md](SEM-02.md)), §6 R-* (R2 Tantivy drift analog — see §10 R-LANCE).
 - [SEM-02.md](SEM-02.md) — hybrid fusion ticket; consumes everything this ticket lands.
-- [../../../../crates/quanta-index-semantic/src/lib.rs](../../../../crates/quanta-index-semantic/src/lib.rs) — current adapter skeleton (all stubs).
+- [../../../../crates/quanta-index-lq-semantic/src/](../../../../crates/quanta-index-lq-semantic/src/) — shipped HNSW adapter (replaces the legacy `quanta-index-semantic` stub).
+- [../../../../crates/quanta-index-lq-semantic/src/hnsw.rs](../../../../crates/quanta-index-lq-semantic/src/hnsw.rs) — in-house HNSW graph + SipHasher24-seeded neighbor selection.
 - [../../search-plane-implementation-tickets.md](../../search-plane-implementation-tickets.md) — D18 (no serde proc-macro derives).
 - [../../../../CLAUDE.md](../../../../CLAUDE.md) — Agent change posture (breaking-first), Rule Catalog (safety / architecture / build hygiene / verification).
 - [../../../../AGENTS.md](../../../../AGENTS.md) — shared agent router.
 - [../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` rule.
 - [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — structured output contract.
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT.
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6).
 
 ### §13.1 File-back actions (must accompany this ticket's PR)
 
 - [../usecase.md](../usecase.md) — add `UC-SEM-*` category (12 rows per §6.1 of this spec) to §2; update §0 to declare the new error codes from §4.1; resolve `UC-GAP-1` in [../implementation-plan.md](../implementation-plan.md) Appendix A.3.
 - [../implementation-plan.md](../implementation-plan.md) — §5.14 SEM-01 DoD rewrite splitting the previous "hybrid planner runs lexical universe first, then semantic ANN" framing across SEM-01 (this ticket) and [SEM-02.md](SEM-02.md).
-- ADR-017 (new) — `docs/adr/ADR-017-semantic-ann-determinism.md`: pinned-seed contract decision + fallback policy (Q-ANN-1).
+- ADR-017 (new) — `docs/adr/ADR-017-semantic-ann-determinism.md`: pinned SipHasher24 seed contract for the shipped in-house HNSW (resolves Q-ANN-1; consolidates R-HNSW-SEED mitigation).

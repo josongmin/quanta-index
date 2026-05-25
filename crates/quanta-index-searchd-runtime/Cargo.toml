@@ -1,0 +1,26 @@
+[package]
+name = "quanta-index-searchd-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quanta-index-channel = { version = "0.1.0", path = "../quanta-index-channel" }
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
+
+[dev-dependencies]
+ciborium = { workspace = true }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
+quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
+tempfile.workspace = true

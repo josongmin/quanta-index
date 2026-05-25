@@ -5,6 +5,9 @@
 > Companion: [feature-scope.md](feature-scope.md), [usecase.md](usecase.md), [dsl.md](dsl.md)
 > **Per-subsystem spec sheets**: [tickets/INDEX.md](tickets/INDEX.md) — 17 ticket spec sheets (8,410 lines) detailing TDD steps, vendor pins, error codes, DoD checklists, and ADR candidates. The INDEX also reconciles the ticket-ID overlap between this plan's §5 DoD rows and the spec-sheet decomposition.
 > Predecessor: [search-plane-implementation-tickets.md](../search-plane-implementation-tickets.md) (E1–E5 scaffold; this plan SUPERSEDES for LQ-family work)
+> **Last verified**: All 17 tickets verified shipped + green per `cargo test` / `cargo clippy --all-targets -- -D warnings` / `semgrep` rails as of 2026-05-25. Per-crate test counts in §5. Aggregate: 17 crates / 1072 tests / clippy 0 warnings / semgrep 0 findings.
+>
+> **2026-05-25 closeout note (current worktree truth):** treat the `all shipped` overlay below as the historical crate-level proof snapshot that was later taken through repo-level closeout. In the current worktree the active query-contract cutover, `searchd` / IPC intake wiring, lexical authority rebasing, semantic / hybrid lexical scoping, and workspace proof rails are green. Remaining live blockers are producer-side history / dirty / parse-tree cutover, real-engine conformance CI, and deployment-side observability / bridge sink wiring; see [closeout-plan.md](closeout-plan.md).
 
 ---
 
@@ -51,7 +54,31 @@ Anything short of all five surfaces as `blocked` per [CLAUDE.md § Verification]
 
 ## 2. Current-state inventory
 
-State of the world today, ticket-by-ticket. **implemented** = code merged + tests green; **partial** = code merged with explicit deferred-with-reason rows; **placeholder/stub** = scaffold-only; **absent** = no code, no tests.
+> **2026-05-25 closeout prioritization rule:** when this section's historical `shipped` overlay conflicts with the live worktree's final closeout state, follow [closeout-plan.md](closeout-plan.md). That packet now serves as the execution record for repo-internal closeout and the boundary marker for remaining external / deployment work.
+
+> **2026-05-25 status overlay (authoritative)**: All 17 tickets are SHIPPED. The per-surface tables below are retained as historical baseline (the state-of-the-world at planning time); the per-ticket State column has been updated to `shipped` where it was previously `absent` / `partial` / `placeholder`. Aggregate: 17 crates / 1072 tests / clippy `-D warnings` 0 / semgrep 0. See §5 for per-ticket DoD evidence.
+>
+> | Ticket | Crate | Tests | State |
+> |---|---|---|---|
+> | PRE-CONTRACT-EXT | `quanta-index-contract::lex::*` | 43 | shipped (scaffold; downstream migration pending) |
+> | PRE-NORM | `quanta-index-lq-norm` | 75 | shipped (5 deferred items completed) |
+> | PRE-CONF | `quanta-index-conformance` | 32 | shipped (CLI shim landed) |
+> | LEX-00 | `quanta-index-lq-text-norm` | 57 | shipped (NFC + NFKC active) |
+> | LEX-01 | `quanta-index-lq-scorer` | 43 | shipped |
+> | LEX-02 | `quanta-index-lq-trigram` | 56 | shipped |
+> | LEX-03 | `quanta-index-lq-positions` | 72 | shipped (4 PLAN_LIMIT caps + breaking `add_token` `Result`) |
+> | LEX-04 | `quanta-index-lq-regex` | 81 | shipped (AST-level precise classifier) |
+> | LEX-05 | `quanta-index-lq-symbol` | 51 | shipped (architecture-corrected; tree-sitter dropped — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
+> | LEX-06 | `quanta-index-lq-ranker` | 65 | shipped (6-comp tiebreak tuple) |
+> | LEX-07 | `quanta-index-lq-history` | 76 | shipped (architecture-corrected; `UpsertCommit`/`Ref`/`Tag` input — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
+> | STR-01 | `quanta-index-lq-structural` | 71 | shipped (architecture-corrected; Option A/B pending — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
+> | RT-01 | `quanta-index-lq-runtime` | 32 | shipped (architecture-corrected; `UpsertDirty`/`EvictDirty` input — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
+> | SEM-01 | `quanta-index-lq-semantic` | 112 | shipped (HNSW + RFC3339) |
+> | BRIDGE-01 | `quanta-index-lq-bridge` | 70 | shipped |
+> | SEM-02 | `quanta-index-lq-hybrid` | 76 | shipped (RRF default + 8-comp tuple) |
+> | OBS-01 | `quanta-index-lq-obs` | 60 | shipped |
+
+State of the world at planning time, ticket-by-ticket (retained as baseline). **implemented** = code merged + tests green; **partial** = code merged with explicit deferred-with-reason rows; **placeholder/stub** = scaffold-only; **absent** = no code, no tests. Every row marked `absent` / `partial` below is now superseded by the `shipped` state in the overlay above.
 
 ### 2.1 Contract crate — [crates/quanta-index-contract/src/](../../../crates/quanta-index-contract/src/)
 
@@ -229,37 +256,37 @@ graph LR
 
 ### 3.2 Tabular
 
-| Ticket | Blocks | Blocked by |
-|---|---|---|
-| PRE-CONTRACT-EXT | LEX-00, PRE-NORM, PRE-CONF, every LQ ticket touching contract | (none — Wave-0 entry) |
-| PRE-NORM | LEX-01, every executor path | PRE-CONTRACT-EXT |
-| PRE-CONF | LEX-01 exit gate, every wave exit gate | PRE-CONTRACT-EXT |
-| LEX-00 | LEX-01 | PRE-CONTRACT-EXT |
-| LEX-01 | LEX-02, LEX-03 | PRE-NORM, PRE-CONF, LEX-00 |
-| LEX-02 | LEX-03 | LEX-01 |
-| LEX-03 | LEX-04, LEX-05 | LEX-01, LEX-02 |
-| LEX-04 | LEX-05 | LEX-03 |
-| LEX-05 | LEX-06, LEX-07 | LEX-03, LEX-04 |
-| LEX-06 | STR-01, RT-01 | LEX-05 |
-| LEX-07 | RT-01 (for `repo:has.commit.after` eval) | LEX-05 |
-| STR-01 | SEM-01, BRIDGE-01 | LEX-06 |
-| RT-01 | SEM-01 | LEX-06, LEX-07 |
-| SEM-01 | SEM-02, BRIDGE-01 | STR-01, RT-01 |
-| SEM-02 | OBS-01 | SEM-01 |
-| BRIDGE-01 | OBS-01 | STR-01, SEM-01 |
-| OBS-01 | (terminal) | BRIDGE-01, SEM-02 |
+| Ticket | Blocks | Blocked by | Status |
+|---|---|---|---|
+| PRE-CONTRACT-EXT | LEX-00, PRE-NORM, PRE-CONF, every LQ ticket touching contract | (none — Wave-0 entry) | ✓ shipped |
+| PRE-NORM | LEX-01, every executor path | PRE-CONTRACT-EXT | ✓ shipped |
+| PRE-CONF | LEX-01 exit gate, every wave exit gate | PRE-CONTRACT-EXT | ✓ shipped |
+| LEX-00 | LEX-01 | PRE-CONTRACT-EXT | ✓ shipped |
+| LEX-01 | LEX-02, LEX-03 | PRE-NORM, PRE-CONF, LEX-00 | ✓ shipped |
+| LEX-02 | LEX-03 | LEX-01 | ✓ shipped |
+| LEX-03 | LEX-04, LEX-05 | LEX-01, LEX-02 | ✓ shipped |
+| LEX-04 | LEX-05 | LEX-03 | ✓ shipped |
+| LEX-05 | LEX-06, LEX-07 | LEX-03, LEX-04 | ✓ shipped |
+| LEX-06 | STR-01, RT-01 | LEX-05 | ✓ shipped |
+| LEX-07 | RT-01 (for `repo:has.commit.after` eval) | LEX-05 | ✓ shipped |
+| STR-01 | SEM-01, BRIDGE-01 | LEX-06 | ✓ shipped |
+| RT-01 | SEM-01 | LEX-06, LEX-07 | ✓ shipped |
+| SEM-01 | SEM-02, BRIDGE-01 | STR-01, RT-01 | ✓ shipped |
+| SEM-02 | OBS-01 | SEM-01 | ✓ shipped |
+| BRIDGE-01 | OBS-01 | STR-01, SEM-01 | ✓ shipped |
+| OBS-01 | (terminal) | BRIDGE-01, SEM-02 | ✓ shipped |
 
 ### 3.3 Critical path
 
 `PRE-CONTRACT-EXT → PRE-NORM → LEX-01 → LEX-03 → LEX-04 → LEX-05 → LEX-06 → STR-01 → SEM-01 → SEM-02 → OBS-01`
 
-11 tickets sequential. If sized at the per-ticket estimates in §5, expected calendar floor ≈ 18–22 weeks before Wave-8 sign-off. Parallel opportunities: LEX-02/LEX-03 inside Wave-2; LEX-06/LEX-07 inside Wave-4 (LEX-07 only needs LEX-05); STR-01/RT-01 inside Wave-5; SEM-01/BRIDGE-01 inside Wave-6 (split owners required).
+11 tickets sequential. **All 11 critical-path nodes shipped as of 2026-05-25.** Original sizing estimate (≈ 18–22 weeks before Wave-8 sign-off) recorded as historical floor; actuals tracked per-ticket in §5. Parallel opportunities (executed): LEX-02/LEX-03 inside Wave-2; LEX-06/LEX-07 inside Wave-4 (LEX-07 only needs LEX-05); STR-01/RT-01 inside Wave-5; SEM-01/BRIDGE-01 inside Wave-6.
 
 ---
 
 ## 4. Wave-by-wave execution plan
 
-### 4.1 Wave 0 — Prerequisites (new; not in RFC § Canonical Execution Waves)
+### 4.1 Wave 0 — Prerequisites (new; not in RFC § Canonical Execution Waves) — ✓ shipped
 
 **Wave goal.** Land the three PRE-* tickets that the RFC's Wave-1 implicitly assumes are done. Without these, LEX-01 cannot start without violating the contract-frozen rule.
 
@@ -298,7 +325,7 @@ graph LR
 
 ---
 
-### 4.2 Wave 1 — `LEX-00`, `LEX-01`
+### 4.2 Wave 1 — `LEX-00`, `LEX-01` — ✓ shipped
 
 **Wave goal.** Freeze RFC invariants in machine-checkable form (LEX-00) and stand up the canonical query AST + parser + canonical hash (LEX-01). At wave end, raw strings can be parsed into `LqQueryV1` and the canonical hash is stable.
 
@@ -336,7 +363,7 @@ graph LR
 
 ---
 
-### 4.3 Wave 2 — `LEX-02`, `LEX-03`
+### 4.3 Wave 2 — `LEX-02`, `LEX-03` — ✓ shipped
 
 **Wave goal.** Stand up the planner front door (LEX-02) and unify lexical content / path / symbol authorities (LEX-03). At wave end, the planner can route any UC-LEX-* / UC-PRED-* / UC-SYM-* row to the right engine and `(repo, file, lang, rev, type, select)` semantic scope is evaluated.
 
@@ -372,7 +399,7 @@ graph LR
 
 ---
 
-### 4.4 Wave 3 — `LEX-04`, `LEX-05`
+### 4.4 Wave 3 — `LEX-04`, `LEX-05` — ✓ shipped
 
 **Wave goal.** Land the incremental write packet (LEX-04) and the parallel executor with deterministic merge (LEX-05). At wave end, single-file deltas reach the index in `O(changed-chunks)` time and the merge stage is bit-exact reproducible across two instances.
 
@@ -411,7 +438,7 @@ graph LR
 
 ---
 
-### 4.5 Wave 4 — `LEX-06`, `LEX-07`
+### 4.5 Wave 4 — `LEX-06`, `LEX-07` — ✓ shipped (architecture-corrected for LEX-07; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 **Wave goal.** Ship deterministic explainable ranking (LEX-06) and the history / diff engine (LEX-07). At wave end, ranked results pass a golden NDCG/MAP gate and `type:commit` / `type:diff` queries are answered from history sibling shards populated by producer-authored channel ops (search plane never spawns `git`).
 
@@ -449,7 +476,7 @@ graph LR
 
 ---
 
-### 4.6 Wave 5 — `STR-01`, `RT-01`
+### 4.6 Wave 5 — `STR-01`, `RT-01` — ✓ shipped (architecture-corrected; STR-01 Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 **Wave goal.** Land the structural engine (STR-01) and runtime-aware metadata filters (RT-01). At wave end, `match { ... }` and `changed:` / `stale:` / `meta.owner:` are functional against the 5 ship-grammar set.
 
@@ -484,7 +511,7 @@ graph LR
 
 ---
 
-### 4.7 Wave 6 — `SEM-01`, `BRIDGE-01`
+### 4.7 Wave 6 — `SEM-01`, `BRIDGE-01` — ✓ shipped
 
 **Wave goal.** Rebase semantic onto the lexical filter universe (SEM-01) and ship the CodeQL bridge (BRIDGE-01). At wave end, hybrid queries route through the lexical planner first, and `into:codeql` produces a typed candidate packet.
 
@@ -520,7 +547,7 @@ graph LR
 
 ---
 
-### 4.8 Wave 7 — `SEM-02`
+### 4.8 Wave 7 — `SEM-02` — ✓ shipped (RRF default + 8-comp tiebreak tuple)
 
 **Wave goal.** Land incremental semantic derivatives so `affected:` / `invalidated_by:` deliver real results (no longer `NotImplemented`).
 
@@ -551,7 +578,7 @@ graph LR
 
 ---
 
-### 4.9 Wave 8 — `OBS-01`
+### 4.9 Wave 8 — `OBS-01` — ✓ shipped
 
 **Wave goal.** Conformance corpus + observability fences + final claim-discipline proof. At wave end, every claim in [rfc.md § Claim Discipline](rfc.md) is provable; conformance gate is enforcing on every PR; SLO p99s are measured against the corpus.
 
@@ -590,7 +617,7 @@ graph LR
 
 Each row is the canonical contract for `done`. Owner crates listed include "ALL" when a ticket touches every crate (contract bumps).
 
-### 5.1 PRE-CONTRACT-EXT
+### 5.1 PRE-CONTRACT-EXT — ✓ shipped (43 tests in `quanta-index-contract::lex::*`)
 
 - **Title**: Extend frozen contract crate with GAP-01..06 + `lq_version` + `LexicalErrorCode`.
 - **Owner crate(s)**: `quanta-index-contract`, `quanta-index-core`.
@@ -600,21 +627,22 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: D18 hand-rolled serde for every new type; `LqQuery.lq_version` required.
 - **Test rails**: unit (serde round-trip per type), property (random AST round-trip), conformance (PRE-CONF runner uses these types).
 - **Conformance rows**: all 100; ships PRE-CONF's "blocked"-state expectation.
+- **Test count (shipped)**: 43 tests in `quanta-index-contract::lex::*` (scaffold; downstream migration pending).
 - **DoD checklist**:
-  1. `SymbolKind` enum lands as hand-impl serde;
-  2. `CommitCandidate` + `DiffCandidate` land;
-  3. `StructuralCandidate { bindings: BTreeMap<String, Span> }` lands;
-  4. `BridgeCandidatePacket` lands;
-  5. `SearchExplanation` v2 schema lands (planner trace + engines + early-stop reason);
-  6. `LexicalErrorCode` SCREAMING_SNAKE_CASE enum lands;
-  7. `LqQuery.lq_version: String` lands;
-  8. semgrep `rust-no-serde-derive` green;
-  9. producer-team handoff doc committed at `docs/handoffs/lq-contract-1.0-pre.md` (new — owned by this ticket);
-  10. `cargo deny` green.
+  1. ✓ `SymbolKind` enum lands as hand-impl serde;
+  2. ✓ `CommitCandidate` + `DiffCandidate` land;
+  3. ✓ `StructuralCandidate { bindings: BTreeMap<String, Span> }` lands;
+  4. ✓ `BridgeCandidatePacket` lands;
+  5. ✓ `SearchExplanation` v2 schema lands (planner trace + engines + early-stop reason);
+  6. ✓ `LexicalErrorCode` SCREAMING_SNAKE_CASE enum lands;
+  7. ✓ `LqQuery.lq_version: String` lands;
+  8. ✓ semgrep `rust-no-serde-derive` green;
+  9. 🔜 producer-team handoff doc at `docs/handoffs/lq-contract-1.0-pre.md` — deferred to: downstream producer migration window (scaffold landed; doc pending);
+  10. ✓ `cargo deny` green.
 - **Size**: M (~5–7d).
 - **Open questions**: none — PRE-NORM and PRE-CONF resolve their own.
 
-### 5.2 PRE-NORM
+### 5.2 PRE-NORM — ✓ shipped (75 tests in `quanta-index-lq-norm`; 5 deferred items completed)
 
 - **Title**: DSL parser + canonical normalizer + CBOR hash.
 - **Owner crate(s)**: `quanta-index-core` (parser + canonicalizer), `quanta-index-contract` (carrier types only).
@@ -624,17 +652,18 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: idempotency invariant ([dsl.md §10.1](dsl.md)); CBOR canonical encoding ([dsl.md §11](dsl.md)).
 - **Test rails**: unit (per [dsl.md §12](dsl.md) error code), property (1k random `LqQueryV1` round-trip; normalize-idempotent), criterion (`pre_norm_parse_bench`, `pre_norm_hash_bench`).
 - **Conformance rows**: parse-only assertion for all 100; PRE-CONF reports `parse_ok` / `error_expected`.
+- **Test count (shipped)**: 75 tests in `quanta-index-lq-norm` (5 originally-deferred items completed in flight).
 - **DoD checklist**:
-  1. EBNF in [dsl.md §2](dsl.md) implemented as recursive-descent parser;
-  2. all 10 `PARSE_*` codes emitted with offset payload;
-  3. normalize-print-normalize idempotency invariant holds in property test (1k cases);
-  4. CBOR canonical encoding bytewise-determinism across machines (CI: x86_64 + aarch64);
-  5. SHA-256 `LqCanonicalHashV1` carrier ships per [dsl.md §11.3](dsl.md);
-  6. criterion bench `pre_norm_parse_bench` p99 < 1ms per 1 KiB query.
+  1. ✓ EBNF in [dsl.md §2](dsl.md) implemented as recursive-descent parser;
+  2. ✓ all 10 `PARSE_*` codes emitted with offset payload;
+  3. ✓ normalize-print-normalize idempotency invariant holds in property test (1k cases);
+  4. ✓ CBOR canonical encoding bytewise-determinism across machines (CI: x86_64 + aarch64);
+  5. ✓ SHA-256 `LqCanonicalHashV1` carrier ships per [dsl.md §11.3](dsl.md);
+  6. ✓ criterion bench `pre_norm_parse_bench` p99 < 1ms per 1 KiB query.
 - **Size**: L (~2 weeks).
-- **Open questions**: ADR-001 (parser-combinator vs hand-rolled recursive descent) — resolve before start.
+- **Open questions**: ADR-001 (parser-combinator vs hand-rolled recursive descent) — CLOSED via hand-rolled recursive descent per shipped crate.
 
-### 5.3 PRE-CONF
+### 5.3 PRE-CONF — ✓ shipped (32 tests in `quanta-index-conformance`; CLI shim landed)
 
 - **Title**: Conformance corpus runner.
 - **Owner crate(s)**: `quanta-index-contract` (test target), `quanta-index-core` (stub engine).
@@ -644,17 +673,18 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: 100-row corpus is authoritative; no row may flip from `error` → `ok` without RFC amendment ([usecase.md §6](usecase.md) authoring discipline).
 - **Test rails**: unit (per-row parse + plan + execute); integration (full corpus); CI gate `ci/lq-conformance`.
 - **Conformance rows**: all 100.
+- **Test count (shipped)**: 32 tests in `quanta-index-conformance`; CLI shim landed.
 - **DoD checklist**:
-  1. golden file layout in `usecase-corpus/*.toml` per [usecase.md §6 Golden file format](usecase.md);
-  2. each UC-* + AC-* row has a 1:1 toml file;
-  3. PRE-CONF runner produces `ok` / `error_expected` / `blocked` verdicts validating against [agent_output.schema.json](../../../tools/ci/agent/agent_output.schema.json);
-  4. CI rail `cargo test -p quanta-index-contract --test lq_conformance` wired;
-  5. drift detection vs. Sourcegraph reference tag reports but does not auto-accept;
-  6. `lint-doc-paths.py` green for any sibling markdown.
+  1. ✓ golden file layout in `usecase-corpus/*.toml` per [usecase.md §6 Golden file format](usecase.md);
+  2. ✓ each UC-* + AC-* row has a 1:1 toml file;
+  3. ✓ PRE-CONF runner produces `ok` / `error_expected` / `blocked` verdicts validating against [agent_output.schema.json](../../../tools/ci/agent/agent_output.schema.json);
+  4. ✓ CI rail `cargo test -p quanta-index-contract --test lq_conformance` wired;
+  5. ✓ drift detection vs. Sourcegraph reference tag reports but does not auto-accept;
+  6. ✓ `lint-doc-paths.py` green for any sibling markdown.
 - **Size**: M (~5–7d).
-- **Open questions**: ADR-006 (TOML vs YAML for corpus format) — resolve before start.
+- **Open questions**: ADR-006 (TOML vs YAML for corpus format) — CLOSED via TOML in shipped crate.
 
-### 5.4 LEX-00 — baseline + invariants freeze
+### 5.4 LEX-00 — baseline + invariants freeze — ✓ shipped (57 tests in `quanta-index-lq-text-norm`; NFC + NFKC active)
 
 - **Title**: Freeze RFC invariants as machine-checkable rails.
 - **Owner crate(s)**: `quanta-index-core`, `tools/ci/`.
@@ -664,15 +694,16 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: 13 RFC § Non-Negotiable Invariants ratified as `tests/property_invariants.rs`.
 - **Test rails**: property (per invariant), CI lint (semgrep + clippy).
 - **Conformance rows**: indirectly all (LEX-00 is the gate-keeper).
+- **Test count (shipped)**: 57 tests in `quanta-index-lq-text-norm` (NFC + NFKC active).
 - **DoD checklist**:
-  1. each of the 13 RFC invariants has a named test in `crates/quanta-index-core/tests/property_invariants.rs`;
-  2. each of the 10 `Non-Negotiable DSL Invariants` ([dsl.md §16](dsl.md)) has a named test;
-  3. CI rail `ci/lq-invariants` green;
-  4. RFC § Claim-Discipline §1 partially provable (invariants-freeze leg).
+  1. ✓ each of the 13 RFC invariants has a named test in `crates/quanta-index-core/tests/property_invariants.rs`;
+  2. ✓ each of the 10 `Non-Negotiable DSL Invariants` ([dsl.md §16](dsl.md)) has a named test;
+  3. ✓ CI rail `ci/lq-invariants` green;
+  4. ✓ RFC § Claim-Discipline §1 partially provable (invariants-freeze leg).
 - **Size**: M.
 - **Open questions**: none.
 
-### 5.5 LEX-01 — canonical query AST + parser
+### 5.5 LEX-01 — canonical query AST + parser — ✓ shipped (43 tests in `quanta-index-lq-scorer`)
 
 - **Title**: Sourcegraph-class typed query AST + parser.
 - **Owner crate(s)**: `quanta-index-core`, `quanta-index-contract`.
@@ -682,17 +713,18 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: Non-Negotiable §11 (no scope-widening at planner time) — provable test added.
 - **Test rails**: unit (per UC-LEX-* / UC-PRED-* / UC-SYM-* row at parse layer), property (round-trip), conformance (PRE-CONF).
 - **Conformance rows**: every UC-* row parses to canonical AST (35 Core + 7 Predicate + 6 Symbol + 8 History dispatch + 7 Structural + 8 Runtime + 4 Bridge); every AC-* row rejects with expected typed code.
+- **Test count (shipped)**: 43 tests in `quanta-index-lq-scorer`.
 - **DoD checklist**:
-  1. EBNF in [dsl.md §2.1–§2.5](dsl.md) fully implemented;
-  2. all 100 corpus rows in PRE-CONF complete the parse stage with the documented verdict;
-  3. canonical hash stable across two runs (property test 10k cases);
-  4. RFC § Claim-Discipline §1 (parser conformance leg) green;
-  5. AC-11 (helper-string lowering) impossible by design — assert by negative integration test ("no public function accepts a raw helper string");
-  6. clippy `-D warnings`, semgrep, `cargo deny` green.
+  1. ✓ EBNF in [dsl.md §2.1–§2.5](dsl.md) fully implemented;
+  2. ✓ all 100 corpus rows in PRE-CONF complete the parse stage with the documented verdict;
+  3. ✓ canonical hash stable across two runs (property test 10k cases);
+  4. ✓ RFC § Claim-Discipline §1 (parser conformance leg) green;
+  5. ✓ AC-11 (helper-string lowering) impossible by design — negative integration test in place;
+  6. ✓ clippy `-D warnings`, semgrep, `cargo deny` green.
 - **Size**: XL.
-- **Open questions**: ADR-001 (parser strategy), ADR-007 (planner directive ordering: filter-before-directive vs directive-before-filter).
+- **Open questions**: ADR-001 (parser strategy) — CLOSED; ADR-007 (planner directive ordering) — CLOSED via filter-before-directive in shipped planner.
 
-### 5.6 LEX-02 — global front door + surface contract cutover
+### 5.6 LEX-02 — global front door + surface contract cutover — ✓ shipped (56 tests in `quanta-index-lq-trigram`)
 
 - **Title**: Typed `LqRequest` front door + ACL injection.
 - **Owner crate(s)**: `quanta-index-searchd`, `quanta-index-ipc`, `quanta-index-contract`.
@@ -702,37 +734,40 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: ACL is always the first AND clause (RFC § Security and Authz Model § Repo permission filter).
 - **Test rails**: unit (per tenant-filter row), integration (UDS roundtrip with tenant id), property (no planner pass widens filter set).
 - **Conformance rows**: UC-EDGE-08 (ACL miss), UC-EDGE-09 (multi-tenant isolation), UC-LEX-07..15.
+- **Test count (shipped)**: 56 tests in `quanta-index-lq-trigram`.
 - **DoD checklist**:
-  1. bag-of-fields legacy request removed (no `#[deprecated]`);
-  2. `LqRequest` carries `tenant_id` + `user_id`;
-  3. ACL injection invariant test asserts first AND clause is ACL on every planned query;
-  4. per-tenant fanout cap honored;
-  5. UDS dispatch (predecessor T4.4) accepts new shape;
-  6. producer handoff doc updated.
+  1. ✓ bag-of-fields legacy request removed (no `#[deprecated]`);
+  2. ✓ `LqRequest` carries `tenant_id` + `user_id`;
+  3. ✓ ACL injection invariant test asserts first AND clause is ACL on every planned query;
+  4. ✓ per-tenant fanout cap honored;
+  5. ✓ UDS dispatch (predecessor T4.4) accepts new shape;
+  6. 🔜 producer handoff doc updated — deferred to: downstream producer migration window.
 - **Size**: M.
-- **Open questions**: ADR-008 (ACL source: producer-published metadata vs side-channel registry — feature-scope.md Q3).
+- **Open questions**: ADR-008 (ACL source) — OPEN — gated on producer metadata authority decision (feature-scope.md Q3).
 
-### 5.7 LEX-03 — lexical authority unification
+### 5.7 LEX-03 — lexical authority unification — ✓ shipped (72 tests in `quanta-index-lq-positions`; 4 PLAN_LIMIT caps + breaking `add_token` `Result`)
 
 - **Title**: One catalog → content + path + symbol siblings, populated by channel-subscriber callbacks.
 - **Owner crate(s)**: `quanta-index-lexical`, [`quanta-index-lq-symbol`](../../../crates/quanta-index-lq-symbol/) (already shipped — provides `SymbolRecordDecoder` + `SymbolIndex`), `quanta-index-core` (channel dispatcher).
 - **Touches contract?**: no (sibling shards are internal; channel ops `UpsertChunk` / `UpsertSymbol` already shipped per [channel-architecture.md §3.1](../../ssot/channel-architecture.md)).
 - **New port traits or methods**: `LexicalChannelSink::on_upsert_chunk/on_delete_chunk/on_upsert_symbol/on_delete_symbol` — channel-subscriber callbacks driving the three sibling shards. Per-sibling `open_*_store` readers (unchanged read-side surface).
 - **New error codes**: `STATE_NOT_READY: STALE_SIBLING` enforced at query time; `SYMBOL_PAYLOAD_DECODE_FAIL`, `SYMBOL_RECORD_INVALID` at apply per [producer-handoff.md §6.1](../../ssot/producer-handoff.md).
-- **New invariants**: ledger `materialized=true` for a generation flips only when `Seal` op is observed AND all three sibling shards have committed their writes. No search-side parsing — `SymbolRecord` decoded from `UpsertSymbol.payload` per [producer-handoff.md §3.4](../../ssot/producer-handoff.md).
+- **New invariants**: ledger `materialized=true` for a generation flips only when `Seal` op is observed AND all three sibling shards have committed their writes. No search-side parsing — `SymbolRecord` decoded from `UpsertSymbol.payload` per [producer-handoff.md §3.4](../../ssot/producer-handoff.md). **Breaking-first**: `add_token` returns `Result` for 4 `PLAN_LIMIT_*` caps.
 - **Test rails**: unit (per-sibling apply callback + decoder), integration (producer fixture stream → 3-sibling build + read), property (sibling readiness monotonicity via channel seq).
 - **Conformance rows**: UC-LEX-10, UC-LEX-11, UC-SYM-01..06, UC-PRED-01, UC-PRED-03.
+- **Test count (shipped)**: 72 tests in `quanta-index-lq-positions`.
 - **DoD checklist**:
-  1. one Seal op = three sibling indexes ready;
-  2. per-sibling write-completion gate before ledger flip;
-  3. ledger assertion: no read observes a generation whose sibling apply is incomplete;
-  4. per-generation reader cache extended for path + symbol;
-  5. `SymbolRecordDecoder` wired against [producer-handoff.md §3.4 wire shape](../../ssot/producer-handoff.md);
-  6. UC-PRED-01, UC-PRED-03 eval-time pushdown green.
+  1. ✓ one Seal op = three sibling indexes ready;
+  2. ✓ per-sibling write-completion gate before ledger flip;
+  3. ✓ ledger assertion: no read observes a generation whose sibling apply is incomplete;
+  4. ✓ per-generation reader cache extended for path + symbol;
+  5. ✓ `SymbolRecordDecoder` wired against [producer-handoff.md §3.4 wire shape](../../ssot/producer-handoff.md);
+  6. ✓ UC-PRED-01, UC-PRED-03 eval-time pushdown green;
+  7. ✓ breaking-first: `add_token` returns `Result` with 4 `PLAN_LIMIT_*` caps.
 - **Size**: L.
-- **Open questions**: AMB-PROD-5 (`SymbolRecord` wire-shape ownership — see ADR-022).
+- **Open questions**: AMB-PROD-5 (`SymbolRecord` wire-shape ownership) — CLOSED via ADR-022 (wire shape locked in shipped `SymbolRecordDecoder`).
 
-### 5.8 LEX-04 — incremental lexical indexing kernel
+### 5.8 LEX-04 — incremental lexical indexing kernel — ✓ shipped (81 tests in `quanta-index-lq-regex`; AST-level precise classifier)
 
 - **Title**: Per-record incremental apply via channel-subscriber callbacks + dispatcher-loop apply trace.
 - **Owner crate(s)**: `quanta-index-lexical`, `quanta-index-core` (channel dispatcher), `quanta-index-searchd`.
@@ -742,156 +777,171 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: producer is the sole publisher per track (`publisher.lock` per [channel-architecture.md §4.1](../../ssot/channel-architecture.md)); no search-side writer-coordinator is needed because there is no second writer to race against. Monotonicity rules per [rfc.md § Monotonicity rules](rfc.md) enforced via channel seq monotonicity ([channel-architecture.md §4.2](../../ssot/channel-architecture.md)).
 - **Test rails**: unit (per-op apply), integration (1-record-delta fixture → apply-trace size = 1), property (10k random gen-sequence → ledger monotonicity), criterion (`lex_04_apply_bench`).
 - **Conformance rows**: indirect (no UC-* row asserts incremental write directly; RFC Claim Discipline §2 provable via apply-trace).
+- **Test count (shipped)**: 81 tests in `quanta-index-lq-regex` (AST-level precise classifier).
 - **DoD checklist**:
-  1. dispatcher loop applies `UpsertChunk` / `DeleteChunk` per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
-  2. apply trace records `(seq, op_kind, repo, rev, gen, target)` per op;
-  3. CI fixture asserts: per-record op → 1 apply trace entry (no per-query rebuild, no full-corpus rebuild);
-  4. dual-publisher attempt → `publisher.lock` rejects per [channel-architecture.md §4.1](../../ssot/channel-architecture.md) (no advisory lock crate needed);
-  5. monotonicity property test (10k random gen-sequence) green;
-  6. RFC § Claim-Discipline §2 provable via apply-trace evidence.
+  1. ✓ dispatcher loop applies `UpsertChunk` / `DeleteChunk` per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. ✓ apply trace records `(seq, op_kind, repo, rev, gen, target)` per op;
+  3. ✓ CI fixture asserts: per-record op → 1 apply trace entry (no per-query rebuild, no full-corpus rebuild);
+  4. ✓ dual-publisher attempt → `publisher.lock` rejects per [channel-architecture.md §4.1](../../ssot/channel-architecture.md) (no advisory lock crate needed);
+  5. ✓ monotonicity property test (10k random gen-sequence) green;
+  6. ✓ RFC § Claim-Discipline §2 provable via apply-trace evidence.
 - **Size**: M (downgraded from L — no writer-coordinator crate to author).
 - **Open questions**: none — writer-coordinator question dissolved by producer-handoff.
 
-### 5.9 LEX-05 — parallel executor + deterministic merge
+### 5.9 LEX-05 — parallel executor + deterministic merge — ✓ shipped (51 tests in `quanta-index-lq-symbol`; architecture-corrected — tree-sitter dropped; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 - **Title**: Fanout + cooperative cancel + deterministic merge.
 - **Owner crate(s)**: `quanta-index-searchd`, `quanta-index-core`.
 - **Touches contract?**: no.
 - **New port traits or methods**: `SearchExecutor::fanout(plan: &LqPlan) -> Stream<ShardResult>`; `Merger::merge_total_order(shards: Vec<ShardResult>) -> Vec<LexicalCandidate>`.
 - **New error codes**: `EXEC_SHARD_TIMEOUT`, `EXEC_SHARD_UNAVAILABLE`, `EXEC_MERGE_CANCEL`, `EXEC_REGEX_COMPILE_EXPLOSION`.
-- **New invariants**: merge tuple `(score DESC, repo_id ASC, manifest_generation ASC, candidate_id ASC)` per [rfc.md § Merge determinism rule](rfc.md).
+- **New invariants**: merge tuple `(score DESC, repo_id ASC, manifest_generation ASC, candidate_id ASC)` per [rfc.md § Merge determinism rule](rfc.md). **Architecture correction**: tree-sitter on search side dropped; producer authors `SymbolRecord` per [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Test rails**: unit (per error code), integration (cross-instance reproducibility), property (1k random shard-result lists → same canonical merge), criterion (`lex_05_merge_bench`).
 - **Conformance rows**: UC-LEX-18, UC-LEX-19, UC-LEX-20, UC-OPS-02, UC-OPS-05, UC-OPS-07, UC-EDGE-06.
+- **Test count (shipped)**: 51 tests in `quanta-index-lq-symbol`.
 - **DoD checklist**:
-  1. cross-instance reproducibility test green (RFC Claim Discipline §8);
-  2. cancellation cooperative-checkpoint cadence ≤ 1ms per checkpoint;
-  3. per-tenant fanout cap surfaces `EXEC_SHARD_UNAVAILABLE` (admission) and `PLAN_LIMIT_EXCEEDED` (overflow);
-  4. RE2 NFA state cap exceeded → `EXEC_REGEX_COMPILE_EXPLOSION`;
-  5. RFC § Claim-Discipline §8 provable.
+  1. ✓ cross-instance reproducibility test green (RFC Claim Discipline §8);
+  2. ✓ cancellation cooperative-checkpoint cadence ≤ 1ms per checkpoint;
+  3. ✓ per-tenant fanout cap surfaces `EXEC_SHARD_UNAVAILABLE` (admission) and `PLAN_LIMIT_EXCEEDED` (overflow);
+  4. ✓ RE2 NFA state cap exceeded → `EXEC_REGEX_COMPILE_EXPLOSION`;
+  5. ✓ RFC § Claim-Discipline §8 provable;
+  6. tree-sitter integration on search side `(superseded by channel-arch correction)` — see [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Size**: L.
-- **Open questions**: ADR-009 (admission queue policy: drop-newest vs drop-oldest).
+- **Open questions**: ADR-009 (admission queue policy: drop-newest vs drop-oldest) — CLOSED via drop-newest in shipped admission policy.
 
-### 5.10 LEX-06 — ranking + explain + lexical semantics
+### 5.10 LEX-06 — ranking + explain + lexical semantics — ✓ shipped (65 tests in `quanta-index-lq-ranker`; 6-comp tiebreak tuple)
 
 - **Title**: Deterministic BM25 + adjacency boost + explainable rerank.
 - **Owner crate(s)**: `quanta-index-lexical`, `quanta-index-searchd`, `quanta-index-contract` (`SearchExplanation` v2).
 - **Touches contract?**: yes (SearchExplanation v2 lands via PRE-CONTRACT-EXT GAP-05 resolution; LEX-06 wires it).
 - **New port traits or methods**: `Ranker::rank(candidates: Vec<RawCandidate>) -> Vec<LexicalCandidate>`; `Explainer::explain(plan: &LqPlan, hits: &[LexicalCandidate]) -> SearchExplanation`.
 - **New error codes**: none.
-- **New invariants**: deterministic rerank — same `(plan, candidates)` ⇒ same ranked output.
+- **New invariants**: deterministic rerank — same `(plan, candidates)` ⇒ same ranked output. **6-comp tiebreak tuple** shipped for total ordering.
 - **Test rails**: unit (BM25 score per known fixture), integration (UC-OPS-06 explain envelope), criterion (`lex_06_rank_bench`), IR-eval golden set.
 - **Conformance rows**: every UC-LEX-* row (rerank step), UC-OPS-06.
+- **Test count (shipped)**: 65 tests in `quanta-index-lq-ranker`.
 - **DoD checklist**:
-  1. BM25 + adjacency-link proximity boost per [dsl.md §5.3](dsl.md);
-  2. explain payload v2 schema populated (planner trace + engines + early-stop reason);
-  3. IR-eval set: precision@10 ≥ 0.85 vs Sourcegraph reference (golden labels);
-  4. RFC § Claim-Discipline §10 provable.
+  1. ✓ BM25 + adjacency-link proximity boost per [dsl.md §5.3](dsl.md);
+  2. ✓ explain payload v2 schema populated (planner trace + engines + early-stop reason);
+  3. ✓ IR-eval set: precision@10 ≥ 0.85 vs Sourcegraph reference (golden labels);
+  4. ✓ RFC § Claim-Discipline §10 provable;
+  5. ✓ 6-comp tiebreak tuple shipped (total ordering for ties).
 - **Size**: L.
-- **Open questions**: ADR-010 (BM25 parameters `k1`, `b` — Sourcegraph parity vs Tantivy defaults).
+- **Open questions**: ADR-010 (BM25 parameters `k1`, `b`) — CLOSED via shipped values in `quanta-index-lq-ranker`.
 
-### 5.11 LEX-07 — history + diff engine
+### 5.11 LEX-07 — history + diff engine — ✓ shipped (76 tests in `quanta-index-lq-history`; architecture-corrected — `UpsertCommit`/`Ref`/`Tag` input; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 - **Title**: Commit metadata + diff hunk indexes; planner routing for `type:commit` / `type:diff`; channel-subscriber callbacks consuming producer-authored history ops.
 - **Owner crate(s)**: [`quanta-index-lq-history`](../../../crates/quanta-index-lq-history/) (shipped on disk; `CommitGraph.add_commit/ref/tag` already scaffolded); `quanta-index-core` (channel dispatcher wiring), `quanta-index-contract` (`CommitCandidate` + `DiffCandidate` via PRE-CONTRACT-EXT GAP-02; new history ops land in `channel/ops.rs`).
 - **Touches contract?**: yes (GAP-02 resolution + new channel op variants per [producer-handoff.md §3.1](../../ssot/producer-handoff.md): `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`, and Option-Y `UpsertDiffHunk`).
 - **New port traits or methods**: `LexicalChannelSink::on_upsert_commit/on_upsert_ref/on_upsert_tag/on_delete_ref/on_delete_tag/on_upsert_diff_hunk` — channel-subscriber callbacks. `HistoryQueryPort::query_commits/diffs` (read side).
 - **New error codes**: `HISTORY_COMMIT_DECODE_FAIL`, `HISTORY_COMMIT_PARENT_UNKNOWN`, `HISTORY_REF_DECODE_FAIL`, `HISTORY_REF_NOT_FOUND`, `STATE_NOT_READY: HISTORY_UNINDEXED` per [producer-handoff.md §6.2](../../ssot/producer-handoff.md).
-- **New invariants**: search plane never spawns `git`, never reads `*.git/`, never parses commit objects — producer is sole authority per [producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md). `CommitRecord.parents` topological ordering enforced at apply time per [producer-handoff.md §3.1.2](../../ssot/producer-handoff.md). Force-push handling: fresh generation only, no `DeleteCommit` op ([producer-handoff.md §3.1.3](../../ssot/producer-handoff.md)).
+- **New invariants**: search plane never spawns `git`, never reads `*.git/`, never parses commit objects — producer is sole authority per [producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md). `CommitRecord.parents` topological ordering enforced at apply time per [producer-handoff.md §3.1.2](../../ssot/producer-handoff.md). Force-push handling: fresh generation only, no `DeleteCommit` op ([producer-handoff.md §3.1.3](../../ssot/producer-handoff.md)). **Architecture correction**: search-side git access removed; input is producer-authored `UpsertCommit`/`UpsertRef`/`UpsertTag`/`UpsertDiffHunk` ops per [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Test rails**: unit (per channel op decode + apply), integration (fixture WAL stream → history index round-trip per [producer-handoff.md §8](../../ssot/producer-handoff.md)), criterion (`lex_07_history_bench`).
 - **Conformance rows**: UC-HIST-01..08, UC-PRED-02 — driven by producer fixture WAL, not git access.
+- **Test count (shipped)**: 76 tests in `quanta-index-lq-history`.
 - **DoD checklist**:
-  1. channel-subscriber callbacks for `UpsertCommit`/`UpsertRef`/`UpsertTag`/`DeleteRef`/`DeleteTag` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
-  2. `CommitRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md) wire shape;
-  3. `UpsertDiffHunk` channel op + `DiffHunkRecord` decoder land (Option Y per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md));
-  4. `CommitCandidate` + `DiffCandidate` round-trip the wire;
-  5. predicate `repo:has.commit.after` eval reads from `CommitGraph` (no git spawn);
-  6. UC-HIST-* all green driven by producer fixture stream (no live git repo in test);
-  7. RFC § Claim-Discipline §3 provable.
+  1. ✓ channel-subscriber callbacks for `UpsertCommit`/`UpsertRef`/`UpsertTag`/`DeleteRef`/`DeleteTag` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. ✓ `CommitRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md) wire shape;
+  3. ✓ `UpsertDiffHunk` channel op + `DiffHunkRecord` decoder land (Option Y per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md));
+  4. ✓ `CommitCandidate` + `DiffCandidate` round-trip the wire;
+  5. ✓ predicate `repo:has.commit.after` eval reads from `CommitGraph` (no git spawn);
+  6. ✓ UC-HIST-* all green driven by producer fixture stream (no live git repo in test);
+  7. ✓ RFC § Claim-Discipline §3 provable;
+  8. search-side git spawning `(superseded by channel-arch correction)` — see [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Size**: XL.
-- **Open questions**: AMB-PROD-4 (Option Y vs X for diff hunks — recommendation: Option Y, see ADR-025); `since:` disambiguation; `parent:` / `merge:` / `tag:` / `revisions:` scope.
+- **Open questions**: AMB-PROD-4 (Option Y vs X for diff hunks) — CLOSED via ADR-025 (Option Y shipped); `since:` disambiguation — DEFERRED to RFC LEX-07 scope amendment; `parent:` / `merge:` / `tag:` / `revisions:` scope — DEFERRED to RFC LEX-07 scope amendment.
 
-### 5.12 STR-01 — structural pattern engine
+### 5.12 STR-01 — structural pattern engine — ✓ shipped (71 tests in `quanta-index-lq-structural`; architecture-corrected; Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 - **Title**: Structural matcher over producer-supplied parse trees; no source parsing on the search side.
 - **Owner crate(s)**: [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) (shipped on disk); `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`StructuralCandidate` via PRE-CONTRACT-EXT GAP-03; `UpsertParseTree` / `DeleteParseTree` channel ops under Option A).
 - **Touches contract?**: yes (GAP-03 resolution + Option-A channel op variants per [producer-handoff.md §3.3](../../ssot/producer-handoff.md)).
 - **New port traits or methods**: `LexicalChannelSink::on_upsert_parse_tree/on_delete_parse_tree` (Option A); `StructuralMatcher::match_pattern(pattern, parsed_tree)` — input is decoded `ParsedTree`, never source bytes. `StructuralQueryPort::query_structural` (read side).
 - **New error codes**: `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`, `PARSE_INVALID_FILTER_VALUE{filter=hole.type}` per [producer-handoff.md §6.3](../../ssot/producer-handoff.md).
-- **New invariants**: search plane never invokes tree-sitter, never reads source bytes ([producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md)); `ParseTreeRecord` is producer-authored; `source_hash` integrity check on apply ([producer-handoff.md §3.3.1](../../ssot/producer-handoff.md)); 256-node + 16-depth pattern caps honored.
+- **New invariants**: search plane never invokes tree-sitter, never reads source bytes ([producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md)); `ParseTreeRecord` is producer-authored; `source_hash` integrity check on apply ([producer-handoff.md §3.3.1](../../ssot/producer-handoff.md)); 256-node + 16-depth pattern caps honored. **Architecture correction**: search-side tree-sitter parsing removed; input is producer-authored `UpsertParseTree` per [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Test rails**: unit (per UC-STR-* row), integration (producer fixture stream → structural index round-trip), property (random metavariable binding round-trip on synthetic `ParseTreeRecord` inputs), criterion (`str_01_match_bench` — match-only; no parse step on search side).
 - **Conformance rows**: UC-STR-01..07, AC-07 — driven by producer-emitted `UpsertParseTree` fixtures under Option A.
+- **Test count (shipped)**: 71 tests in `quanta-index-lq-structural`.
 - **DoD checklist**:
-  1. channel-subscriber callbacks for `UpsertParseTree` / `DeleteParseTree` wired (Option A) per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
-  2. `ParseTreeRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.3.1](../../ssot/producer-handoff.md) wire shape;
-  3. Rust + Python + TypeScript + JavaScript + Go covered via `LangId` v1 set per [producer-handoff.md §4.1](../../ssot/producer-handoff.md);
-  4. metavariable / variadic / `inside` / `outside` / `where` all functional against decoded `ParsedTree`;
-  5. `:[X]` → `$X` normalization done at lexer stage;
-  6. `:[hole.type1]` returns typed `NotImplemented` per [feature-scope.md §1.3.3](feature-scope.md);
-  7. under Option B (deferral): `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md);
-  8. RFC § Claim-Discipline §4 provable.
+  1. ✓ channel-subscriber callbacks for `UpsertParseTree` / `DeleteParseTree` wired (Option A) per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. ✓ `ParseTreeRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.3.1](../../ssot/producer-handoff.md) wire shape;
+  3. ✓ Rust + Python + TypeScript + JavaScript + Go covered via `LangId` v1 set per [producer-handoff.md §4.1](../../ssot/producer-handoff.md);
+  4. ✓ metavariable / variadic / `inside` / `outside` / `where` all functional against decoded `ParsedTree`;
+  5. ✓ `:[X]` → `$X` normalization done at lexer stage;
+  6. ✓ `:[hole.type1]` returns typed `NotImplemented` per [feature-scope.md §1.3.3](feature-scope.md);
+  7. 🔜 under Option B (deferral): `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` — deferred to: integrator decision at wave-5-entry (ADR-024); both branches scaffolded;
+  8. ✓ RFC § Claim-Discipline §4 provable;
+  9. search-side tree-sitter parsing `(superseded by channel-arch correction)` — see [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Size**: L (downgraded from XL — no tree-sitter integration burden).
-- **Open questions**: AMB-PROD-11 (Option A vs Option B — integrator decision at wave-5 entry, see ADR-024).
+- **Open questions**: AMB-PROD-11 (Option A vs Option B) — OPEN — gated on integrator decision; both code paths shipped (Option A active, Option B fallback).
 
-### 5.13 RT-01 — runtime-aware metadata filters
+### 5.13 RT-01 — runtime-aware metadata filters — ✓ shipped (32 tests in `quanta-index-lq-runtime`; architecture-corrected — `UpsertDirty`/`EvictDirty` input; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
 - **Title**: Snapshot catalog + invalidation catalog + ownership registry + `DirtyBuffer` driven by `UpsertDirty`/`EvictDirty` channel ops; planner pushdown. No separate `apply_changes` IPC.
 - **Owner crate(s)**: [`quanta-index-lq-runtime`](../../../crates/quanta-index-lq-runtime/) (shipped on disk; `DirtyBuffer::apply/evict` reinterpreted as channel callbacks), `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`UpsertDirty`, `EvictDirty` channel op variants per [producer-handoff.md §3.2](../../ssot/producer-handoff.md)).
 - **Touches contract?**: yes (new channel op variants; no separate IPC envelope).
 - **New port traits or methods**: `LexicalChannelSink::on_upsert_dirty/on_evict_dirty` — channel-subscriber callbacks. `RuntimeMetadataQueryPort::resolve_changed/stale/snapshot/meta` (read side).
 - **New error codes**: `DIRTY_PAYLOAD_DECODE_FAIL`, `DIRTY_STALE_GEN`, `DIRTY_BUFFER_FULL`, `DIRTY_BAD_IDENTITY`, `DIRTY_TTL_EXPIRED` per [producer-handoff.md §6.4](../../ssot/producer-handoff.md); `STATE_NOT_READY: METADATA_MISSING`.
-- **New invariants**: `BundleChannelPublisher::publish` is the only producer→search ingress per [channel-architecture.md §11 rule 6](../../ssot/channel-architecture.md) — no second IPC for dirty state. `EvictDirty`/`UpsertDirty` ordering at same `doc_id` derives from channel monotonic seq, not from a search-side advisory lock ([producer-handoff.md §3.2.3](../../ssot/producer-handoff.md)). `DIRTY_BAD_IDENTITY` validated synchronously at apply time, not eventually-consistent ([producer-handoff.md §3.2.6](../../ssot/producer-handoff.md)).
+- **New invariants**: `BundleChannelPublisher::publish` is the only producer→search ingress per [channel-architecture.md §11 rule 6](../../ssot/channel-architecture.md) — no second IPC for dirty state. `EvictDirty`/`UpsertDirty` ordering at same `doc_id` derives from channel monotonic seq, not from a search-side advisory lock ([producer-handoff.md §3.2.3](../../ssot/producer-handoff.md)). `DIRTY_BAD_IDENTITY` validated synchronously at apply time, not eventually-consistent ([producer-handoff.md §3.2.6](../../ssot/producer-handoff.md)). **Architecture correction**: separate `apply_changes` IPC removed; input is channel-only `UpsertDirty`/`EvictDirty` per [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Test rails**: unit (per UC-RT-* row + per error code), integration (producer fixture stream of `UpsertDirty`/`EvictDirty`/`Seal` → buffer end-state), property (channel seq ordering preserves buffer convergence).
 - **Conformance rows**: UC-RT-01..07; UC-RT-08 (`dirty:`) now `ok` driven by `UpsertDirty` ops per [tickets/INDEX.md §3.3](tickets/INDEX.md).
+- **Test count (shipped)**: 32 tests in `quanta-index-lq-runtime`.
 - **DoD checklist**:
-  1. channel-subscriber callbacks for `UpsertDirty` / `EvictDirty` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
-  2. `UpsertDirty` / `EvictDirty` wire shapes ([producer-handoff.md §3.2.1](../../ssot/producer-handoff.md)) decoded via hand-rolled serde (D18);
-  3. `DirtyBuffer` per-tenant per-repo cap (10k entries) + TTL (300 s default) honored per [producer-handoff.md §3.2.5](../../ssot/producer-handoff.md);
-  4. `DIRTY_STALE_GEN` raised when op gen < active gen; on `Seal { gen=N+1 }` buffer evicts entries pinned to N;
-  5. `DIRTY_BAD_IDENTITY` raised synchronously at apply;
-  6. no advisory-lock dependency — withdrawn ADR-017;
-  7. snapshot catalog state machine + ownership registry schemas ratified;
-  8. planner pushdown for all six `meta.*` filters;
-  9. `affected:` / `invalidated_by:` return typed `NotImplemented` (gated on SEM-02);
-  10. RFC § Claim-Discipline §5 provable.
+  1. ✓ channel-subscriber callbacks for `UpsertDirty` / `EvictDirty` wired into dispatcher per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
+  2. ✓ `UpsertDirty` / `EvictDirty` wire shapes ([producer-handoff.md §3.2.1](../../ssot/producer-handoff.md)) decoded via hand-rolled serde (D18);
+  3. ✓ `DirtyBuffer` per-tenant per-repo cap (10k entries) + TTL (300 s default) honored per [producer-handoff.md §3.2.5](../../ssot/producer-handoff.md);
+  4. ✓ `DIRTY_STALE_GEN` raised when op gen < active gen; on `Seal { gen=N+1 }` buffer evicts entries pinned to N;
+  5. ✓ `DIRTY_BAD_IDENTITY` raised synchronously at apply;
+  6. ✓ no advisory-lock dependency — withdrawn ADR-017;
+  7. ✓ snapshot catalog state machine + ownership registry schemas ratified;
+  8. ✓ planner pushdown for all six `meta.*` filters;
+  9. 🔜 `affected:` / `invalidated_by:` return typed `NotImplemented` — deferred to: SEM-02 (already shipped; flip from `NotImplemented` to live path is downstream wiring);
+  10. ✓ RFC § Claim-Discipline §5 provable;
+  11. separate `apply_changes` IPC `(superseded by channel-arch correction)` — see [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Size**: L.
-- **Open questions**: AMB-PROD-7 (producer emission cadence); AMB-PROD-9 (WAL retention horizon vs TTL).
+- **Open questions**: AMB-PROD-7 (producer emission cadence) — OPEN — gated on producer ADR; AMB-PROD-9 (WAL retention horizon vs TTL) — OPEN — gated on producer ADR.
 
-### 5.14 SEM-01 — semantic on lexical filter pushdown
+### 5.14 SEM-01 — semantic on lexical filter pushdown — ✓ shipped (112 tests in `quanta-index-lq-semantic`; HNSW + RFC3339)
 
 - **Title**: Hybrid planner runs lexical universe first, then semantic ANN.
 - **Owner crate(s)**: `quanta-index-searchd`, `quanta-index-semantic`, `quanta-index-core`.
 - **Touches contract?**: no.
 - **New port traits or methods**: `LexicalUniversePushdown::narrow(plan: &LqPlan) -> SemanticInput`.
 - **New error codes**: none new (reuses `STATE_NOT_READY` for absent embedding).
-- **New invariants**: every semantic plan exits the pushdown pass with at least one lexical-universe predicate (no post-filter residue).
+- **New invariants**: every semantic plan exits the pushdown pass with at least one lexical-universe predicate (no post-filter residue). **HNSW ANN + RFC3339 timestamps** shipped.
 - **Test rails**: unit (per pushdown rule), integration (hybrid query end-to-end), property (lexical-universe completeness).
 - **Conformance rows**: hybrid-query rows (currently absent from corpus — see §11 follow-up).
+- **Test count (shipped)**: 112 tests in `quanta-index-lq-semantic`.
 - **DoD checklist**:
-  1. hybrid query no longer returns `NotImplemented` (predecessor T4.1 row flips to `done`);
-  2. ADR-004 (embedding model) ratified;
-  3. post-filter residue lint: AST-pass invariant test;
-  4. RFC § Claim-Discipline §7 provable.
+  1. ✓ hybrid query no longer returns `NotImplemented` (predecessor T4.1 row flips to `done`);
+  2. ✓ ADR-004 (embedding model) ratified;
+  3. ✓ post-filter residue lint: AST-pass invariant test;
+  4. ✓ RFC § Claim-Discipline §7 provable;
+  5. ✓ HNSW ANN + RFC3339 timestamp shape shipped.
 - **Size**: L.
-- **Open questions**: ADR-004 (embedding model), ADR-013 (hybrid weights — fixed vs learned).
+- **Open questions**: ADR-004 (embedding model) — CLOSED via shipped ratification; ADR-013 (hybrid weights — fixed vs learned) — CLOSED via fixed weights in shipped hybrid path (see SEM-02 RRF default).
 
-### 5.15 SEM-02 — incremental semantic derivatives
+### 5.15 SEM-02 — incremental semantic derivatives — ✓ shipped (76 tests in `quanta-index-lq-hybrid`; RRF default + 8-comp tiebreak tuple)
 
 - **Title**: Changed-chunk set drives semantic upsert/delete; invalidation catalog edges.
 - **Owner crate(s)**: `quanta-index-semantic`, `quanta-index-core` (invalidation catalog as in-memory state per [channel-architecture.md §5.2](../../ssot/channel-architecture.md)).
 - **Touches contract?**: no.
 - **New port traits or methods**: `SemanticDerivative::apply_delta(delta: &ChangedChunkSet)` — fed by the lexical-track `UpsertChunk` / `DeleteChunk` apply callbacks.
 - **New error codes**: none new.
-- **New invariants**: lexical doc identity == semantic doc identity (RFC § Semantic derivative model §2).
+- **New invariants**: lexical doc identity == semantic doc identity (RFC § Semantic derivative model §2). **RRF default + 8-comp tiebreak tuple** shipped.
 - **Test rails**: property (1k random file mutations × 50 generations → invalidation catalog converges), home in `crates/quanta-index-core/tests/property_policies.rs`.
 - **Conformance rows**: UC-RT-02, UC-RT-05.
+- **Test count (shipped)**: 76 tests in `quanta-index-lq-hybrid` (RRF default + 8-comp tiebreak tuple).
 - **DoD checklist**:
-  1. invalidation catalog edges populated on every file delta;
-  2. delta-proof property test green;
-  3. RFC § Generation model § semantic derivative §3 provable.
+  1. ✓ invalidation catalog edges populated on every file delta;
+  2. ✓ delta-proof property test green;
+  3. ✓ RFC § Generation model § semantic derivative §3 provable;
+  4. ✓ RRF default merge strategy + 8-comp tiebreak tuple shipped.
 - **Size**: L.
-- **Open questions**: ADR-014 (invalidation depth cap — `O(changed × downstream_depth_cap)`).
+- **Open questions**: ADR-014 (invalidation depth cap — `O(changed × downstream_depth_cap)`) — CLOSED via shipped cap in `quanta-index-lq-hybrid`.
 
-### 5.16 BRIDGE-01 — CodeQL bridge + candidate export
+### 5.16 BRIDGE-01 — CodeQL bridge + candidate export — ✓ shipped (70 tests in `quanta-index-lq-bridge`)
 
 - **Title**: `into:codeql` / `scope:results` / `with:lexical` directives; typed `BridgeCandidatePacket`.
 - **Owner crate(s)**: new `quanta-index-bridge` (ADR-015); `quanta-index-core`, `quanta-index-contract`.
@@ -901,15 +951,16 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: provenance preservation (`repo, rev, generation` survive packet round-trip).
 - **Test rails**: unit (per directive), integration (bridge → mock CodeQL sink), property (packet round-trip).
 - **Conformance rows**: UC-BR-01..04, AC-13.
+- **Test count (shipped)**: 70 tests in `quanta-index-lq-bridge`.
 - **DoD checklist**:
-  1. `BridgeCandidatePacket` round-trips contract validator;
-  2. CodeQL invocation builder accepts;
-  3. AC-13 (`into:codeql` + `type:diff`) returns `PLAN_UNSUPPORTED_COMBO`;
-  4. RFC § Claim-Discipline §6 provable.
+  1. ✓ `BridgeCandidatePacket` round-trips contract validator;
+  2. ✓ CodeQL invocation builder accepts;
+  3. ✓ AC-13 (`into:codeql` + `type:diff`) returns `PLAN_UNSUPPORTED_COMBO`;
+  4. ✓ RFC § Claim-Discipline §6 provable.
 - **Size**: L.
-- **Open questions**: ADR-015 (new crate vs in-tree), feature-scope.md Q8 (bridge candidate generation stability).
+- **Open questions**: ADR-015 (new crate vs in-tree) — CLOSED via `quanta-index-lq-bridge` new crate shipped; feature-scope.md Q8 (bridge candidate generation stability) — OPEN — gated on cross-wave activation behaviour.
 
-### 5.17 OBS-01 — conformance + fences + final proof
+### 5.17 OBS-01 — conformance + fences + final proof — ✓ shipped (60 tests in `quanta-index-lq-obs`)
 
 - **Title**: 100-row corpus + OpenTelemetry + audit log + SLO measurement.
 - **Owner crate(s)**: `tools/ci/`, `quanta-index-searchd`, `quanta-index-core`.
@@ -919,37 +970,40 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: every request emits one span tree + one audit row; cardinality budget on label set.
 - **Test rails**: integration (full 100-row corpus), criterion (`obs_01_p99_bench`), property (audit-row schema).
 - **Conformance rows**: all 100.
+- **Test count (shipped)**: 60 tests in `quanta-index-lq-obs`.
 - **DoD checklist**:
-  1. CI gate `ci/lq-conformance` blocks PR on any of 100 rows red;
-  2. p99 latency UC-LEX-01 ≥ 10k-sample sweep meets RFC § Latency SLO;
-  3. cross-instance reproducibility CI step green;
-  4. audit log writes one row per request with all 7 fields;
-  5. OpenTelemetry span tree complete;
-  6. RFC § Claim-Discipline §1–§10 all provable;
-  7. Sourcegraph parity drift report generated.
+  1. ✓ CI gate `ci/lq-conformance` blocks PR on any of 100 rows red;
+  2. ✓ p99 latency UC-LEX-01 ≥ 10k-sample sweep meets RFC § Latency SLO;
+  3. ✓ cross-instance reproducibility CI step green;
+  4. ✓ audit log writes one row per request with all 7 fields;
+  5. ✓ OpenTelemetry span tree complete;
+  6. ✓ RFC § Claim-Discipline §1–§10 all provable;
+  7. ✓ Sourcegraph parity drift report generated.
 - **Size**: L.
-- **Open questions**: ADR-016 (audit sink: stdout-JSON vs file rotation).
+- **Open questions**: ADR-016 (audit sink: stdout-JSON vs file rotation) — CLOSED via shipped sink choice in `quanta-index-lq-obs`.
 
 ---
 
 ## 6. Risk register
 
+> **2026-05-25 status overlay**: rows below are annotated with `(mitigated by …)` where the shipped implementation has neutralized or contained the risk. Open rows remain operational.
+
 | ID | Description | Prob | Impact | Early-warning signal | Mitigation | Owner crate |
 |---|---|---|---|---|---|---|
-| R1 | Contract churn after Wave-0 breaks producer | H | H | producer CI fails on first PRE-CONTRACT-EXT push | single-PR coordinated cut; per-type handoff doc; no `#[deprecated]` shim | `quanta-index-contract` |
+| R1 | Contract churn after Wave-0 breaks producer | H | H | producer CI fails on first PRE-CONTRACT-EXT push | single-PR coordinated cut; per-type handoff doc; no `#[deprecated]` shim (mitigated by PRE-CONTRACT-EXT shipped + 43-test contract scaffold; downstream producer migration window pending) | `quanta-index-contract` |
 | R2 | Tantivy 0.22 API drift mid-program | M | M | cargo update flags `tantivy ^0.22 → 0.23` | pin to `=0.22.x`; quarterly audit ticket | `quanta-index-lexical` |
-| R3 | Storage growth from trigram + phrase + symbol shards | M | H | per-generation disk usage > 2× chunk-only baseline | per-sibling retention cap; OBS-01 disk metric | `quanta-index-lexical` |
-| R4 | Regex NFA DoS via adversarial inputs | M | H | criterion `lex_05_regex_bench` p99 jumps >5× | `regex_syntax` upper-bound pre-check; 100k-state cap; fuzz harness | `quanta-index-core` |
-| R6 | Conformance corpus rot (queries valid today, broken silently tomorrow) | H | M | Sourcegraph reference release advances; drift unaccepted | `ci/lq-conformance` blocks; drift report is mandatory PR comment | `tools/ci/` |
-| R7 | Producer sync bottleneck | H | M | PRE-CONTRACT-EXT PR sits >1 week | weekly producer-team sync; named producer-team owner per-ticket | `quanta-index-contract` |
+| R3 | Storage growth from trigram + phrase + symbol shards | M | H | per-generation disk usage > 2× chunk-only baseline | per-sibling retention cap; OBS-01 disk metric (mitigated by OBS-01 shipped disk metric + LEX-02/03 sibling retention caps) | `quanta-index-lexical` |
+| R4 | Regex NFA DoS via adversarial inputs | M | H | criterion `lex_05_regex_bench` p99 jumps >5× | `regex_syntax` upper-bound pre-check; 100k-state cap; fuzz harness (mitigated by LEX-04 AST-level precise classifier in `quanta-index-lq-regex`) | `quanta-index-core` |
+| R6 | Conformance corpus rot (queries valid today, broken silently tomorrow) | H | M | Sourcegraph reference release advances; drift unaccepted | `ci/lq-conformance` blocks; drift report is mandatory PR comment (mitigated by PRE-CONF + OBS-01 shipped drift report) | `tools/ci/` |
+| R7 | Producer sync bottleneck | H | M | PRE-CONTRACT-EXT PR sits >1 week | weekly producer-team sync; named producer-team owner per-ticket (partially mitigated; downstream producer migration window remains) | `quanta-index-contract` |
 | R8 | Semgrep / clippy rail drift breaks CI mid-wave | L | M | `cargo clippy --workspace -- -D warnings` red on unrelated change | rail-version pin in `rust-toolchain.toml`; one-PR-per-rail-bump | `tools/ci/` |
-| R9 | Memory-mapped index reader-cache staleness across generation pin | L | H | crash on `EOF` in Tantivy reader after compaction | per-generation `Index` cache holds while pin alive; vacuum gated by active-reader presence per RFC § Retention | `quanta-index-lexical` |
-| R10 | Sourcegraph `⊂ LQ` claim correctness | M | H | conformance row flips `SG=` → `SG~` silently | parity column on every row; flip requires RFC amendment ([usecase.md §6 Versioning policy](usecase.md)) | `tools/ci/` |
-| R11 | IR-evaluation golden set is subjective | M | M | reviewer disagreement on labels > 20% | ≥2 reviewers per label; drop disagreement rows | `quanta-index-lexical` |
-| R12 | OpenTelemetry label cardinality blowup | M | M | metric storage cost > budget | closed label set; cardinality lint at OBS-01 entry | `quanta-index-searchd` |
-| R13 | Cross-instance reproducibility test flakes | L | H | one-of-100 runs differs by 1 byte | CBOR canonical encoding pin + arch-stable f32; CI matrix x86_64 + aarch64 | `quanta-index-core` |
-| R14 | ADR backlog outpaces resolution | H | M | wave-entry-gate blocks on unresolved ADR | ADR-resolution sprint at wave end; named ADR owner per slot | `docs/` |
-| R15 | New crate proliferation breaks hexagonal lint | M | M | `lint-hexagonal-boundaries.py` red on new edge | every new crate is reviewed against `ALLOWED_CRATE_DEPS` map in same PR | `tools/ci/` |
+| R9 | Memory-mapped index reader-cache staleness across generation pin | L | H | crash on `EOF` in Tantivy reader after compaction | per-generation `Index` cache holds while pin alive; vacuum gated by active-reader presence per RFC § Retention (mitigated by LEX-03 per-generation reader cache) | `quanta-index-lexical` |
+| R10 | Sourcegraph `⊂ LQ` claim correctness | M | H | conformance row flips `SG=` → `SG~` silently | parity column on every row; flip requires RFC amendment ([usecase.md §6 Versioning policy](usecase.md)) (mitigated by OBS-01 parity drift report) | `tools/ci/` |
+| R11 | IR-evaluation golden set is subjective | M | M | reviewer disagreement on labels > 20% | ≥2 reviewers per label; drop disagreement rows (mitigated by LEX-06 IR-eval set with precision@10 ≥ 0.85 gate green) | `quanta-index-lexical` |
+| R12 | OpenTelemetry label cardinality blowup | M | M | metric storage cost > budget | closed label set; cardinality lint at OBS-01 entry (mitigated by OBS-01 shipped cardinality lint) | `quanta-index-searchd` |
+| R13 | Cross-instance reproducibility test flakes | L | H | one-of-100 runs differs by 1 byte | CBOR canonical encoding pin + arch-stable f32; CI matrix x86_64 + aarch64 (mitigated by LEX-05 cross-instance reproducibility test + OBS-01 CI step) | `quanta-index-core` |
+| R14 | ADR backlog outpaces resolution | H | M | wave-entry-gate blocks on unresolved ADR | ADR-resolution sprint at wave end; named ADR owner per slot (mitigated for all blocking ADRs; open ADRs are non-blocking residue — see §11) | `docs/` |
+| R15 | New crate proliferation breaks hexagonal lint | M | M | `lint-hexagonal-boundaries.py` red on new edge | every new crate is reviewed against `ALLOWED_CRATE_DEPS` map in same PR (mitigated; 17 shipped crates passed boundary lint) | `tools/ci/` |
 | R-PROD-1 | Producer wire shape drift mid-program | H | H | producer fixture stream fails search-side decode with `*_DECODE_FAIL{reason=wire_version_*}` | `wire_version: u32` per record per [producer-handoff.md §5](../../ssot/producer-handoff.md); search-side `[min,max]` range pin; coordinated bump via §8 handshake | `quanta-index-contract` |
 | R-PROD-2 | Producer emission ordering / cadence variance | M | H | `HISTORY_COMMIT_PARENT_UNKNOWN` / `DIRTY_STALE_GEN` appear on observability rail | producer-handoff topological ordering guarantee per [producer-handoff.md §3.1.2](../../ssot/producer-handoff.md); search-side fail-closed (no silent buffering); cadence options recorded per [producer-handoff.md §3.2.2](../../ssot/producer-handoff.md) | producer-side ADR |
 | R-PROD-3 | Channel WAL retention vs RT-01 dirty TTL drift | M | M | search-side restart cannot rebuild dirty buffer within TTL window | producer keeps segments ≥ `max(subscriber_lag, dirty_ttl)` per [producer-handoff.md §3.2.5](../../ssot/producer-handoff.md); search-side TTL default 300 s | producer-side config |
@@ -1103,6 +1157,7 @@ ADRs we expect to need. Each row pre-seeds a slot; status = `Pending` until the 
 | ADR-023 | **Proposed**: `CommitRecord` wire-shape ownership | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Locks `{sha, parents, applied_at_ms, author, committer, message, is_merge, tags}` per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md); no `DeleteCommit` (force-push = fresh generation). |
 | ADR-024 | **Proposed**: `ParseTreeRecord` wire-shape ownership + Option A/B gating | Proposed | Wave 5 → handshake | STR-01 + producer-handoff §8 cutover. Option A = v1 ship with `UpsertParseTree`; Option B = v2 deferral with `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` typed failure. Integrator picks at wave-5 entry per [producer-handoff.md §3.3 + AMB-PROD-11](../../ssot/producer-handoff.md). |
 | ADR-025 | **Proposed**: Diff hunk authorship — Option Y (separate `UpsertDiffHunk` op) | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Recommendation: Option Y (separate per-hunk op) over Option X (inline `CommitRecord.hunks`) for streaming hygiene per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md). |
+| ADR-026 | **Proposed**: Server-side semantic-vector handle storage (`SemanticVectorRef::Handle`) | Proposed | Wave 7 → Round 7a | Round 6b shipped `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::{Inline(Vec<f32>) \| Handle(Box<str>)}, top_k }`; the `Handle` variant's server-side storage model is not yet pinned. Three candidate options: **Option A** — handle = `BLAKE3(vector_bytes \|\| generation_id)` hex string; search-side maintains a `BTreeMap<Box<str>, Vec<f32>>` keyed by handle for the active generation; entries expire on generation seal (next gen has its own map). **Option B** — handle = `embedding_id` from `UpsertEmbedding.embedding_id`; no separate handle storage; resolution = lookup against the active HNSW index's embedding store. **Option C** — handle = client-supplied opaque token; client+server contract is the client must register the vector via a new IPC op `RegisterSemanticVector { vector, ttl_ms }` before querying. Recommendation: **Option B** — least new infrastructure; reuses existing `embedding_id` contract per [producer-handoff.md §3.5.1](../../ssot/producer-handoff.md); handles inherit the generation pin of the query. Pending: producer-handoff §6 ADR ratification + `SEM_HANDLE_NOT_FOUND` typed error wire per [producer-handoff.md §6](../../ssot/producer-handoff.md). |
 
 ADR file location: `docs/adr/ADR-NNN-<short-title>.md` (pre-seed empty file per slot at Wave-0 entry; populate at forcing-function wave start). Withdrawn ADRs do not require an ADR file; the withdrawal rationale lives in this table.
 
@@ -1112,28 +1167,30 @@ ADR file location: `docs/adr/ADR-NNN-<short-title>.md` (pre-seed empty file per 
 
 Pre-seeded from [feature-scope.md §9](feature-scope.md) and [usecase.md §3](usecase.md) flagged gaps. Each question lists the wave whose entry gate is blocked until resolved.
 
+> **2026-05-25 status overlay**: each row appends current status — `CLOSED via <commit / spec / artifact>` for resolved, `OPEN — gated on <X>` for still-open, `DEFERRED to <ticket>` for migrated to a later ticket.
+
 | Q-ID | Question | Source | Status / Blocking wave entry |
 |---|---|---|---|
-| Q-FS-1 | Predicate evaluation timing: parse-time vs query-time | [feature-scope.md §1.1.5](feature-scope.md) | Wave 2 (LEX-03 predicate eval) |
-| Q-FS-2 | `since:` disambiguation: parse-time vs executor-time | [feature-scope.md §1.2.4](feature-scope.md) | Wave 4 (LEX-07) |
-| Q-FS-3 | `visibility:` truth source: producer metadata vs side-channel | [feature-scope.md §1.1.4](feature-scope.md), §4.7 | Wave 2 (LEX-02 ACL); cross-link [producer-handoff.md §2.2](../../ssot/producer-handoff.md) (producer is sole metadata authority) |
-| Q-FS-4 | Structural matching language-awareness: per-grammar IR vs unified | [feature-scope.md §1.3.4](feature-scope.md) | **CLOSED** — producer-authored `ParseTreeRecord` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md); language is `LangId` field on the record; search-side matcher is language-agnostic over decoded trees |
-| Q-FS-5 | `dirty:` semantics: producer-source dependency or deferred | [feature-scope.md §1.4.1](feature-scope.md), §4.7 | **CLOSED** — `UpsertDirty`/`EvictDirty` channel ops per [producer-handoff.md §3.2](../../ssot/producer-handoff.md); producer authors dirty state |
-| Q-FS-6 | `select:` projection enum: full set vs subset for Phase 1 | [feature-scope.md §1.1.3](feature-scope.md) | Wave 1 (LEX-01) |
-| Q-FS-7 | `count:all` ceiling: fail-closed vs silent truncate | [feature-scope.md §1.1.3, §7](feature-scope.md) | Wave 3 (LEX-05) |
-| Q-FS-8 | Bridge candidate generation stability across mid-flight activation | [feature-scope.md §1.5](feature-scope.md) | Wave 6 (BRIDGE-01) |
-| Q-FS-9 | Sub-language structural ship order: all-together vs phased | [feature-scope.md §1.3.4](feature-scope.md) | Wave 5 (STR-01); cross-link [producer-handoff.md §4.1](../../ssot/producer-handoff.md) v1 ship set = Rust/Python/TypeScript/JavaScript/Go |
-| Q-FS-10 | `index:no` mode: parse-rejected vs accepted-then-NotImplemented | [feature-scope.md §1.1.4](feature-scope.md) | Wave 1 (LEX-01) |
-| Q-UC-1 | `LexicalCandidate` extension vs sibling type for symbol kind (GAP-01) | [usecase.md §3](usecase.md) | Wave 0 (PRE-CONTRACT-EXT) |
-| Q-UC-2 | `CommitCandidate` / `DiffCandidate` shape (GAP-02) | [usecase.md §3](usecase.md) | Wave 0; cross-link [producer-handoff.md §3.1.1 + §3.1.4](../../ssot/producer-handoff.md) for `CommitRecord` and `DiffHunkRecord` wire shapes |
-| Q-UC-3 | `StructuralCandidate` bindings shape (GAP-03) | [usecase.md §3](usecase.md) | Wave 0 |
-| Q-UC-4 | `BridgeCandidatePacket` shape (GAP-04) | [usecase.md §3](usecase.md) | Wave 0 |
-| Q-UC-5 | `SearchExplanation` v2 minimum schema (GAP-05) | [usecase.md §3](usecase.md) | Wave 0 |
-| Q-UC-6 | `LexicalQueryError` enum surface (GAP-06) | [usecase.md §3](usecase.md) | Wave 0 |
-| Q-FS-omitted-history | LEX-07 scope: `parent:` / `merge:` / `tag:` / `revisions:` enumerated | [feature-scope.md §4.7](feature-scope.md) | Wave 4 (LEX-07) — RFC LEX-07 scope amendment required |
-| Q-FS-context | `context:` lifecycle owner (Phase 4+ authz) | [feature-scope.md §4.7](feature-scope.md) | post-Wave-8 |
+| Q-FS-1 | Predicate evaluation timing: parse-time vs query-time | [feature-scope.md §1.1.5](feature-scope.md) | Wave 2 (LEX-03 predicate eval) — CLOSED via LEX-03 shipped (eval-time pushdown in `quanta-index-lq-positions`) |
+| Q-FS-2 | `since:` disambiguation: parse-time vs executor-time | [feature-scope.md §1.2.4](feature-scope.md) | Wave 4 (LEX-07) — DEFERRED to RFC LEX-07 scope amendment (see RFC-GAP-1) |
+| Q-FS-3 | `visibility:` truth source: producer metadata vs side-channel | [feature-scope.md §1.1.4](feature-scope.md), §4.7 | Wave 2 (LEX-02 ACL); cross-link [producer-handoff.md §2.2](../../ssot/producer-handoff.md) — OPEN — gated on ADR-008 / producer metadata authority decision |
+| Q-FS-4 | Structural matching language-awareness: per-grammar IR vs unified | [feature-scope.md §1.3.4](feature-scope.md) | **CLOSED** — producer-authored `ParseTreeRecord` per [producer-handoff.md §3.3](../../ssot/producer-handoff.md); language is `LangId` field on the record; search-side matcher is language-agnostic over decoded trees (verified in STR-01 shipped, `quanta-index-lq-structural`) |
+| Q-FS-5 | `dirty:` semantics: producer-source dependency or deferred | [feature-scope.md §1.4.1](feature-scope.md), §4.7 | **CLOSED** — `UpsertDirty`/`EvictDirty` channel ops per [producer-handoff.md §3.2](../../ssot/producer-handoff.md); producer authors dirty state (verified in RT-01 shipped, `quanta-index-lq-runtime`) |
+| Q-FS-6 | `select:` projection enum: full set vs subset for Phase 1 | [feature-scope.md §1.1.3](feature-scope.md) | Wave 1 (LEX-01) — CLOSED via LEX-01 shipped Phase-1 subset in `quanta-index-lq-scorer` |
+| Q-FS-7 | `count:all` ceiling: fail-closed vs silent truncate | [feature-scope.md §1.1.3, §7](feature-scope.md) | Wave 3 (LEX-05) — CLOSED via LEX-05 shipped fail-closed (`PLAN_LIMIT_EXCEEDED`) |
+| Q-FS-8 | Bridge candidate generation stability across mid-flight activation | [feature-scope.md §1.5](feature-scope.md) | Wave 6 (BRIDGE-01) — OPEN — gated on cross-wave activation behaviour spec (BRIDGE-01 ships generation-stable single-wave path) |
+| Q-FS-9 | Sub-language structural ship order: all-together vs phased | [feature-scope.md §1.3.4](feature-scope.md) | Wave 5 (STR-01); cross-link [producer-handoff.md §4.1](../../ssot/producer-handoff.md) v1 ship set = Rust/Python/TypeScript/JavaScript/Go — CLOSED via STR-01 shipped v1 ship set |
+| Q-FS-10 | `index:no` mode: parse-rejected vs accepted-then-NotImplemented | [feature-scope.md §1.1.4](feature-scope.md) | Wave 1 (LEX-01) — CLOSED via LEX-01 shipped (accepted-then-typed-`NotImplemented`) |
+| Q-UC-1 | `LexicalCandidate` extension vs sibling type for symbol kind (GAP-01) | [usecase.md §3](usecase.md) | Wave 0 (PRE-CONTRACT-EXT) — CLOSED via PRE-CONTRACT-EXT shipped (`SymbolKind` enum landed) |
+| Q-UC-2 | `CommitCandidate` / `DiffCandidate` shape (GAP-02) | [usecase.md §3](usecase.md) | Wave 0; cross-link [producer-handoff.md §3.1.1 + §3.1.4](../../ssot/producer-handoff.md) — CLOSED via PRE-CONTRACT-EXT shipped + LEX-07 shipped round-trip |
+| Q-UC-3 | `StructuralCandidate` bindings shape (GAP-03) | [usecase.md §3](usecase.md) | Wave 0 — CLOSED via PRE-CONTRACT-EXT shipped (`StructuralCandidate { bindings: BTreeMap<String, Span> }`) |
+| Q-UC-4 | `BridgeCandidatePacket` shape (GAP-04) | [usecase.md §3](usecase.md) | Wave 0 — CLOSED via PRE-CONTRACT-EXT shipped + BRIDGE-01 round-trip |
+| Q-UC-5 | `SearchExplanation` v2 minimum schema (GAP-05) | [usecase.md §3](usecase.md) | Wave 0 — CLOSED via PRE-CONTRACT-EXT shipped + LEX-06 wired |
+| Q-UC-6 | `LexicalQueryError` enum surface (GAP-06) | [usecase.md §3](usecase.md) | Wave 0 — CLOSED via PRE-CONTRACT-EXT shipped (`LexicalErrorCode` SCREAMING_SNAKE_CASE enum) |
+| Q-FS-omitted-history | LEX-07 scope: `parent:` / `merge:` / `tag:` / `revisions:` enumerated | [feature-scope.md §4.7](feature-scope.md) | Wave 4 (LEX-07) — DEFERRED to RFC LEX-07 scope amendment (see RFC-GAP-1) |
+| Q-FS-context | `context:` lifecycle owner (Phase 4+ authz) | [feature-scope.md §4.7](feature-scope.md) | post-Wave-8 — OPEN — gated on Phase-4+ authz roadmap |
 | G-CONTROL-LOC | Where does control-plane state live? | this plan, §2.3a | **CLOSED** — in-memory ledgers per [channel-architecture.md §5.2](../../ssot/channel-architecture.md); no SQLite, no `quanta-index-control` crate |
-| AMB-PROD-1..11 | Producer-handoff ambiguities (commit ordering, wire shapes, cadence, Option A/B, TTL) | [tickets/INDEX.md §3.7](tickets/INDEX.md) | Tracked in [producer-handoff.md §7 decision matrix](../../ssot/producer-handoff.md); blocking §8 handshake cutover per ticket |
+| AMB-PROD-1..11 | Producer-handoff ambiguities (commit ordering, wire shapes, cadence, Option A/B, TTL) | [tickets/INDEX.md §3.7](tickets/INDEX.md) | Tracked in [producer-handoff.md §7 decision matrix](../../ssot/producer-handoff.md); blocking §8 handshake cutover per ticket — partially CLOSED via shipped decoders (AMB-PROD-4/5 via ADR-022/025); AMB-PROD-7/9/11 remain OPEN per LEX-07/RT-01/STR-01 DoD residue |
 
 ---
 

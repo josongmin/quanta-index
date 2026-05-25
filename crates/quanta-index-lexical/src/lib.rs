@@ -28,22 +28,27 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    LexicalCandidate, LexicalChannelOp, LqExpr, LqQuery, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId,
+    ChunkRecord, LexicalCandidate, LexicalChannelOp, LqExpr, LqFilter, LqLeaf, LqQuery,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
     domains::lexical::LexicalPolicy,
 };
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser};
-use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument, Value};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::schema::{
+    Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument, Value,
+};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 /// Memory budget for a Tantivy `IndexWriter`. Pinned to the upstream-documented
 /// minimum so adapter setup is bounded and reproducible across test runs.
 const WRITER_MEMORY_BUDGET_BYTES: usize = 15_000_000;
+const TEXT_DOC_KIND: &str = "text";
+const SYMBOL_DOC_KIND: &str = "symbol";
 
 /// Maximum number of open `GenerationWriter` entries cached in memory at once.
 ///
@@ -63,7 +68,10 @@ struct SchemaFields {
     candidate_id: Field,
     repo_id: Field,
     revision_id: Field,
+    doc_kind: Field,
     repo_relative_path: Field,
+    start_line: Field,
+    end_line: Field,
     chunk_text: Field,
 }
 
@@ -73,7 +81,10 @@ impl SchemaFields {
         let candidate_id = builder.add_text_field("candidate_id", STRING | STORED);
         let repo_id = builder.add_text_field("repo_id", STRING | STORED);
         let revision_id = builder.add_text_field("revision_id", STRING | STORED);
+        let doc_kind = builder.add_text_field("doc_kind", STRING | STORED);
         let repo_relative_path = builder.add_text_field("repo_relative_path", STRING | STORED);
+        let start_line = builder.add_u64_field("start_line", STORED);
+        let end_line = builder.add_u64_field("end_line", STORED);
         let chunk_text = builder.add_text_field("chunk_text", TEXT | STORED);
         let schema = builder.build();
         Self {
@@ -81,7 +92,10 @@ impl SchemaFields {
             candidate_id,
             repo_id,
             revision_id,
+            doc_kind,
             repo_relative_path,
+            start_line,
+            end_line,
             chunk_text,
         }
     }
@@ -235,6 +249,16 @@ impl WriterCache {
     }
 }
 
+fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
+    ciborium::from_reader::<ChunkRecord, _>(bytes)
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: chunk payload decode: {err}")))
+}
+
+fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
+    ciborium::from_reader::<SymbolRecord, _>(bytes)
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
+}
+
 /// Open or create the Tantivy index at `path` under the adapter's schema.
 ///
 /// Free function rather than a method so [`WriterCache`] can call it without
@@ -316,13 +340,19 @@ impl LexicalAdapter {
                 let candidate_id = upsert.chunk_id.as_str();
                 let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
                 let _opstamp = writer.delete_term(term);
-                let text = String::from_utf8_lossy(&upsert.payload).into_owned();
+                let chunk = decode_chunk_payload(&upsert.payload)?;
                 let mut doc = TantivyDocument::new();
                 doc.add_text(self.fields.candidate_id, candidate_id);
                 doc.add_text(self.fields.repo_id, key.repo_id.as_str());
                 doc.add_text(self.fields.revision_id, key.revision_id.as_str());
-                doc.add_text(self.fields.repo_relative_path, "");
-                doc.add_text(self.fields.chunk_text, text);
+                doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
+                doc.add_text(
+                    self.fields.repo_relative_path,
+                    chunk.repo_relative_path.as_str(),
+                );
+                doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
+                doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
+                doc.add_text(self.fields.chunk_text, chunk.snippet.as_ref());
                 let _opstamp = writer
                     .add_document(doc)
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
@@ -334,13 +364,51 @@ impl LexicalAdapter {
                 let _opstamp = writer.delete_term(term);
                 Ok(true)
             }
+            LexicalChannelOp::UpsertSymbol(upsert) => {
+                let candidate_id = upsert.symbol_id.as_str();
+                let term = Term::from_field_text(self.fields.candidate_id, candidate_id);
+                let _opstamp = writer.delete_term(term);
+                let symbol = decode_symbol_payload(&upsert.payload)?;
+                let mut doc = TantivyDocument::new();
+                doc.add_text(self.fields.candidate_id, candidate_id);
+                doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                doc.add_text(self.fields.doc_kind, SYMBOL_DOC_KIND);
+                doc.add_text(self.fields.repo_relative_path, symbol.span.path.as_ref());
+                doc.add_u64(self.fields.start_line, u64::from(symbol.span.line_start));
+                doc.add_u64(self.fields.end_line, u64::from(symbol.span.line_end));
+                let snippet = match symbol.container_name.as_deref() {
+                    Some(container) if !container.is_empty() => {
+                        format!("{} {}", symbol.name.as_ref(), container)
+                    }
+                    _ => symbol.name.as_ref().to_string(),
+                };
+                doc.add_text(self.fields.chunk_text, &snippet);
+                let _opstamp = writer
+                    .add_document(doc)
+                    .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
+                Ok(true)
+            }
+            LexicalChannelOp::DeleteSymbol(delete) => {
+                let term =
+                    Term::from_field_text(self.fields.candidate_id, delete.symbol_id.as_str());
+                let _opstamp = writer.delete_term(term);
+                Ok(true)
+            }
             // FullBundle/Seal carry no document-level effect (dispatcher's
-            // ledger update observes Seal). Symbol ops are out-of-scope for
-            // the lexical chunk index.
+            // ledger update observes Seal).
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::Seal(_)
-            | LexicalChannelOp::UpsertSymbol(_)
-            | LexicalChannelOp::DeleteSymbol(_) => Ok(false),
+            | LexicalChannelOp::UpsertCommit(_)
+            | LexicalChannelOp::UpsertRef(_)
+            | LexicalChannelOp::UpsertTag(_)
+            | LexicalChannelOp::DeleteRef(_)
+            | LexicalChannelOp::DeleteTag(_)
+            | LexicalChannelOp::UpsertDirty(_)
+            | LexicalChannelOp::EvictDirty(_)
+            | LexicalChannelOp::UpsertParseTree(_)
+            | LexicalChannelOp::DeleteParseTree(_)
+            | LexicalChannelOp::UpsertDiffHunk(_) => Ok(false),
         }
     }
 }
@@ -470,39 +538,134 @@ struct TantivySearcher {
 }
 
 impl TantivySearcher {
-    fn compile(&self, expr: &LqExpr) -> Result<Box<dyn Query>, CoreError> {
+    fn query_parser(&self) -> QueryParser {
+        QueryParser::for_index(
+            &self.index,
+            vec![self.fields.chunk_text, self.fields.repo_relative_path],
+        )
+    }
+
+    fn compile_expr(&self, expr: &LqExpr) -> Result<Box<dyn Query>, CoreError> {
         match expr {
-            LqExpr::MatchAll => Err(CoreError::InvalidContract(
-                "lexical: MatchAll not compilable (must be rejected by policy)".to_string(),
-            )),
-            LqExpr::Raw(text) => {
-                let parser = QueryParser::for_index(&self.index, vec![self.fields.chunk_text]);
-                let parsed = parser
-                    .parse_query(text)
-                    .map_err(|err| CoreError::InvalidContract(format!("lexical: parse: {err}")))?;
-                Ok(parsed)
-            }
+            LqExpr::Empty => Ok(Box::new(AllQuery)),
+            LqExpr::Leaf(leaf) => self.compile_leaf(leaf),
             LqExpr::All(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Must, self.compile(part)?));
+                    clauses.push((Occur::Must, self.compile_expr(part)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Any(parts) => {
                 let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    clauses.push((Occur::Should, self.compile(part)?));
+                    clauses.push((Occur::Should, self.compile_expr(part)?));
                 }
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
             LqExpr::Not(inner) => {
-                let inner_q = self.compile(inner)?;
+                let inner_q = self.compile_expr(inner)?;
                 let clauses: Vec<(Occur, Box<dyn Query>)> =
                     vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
+            // Semantic-vector leaves are out of scope for the Tantivy lexical
+            // adapter; the search-plane router dispatches them to the semantic
+            // adapter. Fail closed here per CLAUDE.md "no heuristic authority".
+            LqExpr::SemanticVector { .. } => Err(CoreError::NotImplemented(
+                "lexical: semantic-vector leaf is not executable on the Tantivy adapter"
+                    .to_string(),
+            )),
         }
+    }
+
+    fn compile_leaf(&self, leaf: &LqLeaf) -> Result<Box<dyn Query>, CoreError> {
+        let parser = self.query_parser();
+        let query_text = match leaf {
+            LqLeaf::Keyword(text) | LqLeaf::RawString(text) => text.clone(),
+            LqLeaf::Phrase(text) => format!("\"{text}\""),
+            LqLeaf::Regex(text) => format!("/{text}/"),
+            LqLeaf::StructuralBlock(_) => {
+                return Err(CoreError::Typed {
+                    code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                    message:
+                        "lexical: structural leaf cannot compile without producer parse-tree ops"
+                            .to_string(),
+                });
+            }
+            LqLeaf::Predicate { name, .. } => {
+                return Err(CoreError::NotImplemented(format!(
+                    "lexical: predicate leaf `{name}` is not yet executable on Tantivy adapter"
+                )));
+            }
+        };
+        parser
+            .parse_query(&query_text)
+            .map_err(|err| CoreError::InvalidContract(format!("lexical: parse: {err}")))
+    }
+
+    fn compile_filter(&self, filter: &LqFilter) -> Result<Option<Box<dyn Query>>, CoreError> {
+        match filter {
+            LqFilter::Repo { .. } => Ok(None),
+            LqFilter::File { pattern, .. } => {
+                let term = Term::from_field_text(self.fields.repo_relative_path, pattern.as_str());
+                Ok(Some(Box::new(TermQuery::new(
+                    term,
+                    IndexRecordOption::Basic,
+                ))))
+            }
+            LqFilter::Content { leaf } => Ok(Some(self.compile_leaf(leaf)?)),
+            LqFilter::Lang { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => Err(CoreError::NotImplemented(format!(
+                "lexical: filter `{filter:?}` is not executable on the current Tantivy adapter"
+            ))),
+        }
+    }
+
+    fn compile_query(&self, query: &LqQuery) -> Result<Box<dyn Query>, CoreError> {
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        if !matches!(query.expr, LqExpr::Empty) {
+            clauses.push((Occur::Must, self.compile_expr(&query.expr)?));
+        }
+        for filter in &query.filters {
+            if let Some(compiled_filter) = self.compile_filter(filter)? {
+                clauses.push((Occur::Must, compiled_filter));
+            }
+        }
+        match clauses.len() {
+            0 => Err(CoreError::InvalidContract(
+                "lexical: query lowered to zero executable clauses".to_string(),
+            )),
+            1 => match clauses.into_iter().next() {
+                Some((_, only)) => Ok(only),
+                None => Err(CoreError::InvalidContract(
+                    "lexical: query lowered to zero executable clauses".to_string(),
+                )),
+            },
+            _ => Ok(Box::new(BooleanQuery::new(clauses))),
+        }
+    }
+
+    fn compile_query_for_doc_kind(
+        &self,
+        query: &LqQuery,
+        doc_kind: &str,
+    ) -> Result<Box<dyn Query>, CoreError> {
+        let base = self.compile_query(query)?;
+        let doc_kind_term = Term::from_field_text(self.fields.doc_kind, doc_kind);
+        Ok(Box::new(BooleanQuery::new(vec![
+            (Occur::Must, base),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(doc_kind_term, IndexRecordOption::Basic)),
+            ),
+        ])))
     }
 
     fn document_to_candidate(
@@ -516,14 +679,16 @@ impl TantivySearcher {
         let snippet = stored_text(doc, self.fields.chunk_text).unwrap_or_default();
         let repo_relative_path =
             stored_text(doc, self.fields.repo_relative_path).unwrap_or_default();
+        let start_line = stored_u32(doc, self.fields.start_line)?.unwrap_or(0);
+        let end_line = stored_u32(doc, self.fields.end_line)?.unwrap_or(0);
         Ok(LexicalCandidate {
             candidate_id,
             repo_id: self.repo_id.clone(),
             revision_id: self.revision_id.clone(),
             manifest_generation: self.generation,
             repo_relative_path: RepoRelativePath::new(repo_relative_path),
-            start_line: 0,
-            end_line: 0,
+            start_line,
+            end_line,
             score,
             snippet,
         })
@@ -535,10 +700,22 @@ fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {
     Value::as_str(&value).map(str::to_owned)
 }
 
+fn stored_u32(doc: &TantivyDocument, field: Field) -> Result<Option<u32>, CoreError> {
+    let Some(value) = doc.get_first(field) else {
+        return Ok(None);
+    };
+    let Some(raw) = Value::as_u64(&value) else {
+        return Ok(None);
+    };
+    u32::try_from(raw)
+        .map(Some)
+        .map_err(|err| CoreError::Storage(format!("lexical: stored u32 exceeds range: {err}")))
+}
+
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         LexicalPolicy::validate_query(query)?;
-        let compiled = self.compile(&query.expr)?;
+        let compiled = self.compile_query_for_doc_kind(query, TEXT_DOC_KIND)?;
         let limit = usize::try_from(top_k)
             .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
         if limit == 0 {
@@ -548,6 +725,57 @@ impl LexicalSearcher for TantivySearcher {
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(limit))
             .map_err(|err| CoreError::Storage(format!("lexical: search: {err}")))?;
+        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
+        for (score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            out.push(self.document_to_candidate(&doc, score)?);
+        }
+        Ok(out)
+    }
+
+    fn search_symbols(
+        &self,
+        query: &LqQuery,
+        top_k: u32,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        LexicalPolicy::validate_query(query)?;
+        let compiled = self.compile_query_for_doc_kind(query, SYMBOL_DOC_KIND)?;
+        let limit = usize::try_from(top_k)
+            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: symbol search: {err}")))?;
+        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
+        for (score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            out.push(self.document_to_candidate(&doc, score)?);
+        }
+        Ok(out)
+    }
+
+    fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
+        LexicalPolicy::validate_query(query)?;
+        let compiled = self.compile_query_for_doc_kind(query, TEXT_DOC_KIND)?;
+        let searcher = self.reader.searcher();
+        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while materializing scope: {err}"
+            ))
+        })?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: search_all: {err}")))?;
         let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {

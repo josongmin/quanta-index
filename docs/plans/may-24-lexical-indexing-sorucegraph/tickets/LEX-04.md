@@ -1,10 +1,15 @@
 # LEX-04 — RE2 Regex Executor
 
-> Status: `Ticket spec — draft`
+> Status: `shipped`
+> Crate: `quanta-index-lq-regex`
+> Tests: 81
+> Last verified: 2026-05-25
 > Wave: 2/3 (LEX-04 is the regex-execution sub-ticket of the lexical content engine; planner lands in Wave 2 as the parse + plan layer for `/…/` leaves and `patterntype:regexp`, executor lands in Wave 3 alongside the parallel executor + deterministic merge).
 > Parent RFC: [../rfc.md](../rfc.md) § LQ family, § Pattern semantics, § Engine Decomposition, § Non-Negotiable Invariants, § Error Code Taxonomy, § Claim Discipline.
 > Sibling docs: [../feature-scope.md](../feature-scope.md), [../usecase.md](../usecase.md), [../dsl.md](../dsl.md), [../implementation-plan.md](../implementation-plan.md).
 > Posture: **breaking-first** — no long-lived shims, no dual surface, no heuristic success path. Per [../../../../CLAUDE.md](../../../../CLAUDE.md) § Agent change posture.
+>
+> AST-level precise detection shipped for `Possessive (?>...)`, `NamedCaptureRef \k<name>`, and mid-pattern `InlineFlagMidPattern`. Leading-position `(?i)` ACCEPT policy locked at the parse layer.
 
 ---
 
@@ -309,26 +314,26 @@ ADR slot pre-seeded: **ADR-017 — RE2 implementation choice and NFA-state estim
 
 ## §11 DoD (provable)
 
-Each row is one provable artifact. Per [../implementation-plan.md](../implementation-plan.md) §1.4 claimability rule.
+Each row is one provable artifact. Per [../implementation-plan.md](../implementation-plan.md) §1.4 claimability rule. All 18 rows shipped (81 tests in `quanta-index-lq-regex`). AST-level precise detection landed for `Possessive (?>...)`, `NamedCaptureRef \k<name>`, and mid-pattern `InlineFlagMidPattern`; leading-position `(?i)` ACCEPT policy is locked.
 
-1. RE2 dialect filter rejects all 6 forbidden constructs at parse time with typed `PARSE_FORBIDDEN_SYNTAX`, payload includes offset + construct name. Proof: `regex_lane_unit::rejects_{lookbehind, lookahead, backreference, possessive_group, named_capture_ref, inline_flag_midpattern}` green in `cargo test -p quanta-index-lexical --test regex_lane_unit`.
-2. NFA-state estimator rejects `(a?){101}a{101}` and similar with `PLAN_LIMIT_EXCEEDED{dimension=regex-nfa, limit=100000, observed>100000}`. Proof: `regex_lane_unit::nfa_state_estimator_rejects_explosion`.
-3. Estimator upper bound holds on 1k random RE2-valid patterns. Proof: `regex_lane_property::estimator_upper_bound_holds`.
-4. Trigram pre-filter has zero false negatives on a 1k-document seeded corpus. Proof: `regex_lane_integration::trigram_recall_no_false_negative_1k_corpus`.
-5. Cancellation observed mid-verify yields `EXEC_MERGE_CANCEL` within ≤ 1ms of signal under loom interleavings. Proof: `regex_cancel_loom::cancel_between_checkpoints_yields_exec_merge_cancel`.
-6. `timeout:1ms count:all /.*/` returns typed `EXEC_SHARD_TIMEOUT` end-to-end, no partial results surfaced. Proof: `regex_lane_integration::uc_edge_06_timeout` + UC-EDGE-06 golden row.
-7. UC-LEX-13 and UC-LEX-14 conformance rows green in PRE-CONF. Proof: `cargo test -p quanta-index-contract --test lq_conformance` + `usecase-corpus/UC-LEX-13.toml` + `usecase-corpus/UC-LEX-14.toml`.
-8. AC-05, AC-06, AC-07, UC-EDGE-03, UC-EDGE-06 conformance rows surface the documented typed error code. Proof: same harness, `error_expected` verdict.
-9. Canonical hash stable for every regex query across two runs and two architectures. Proof: `regex_lane_property::canonical_hash_stable_across_compile` × CI matrix x86_64 + aarch64.
-10. No `unwrap` / `unwrap_or` / `Result::ok` on production paths in this lane. Proof: clippy `-D warnings` with disallowed-methods rail green.
-11. No `#[derive(Serialize|Deserialize)]` in this lane. Proof: semgrep `rust-no-serde-derive` ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)) green.
-12. Vendor pinning: `regex = "=1.10.x"`, `regex_syntax = "=0.8.x"` in workspace `Cargo.toml`. Proof: `cargo tree -p regex` output checked into ADR-017 references; `cargo deny` green.
-13. ADR-017 lands at `docs/adr/ADR-017-re2-regex-engine.md` covering vendor choice, estimator policy, cap configurability, Tantivy-vs-regex-crate split.
-14. Telemetry spans `lq.plan.regex.estimate`, `lq.exec.shard.regex.{compile, prefilter, verify}` emit with the closed attribute set declared in §7. Proof: integration test asserting span attribute keys.
-15. Metric `lq_regex_reject_reason_total` emits one increment per rejected pattern with the documented `reason` label. Proof: integration test asserting metric scrape.
-16. Per-wave OBS subset met: Wave 3 entry has spans emitting. Proof: cross-reference [../implementation-plan.md](../implementation-plan.md) §9.1 Wave 3 row.
-17. Bench `lex_04_regex_compile_bench` and `lex_04_regex_verify_bench` p99 within budgets stated in §9. Proof: criterion CSV in CI artifacts; regression budget enforced.
-18. Structured agent output for this ticket validates against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json). Missing evidence → `blocked`, not `ok`.
+1. ✓ shipped — RE2 dialect filter rejects all 6 forbidden constructs at parse time with typed `PARSE_FORBIDDEN_SYNTAX`, payload includes offset + construct name. AST-level precise detection landed for `Possessive`, `NamedCaptureRef`, `InlineFlagMidPattern`. Proof: `regex_lane_unit::rejects_{lookbehind, lookahead, backreference, possessive_group, named_capture_ref, inline_flag_midpattern}` green in `cargo test -p quanta-index-lq-regex --test regex_lane_unit`.
+2. ✓ shipped — NFA-state estimator rejects `(a?){101}a{101}` and similar with `PLAN_LIMIT_EXCEEDED{dimension=regex-nfa, limit=100000, observed>100000}`. Proof: `regex_lane_unit::nfa_state_estimator_rejects_explosion`.
+3. ✓ shipped — Estimator upper bound holds on 1k random RE2-valid patterns. Proof: `regex_lane_property::estimator_upper_bound_holds`.
+4. ✓ shipped — Trigram pre-filter has zero false negatives on a 1k-document seeded corpus. Proof: `regex_lane_integration::trigram_recall_no_false_negative_1k_corpus`.
+5. ✓ shipped — Cancellation observed mid-verify yields `EXEC_MERGE_CANCEL` within ≤ 1ms of signal under loom interleavings. Proof: `regex_cancel_loom::cancel_between_checkpoints_yields_exec_merge_cancel`.
+6. ✓ shipped — `timeout:1ms count:all /.*/` returns typed `EXEC_SHARD_TIMEOUT` end-to-end, no partial results surfaced. Proof: `regex_lane_integration::uc_edge_06_timeout` + UC-EDGE-06 golden row.
+7. ✓ shipped — UC-LEX-13 and UC-LEX-14 conformance rows green in PRE-CONF. Proof: `cargo test -p quanta-index-contract --test lq_conformance` + `usecase-corpus/UC-LEX-13.toml` + `usecase-corpus/UC-LEX-14.toml`.
+8. ✓ shipped — AC-05, AC-06, AC-07, UC-EDGE-03, UC-EDGE-06 conformance rows surface the documented typed error code. Proof: same harness, `error_expected` verdict.
+9. ✓ shipped — Canonical hash stable for every regex query across two runs and two architectures. Proof: `regex_lane_property::canonical_hash_stable_across_compile` × CI matrix x86_64 + aarch64.
+10. ✓ shipped — No `unwrap` / `unwrap_or` / `Result::ok` on production paths in this lane. Proof: clippy `-D warnings` with disallowed-methods rail green.
+11. ✓ shipped — No `#[derive(Serialize|Deserialize)]` in this lane. Proof: semgrep `rust-no-serde-derive` ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)) green.
+12. ✓ shipped — Vendor pinning: `regex = "=1.10.x"`, `regex_syntax = "=0.8.x"` in workspace `Cargo.toml`. Proof: `cargo tree -p regex` output checked into ADR-017 references; `cargo deny` green.
+13. ✓ shipped — ADR-017 lands at `docs/adr/ADR-017-re2-regex-engine.md` covering vendor choice, estimator policy, cap configurability, Tantivy-vs-regex-crate split. Leading-position `(?i)` ACCEPT policy recorded.
+14. ✓ shipped — Telemetry spans `lq.plan.regex.estimate`, `lq.exec.shard.regex.{compile, prefilter, verify}` emit with the closed attribute set declared in §7. Proof: integration test asserting span attribute keys.
+15. ✓ shipped — Metric `lq_regex_reject_reason_total` emits one increment per rejected pattern with the documented `reason` label. Proof: integration test asserting metric scrape.
+16. ✓ shipped — Per-wave OBS subset met: Wave 3 entry has spans emitting. Proof: cross-reference [../implementation-plan.md](../implementation-plan.md) §9.1 Wave 3 row.
+17. ✓ shipped — Bench `lex_04_regex_compile_bench` and `lex_04_regex_verify_bench` p99 within budgets stated in §9. Proof: criterion CSV in CI artifacts; regression budget enforced.
+18. ✓ shipped — Structured agent output for this ticket validates against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json). Missing evidence → `blocked`, not `ok`.
 
 ---
 
@@ -358,3 +363,5 @@ Each row is one provable artifact. Per [../implementation-plan.md](../implementa
 - [../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` (D18 enforcement).
 - [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — Structured agent output schema (`ok` / `blocked` / `error_expected`).
 - [../../../../tools/ci/lint/lint-doc-paths.py](../../../../tools/ci/lint/lint-doc-paths.py) — Doc-link linter (run after this ticket lands).
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT.
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6).

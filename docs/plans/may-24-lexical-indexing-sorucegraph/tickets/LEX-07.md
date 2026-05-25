@@ -1,8 +1,14 @@
 # LEX-07 — Generation governance + history extension (parent:/merge:/tag:/revisions:)
 
+> Status: `shipped (architecture-corrected)`
+> Crate: `quanta-index-lq-history`
+> Tests: 76
+> Last verified: 2026-05-25
 > Wave: 4 (Canonical Execution Wave per [rfc.md § Canonical Execution Waves](../rfc.md)).
 > Source: [rfc.md § LQ/History-1.1](../rfc.md), [rfc.md § Canonical Incremental Write Pipeline](../rfc.md), [rfc.md § Index Lifecycle](../rfc.md), [rfc.md § Migration and Versioning Policy](../rfc.md), [implementation-plan.md § 5.11 LEX-07](../implementation-plan.md), [implementation-plan.md § Appendix A.1 RFC-GAP-1](../implementation-plan.md), [feature-scope.md § 1.2.4](../feature-scope.md), [feature-scope.md § 4.7](../feature-scope.md), [usecase.md § UC-HIST-01..08](../usecase.md), [dsl.md § 2.2 LQ/History-1.1 extensions](../dsl.md).
 > Posture: **breaking-first** per [CLAUDE.md § Agent change posture](../../../../CLAUDE.md). No long-lived shims. Every DoD item is provable. No `#[derive(serde::Serialize)]` / `#[derive(serde::Deserialize)]` per D18 — manual `impl` only.
+>
+> **Architecture correction:** consumes `UpsertCommit` / `UpsertRef` / `UpsertTag` channel ops (producer-authored). `add_commit` / `add_ref` / `add_tag` are channel-subscriber callbacks, not IPC endpoints. See [INDEX.md](INDEX.md) §3.6 for the producer-authorship correction context.
 
 ---
 
@@ -494,32 +500,32 @@ Capacity:
 
 ## 11. Definition of Done (provable)
 
-Every row cites the artifact that proves it. If any row cannot cite an artifact, the wave-4 exit gate stays `blocked` per [CLAUDE.md § Claude Supplements](../../../../CLAUDE.md).
+Every row cites the artifact that proves it. If any row cannot cite an artifact, the wave-4 exit gate stays `blocked` per [CLAUDE.md § Claude Supplements](../../../../CLAUDE.md). All 23 active rows shipped (76 tests in `quanta-index-lq-history`); the architecture-corrected ingress (channel-driven `UpsertCommit/UpsertRef/UpsertTag` callbacks) is load-bearing for rows 1, 4, 5, 7, 8, 9, 10, 15, 17, and 23. Row 22 is deferred (producer handoff SSOT is `docs/ssot/producer-handoff.md`; a `docs/handoffs/lq-history-1.1.md` cut is the follow-up).
 
-1. **Manifest atomicity contract enforced** — proven by `governance::activation_regression_rejected`, `prop_manifest_gen_strictly_increasing`, `prop_sibling_gen_non_decreasing`, `history_sidecar_atomicity` (§ 6.1, § 6.2, § 6.3).
-2. **Strict monotonic activation** — proven by `prop_manifest_gen_strictly_increasing` and `prop_sibling_gen_non_decreasing` (§ 6.3).
-3. **Stale-activation guard** — proven by `governance::activation_regression_rejected` (§ 6.1).
-4. **Write-packet trace records correct fields** — proven by `trace::apply_records_hash_and_gens` (§ 6.1) asserting `committer_id`, `applied_at_ms`, `before_gen`, `after_gen`, `hash` are present and `hash = SHA-256(canonical_cbor(packet))`.
-5. **Idempotency** — proven by `trace::reapply_same_packet_is_noop` (§ 6.1) and `loom_trace_idempotent_under_race` (§ 6.4).
-6. **History sidecar siblings are first-class** — proven by `history_sidecar_atomicity` (§ 6.2): a reader observes `STATE_NOT_READY: STALE_SIBLING` when any of `commits/MARKER_OK`, `diff_hunks/MARKER_OK`, `commit_dag/MARKER_OK` is absent.
-7. **`parent:` extension** — proven by `history::parent_returns_parents`, `history::parent_unknown_ref_fails`, `history::parent_depth_bounded` (§ 6.1) plus `prop_history_dag_walk_bounded` (§ 6.3).
-8. **`merge:` extension with ambiguity lock** — proven by `history::merge_yes_filters_to_merge_commits` and `history::merge_scope_is_merge_result_only` (§ 6.1).
-9. **`tag:` extension** — proven by `history::tag_resolves` and `history::tag_unknown_fails` (§ 6.1).
-10. **`revisions:` extension with 10k-commit cap** — proven by `history::revisions_two_dot`, `history::revisions_three_dot`, `history::revisions_overrun` (§ 6.1) plus `prop_revisions_range_bounded` (§ 6.3).
-11. **`since.time:` tied to write-packet trace** — proven by `history::since_time_uses_applied_at_ms` and `prop_since_time_monotone` (§ 6.3).
-12. **`since:` disambiguation closes Q2** — proven by `history::since_disambiguation_at_parse` (§ 6.1) covering both RFC3339 / duration → `since.time:` and SHA / ref → `since.commit:`.
-13. **Defensive merge-cycle handler** — proven by `history::merge_cycle_detected` (§ 6.1).
-14. **`type:commit` / `type:diff` planner routing** — proven by UC-HIST-01..08 + UC-PRED-02 green in PRE-CONF (§ 6.6).
-15. **No request-time `git log`** — proven by `history_no_git_subprocess` (§ 6.2) asserting zero `git` subprocess invocations during the query path.
-16. **AC-08 / AC-09 / AC-13 fail with typed errors** — proven by PRE-CONF rows (§ 6.6).
-17. **Cross-instance reproducibility for history applies** — proven by `history_writepacket_trace_cross_instance` (§ 6.2) — same delta on instance A and instance B produces byte-identical trace records.
-18. **Observability spans + metrics emit** — proven by [implementation-plan.md § 9.1 Wave-4 OBS subset](../implementation-plan.md) compliance test; new spans visible in OBS-01 capture.
-19. **Performance envelope met** — proven by `lex_07_write_trace_bench`, `lex_07_history_query_bench`, `lex_07_dag_walk_bench`, `lex_07_revisions_range_bench` p99 targets (§ 6.5, § 9).
-20. **RFC Claim Discipline §3 (history search)** provable — citing UC-HIST-01..08 corpus green + history index proven non-empty.
-21. **No serde proc-macro derives** — proven by `semgrep rust-no-serde-derive` green ([tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
-22. **Producer handoff** — `docs/handoffs/lq-history-1.1.md` committed in the same PR per [implementation-plan.md § 7.3](../implementation-plan.md).
-23. **Wave-4 contract bump** — `LQ/Core-1.0 → LQ/History-1.1` recorded in `lq_version` field on the canonical AST per [implementation-plan.md § 7.1 Wave 4 row](../implementation-plan.md); no `#[deprecated]` shim.
-24. **CI rails green** — `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all -- --check`, `cargo deny`, `cargo machete`, `python3 tools/ci/lint/lint-doc-paths.py`, `ci/lq-conformance` (PRE-CONF) all green.
+1. ✓ shipped (architecture-corrected) — **Manifest atomicity contract enforced** — proven by `governance::activation_regression_rejected`, `prop_manifest_gen_strictly_increasing`, `prop_sibling_gen_non_decreasing`, `history_sidecar_atomicity` (§ 6.1, § 6.2, § 6.3).
+2. ✓ shipped — **Strict monotonic activation** — proven by `prop_manifest_gen_strictly_increasing` and `prop_sibling_gen_non_decreasing` (§ 6.3).
+3. ✓ shipped — **Stale-activation guard** — proven by `governance::activation_regression_rejected` (§ 6.1).
+4. ✓ shipped (architecture-corrected) — **Write-packet trace records correct fields** — proven by `trace::apply_records_hash_and_gens` (§ 6.1) asserting `committer_id`, `applied_at_ms`, `before_gen`, `after_gen`, `hash` are present and `hash = SHA-256(canonical_cbor(packet))`. The producer authors `applied_at_ms`; the search plane records it.
+5. ✓ shipped (architecture-corrected) — **Idempotency** — proven by `trace::reapply_same_packet_is_noop` (§ 6.1) and `loom_trace_idempotent_under_race` (§ 6.4). Idempotency is keyed on `(channel_seq, op_kind, ref_id)`.
+6. ✓ shipped — **History sidecar siblings are first-class** — proven by `history_sidecar_atomicity` (§ 6.2): a reader observes `STATE_NOT_READY: STALE_SIBLING` when any of `commits/MARKER_OK`, `diff_hunks/MARKER_OK`, `commit_dag/MARKER_OK` is absent.
+7. ✓ shipped (architecture-corrected) — **`parent:` extension** — proven by `history::parent_returns_parents`, `history::parent_unknown_ref_fails`, `history::parent_depth_bounded` (§ 6.1) plus `prop_history_dag_walk_bounded` (§ 6.3). DAG is built from producer-shipped `CommitRecord.parents`.
+8. ✓ shipped (architecture-corrected) — **`merge:` extension with ambiguity lock** — proven by `history::merge_yes_filters_to_merge_commits` and `history::merge_scope_is_merge_result_only` (§ 6.1).
+9. ✓ shipped (architecture-corrected) — **`tag:` extension** — proven by `history::tag_resolves` and `history::tag_unknown_fails` (§ 6.1). Tag pointers arrive via `UpsertTag` / `DeleteTag`.
+10. ✓ shipped (architecture-corrected) — **`revisions:` extension with 10k-commit cap** — proven by `history::revisions_two_dot`, `history::revisions_three_dot`, `history::revisions_overrun` (§ 6.1) plus `prop_revisions_range_bounded` (§ 6.3).
+11. ✓ shipped — **`since.time:` tied to write-packet trace** — proven by `history::since_time_uses_applied_at_ms` and `prop_since_time_monotone` (§ 6.3).
+12. ✓ shipped — **`since:` disambiguation closes Q2** — proven by `history::since_disambiguation_at_parse` (§ 6.1) covering both RFC3339 / duration → `since.time:` and SHA / ref → `since.commit:`.
+13. ✓ shipped — **Defensive merge-cycle handler** — proven by `history::merge_cycle_detected` (§ 6.1).
+14. ✓ shipped — **`type:commit` / `type:diff` planner routing** — proven by UC-HIST-01..08 + UC-PRED-02 green in PRE-CONF (§ 6.6).
+15. ✓ shipped (architecture-corrected) — **No request-time `git log`** — proven by `history_no_git_subprocess` (§ 6.2) asserting zero `git` subprocess invocations during the query path. The producer is the sole git surface.
+16. ✓ shipped — **AC-08 / AC-09 / AC-13 fail with typed errors** — proven by PRE-CONF rows (§ 6.6).
+17. ✓ shipped (architecture-corrected) — **Cross-instance reproducibility for history applies** — proven by `history_writepacket_trace_cross_instance` (§ 6.2) — same channel-op stream on instance A and instance B produces byte-identical trace records.
+18. ✓ shipped — **Observability spans + metrics emit** — proven by [implementation-plan.md § 9.1 Wave-4 OBS subset](../implementation-plan.md) compliance test; new spans visible in OBS-01 capture.
+19. ✓ shipped — **Performance envelope met** — proven by `lex_07_write_trace_bench`, `lex_07_history_query_bench`, `lex_07_dag_walk_bench`, `lex_07_revisions_range_bench` p99 targets (§ 6.5, § 9).
+20. ✓ shipped — **RFC Claim Discipline §3 (history search)** provable — citing UC-HIST-01..08 corpus green + history index proven non-empty.
+21. ✓ shipped — **No serde proc-macro derives** — proven by `semgrep rust-no-serde-derive` green ([tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
+22. 🔜 deferred (see §12) — **Producer handoff** — `docs/handoffs/lq-history-1.1.md` to be cut from the canonical [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md) SSOT.
+23. ✓ shipped (architecture-corrected) — **Wave-4 contract bump** — `LQ/Core-1.0 → LQ/History-1.1` recorded in `lq_version` field on the canonical AST per [implementation-plan.md § 7.1 Wave 4 row](../implementation-plan.md); no `#[deprecated]` shim. ADR-017 (`channel seq supersedes advisory lock`) withdrew the standalone advisory-lock ADR.
+24. ✓ shipped — **CI rails green** — `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all -- --check`, `cargo deny`, `cargo machete`, `python3 tools/ci/lint/lint-doc-paths.py`, `ci/lq-conformance` (PRE-CONF) all green.
 
 ---
 
@@ -586,3 +592,5 @@ Every row cites the artifact that proves it. If any row cannot cite an artifact,
 - [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` (D18 enforcement)
 - [tools/ci/lint/lint-doc-paths.py](../../../../tools/ci/lint/lint-doc-paths.py) — markdown link integrity
 - [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — structured agent output schema
+- [docs/ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT (authoritative wire shape for `UpsertCommit/UpsertRef/UpsertTag`; delta-handling identity / cascade / replay contract in §3.5; force-push handling in §3.1.3)
+- [INDEX.md](INDEX.md) — ticket index (architecture correction context: §3.6 producer-authorship correction, §3.8 stale-references follow-up)

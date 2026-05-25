@@ -11,7 +11,7 @@
 //! `EXPECTED_*` constants at the bottom of this file.
 
 use quanta_index_lq_scorer::scorer::SliceTokenSource;
-use quanta_index_lq_scorer::{Bm25Params, Bm25Scorer, IdfBuilder};
+use quanta_index_lq_scorer::{Bm25Params, Bm25Scorer, DocId, IdfBuilder};
 
 fn fatal(msg: &str) -> ! {
     assert!(false, "{msg}");
@@ -33,13 +33,21 @@ fn build_corpus_scorer() -> Bm25Scorer {
     let doc_c = ["beta", "gamma", "delta"];
     let doc_d = ["alpha", "beta", "epsilon"];
     let mut sa = SliceTokenSource::new(&doc_a);
-    b.add_doc(&mut sa, 3);
+    if let Err(e) = b.add_doc(DocId(1), &mut sa, 3) {
+        fatal(&format!("{e}"));
+    }
     let mut sb = SliceTokenSource::new(&doc_b);
-    b.add_doc(&mut sb, 3);
+    if let Err(e) = b.add_doc(DocId(2), &mut sb, 3) {
+        fatal(&format!("{e}"));
+    }
     let mut sc = SliceTokenSource::new(&doc_c);
-    b.add_doc(&mut sc, 3);
+    if let Err(e) = b.add_doc(DocId(3), &mut sc, 3) {
+        fatal(&format!("{e}"));
+    }
     let mut sd = SliceTokenSource::new(&doc_d);
-    b.add_doc(&mut sd, 3);
+    if let Err(e) = b.add_doc(DocId(4), &mut sd, 3) {
+        fatal(&format!("{e}"));
+    }
     let table = match b.finish() {
         Ok(t) => t,
         Err(e) => fatal(&format!("{e}")),

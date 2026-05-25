@@ -165,6 +165,13 @@ mod tests {
         CommitSha::from_bytes([byte; 20])
     }
 
+    /// Strict-mode upsert helper that fails the test on a typed error.
+    fn ups(g: &mut CommitGraph, node: CommitNode) {
+        if let Err(e) = g.upsert_commit(node) {
+            assert!(false, "upsert_commit: {e}");
+        }
+    }
+
     fn linear_chain(len: u8) -> CommitGraph {
         let mut g = CommitGraph::new();
         let mut i: u8 = 0;
@@ -175,11 +182,10 @@ mod tests {
                 let prev = i.saturating_sub(1);
                 vec![sha(prev)]
             };
-            g.add_commit(CommitNode::new(
-                sha(i),
-                parents,
-                AppliedAtMs::new(u64::from(i)),
-            ));
+            ups(
+                &mut g,
+                CommitNode::new(sha(i), parents, AppliedAtMs::new(u64::from(i))),
+            );
             i = i.saturating_add(1);
         }
         g
@@ -222,14 +228,22 @@ mod tests {
         // 0 <- 1 <- 3
         //   \- 2 -/
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
-        g.add_commit(CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)));
-        g.add_commit(CommitNode::new(
-            sha(3),
-            vec![sha(1), sha(2)],
-            AppliedAtMs::new(3),
-        ));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(0)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), vec![sha(0)], AppliedAtMs::new(2)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(3), vec![sha(1), sha(2)], AppliedAtMs::new(3)),
+        );
         let got = match parents_within_depth(&g, &sha(3), 5) {
             Ok(v) => v,
             Err(e) => {
@@ -268,8 +282,14 @@ mod tests {
 
     #[test]
     fn contrived_self_loop_is_cycle() {
+        // Self-loop is allowed by strict-mode upsert (the parent SHA equals
+        // the inserted SHA, treated as "present after this insert"); the
+        // cycle surfaces at walk time as designed.
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), vec![sha(0)], AppliedAtMs::new(0)));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), vec![sha(0)], AppliedAtMs::new(0)),
+        );
         match parents_within_depth(&g, &sha(0), 5) {
             Ok(_) => assert!(false, "self-loop must surface cycle"),
             Err(e) => assert_eq!(e.code, HistoryErrorCode::HistoryMergeCycle),
@@ -278,9 +298,18 @@ mod tests {
 
     #[test]
     fn contrived_two_node_cycle() {
-        let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), vec![sha(1)], AppliedAtMs::new(0)));
-        g.add_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)));
+        // Two-node cycle requires buffered mode at insert: sha(0)'s parent
+        // sha(1) isn't yet in the graph. The cycle is surfaced at walk
+        // time by the gray/black DFS pre-pass.
+        let mut g = CommitGraph::new().with_buffering();
+        if let Err(e) = g.upsert_commit(CommitNode::new(sha(0), vec![sha(1)], AppliedAtMs::new(0)))
+        {
+            assert!(false, "buffered upsert sha(0): {e}");
+        }
+        if let Err(e) = g.upsert_commit(CommitNode::new(sha(1), vec![sha(0)], AppliedAtMs::new(1)))
+        {
+            assert!(false, "buffered upsert sha(1): {e}");
+        }
         match parents_within_depth(&g, &sha(0), 5) {
             Ok(_) => assert!(false, "cycle must be detected"),
             Err(e) => assert_eq!(e.code, HistoryErrorCode::HistoryMergeCycle),
@@ -289,8 +318,13 @@ mod tests {
 
     #[test]
     fn dangling_parent_surfaces_typed_error() {
-        let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), vec![sha(7)], AppliedAtMs::new(0)));
+        // Dangling parent edge requires buffered mode at insert; the
+        // walk surfaces the missing parent as `HistoryRefNotFound`.
+        let mut g = CommitGraph::new().with_buffering();
+        if let Err(e) = g.upsert_commit(CommitNode::new(sha(0), vec![sha(7)], AppliedAtMs::new(0)))
+        {
+            assert!(false, "buffered upsert sha(0): {e}");
+        }
         match parents_within_depth(&g, &sha(0), 5) {
             Ok(_) => assert!(false, "dangling parent must surface"),
             Err(e) => assert_eq!(e.code, HistoryErrorCode::HistoryRefNotFound),

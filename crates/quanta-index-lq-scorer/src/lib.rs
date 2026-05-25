@@ -26,7 +26,7 @@ pub mod idf;
 pub mod scorer;
 
 pub use bm25::Bm25Params;
-pub use builder::IdfBuilder;
+pub use builder::{DocId, DocStats, IdfBuilder, IdfStateBundle};
 pub use errors::{ScorerError, ScorerErrorCode};
 pub use idf::IdfTable;
 pub use scorer::{Bm25Scorer, IdfTokenSource};

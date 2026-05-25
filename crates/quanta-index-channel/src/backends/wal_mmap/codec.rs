@@ -6,9 +6,11 @@
 //! subscriber generic does not require a value-bearing parameter.
 
 use quanta_index_contract::{
-    ChannelSeq, ChunkId, DeleteChunk, DeleteEmbedding, DeleteSymbol, EmbeddingId, LexicalChannelOp,
-    LexicalFullBundle, LexicalSeal, ManifestGeneration, RepoId, RevisionId, SemanticChannelOp,
-    SemanticFullBundle, SemanticSeal, SymbolId, UpsertChunk, UpsertEmbedding, UpsertSymbol,
+    ChannelSeq, ChunkId, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef, DeleteSymbol,
+    DeleteTag, EmbeddingId, EvictDirty, LexicalChannelOp, LexicalFullBundle, LexicalSeal,
+    ManifestGeneration, RepoId, RevisionId, SemanticChannelOp, SemanticFullBundle, SemanticSeal,
+    SymbolId, UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding,
+    UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
 
 use crate::api::error::ChannelError;
@@ -114,6 +116,120 @@ impl OpCodec for LexicalCodec {
                 write_common(out, repo_id, revision_id, *generation)?;
                 Ok(LexicalOpTag::Seal.to_byte())
             }
+            LexicalChannelOp::UpsertCommit(UpsertCommit {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::UpsertCommit.to_byte())
+            }
+            LexicalChannelOp::UpsertRef(UpsertRef {
+                repo_id,
+                revision_id,
+                generation,
+                name,
+                sha,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, name)?;
+                out.extend_from_slice(sha);
+                Ok(LexicalOpTag::UpsertRef.to_byte())
+            }
+            LexicalChannelOp::UpsertTag(UpsertTag {
+                repo_id,
+                revision_id,
+                generation,
+                name,
+                sha,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, name)?;
+                out.extend_from_slice(sha);
+                Ok(LexicalOpTag::UpsertTag.to_byte())
+            }
+            LexicalChannelOp::DeleteRef(DeleteRef {
+                repo_id,
+                revision_id,
+                generation,
+                name,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, name)?;
+                Ok(LexicalOpTag::DeleteRef.to_byte())
+            }
+            LexicalChannelOp::DeleteTag(DeleteTag {
+                repo_id,
+                revision_id,
+                generation,
+                name,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, name)?;
+                Ok(LexicalOpTag::DeleteTag.to_byte())
+            }
+            LexicalChannelOp::UpsertDirty(UpsertDirty {
+                repo_id,
+                revision_id,
+                generation,
+                doc_id,
+                applied_at_ms,
+                payload_hash,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, doc_id.as_str())?;
+                out.extend_from_slice(&applied_at_ms.to_le_bytes());
+                out.extend_from_slice(payload_hash);
+                Ok(LexicalOpTag::UpsertDirty.to_byte())
+            }
+            LexicalChannelOp::EvictDirty(EvictDirty {
+                repo_id,
+                revision_id,
+                generation,
+                doc_id,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, doc_id.as_str())?;
+                Ok(LexicalOpTag::EvictDirty.to_byte())
+            }
+            LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+                repo_id,
+                revision_id,
+                generation,
+                chunk_id,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, chunk_id.as_str())?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::UpsertParseTree.to_byte())
+            }
+            LexicalChannelOp::DeleteParseTree(DeleteParseTree {
+                repo_id,
+                revision_id,
+                generation,
+                chunk_id,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_str(out, chunk_id.as_str())?;
+                Ok(LexicalOpTag::DeleteParseTree.to_byte())
+            }
+            LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
+                repo_id,
+                revision_id,
+                generation,
+                commit_sha,
+                file_path,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                out.extend_from_slice(commit_sha);
+                write_str(out, file_path)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::UpsertDiffHunk.to_byte())
+            }
         }
     }
 
@@ -184,6 +300,132 @@ impl OpCodec for LexicalCodec {
                     repo_id,
                     revision_id,
                     generation,
+                }))
+            }
+            LexicalOpTag::UpsertCommit => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertCommit(UpsertCommit {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    payload,
+                }))
+            }
+            LexicalOpTag::UpsertRef => {
+                let name = reader.read_string()?.into_boxed_str();
+                let sha: [u8; 20] = reader
+                    .advance(20)?
+                    .try_into()
+                    .map_err(|_err| ChannelError::Encoding("sha truncated".to_string()))?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertRef(UpsertRef {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    name,
+                    sha,
+                }))
+            }
+            LexicalOpTag::UpsertTag => {
+                let name = reader.read_string()?.into_boxed_str();
+                let sha: [u8; 20] = reader
+                    .advance(20)?
+                    .try_into()
+                    .map_err(|_err| ChannelError::Encoding("sha truncated".to_string()))?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertTag(UpsertTag {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    name,
+                    sha,
+                }))
+            }
+            LexicalOpTag::DeleteRef => {
+                let name = reader.read_string()?.into_boxed_str();
+                reader.finish()?;
+                Ok(LexicalChannelOp::DeleteRef(DeleteRef {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    name,
+                }))
+            }
+            LexicalOpTag::DeleteTag => {
+                let name = reader.read_string()?.into_boxed_str();
+                reader.finish()?;
+                Ok(LexicalChannelOp::DeleteTag(DeleteTag {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    name,
+                }))
+            }
+            LexicalOpTag::UpsertDirty => {
+                let doc_id = ChunkId::new(reader.read_string()?);
+                let applied_at_ms = reader.read_u64()?;
+                let payload_hash: [u8; 32] = reader
+                    .advance(32)?
+                    .try_into()
+                    .map_err(|_err| ChannelError::Encoding("payload_hash truncated".to_string()))?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertDirty(UpsertDirty {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    doc_id,
+                    applied_at_ms,
+                    payload_hash,
+                }))
+            }
+            LexicalOpTag::EvictDirty => {
+                let doc_id = ChunkId::new(reader.read_string()?);
+                reader.finish()?;
+                Ok(LexicalChannelOp::EvictDirty(EvictDirty {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    doc_id,
+                }))
+            }
+            LexicalOpTag::UpsertParseTree => {
+                let chunk_id = ChunkId::new(reader.read_string()?);
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    chunk_id,
+                    payload,
+                }))
+            }
+            LexicalOpTag::DeleteParseTree => {
+                let chunk_id = ChunkId::new(reader.read_string()?);
+                reader.finish()?;
+                Ok(LexicalChannelOp::DeleteParseTree(DeleteParseTree {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    chunk_id,
+                }))
+            }
+            LexicalOpTag::UpsertDiffHunk => {
+                let commit_sha: [u8; 20] = reader
+                    .advance(20)?
+                    .try_into()
+                    .map_err(|_err| ChannelError::Encoding("commit_sha truncated".to_string()))?;
+                let file_path = reader.read_string()?.into_boxed_str();
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    commit_sha,
+                    file_path,
+                    payload,
                 }))
             }
         }
@@ -334,6 +576,16 @@ enum LexicalOpTag {
     UpsertSymbol = 4,
     DeleteSymbol = 5,
     Seal = 6,
+    UpsertCommit = 7,
+    UpsertRef = 8,
+    UpsertTag = 9,
+    DeleteRef = 10,
+    DeleteTag = 11,
+    UpsertDirty = 12,
+    EvictDirty = 13,
+    UpsertParseTree = 14,
+    DeleteParseTree = 15,
+    UpsertDiffHunk = 16,
 }
 
 impl LexicalOpTag {
@@ -345,6 +597,16 @@ impl LexicalOpTag {
             Self::UpsertSymbol => 4,
             Self::DeleteSymbol => 5,
             Self::Seal => 6,
+            Self::UpsertCommit => 7,
+            Self::UpsertRef => 8,
+            Self::UpsertTag => 9,
+            Self::DeleteRef => 10,
+            Self::DeleteTag => 11,
+            Self::UpsertDirty => 12,
+            Self::EvictDirty => 13,
+            Self::UpsertParseTree => 14,
+            Self::DeleteParseTree => 15,
+            Self::UpsertDiffHunk => 16,
         }
     }
 
@@ -356,6 +618,16 @@ impl LexicalOpTag {
             4 => Self::UpsertSymbol,
             5 => Self::DeleteSymbol,
             6 => Self::Seal,
+            7 => Self::UpsertCommit,
+            8 => Self::UpsertRef,
+            9 => Self::UpsertTag,
+            10 => Self::DeleteRef,
+            11 => Self::DeleteTag,
+            12 => Self::UpsertDirty,
+            13 => Self::EvictDirty,
+            14 => Self::UpsertParseTree,
+            15 => Self::DeleteParseTree,
+            16 => Self::UpsertDiffHunk,
             _ => return None,
         })
     }

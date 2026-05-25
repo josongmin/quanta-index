@@ -224,6 +224,8 @@ Filed by the 4 correction agents. Need resolution before integration:
 | AMB-PROD-9 | Channel WAL retention horizon vs RT-01 TTL (300s default) — crash-recovery completeness | channel-arch SSOT §4.3 amendment |
 | AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing (sync at apply vs async eventually-consistent) | RT-01 §8 amendment |
 | AMB-PROD-11 | Q-STR-01-OPTION — A (v1 with `UpsertParseTree`) or B (v2 deferral)? | integrator wave-entry |
+| AMB-PROD-13 | `DeleteChunk` cascade silent on semantic shard — Q-RFC-SEM-02-3 surfaced the gap in [producer-handoff.md §3.5.2](../../../ssot/producer-handoff.md) | **RESOLVED** via §3.5.2 amendment (this round) + Round 7a HNSW delta API landing (`SemanticIndexBuilder::remove_embedding(doc_id)`); embedding wire identity is `chunk_id` per §3.5.1 |
+| AMB-PROD-14 | `SemanticVectorRef::Handle` server-side storage model — Round 6b shipped `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::{Inline \| Handle}, top_k }` but the handle resolution surface is unpinned | **DEFERRED** to [ADR-026](../implementation-plan.md) (recommendation: Option B = handle == `embedding_id`); typed error `SEM_HANDLE_NOT_FOUND` wired in [producer-handoff.md §6.5](../../../ssot/producer-handoff.md) |
 
 ### 3.8 Stale references in corrected specs (follow-up pass needed)
 
@@ -233,6 +235,37 @@ The correction was targeted (key sections only) to keep diffs reviewable. Stale 
 - `LEX-05.md` §11 row 22 (Sourcegraph claim-discipline) — semantics narrow to "given equivalent extraction".
 
 Follow-up: a tidy-up PR aligning §6/§7/§9 of LEX-05 with the new architecture (low-risk, no behavior change).
+
+### 3.9 Delta contract lock (Round 5, 2026-05-25)
+
+The delta-handling contract for every `Upsert*` / `Delete*` op in the channel
+catalogue (per [channel-architecture.md §3.1](../../../ssot/channel-architecture.md)) was locked in
+[producer-handoff.md §3.5](../../../ssot/producer-handoff.md) as part of the Round-5 builder-hardening
+work. The lock covers:
+
+- per-record identity rules (wire identity vs search-side shard identity per §3.5.1)
+- delete cascade graph — `DeleteChunk` cascades to trigram + positions + scorer + symbol + structural; `DeleteSymbol` does not cascade; no `DeleteCommit` (force-push = fresh generation per §3.1.3)
+- replay safety — at-least-once delivery, apply-then-ack atomic order per §3.5.3
+- in-generation last-write-wins under strict channel seq order per §3.5.4
+- cross-generation `FullBundle` reset vs `from_prior(...)` delta inherit (Round-5 builder API) per §3.5.5
+- ordering — channel seq monotonicity is sole authority; history track topological emission with `CommitGraph::with_buffering` fallback per §3.5.6
+
+Round-5 builder hardening (search-side) lands `upsert_X`, `remove_X`, and
+`from_prior(...)` APIs on the 4 affected LQ builders (trigram, positions,
+symbol, scorer) so they are idempotent under §3.5.3 replay and support §3.5.5
+cross-generation delta inherit. The contract section is normative; the builder
+implementations are the search-side enforcement of it.
+
+#### Audit findings (cross-doc consistency)
+
+| Doc | Line(s) | Finding | Disposition |
+|---|---|---|---|
+| [rfc.md](../rfc.md) | 350 ("source of truth: apply-changes outputs plus snapshot/invalidation catalog"), 384 ("ingest changed file set from apply-changes / repo delta authority") | Stale `apply-changes` terminology in §Canonical Read Pipeline / §Canonical Incremental Write Pipeline; the canonical input is now producer-emitted `Upsert*` / `Delete*` channel ops per [producer-handoff.md §3.5](../../../ssot/producer-handoff.md). | **RESOLVED 2026-05-25**: rfc.md §Runtime metadata engine L350 rewritten to `LexicalChannelOp::UpsertDirty` / `EvictDirty` + snapshot catalog cross-link; §Canonical Incremental Write Pipeline step 1 rewritten to `BundleChannelSubscriber::next_event` with producer-handoff §3.5 / channel-architecture §3.1 / INDEX §3.6 cross-links. |
+| [rfc.md §Canonical Incremental Write Pipeline](../rfc.md) | 380–410 (steps 1–8 + Atomicity contract) | Steps describe the search-side mutation pipeline but predate the producer/search split. Steps 1 ("ingest changed file set from apply-changes") and 7 ("derive semantic delta packets from changed chunk/doc identities") implicitly assume search-side authorship; producer-handoff §3.5.5 mode (b) replaces step 7 with channel-driven `Upsert*` against an open prior gen. | **RESOLVED 2026-05-25**: top-of-section NOTE added stating producer-authorship inversion per INDEX §3.6; step 1 reframed to `BundleChannelSubscriber::next_event`; step 7 reframed to `SemanticChannelOp::UpsertEmbedding` / `DeleteEmbedding` with `DeleteChunk` cascade cross-link to producer-handoff §3.5.2. Atomicity contract (linearization point + sibling MARKER_OK invariant) preserved — orthogonal to authorship axis. |
+| [tickets/LEX-04.md](LEX-04.md) §3 Inputs | full §3 | LEX-04 is the regex-executor spec sheet; its §3 inputs are query-shaped (`LqQueryV1` + `RawRegex` + `PlanContext`), not delta-shaped. No delta-semantics reflection needed — LEX-04 is downstream of the delta-applying builders. The "incremental lexical indexing kernel" RFC roll-up is satisfied across LEX-02 / LEX-03 / LEX-05 / LEX-04 spec sheets per [§1.1](#11-spec-sheet--rfc-roll-up-map). | No edit. Delta semantics are owned by the upstream builders (trigram / positions / symbol / scorer), not by the regex executor; LEX-04 consumes the trigram authority after deltas have been applied. |
+
+These follow-ups do not block Round-5 builder hardening; they are doc-debt
+items against the post-correction RFC text.
 
 ---
 
@@ -303,6 +336,7 @@ Wave 8:
 | 7 | Reconcile §3.4 inter-sibling-doc conflicts (8 items) | each doc's owner |
 | 8 | Update implementation-plan.md §5 DoD rows where spec sheets refined the scope | impl-plan owner |
 | 9 | After items 1–8 settle, run full doc-paths lint and conformance corpus dry-run | CI |
+| 10 | Land `SEM_HANDLE_NOT_FOUND` typed error in [`crates/quanta-index-lq-semantic/src/errors.rs`](../../../../crates/quanta-index-lq-semantic/src/errors.rs) (currently absent) and wire it into the semantic resolver per [ADR-026](../implementation-plan.md) Option B; gated on Round 7a HNSW delta API landing | LQ-semantic agent |
 
 ---
 

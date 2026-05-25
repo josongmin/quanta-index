@@ -1,17 +1,44 @@
 use std::collections::BTreeMap;
 
+use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{LexicalCandidate, ManifestGeneration};
 
-use crate::error::CoreError;
+use crate::{domains::semantic::SemanticPolicy, error::CoreError};
 
 /// Reciprocal Rank Fusion constant. Tunable but fixed here so all callers
 /// produce identical fused rankings.
 const RRF_K: f64 = 60.0;
+const MIN_INTERNAL_FETCH_K: u32 = 100;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HybridOrchestratorPolicy;
 
 impl HybridOrchestratorPolicy {
+    pub fn validate_top_k(top_k: u32) -> Result<(), CoreError> {
+        let max_top_k = SemanticPolicy::max_top_k();
+        if top_k == 0 || top_k > max_top_k {
+            return Err(CoreError::Typed {
+                code: LexicalErrorCode::HybTopKInvalid.as_code_str().to_string(),
+                message: format!("hybrid: top_k must be within 1..={max_top_k}, got {top_k}"),
+            });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn over_fetch_top_k(top_k: u32) -> u32 {
+        let floored = if top_k < MIN_INTERNAL_FETCH_K {
+            MIN_INTERNAL_FETCH_K
+        } else {
+            top_k
+        };
+        if floored > SemanticPolicy::max_top_k() {
+            SemanticPolicy::max_top_k()
+        } else {
+            floored
+        }
+    }
+
     /// Require both tracks to have materialized the requested generation. If
     /// either is behind, query is `NOT_READY`.
     pub fn validate_joint_readiness(

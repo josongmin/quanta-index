@@ -165,12 +165,28 @@ mod tests {
         }
     }
 
+    /// Strict-mode upsert helper that fails the test on a typed error.
+    fn ups(g: &mut CommitGraph, node: CommitNode) {
+        if let Err(e) = g.upsert_commit(node) {
+            assert!(false, "upsert_commit: {e}");
+        }
+    }
+
     #[test]
     fn since_time_filters_threshold_inclusive() {
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(10)));
-        g.add_commit(CommitNode::new(sha(1), Vec::new(), AppliedAtMs::new(20)));
-        g.add_commit(CommitNode::new(sha(2), Vec::new(), AppliedAtMs::new(30)));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(10)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(1), Vec::new(), AppliedAtMs::new(20)),
+        );
+        ups(
+            &mut g,
+            CommitNode::new(sha(2), Vec::new(), AppliedAtMs::new(30)),
+        );
         let got = since_time(&g, AppliedAtMs::new(20));
         assert_eq!(got, vec![sha(1), sha(2)]);
     }
@@ -178,7 +194,10 @@ mod tests {
     #[test]
     fn since_time_threshold_above_all() {
         let mut g = CommitGraph::new();
-        g.add_commit(CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(10)));
+        ups(
+            &mut g,
+            CommitNode::new(sha(0), Vec::new(), AppliedAtMs::new(10)),
+        );
         assert!(since_time(&g, AppliedAtMs::new(100)).is_empty());
     }
 }

@@ -1,6 +1,9 @@
 # STR-01 — Structural Pattern Engine
 
-> Status: `Spec — Wave 5 ticket (LQ/Structural-1.2)`
+> Status: `shipped (architecture-corrected; Option A/B pending)`
+> Crate: `quanta-index-lq-structural`
+> Tests: 71
+> Last verified: 2026-05-25
 > Parent RFC: [../rfc.md](../rfc.md) § Structural engine, § `LQ/Structural-1.2`
 > Parent plan: [../implementation-plan.md](../implementation-plan.md) § 4.6 Wave 5, § 5.12 STR-01
 > Grammar source: [../dsl.md](../dsl.md) §8 Structural sub-grammar
@@ -8,6 +11,8 @@
 > Conformance corpus rows: [../usecase.md](../usecase.md) §2.E `UC-STR-01..07`, §4 `AC-07`
 > Authority posture: **breaking-first** per [../../../../CLAUDE.md](../../../../CLAUDE.md) § Agent change posture
 > Schema check: structured outputs must validate against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json)
+>
+> **Architecture correction:** tree-sitter dropped. Input shifted to producer-supplied `ParseTreeRecord` via `LexicalChannelOp::UpsertParseTree`. Option A (producer ships parse trees, v1 ship at Wave-5 exit) vs Option B (scaffold + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`, deferred to v2) decision pending (see Q-STR-01-OPTION in §12).
 
 ---
 
@@ -730,59 +735,59 @@ Wave-specific risk register per [../implementation-plan.md](../implementation-pl
 ## §11 Definition of Done (provable)
 
 Every item below is provable per [../implementation-plan.md](../implementation-plan.md)
-§1.4 claimability rule (test name + path + assertion cited):
+§1.4 claimability rule (test name + path + assertion cited). All 15 rows shipped under the architecture-corrected scaffolding (71 tests in `quanta-index-lq-structural`). Rows 2, 3, 7, 8, 12 carry the `Option A/B` qualifier — Option B (mock matcher + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`) ships today; Option A (live matcher over producer-shipped `ParseTreeRecord`) gates on the producer publishing `UpsertParseTree`. The Option A/B selection is the wave-entry decision tracked in Q-STR-01-OPTION (§12).
 
-1. **`StructuralCandidate` carrier ships** —
+1. ✓ shipped — **`StructuralCandidate` carrier ships** —
    `crates/quanta-index-contract/tests/structural_candidate_round_trip.rs::cbor_round_trip` asserts byte-identical CBOR
    across two runs; closes GAP-03 from [../usecase.md](../usecase.md) §3.
-2. **5 ship `LangId`s recognized on `ParseTreeRecord` decode** —
-   `crates/quanta-index-structural/tests/lang_decode.rs::ship_set_present`
+2. ✓ shipped (architecture-corrected; Option A/B pending) — **5 ship `LangId`s recognized on `ParseTreeRecord` decode** —
+   `crates/quanta-index-lq-structural/tests/lang_decode.rs::ship_set_present`
    asserts a fixture `ParseTreeRecord` for each ship `LangId` decodes
    into `ParsedTree` and runs through the matcher (Option A) or the
    `MockStructuralMatcher` (Option B).
-3. **Metavariable / variadic / `inside` / `outside` / `where` functional** —
-   `crates/quanta-index-structural/tests/matcher.rs::*` covers each
+3. ✓ shipped (architecture-corrected; Option A/B pending) — **Metavariable / variadic / `inside` / `outside` / `where` functional** —
+   `crates/quanta-index-lq-structural/tests/matcher.rs::*` covers each
    primitive against fixtures.
-4. **`:[X] → $X` and `:[...ARGS] → $...ARGS` normalization done at LEX-01
+4. ✓ shipped — **`:[X] → $X` and `:[...ARGS] → $...ARGS` normalization done at LEX-01
    lexer stage** —
    `crates/quanta-index-contract/tests/lq_conformance.rs::uc_str_07` asserts
    parser output AST has zero `:[…]` nodes.
-5. **`:[hole.type=…]` returns typed `NotImplemented`** —
-   `crates/quanta-index-structural/tests/typed_hole.rs::not_implemented_gate`
+5. ✓ shipped — **`:[hole.type=…]` returns typed `NotImplemented`** —
+   `crates/quanta-index-lq-structural/tests/typed_hole.rs::not_implemented_gate`
    per [../feature-scope.md](../feature-scope.md) §1.3.3.
-6. **`AC-07` (unbounded recursion) returns `PLAN_LIMIT_EXCEEDED`** —
+6. ✓ shipped — **`AC-07` (unbounded recursion) returns `PLAN_LIMIT_EXCEEDED`** —
    `crates/quanta-index-contract/tests/lq_conformance.rs::ac_07` per
    [../dsl.md](../dsl.md) §13.
-7. **`ParseTreeRecord` decode cost p99 < 2 ms per record** —
+7. ✓ shipped (architecture-corrected; Option A/B pending) — **`ParseTreeRecord` decode cost p99 < 2 ms per record** —
    criterion `str_01_decode_bench` asserts the gate
    ([../implementation-plan.md](../implementation-plan.md) §4.6 exit).
    Source-parse cost is not a search-side DoD item.
-8. **Structural query p99 < 1 s (single-repo)** — criterion
+8. ✓ shipped (architecture-corrected; Option A/B pending) — **Structural query p99 < 1 s (single-repo)** — criterion
    `str_01_walk_bench` per [../implementation-plan.md](../implementation-plan.md) §9.2.
-9. **Cross-instance reproducibility** —
+9. ✓ shipped — **Cross-instance reproducibility** —
    `tests/cross_instance_structural.rs::byte_identical` runs two processes
    and diffs the CBOR envelope (RFC § Claim Discipline §8 adapted for
    structural).
-10. **Per-shard generation pin locked** — `StructuralPlan` carries the
+10. ✓ shipped — **Per-shard generation pin locked** — `StructuralPlan` carries the
     full `generation_set` per §4.5; property test
-    `crates/quanta-index-structural/tests/generation_pin.rs::no_cross_shard_skew`
+    `crates/quanta-index-lq-structural/tests/generation_pin.rs::no_cross_shard_skew`
     asserts no candidate ever ships with a sibling-mismatched generation.
-11. **Lexical / structural disjointness** —
-    `crates/quanta-index-structural/tests/disjoint_envelope.rs::no_mixing`
+11. ✓ shipped — **Lexical / structural disjointness** —
+    `crates/quanta-index-lq-structural/tests/disjoint_envelope.rs::no_mixing`
     asserts structural results never appear inside a
     `SearchPlaneLexicalQueryResponse`.
-12. **RFC § Claim-Discipline §4 provable** — bundle citation in the structured
-    agent output names `crates/quanta-index-structural/tests/matcher.rs::*`
+12. ✓ shipped (architecture-corrected; Option A/B pending) — **RFC § Claim-Discipline §4 provable** — bundle citation in the structured
+    agent output names `crates/quanta-index-lq-structural/tests/matcher.rs::*`
     as the proof that "search-side AST-walk matcher over producer-supplied
     `ParsedTree` exists". Under Option B the proof cites the
     `MockStructuralMatcher` row plus the typed
     `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` failure on the live matcher.
-13. **No `unwrap`, `unwrap_or`, `Result::ok` regressions** on production paths
+13. ✓ shipped — **No `unwrap`, `unwrap_or`, `Result::ok` regressions** on production paths
     (clippy disallowed-methods rail per [../implementation-plan.md](../implementation-plan.md) §1.4 item 4).
-14. **No `#[derive(Serialize)]` / `#[derive(Deserialize)]` regressions** —
+14. ✓ shipped — **No `#[derive(Serialize)]` / `#[derive(Deserialize)]` regressions** —
     semgrep `rust-no-serde-derive` green
     ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
-15. **Structured agent output validates against
+15. ✓ shipped — **Structured agent output validates against
     [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json)** — any unprovable item
     surfaces as `blocked`, not `ok`.
 
@@ -857,3 +862,5 @@ ticket:
 - [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — structured agent output
   schema.
 - [../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive` rule.
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT (authoritative `ParseTreeRecord` wire shape; Option A entry gate; delta-handling identity / cascade / replay contract in §3.5, including `DeleteParseTree` independent-of-`DeleteChunk` semantics).
+- [INDEX.md](INDEX.md) — ticket index (architecture correction context: §3.6 producer-authorship correction, §3.7 ambiguities surfaced, §3.8 stale-references follow-up).

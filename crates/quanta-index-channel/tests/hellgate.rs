@@ -491,7 +491,17 @@ fn producer_can_publish_after_subscriber_open() -> TestResult {
         | LexicalChannelOp::DeleteChunk(_)
         | LexicalChannelOp::UpsertSymbol(_)
         | LexicalChannelOp::DeleteSymbol(_)
-        | LexicalChannelOp::Seal(_) => {
+        | LexicalChannelOp::Seal(_)
+        | LexicalChannelOp::UpsertCommit(_)
+        | LexicalChannelOp::UpsertRef(_)
+        | LexicalChannelOp::UpsertTag(_)
+        | LexicalChannelOp::DeleteRef(_)
+        | LexicalChannelOp::DeleteTag(_)
+        | LexicalChannelOp::UpsertDirty(_)
+        | LexicalChannelOp::EvictDirty(_)
+        | LexicalChannelOp::UpsertParseTree(_)
+        | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(boxed(format!("expected FullBundle, got {:?}", evt.seq)));
         }
     }

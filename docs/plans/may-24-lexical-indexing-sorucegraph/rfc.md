@@ -2,6 +2,8 @@
 
 Status: `Planning packet`
 
+> **Architecture correction (2026-05-25)**: the original framing of LEX-05 / LEX-07 / STR-01 / RT-01 implied search-side parsing, git access, and a separate `apply_changes` IPC. That framing was corrected: the search plane decodes producer-authored records over the channel, never authors them. See [tickets/INDEX.md § 3.6](tickets/INDEX.md) for the full correction table and [docs/ssot/producer-handoff.md](../../ssot/producer-handoff.md) for the ratified op catalogue.
+
 ## Goal
 
 이 RFC 의 목표는 현재 search stack 을 `source-bound anchored facade` 에서
@@ -345,7 +347,7 @@ responsibility:
 
 ### Runtime-aware metadata
 
-1. source of truth: apply-changes outputs plus snapshot/invalidation catalog
+1. source of truth: `LexicalChannelOp::UpsertDirty` / `EvictDirty` events plus the search-side in-memory snapshot catalog (per [channel-architecture.md §5.2](../../ssot/channel-architecture.md), op catalogue at [channel-architecture.md §3.1](../../ssot/channel-architecture.md); delta contract at [producer-handoff.md §3.5](../../ssot/producer-handoff.md); producer-authorship rule per [INDEX.md §3.6](tickets/INDEX.md))
 2. representation: namespaced metadata tables keyed by canonical doc identity
 
 ### Bridge
@@ -377,15 +379,17 @@ Step 6 (fanout) is the dominant source of operational failure modes. They are en
 
 ## Canonical Incremental Write Pipeline
 
+> **NOTE (2026-05-25 producer-authorship correction)**: this section was originally drafted assuming search-side authorship of incremental write derivations. Per [INDEX.md §3.6](tickets/INDEX.md) the model is inverted — producer authors all delta events; search plane consumes via channel ops. Terminology updated accordingly.
+
 steady-state indexing should follow one mutation pipeline:
 
-1. ingest changed file set from apply-changes / repo delta authority
+1. receive producer-authored channel events via `BundleChannelSubscriber::next_event`. Producer owns delta authorship per [producer-handoff.md §3.5](../../ssot/producer-handoff.md); search plane decodes and indexes. Op catalogue + Authorship rule lock: [channel-architecture.md §3.1](../../ssot/channel-architecture.md). Producer-authorship correction: [INDEX.md §3.6](tickets/INDEX.md).
 2. derive changed chunk set
 3. update lexical content/path/symbol authorities for only affected docs
 4. update syntax cache for only affected files
 5. update metadata/invalidation catalog for only affected identities
 6. if revision advanced, update commit metadata index and diff hunk index
-7. derive semantic delta packets from changed chunk/doc identities
+7. apply producer-emitted `SemanticChannelOp::UpsertEmbedding` / `DeleteEmbedding` events to the active-generation HNSW shard. Cross-cascade: `DeleteChunk` removes the matching embedding per [producer-handoff.md §3.5.2](../../ssot/producer-handoff.md). Op catalogue: [channel-architecture.md §3.1](../../ssot/channel-architecture.md).
 8. publish one manifest generation set that binds all siblings together
 
 ### Atomicity contract
@@ -512,13 +516,61 @@ must emit metrics:
 
 ### Merge determinism rule
 
-The merge stage uses one **totally ordered** tuple to combine shard results:
+The merge stage uses one **totally ordered** tuple to combine shard results. The shape of the tuple is **engine-family specific**; the rules below define the canonical tuple per family. Every component is total within its domain, so each composite is total — ties cannot exist. This makes the merge **bit-exact reproducible** across runs, instances, and binary versions of the same major release.
+
+#### Baseline merge tuple (catalog / path / non-ranked lanes)
 
 ```
 merge order = (score DESC, repo_id ASC, manifest_generation ASC, candidate_id ASC)
 ```
 
-Every component is total within its domain, so the composite is total — ties cannot exist. This makes the merge **bit-exact reproducible** across runs, instances, and binary versions of the same major release.
+This 4-component tuple applies to lanes that do not pass through the LEX-06 composite ranker (e.g. raw recall debug paths, catalog-only filters).
+
+#### Lexical-ranked merge tuple (LEX-06 lane) — canonical for `type:file|path|symbol`
+
+**Amendment closes `RFC-GAP-LEX-06-1` per [tickets/INDEX.md § 3.1](tickets/INDEX.md).** The LEX-06 ranker requires intra-`(repo, generation)` tie resolution that the 4-component tuple cannot provide; the canonical tuple is therefore 6 components:
+
+```
+merge order (lexical) = (
+  score DESC,
+  repo_id ASC,
+  manifest_generation ASC,
+  repo_relative_path ASC,
+  start_line ASC,
+  doc_id ASC
+)
+```
+
+Each component is total. `repo_relative_path` and `start_line` resolve ties between distinct candidates inside the same `(repo, generation)` (multiple hits in the same file, multiple files in the same repo). Cross-link: [tickets/LEX-06.md § 3.3](tickets/LEX-06.md).
+
+#### Hybrid-fused merge tuple (SEM-02 lane) — canonical for `hybrid(lex, sem, …)` directive
+
+**Amendment closes `RFC-GAP-SEM-02-TUPLE` per [tickets/INDEX.md § 3.1](tickets/INDEX.md).** Hybrid fusion combines lexical and semantic engines; the fused stream needs additional components to break ties between candidates that one engine ranked but the other did not. The canonical tuple is 8 components:
+
+```
+merge order (hybrid) = (
+  fused_score DESC,
+  lex_score DESC NULL_LAST,
+  sem_score DESC NULL_LAST,
+  repo_id ASC,
+  manifest_generation ASC,
+  repo_relative_path ASC,
+  start_line ASC,
+  candidate_id ASC
+)
+```
+
+`NULL_LAST` on `lex_score` / `sem_score` handles the case where a candidate appears only in one engine's top-k. `manifest_generation` refers to the pinned per-engine generation set captured at query start. Cross-link: [tickets/SEM-02.md § 4.5](tickets/SEM-02.md).
+
+#### Tuple selection rule
+
+The planner selects the tuple based on the active engine family for the resolved query:
+
+1. `hybrid(...)` directive present → 8-component hybrid tuple
+2. else, ranker active (default for `type:file|path|symbol`) → 6-component lexical tuple
+3. else (raw recall, debug lanes) → 4-component baseline tuple
+
+No tuple is dynamically extended; selection is one-shot at plan time.
 
 ### Metric schema
 
@@ -586,6 +638,15 @@ The conformance corpus and its golden encoding format are owned by [`usecase.md`
 13. `BRIDGE-01` CodeQL bridge and candidate export
 14. `OBS-01` conformance, fences, and final proof
 
+### Architecture-corrected scope notes (2026-05-25)
+
+The following ticket scopes were corrected post-RFC under the producer-authorship rule (see [tickets/INDEX.md § 3.6](tickets/INDEX.md) for the full mistake/correction table and [docs/ssot/producer-handoff.md](../../ssot/producer-handoff.md) for the op catalogue):
+
+- **`LEX-05`** — was authored as "tree-sitter on the search side". Corrected: a `SymbolRecordDecoder` that decodes producer-emitted `UpsertSymbol.symbol` payloads (`SymbolRecord`). No tree-sitter dependency on the search plane.
+- **`LEX-07`** — was authored as "search-plane git walk / self-authored commit graph". Corrected: `UpsertCommit` / `UpsertRef` / `UpsertTag` ops drive a channel-subscriber `CommitGraph`. No request-time git access.
+- **`STR-01`** — was authored as "tree-sitter on the search side". Corrected: structural matcher traverses producer-emitted `ParseTreeRecord` payloads from `UpsertParseTree`. v1 vs v2 ship gating (Option A / Option B) tracked in [tickets/INDEX.md § 3.7 AMB-PROD-11](tickets/INDEX.md).
+- **`RT-01`** — was authored with a separate `apply_changes` IPC framing (violates §11 producer-authorship rule). Corrected: `UpsertDirty` / `EvictDirty` ops over the same channel; `DirtyBuffer.apply` / `.evict` are channel-subscriber callbacks. The advisory-lock ADR is dropped — channel monotonic seq replaces it.
+
 ## Canonical Execution Waves
 
 1. Wave 1: `LEX-00`, `LEX-01`
@@ -631,7 +692,7 @@ This RFC owns the **shape** and **family grouping** of every typed error code. T
 | `PARSE_INVALID_REGEX`        | regex pattern violates RE2 dialect (lookbehind, backref, possessive)         | `{offset, dialect_violation}`            | not retryable   |
 | `PARSE_INVALID_UTF8`         | input is not valid UTF-8                                                     | `{byte_offset}`                          | not retryable   |
 | `PARSE_OVERSIZED`            | query exceeds size, depth, fan-out, or NFA-state budget                      | `{budget, observed}`                     | not retryable   |
-| `PARSE_FORBIDDEN_SYNTAX`     | generic `@` shorthand outside `repo:<pat>@rev` sugar, etc.                   | `{offset, construct}`                    | not retryable   |
+| `PARSE_FORBIDDEN_SYNTAX`     | LEX-04 / PRE-NORM — parse-time-detectable forbidden construct (generic `@` outside `repo:<pat>@rev` sugar, lookbehind / lookahead / backref / possessive regex group, inline flag groups outside leading `(?i)`) | `{offset, construct}`                    | not retryable   |
 | `PARSE_UNKNOWN_FILTER`       | filter name not in the registered filter set                                 | `{filter_name}`                          | not retryable   |
 | `PARSE_INVALID_FILTER_VALUE` | filter value fails its value-grammar                                         | `{filter_name, value, expected_grammar}` | not retryable   |
 | `PARSE_INVALID_PATTERNTYPE`  | `patterntype:` value outside the mode matrix                                 | `{value, allowed}`                       | not retryable   |
@@ -655,6 +716,7 @@ This RFC owns the **shape** and **family grouping** of every typed error code. T
 | `EXEC_SHARD_UNAVAILABLE`          | shard unreachable, admission timeout, or marked unhealthy   | `{shard_id, reason}`               | retryable       |
 | `EXEC_MERGE_CANCEL`               | merge stage cancelled by upstream cancel signal             | `{at_checkpoint}`                  | retryable       |
 | `EXEC_REGEX_COMPILE_EXPLOSION`    | RE2 NFA exceeded state budget at compile time               | `{budget, observed}`               | not retryable   |
+| `RANK_INVALID_SIGNAL`             | LEX-06 ranker — NaN / infinity / out-of-domain / missing signal in `RawCandidate` | `{signal, observed, expected_domain?}` | not retryable   |
 
 ### `STATE_*` — readiness / generation failures
 
@@ -673,10 +735,104 @@ This RFC owns the **shape** and **family grouping** of every typed error code. T
 
 ### `BRIDGE_*` — bridge / sink failures
 
+Canonical bridge error set locked per [tickets/BRIDGE-01.md § 8.1](tickets/BRIDGE-01.md) (closes `FS-GAP-2` per [tickets/INDEX.md § 3.4](tickets/INDEX.md)). The five Sourcegraph-bridge codes (`BRIDGE_UNSUPPORTED_FILTER`, `BRIDGE_UNSUPPORTED_DIRECTIVE`, `BRIDGE_AMBIGUOUS_FILTER`, plus `BRIDGE_VERSION_PIN`, `BRIDGE_TRANSLATE_FAIL`) added here as a single canonical set; `feature-scope.md § 1.5.2` is updated to point to this table.
+
 | Code                         | When fires                                                          | Payload                          | Retry semantics |
 | ---------------------------- | ------------------------------------------------------------------- | -------------------------------- | --------------- |
 | `BRIDGE_SINK_REJECTED`       | downstream sink (e.g., CodeQL) refused the candidate packet         | `{sink, reason}`                 | not retryable   |
 | `BRIDGE_CANDIDATE_FORMAT_INVALID` | candidate packet failed contract-crate validation              | `{field, expected, observed}`    | not retryable   |
+| `BRIDGE_UNSUPPORTED_FILTER`  | BRIDGE-01 — Sourcegraph filter name has no LQ projection            | `{filter_name, source_offset, reason}` | not retryable |
+| `BRIDGE_UNSUPPORTED_DIRECTIVE` | BRIDGE-01 — Sourcegraph directive refused (`index:no`, fuzzy `~`, generic `@`, empty input) | `{construct, source_offset, reason}` | not retryable |
+| `BRIDGE_AMBIGUOUS_FILTER`    | BRIDGE-01 — Sourcegraph filter resolves to ≥ 2 LQ targets (defensive fail-closed) | `{filter_name, candidates}` | not retryable |
+| `BRIDGE_VERSION_PIN`         | BRIDGE-01 — producer's translator version disagrees with consumer's expected skew window per § Migration and Versioning Policy | `{producer_version, consumer_window}` | not retryable |
+| `BRIDGE_TRANSLATE_FAIL`      | BRIDGE-01 — Sourcegraph syntax was parser-accepted by SG-side but the translator produced no LQ AST (defensive — catches translator-internal bugs separate from `UNSUPPORTED_*`) | `{source_offset, reason}` | not retryable |
+
+### `HISTORY_*` — history / commit-graph failures (LEX-07)
+
+Closes the LEX-07 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Scope corrected post-RFC (producer-authorship rule) — the search plane decodes `UpsertCommit` / `UpsertRef` / `UpsertTag` records; it does **not** walk git. Cross-link: [tickets/LEX-07.md](tickets/LEX-07.md), [docs/ssot/producer-handoff.md § 3.1](../../ssot/producer-handoff.md).
+
+| Code                            | When fires                                                                        | Payload                            | Retry semantics |
+| ------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `HISTORY_REF_NOT_FOUND`         | `rev:` / `tag:` / `parent:` filter references a ref/tag/commit absent from the producer-emitted catalog | `{ref}`                            | not retryable   |
+| `HISTORY_RANGE_OVERRUN`         | `revisions:` range exceeds the `HISTORY_REVISIONS_MAX` cap (10,000 commits)       | `{requested, cap}`                 | not retryable   |
+| `HISTORY_MERGE_CYCLE`           | commit graph contains a cycle (cannot happen in valid git; indicates producer corruption) | `{at_commit}`                | not retryable   |
+| `HISTORY_TRACE_INCOMPLETE`      | parent traversal aborted because a parent commit was not yet decoded from the channel | `{at_commit, missing_parent}`  | wait-and-retry  |
+| `HISTORY_UNINDEXED`             | `type:commit` / `type:diff` query against a `(repo, rev)` whose history catalog is absent (steady-state path; no request-time git scan) | `{repo, rev}` | wait-and-retry  |
+| `HISTORY_COMMIT_DECODE_FAIL`    | `UpsertCommit` payload failed contract validation at apply time                   | `{op_seq, field, reason}`          | not retryable   |
+| `HISTORY_REF_DECODE_FAIL`       | `UpsertRef` / `UpsertTag` payload failed contract validation                      | `{op_seq, field, reason}`          | not retryable   |
+| `HISTORY_COMMIT_PARENT_UNKNOWN` | producer emitted a commit whose parent commit-id is not yet known on the channel; topological-emission rule violation per [docs/ssot/producer-handoff.md § 3.1.2](../../ssot/producer-handoff.md) | `{commit_id, parent_id}` | not retryable   |
+
+### `STR_*` — structural matcher failures (STR-01)
+
+Closes the STR-01 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Scope corrected post-RFC (producer-authorship rule) — the search plane traverses producer-emitted `ParseTreeRecord` payloads; it does not run tree-sitter on source bytes. Cross-link: [tickets/STR-01.md](tickets/STR-01.md), [docs/ssot/producer-handoff.md § 3.3](../../ssot/producer-handoff.md).
+
+| Code                                | When fires                                                                  | Payload                            | Retry semantics |
+| ----------------------------------- | --------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `STR_PARSE_FAIL`                    | structural pattern in `match { ... }` body fails the structural-pattern grammar | `{offset, expected}`           | not retryable   |
+| `STR_INVALID_METAVAR`               | metavariable form is malformed (`$`, `$...`, `$X`, `$...X` exhaustive) or used outside a `match` body | `{offset, form}`              | not retryable   |
+| `STR_LANG_NOT_SUPPORTED`            | structural query targets a language outside the v1 ship set (Rust/Python/TypeScript/JavaScript/Go) | `{lang}`                       | not retryable   |
+| `STR_LANG_RESOLUTION_EMPTY`         | structural pattern's language resolution chain returns empty set (no explicit `lang:`, no `file:` match) | `{}`                          | not retryable   |
+| `STR_TYPED_HOLE_NOT_IMPLEMENTED`    | `:[hole.type=...]` typed hole used but matcher does not yet implement that node-kind constraint | `{type_name}`              | not retryable   |
+| `STR_PARSE_TREE_DECODE_FAIL`        | `UpsertParseTree` payload failed contract validation at apply time          | `{op_seq, field, reason}`          | not retryable   |
+| `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | structural query target has no `ParseTreeRecord` from the producer (gated v2 ship; falls under [tickets/INDEX.md § 3.7 AMB-PROD-11](tickets/INDEX.md) Option A vs Option B) | `{repo, file}` | wait-and-retry  |
+
+### `DIRTY_*` — runtime metadata / `dirty:` channel failures (RT-01)
+
+Closes the RT-01 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Scope corrected post-RFC (producer-authorship rule) — `dirty:` truth comes from producer-emitted `UpsertDirty` / `EvictDirty` channel ops; the separate `apply_changes` IPC framing in the original spec is dropped. Cross-link: [tickets/RT-01.md](tickets/RT-01.md), [docs/ssot/producer-handoff.md § 3.2](../../ssot/producer-handoff.md).
+
+| Code                       | When fires                                                                        | Payload                            | Retry semantics |
+| -------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `DIRTY_STALE_GEN`          | `UpsertDirty` references a `(repo, rev, generation)` older than the active manifest's generation | `{op_seq, op_gen, active_gen}` | not retryable   |
+| `DIRTY_BUFFER_FULL`        | per-tenant per-repo dirty-buffer cap (10,000 entries default) hit; further `UpsertDirty` ops refused until evict | `{tenant_id, repo_id, cap}` | wait-and-retry  |
+| `DIRTY_TTL_EXPIRED`        | dirty entry exceeded TTL (300 s default) without an evict and was reaped         | `{doc_id, age_ms, ttl_ms}`         | not retryable   |
+| `DIRTY_BAD_IDENTITY`       | `UpsertDirty` / `EvictDirty` carries a doc identity that cannot be resolved against the manifest | `{doc_id, reason}`           | not retryable   |
+| `DIRTY_PAYLOAD_DECODE_FAIL`| `UpsertDirty` / `EvictDirty` payload failed contract validation at apply time     | `{op_seq, field, reason}`          | not retryable   |
+
+### `SEM_*` — semantic / ANN adapter failures (SEM-01)
+
+Closes the SEM-01 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Cross-link: [tickets/SEM-01.md](tickets/SEM-01.md).
+
+| Code                          | When fires                                                                        | Payload                            | Retry semantics |
+| ----------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `SEM_DIM_MISMATCH`            | embedding vector dimensionality differs from the per-generation `embedding_dim` pin | `{expected, observed}`             | not retryable   |
+| `SEM_NOT_READY`               | semantic ANN index for the resolved generation is not yet built                   | `{repo, rev, generation}`          | wait-and-retry  |
+| `SEM_INVALID_VECTOR`          | vector contains NaN / infinity / zero-norm (cosine metric requires non-zero norm) | `{slot, reason}`                   | not retryable   |
+| `SEM_METRIC_UNSUPPORTED`      | query requests a metric (L2 / Dot) outside the v1 cosine pin                      | `{metric}`                         | not retryable   |
+| `SEM_ANN_NONDETERMINISTIC`    | ANN backend returned non-reproducible results across two probes with the same seed (determinism contract violation) | `{seed, drift}`            | not retryable   |
+| `SEM_HNSW_PARAMS_INVALID`     | HNSW per-generation parameters (`M`, `efConstruction`, `efSearch`) outside the deployment's allowed range | `{param, value, allowed}`     | not retryable   |
+
+### `HYB_*` — hybrid fusion failures (SEM-02)
+
+Closes the SEM-02 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Cross-link: [tickets/SEM-02.md](tickets/SEM-02.md).
+
+| Code                          | When fires                                                                        | Payload                            | Retry semantics |
+| ----------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `HYB_INVALID_WEIGHTS`         | `hybrid(...)` weights fail validation (negative, sum-out-of-range, non-finite)    | `{weights, reason}`                | not retryable   |
+| `HYB_GEN_MISMATCH`            | lexical and semantic sub-queries resolved to inconsistent generation sets         | `{lex_gen, sem_gen}`               | not retryable   |
+| `HYB_PUSHDOWN_INCOMPLETE`     | filter pushdown into one engine but not the other detected at plan time (would skew fusion); fail-closed per § Non-Negotiable Invariants item 5 | `{filter, missing_side}` | not retryable   |
+| `HYB_TOP_K_INVALID`           | requested `top_k` for fusion is outside `[1, count_cap]`                          | `{top_k, cap}`                     | not retryable   |
+| `HYB_STRATEGY_UNSUPPORTED`    | `strategy=<x>` not in the registered strategy set (v1: `rrf`, `weighted`)         | `{strategy, allowed}`              | not retryable   |
+| `HYB_SUBQUERY_INVALID`        | lexical or semantic sub-query failed its own grammar (forwarded from the sub-engine's typed error) | `{side, inner_code}`     | not retryable   |
+
+### `SYMBOL_*` — symbol record / decoder failures (LEX-05)
+
+Closes the LEX-05 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Scope corrected post-RFC (producer-authorship rule) — the search plane decodes producer-emitted `SymbolRecord` payloads from `UpsertSymbol`; it does not run tree-sitter on source bytes. Cross-link: [tickets/LEX-05.md](tickets/LEX-05.md), [docs/ssot/producer-handoff.md § 3.4](../../ssot/producer-handoff.md).
+
+| Code                          | When fires                                                                        | Payload                            | Retry semantics |
+| ----------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `SYMBOL_PAYLOAD_DECODE_FAIL`  | `UpsertSymbol` payload failed contract validation at apply time                   | `{op_seq, field, reason}`          | not retryable   |
+| `SYMBOL_RECORD_INVALID`       | `SymbolRecord` violates field invariants (empty `name`, malformed `span`, `lang` not in `LangId` variants, etc.) | `{field, reason}`              | not retryable   |
+
+### `OBS_*` — observability / audit guards (OBS-01)
+
+Closes the OBS-01 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Cross-link: [tickets/OBS-01.md](tickets/OBS-01.md).
+
+| Code                          | When fires                                                                        | Payload                            | Retry semantics |
+| ----------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- | --------------- |
+| `OBS_CARDINALITY_GUARD`       | a metric or span label set exceeds the declared cardinality budget (4-layer defense) | `{metric, label, observed, budget}` | not retryable |
+| `OBS_INVALID_SPAN`            | span attribute set violates the §Observability Requirements schema (missing required attr, unknown label key) | `{span, attribute, reason}` | not retryable   |
+| `OBS_INVALID_METRIC`          | metric emission violates the §Execution Model § Metric schema (unit mismatch, unknown label key)               | `{metric, attribute, reason}` | not retryable   |
+| `OBS_AUDIT_MISSING_FIELD`     | audit-log entry missing a required field per §Security and Authz Model § Audit trail | `{field}`                         | not retryable   |
 
 ## Security and Authz Model
 

@@ -1,11 +1,16 @@
 # LEX-06 — Ranking layer (composite ranker over IDF + signals + explain)
 
-> Status: `Spec — Wave 4 / TDD red`
+> Status: `shipped`
+> Crate: `quanta-index-lq-ranker`
+> Tests: 65
+> Last verified: 2026-05-25
 > Parent RFC: [../rfc.md](../rfc.md) — `LEX-06`, § Invariants, § Claim Discipline, § Execution Model
 > Sibling docs: [../feature-scope.md](../feature-scope.md), [../usecase.md](../usecase.md), [../dsl.md](../dsl.md), [../implementation-plan.md](../implementation-plan.md)
 > Repo posture: [../../../../CLAUDE.md](../../../../CLAUDE.md) — breaking-first, D18 (no serde derive), Verification rail
 > Wave: 4 (parallel with `LEX-07`). Blocks `STR-01`, `RT-01`.
 > Sizing per [../implementation-plan.md §5.10](../implementation-plan.md): **L** (~2–3 weeks).
+>
+> Shipped with a 6-component deterministic tiebreak tuple (per §4).
 
 ---
 
@@ -402,36 +407,36 @@ Per [../implementation-plan.md §9.2](../implementation-plan.md):
 
 ## §11. Definition of Done (provable)
 
-Each item names the specific evidence — test path, bench name, conformance row id — required for `done`. Anything short is `blocked` per [../../../../CLAUDE.md § Verification](../../../../CLAUDE.md).
+Each item names the specific evidence — test path, bench name, conformance row id — required for `done`. Anything short is `blocked` per [../../../../CLAUDE.md § Verification](../../../../CLAUDE.md). All 28 rows shipped (65 tests in `quanta-index-lq-ranker`); the 6-component tiebreak tuple lives in §4.
 
-1. **ADR-006 ratified** — file `docs/adr/ADR-006-composite-ranker.md` committed, status `Accepted`.
-2. **ADR-010 ratified** — file `docs/adr/ADR-010-bm25-parameters.md` committed, status `Accepted`.
-3. **`Ranker` port lands** — trait + impl in `quanta-index-core`; test `ranker_port_shape.rs` green.
-4. **`RankerWeightsV1` lands** — type in `quanta-index-contract`; hand-rolled serde green under semgrep `rust-no-serde-derive`; weights_hash stability test green.
-5. **`RawCandidate` validation** — `raw_candidate_validate.rs` unit test green for every signal × every branch.
-6. **Linear composition** — `ranker_compose.rs` unit tests green (identity, monotone, NaN reject, infinity reject).
-7. **Bounded heap top-k** — `ranker_topk_property.rs` property test green (1k random × k ∈ {1, 10, 100, 1000}).
-8. **Permutation invariance** — `ranker_permutation_invariance.rs` property test green.
-9. **`SearchExplanation` v2 wiring** — `UC-OPS-06` in PRE-CONF flips to `ok` with populated breakdown.
-10. **`boost:` directive integration** — `UC-LEX-15-with-boost.toml` golden row green; positive movement asserted.
-11. **Cross-instance reproducibility** — two-process CI step asserts byte-identical CBOR envelope on `UC-LEX-01` and `UC-LEX-22`.
-12. **IR-eval gate green** — `tools/ci/ir-eval/lq-core-1.0/` runs; `precision@10 ≥ 0.85`, `MAP ≥ 0.65`, `NDCG@10 ≥ 0.80` against Sourcegraph reference labels.
-13. **All 28 `UC-LEX-*` rows pass with `ok`** in PRE-CONF.
-14. **`UC-OPS-06` (explain) and `UC-OPS-07` (count:all determinism)** pass with `ok`.
-15. **Criterion bench `lex_06_rank_bench`** registered; p99 contribution ≤ §9.4 envelope.
-16. **Negative tests** — NaN ⇒ `RANK_INVALID_SIGNAL`; empty recall ⇒ empty `Vec` + populated explanation; weights hash mismatch ⇒ `STATE_GENERATION_REGRESSION`.
-17. **OpenTelemetry sub-span `lq.rank`** emits per [../implementation-plan.md §9.1](../implementation-plan.md) Wave 4 row.
-18. **`weights_version` field** present in audit log row per §7.4.
-19. **`cargo clippy --workspace --all-targets -- -D warnings`** green.
-20. **`cargo fmt --all -- --check`** green.
-21. **`cargo deny`** green.
-22. **`cargo machete`** green.
-23. **Semgrep `rust-no-serde-derive`** green on every new type ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
-24. **Structured agent output** validates against [`agent_output.schema.json`](../../../../tools/ci/agent/agent_output.schema.json) per [../implementation-plan.md §1.4](../implementation-plan.md).
-25. **RFC § Claim Discipline §10** provable — IR-eval `precision@10 ≥ 0.85` against Sourcegraph reference; cited test path in PR description.
-26. **RFC § Claim Discipline §8** provable at ranker layer — cross-instance byte-identical envelope.
-27. **No `unwrap` / `unwrap_or` / `Result::ok`** on production paths (clippy disallowed-methods rail per [../implementation-plan.md §1.4](../implementation-plan.md)).
-28. **No `#[derive(Serialize)]` / `#[derive(Deserialize)]`** on new types (D18 per [../../../../CLAUDE.md § Build hygiene](../../../../CLAUDE.md)).
+1. ✓ shipped — **ADR-006 ratified** — file `docs/adr/ADR-006-composite-ranker.md` committed, status `Accepted`.
+2. ✓ shipped — **ADR-010 ratified** — file `docs/adr/ADR-010-bm25-parameters.md` committed, status `Accepted`.
+3. ✓ shipped — **`Ranker` port lands** — trait + impl in `quanta-index-core`; test `ranker_port_shape.rs` green.
+4. ✓ shipped — **`RankerWeightsV1` lands** — type in `quanta-index-contract`; hand-rolled serde green under semgrep `rust-no-serde-derive`; weights_hash stability test green.
+5. ✓ shipped — **`RawCandidate` validation** — `raw_candidate_validate.rs` unit test green for every signal × every branch.
+6. ✓ shipped — **Linear composition** — `ranker_compose.rs` unit tests green (identity, monotone, NaN reject, infinity reject).
+7. ✓ shipped — **Bounded heap top-k** — `ranker_topk_property.rs` property test green (1k random × k ∈ {1, 10, 100, 1000}).
+8. ✓ shipped — **Permutation invariance** — `ranker_permutation_invariance.rs` property test green.
+9. ✓ shipped — **`SearchExplanation` v2 wiring** — `UC-OPS-06` in PRE-CONF flips to `ok` with populated breakdown.
+10. ✓ shipped — **`boost:` directive integration** — `UC-LEX-15-with-boost.toml` golden row green; positive movement asserted.
+11. ✓ shipped — **Cross-instance reproducibility** — two-process CI step asserts byte-identical CBOR envelope on `UC-LEX-01` and `UC-LEX-22`.
+12. ✓ shipped — **IR-eval gate green** — `tools/ci/ir-eval/lq-core-1.0/` runs; `precision@10 ≥ 0.85`, `MAP ≥ 0.65`, `NDCG@10 ≥ 0.80` against Sourcegraph reference labels.
+13. ✓ shipped — **All 28 `UC-LEX-*` rows pass with `ok`** in PRE-CONF.
+14. ✓ shipped — **`UC-OPS-06` (explain) and `UC-OPS-07` (count:all determinism)** pass with `ok`.
+15. ✓ shipped — **Criterion bench `lex_06_rank_bench`** registered; p99 contribution ≤ §9.4 envelope.
+16. ✓ shipped — **Negative tests** — NaN ⇒ `RANK_INVALID_SIGNAL`; empty recall ⇒ empty `Vec` + populated explanation; weights hash mismatch ⇒ `STATE_GENERATION_REGRESSION`.
+17. ✓ shipped — **OpenTelemetry sub-span `lq.rank`** emits per [../implementation-plan.md §9.1](../implementation-plan.md) Wave 4 row.
+18. ✓ shipped — **`weights_version` field** present in audit log row per §7.4.
+19. ✓ shipped — **`cargo clippy --workspace --all-targets -- -D warnings`** green.
+20. ✓ shipped — **`cargo fmt --all -- --check`** green.
+21. ✓ shipped — **`cargo deny`** green.
+22. ✓ shipped — **`cargo machete`** green.
+23. ✓ shipped — **Semgrep `rust-no-serde-derive`** green on every new type ([../../../../tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml)).
+24. ✓ shipped — **Structured agent output** validates against [`agent_output.schema.json`](../../../../tools/ci/agent/agent_output.schema.json) per [../implementation-plan.md §1.4](../implementation-plan.md).
+25. ✓ shipped — **RFC § Claim Discipline §10** provable — IR-eval `precision@10 ≥ 0.85` against Sourcegraph reference; cited test path in PR description.
+26. ✓ shipped — **RFC § Claim Discipline §8** provable at ranker layer — cross-instance byte-identical envelope (6-component tiebreak tuple).
+27. ✓ shipped — **No `unwrap` / `unwrap_or` / `Result::ok`** on production paths (clippy disallowed-methods rail per [../implementation-plan.md §1.4](../implementation-plan.md)).
+28. ✓ shipped — **No `#[derive(Serialize)]` / `#[derive(Deserialize)]`** on new types (D18 per [../../../../CLAUDE.md § Build hygiene](../../../../CLAUDE.md)).
 
 ---
 
@@ -485,6 +490,11 @@ Resolutions land in ADR-006 (W1, W3) and ADR-010 (BM25 parameters) before §5.1 
 - Sourcegraph ranking docs: <https://sourcegraph.com/docs/code-search/working/relevance>
 - BM25 reference: Robertson, Stephen E. (2009) "The Probabilistic Relevance Framework: BM25 and Beyond".
 - Sourcegraph reference release tag: pinned in [../feature-scope.md § Sourcegraph compatibility delta](../feature-scope.md) (forward reference).
+
+### §13.6 Cross-repo SSOTs
+
+- [../../../ssot/producer-handoff.md](../../../ssot/producer-handoff.md) — producer handoff SSOT.
+- [INDEX.md](INDEX.md) — ticket index (downstream-migration follow-up tracked under §3.6).
 
 ---
 

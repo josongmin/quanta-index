@@ -152,6 +152,16 @@ impl HnswIndex {
         }
     }
 
+    #[must_use]
+    pub(crate) fn resolve_handle(&self, id: &str) -> Option<&[f32]> {
+        let idx = self.id_to_idx.get(id).copied()?;
+        let node = self.nodes.get(idx)?;
+        if node.deleted {
+            return None;
+        }
+        Some(node.vector.as_slice())
+    }
+
     /// Returns `(id, cosine_similarity)` tuples sorted descending by score.
     #[must_use]
     pub(crate) fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
@@ -189,6 +199,45 @@ impl HnswIndex {
                 out.push((node.id.clone(), score));
             }
         }
+        out
+    }
+
+    /// Exact allowlist search over normalized vectors. This closes the
+    /// lexical-scope starvation hole that appears when a global ANN top-k is
+    /// post-filtered after the fact.
+    #[must_use]
+    pub(crate) fn search_scoped(
+        &self,
+        query: &[f32],
+        allowed_ids: &BTreeSet<String>,
+        top_k: usize,
+    ) -> Vec<(String, f32)> {
+        if top_k == 0 || query.len() != self.dim || allowed_ids.is_empty() {
+            return Vec::new();
+        }
+        let Some(normalized) = l2_normalize(query) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, f32)> = Vec::new();
+        for id in allowed_ids {
+            let Some(idx) = self.id_to_idx.get(id).copied() else {
+                continue;
+            };
+            let Some(node) = self.nodes.get(idx) else {
+                continue;
+            };
+            if node.deleted {
+                continue;
+            }
+            out.push((node.id.clone(), dot(&node.vector, &normalized)));
+        }
+        out.sort_by(|lhs, rhs| {
+            rhs.1
+                .partial_cmp(&lhs.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| lhs.0.as_str().cmp(rhs.0.as_str()))
+        });
+        out.truncate(top_k);
         out
     }
 
@@ -596,6 +645,29 @@ mod tests {
             if got != expected {
                 return Err(format!("ordering mismatch: got {order:?}").into());
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_search_respects_allowlist_even_when_global_top_hit_is_outside() -> TestRes {
+        let mut index = HnswIndex::new(2);
+        index.insert("alpha".to_string(), &[1.0, 0.0])?;
+        index.insert("beta".to_string(), &[0.8, 0.2])?;
+        index.insert("gamma".to_string(), &[0.0, 1.0])?;
+
+        let mut allow: BTreeSet<String> = BTreeSet::new();
+        if !allow.insert("beta".to_string()) {
+            return Err("duplicate allowlist id inserted: beta".into());
+        }
+        if !allow.insert("gamma".to_string()) {
+            return Err("duplicate allowlist id inserted: gamma".into());
+        }
+
+        let results = index.search_scoped(&[1.0, 0.0], &allow, 2);
+        let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
+        if ids != vec!["beta".to_string(), "gamma".to_string()] {
+            return Err(format!("scoped search ordering mismatch: {ids:?}").into());
         }
         Ok(())
     }

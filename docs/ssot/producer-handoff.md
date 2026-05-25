@@ -20,6 +20,7 @@ If anything here conflicts with [channel-architecture.md](channel-architecture.m
    2. [3.2 Runtime Track — UpsertDirty / EvictDirty](#32-runtime-track--upsertdirty--evictdirty)
    3. [3.3 Structural Track — UpsertParseTree / DeleteParseTree (gated)](#33-structural-track--upsertparsetree--deleteparsetree-gated)
    4. [3.4 SymbolRecord (extends existing UpsertSymbol payload)](#34-symbolrecord-extends-existing-upsertsymbol-payload)
+   5. [3.5 Delta contract — producer emission semantics](#35-delta-contract--producer-emission-semantics)
 4. [Language Matrix](#4-language-matrix)
 5. [Versioning & Cutover Policy](#5-versioning--cutover-policy)
 6. [Error Contract](#6-error-contract)
@@ -318,6 +319,8 @@ SymbolSpan {
 
 The CBOR `payload` bytes inside `UpsertSymbol.payload` decode to a `SymbolRecord` value. The decoder lives at `crates/quanta-index-lexical/src/symbol/decode.rs` per [LEX-05 §4.1](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md).
 
+The wire-shape identity carrier of `UpsertSymbol` is `symbol_id` (assigned by the producer). Search-side index identity is the dedup key per §3.5.1; the search side records the wire `symbol_id` in its sidecar so producer-driven `DeleteSymbol { symbol_id }` resolves to the correct shard entry.
+
 #### 3.4.2 SymbolKind (closed enum, v1)
 
 Per [`quanta-index-lq-symbol::SymbolKind`](../../crates/quanta-index-lq-symbol) and aligned with the prompt's 12-variant set:
@@ -343,6 +346,93 @@ This is the boundary lock from [LEX-05 §3.5](../plans/may-24-lexical-indexing-s
 #### 3.4.4 Versioning policy (AMB-PROD-5)
 
 Every `SymbolRecord` carries `wire_version: u32`. Bumping requires a coordinated cut per §5 and the §8 handshake. Recommended: producer authors a wire-shape ADR in `semantica-codegraph-v2` per revision; search side pins `[min_wire_version, max_wire_version]` in [`quanta-index-contract::channel`](../../crates/quanta-index-contract/src/channel/ops.rs).
+
+### 3.5 Delta contract — producer emission semantics
+
+This section is the authoritative contract for **delta-handling semantics** across every op in §3.1–§3.4 plus the already-shipped `Upsert*` / `Delete*` family. It exists because the channel transport guarantees at-least-once delivery and replay (per [channel-architecture.md §4.5](channel-architecture.md), [§4.7](channel-architecture.md)), but the per-builder application semantics on the search side need an explicit identity / cascade / replay rule. Without this section, two valid-looking producer emissions can drive a search-side builder into accumulated duplicates or orphaned shard entries.
+
+Round-5 builder hardening (`upsert_X`, `remove_X`, `from_prior(...)` APIs across trigram / positions / symbol / scorer) is the search-side implementation of these rules. Code-level surface lives in the LQ builder crates ([SHIPPED.md §7 item 2](../plans/may-24-lexical-indexing-sorucegraph/SHIPPED.md)) and is not normative; this section is.
+
+#### 3.5.1 Identity rules per record type
+
+The producer carries one wire identity per op; the search side has a corresponding shard identity that may be narrower (e.g. symbol identity is `(doc_id, name, kind, span.byte_start)` because the same `symbol_id` can be re-emitted with a normalised name).
+
+| Op | Wire identity (producer-assigned) | Search-side shard identity | Replacement on same wire identity |
+|---|---|---|---|
+| `UpsertChunk { chunk: ChunkRecord }` | `chunk.chunk_id` | `chunk_id` | overwrite — idempotent via `TrigramIndexBuilder::upsert_doc` + `PositionsBuilder::upsert_doc` + `ScorerBuilder::upsert_doc` |
+| `UpsertSymbol { symbol: SymbolRecord }` | `symbol.symbol_id` | `(doc_id, name, kind, span.byte_start)` per `SymbolIndexBuilder::upsert_symbol` | overwrite at the wire-identity slot; the shard identity is the dedup key inside that slot |
+| `UpsertCommit { commit: CommitRecord }` | `commit.sha` | `(generation, sha)` per §3.1.5 | overwrite allowed but rare; force-push triggers fresh generation per §3.1.3 (AMB-PROD-3) |
+| `UpsertRef { name, sha }` / `UpsertTag { name, sha }` | `(generation, name)` | same | overwrite — last-write-wins per generation |
+| `UpsertDirty { doc_id, applied_at_ms, payload_hash }` | `doc_id` | `doc_id` | overwrite — RT-01 dirty buffer is idempotent per [RT-01 §5.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) |
+| `UpsertParseTree { chunk_id, tree }` | `chunk_id` | `chunk_id` | overwrite — replaces the structural sibling entry |
+| `UpsertEmbedding { embedding: EmbeddingRecord }` | `embedding.embedding_id` | `embedding_id` | overwrite — HNSW idempotent insert |
+
+Producer contract: re-emitting `UpsertX` with the same wire identity and a different payload body MUST be a deliberate overwrite. Search side never accumulates two records under the same wire identity; the LAST emission wins per channel seq order (per §3.5.4).
+
+#### 3.5.2 Delete semantics and cascade
+
+Deletes are typed at the wire level; some cascade across sibling shards, others do not. The cascade graph below is normative.
+
+| Op | Direct shard | Cascades to |
+|---|---|---|
+| `DeleteChunk { chunk_id }` | lexical text shard | trigram shard (per-doc trigram set removed) + positions shard (per-doc positions removed) + scorer shard (per-doc length/term-freq contribution removed) + symbol shard via `SymbolIndexBuilder::remove_doc(doc_id)` (every symbol whose `(doc_id, …)` matches is purged) + structural shard (every `ParseTreeRecord { chunk_id == this }` is purged) + semantic shard via `SemanticIndexBuilder::remove_embedding(doc_id)` (every embedding whose `embedding_id == chunk_id` per §3.5.1 wire-identity equivalence is tombstoned; gated on Round 7a HNSW delta API landing per [tickets/RFC-SEM-02.md §12 Q-RFC-SEM-02-3](../plans/may-24-lexical-indexing-sorucegraph/tickets/RFC-SEM-02.md)) |
+| `DeleteSymbol { symbol_id }` | symbol shard | **none** — only the named symbol_id is removed; other symbols in the same doc remain |
+| `DeleteRef { name }` / `DeleteTag { name }` | ref / tag index | none |
+| `EvictDirty { doc_id }` | RT-01 dirty buffer | none |
+| `DeleteParseTree { chunk_id }` | structural sibling shard | none — may arrive independently of `DeleteChunk` per §3.3.3 |
+| `DeleteEmbedding { embedding_id }` | semantic shard | none — tombstones the HNSW node |
+
+Producer-side commitment: there is **no `DeleteCommit` op in v1**. Force-pushed branches that rewrite history are handled exclusively by emitting a fresh generation per §3.1.3. The search side has no API surface for retro-deletion of a commit row; emitting one would violate the append-only generation invariant.
+
+A `Delete*` whose key is absent on the search side is a no-op (`Ok(None)`), not a typed error. Channel at-least-once delivery makes this expected on subscriber restart.
+
+#### 3.5.3 Replay semantics
+
+The channel guarantees at-least-once delivery and supports replay from any acked cursor per [channel-architecture.md §4.5](channel-architecture.md). The contract below pins the producer + search-side responsibilities under replay.
+
+| Side | Guarantee |
+|---|---|
+| Producer | Never emit two ops with different effects under the same `(track, channel_seq)`. Once a seq is published, its body is immutable; a retried publish must reuse the same body bytes. |
+| Producer | Never reorder ops within a `(repo, revision, generation)` window across a restart. Producer crash recovery reads the last-published seq and resumes from `seq + 1`. |
+| Search | Apply ops in strict channel seq order. Every `Upsert*` and `Delete*` MUST be safe to replay (idempotent on the wire identity per §3.5.1). |
+| Search | Acknowledge the cursor only **after** a successful apply, never before. The atomic order is: apply succeeds → cursor ack persists → next event polled. |
+
+On subscriber restart, the dispatcher reads the persisted cursor and resumes from `cursor + 1`. Any op whose seq exceeds the in-memory ledger's last-applied seq is replayed against the same builder; the §3.5.1 identity rules guarantee no duplicate accumulation.
+
+#### 3.5.4 In-generation delta semantics
+
+Within ONE generation window `(repo, revision, generation)`, the producer MAY emit any sequence of `Upsert*` / `Delete*` against the same wire identity. The search-side state after a `Seal { generation }` equals the channel-final state under strict seq order.
+
+Three patterns the producer MAY emit, and the resulting search-side state:
+
+| Pattern within one generation | Search-side state at Seal |
+|---|---|
+| `UpsertX(id, A)` → `UpsertX(id, B)` | id maps to B |
+| `UpsertX(id, A)` → `DeleteX(id)` | id is absent |
+| `DeleteX(id)` → `UpsertX(id, A)` | id maps to A |
+
+The search-side builder's `upsert_X` / `remove_X` APIs (Round-5 hardening) implement the per-builder mechanics that make these patterns idempotent. The producer never needs to compact in-generation deltas before emission; the search side honours the LAST emission.
+
+#### 3.5.5 Cross-generation delta semantics
+
+When a new generation `N+1` opens, the producer chooses one of two modes:
+
+| Mode | Wire | Search-side build |
+|---|---|---|
+| **(a) FullBundle reset** | `FullBundle { generation: N+1, payload }` + per-record `Upsert*` + `Seal { generation: N+1 }` | Builder starts from empty; payload is the authoritative full state. |
+| **(b) Delta against prior gen** | `Upsert*` / `Delete*` ops referencing the prior gen's records + `Seal { generation: N+1 }` | Builder inherits prior-gen state via the new `from_prior(...)` API (Round-5 hardening across trigram / positions / symbol / scorer), then applies the delta stream. |
+
+Both modes are supported. Mode (b) is the steady-state path; mode (a) is reserved for bootstrap, force-push recovery (§3.1.3), and explicit producer-side rebuild. The producer picks mode per generation; the search side honours whichever appears on the wire.
+
+The producer MUST NOT mix modes within one generation window: emitting a `FullBundle` after one or more `Upsert*` ops in the same generation is a producer-side bug. The search-side dispatcher rejects this with `STATE_GENERATION_REGRESSION` per [channel-architecture.md §5.2](channel-architecture.md).
+
+#### 3.5.6 Ordering
+
+Channel seq monotonicity (per [channel-architecture.md §4.2](channel-architecture.md)) is the sole authority on ordering within a track. The §3.1.2 / §3.2.3 / §3.3.3 per-track ordering rules layer on top of this.
+
+For the history track specifically: the producer SHOULD topologically order `UpsertCommit` ops so that parents precede children within a generation window (per §3.1.2 / AMB-PROD-1). If the producer cannot guarantee topo order (e.g. parallel-walked DAG segments arrive interleaved), the search-side `CommitGraph::with_buffering` mode resolves out-of-order arrivals by buffering until parents land, surfacing `HISTORY_TRACE_INCOMPLETE` as a wait-and-retry code rather than `HISTORY_COMMIT_PARENT_UNKNOWN` as a hard reject. The buffering mode is opt-in at the search-side composition root; topological emission is the recommended producer default.
+
+For every other track (lexical content, runtime dirty, semantic embedding), there is no parent / child ordering constraint beyond seq monotonicity; the search side applies ops as they arrive.
 
 ---
 
@@ -449,13 +539,19 @@ Typed codes the search side raises against producer-emitted ops. Per [channel-ar
 | `DIRTY_BAD_IDENTITY{doc_id}` | `UpsertDirty.doc_id` does not name a known chunk in the active generation — §3.2.6 enforced sync at apply | `DirtyBuffer::apply`. |
 | `DIRTY_TTL_EXPIRED` | (search-side only; not a producer-facing code) sweep evicted a dirty entry past TTL | sweep worker. |
 
-### 6.5 Channel-level (existing)
+### 6.5 Semantic track
+
+| Code | Cause | Site |
+|---|---|---|
+| `SEM_HANDLE_NOT_FOUND{handle}` | `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::Handle(h), .. }` resolves against an active-generation embedding store that contains no entry for `h`; handle storage model is governed by [ADR-026](../plans/may-24-lexical-indexing-sorucegraph/implementation-plan.md) (recommendation: handle == `embedding_id` per Option B, resolved against the active HNSW index) | query path — semantic resolver before HNSW search. Surfaces on the observability rail; query returns typed error, no fallback to empty result. |
+
+### 6.6 Channel-level (existing)
 
 | Code | Cause | Site |
 |---|---|---|
 | `ChannelError::Corrupted{at_seq, reason}` | crc mismatch / non-monotonic seq / length-prefix beyond segment end | [channel-architecture.md §4.6](channel-architecture.md). On any `Corrupted`, the affected track is marked degraded; the daemon rejects further queries against that track with `NOT_READY`. |
 
-### 6.6 No silent skip
+### 6.7 No silent skip
 
 Per [../../CLAUDE.md](../../CLAUDE.md) and [channel-architecture.md §4.6](channel-architecture.md): there is **no silent skip path** for any code above. Every rejected op surfaces a typed code on the observability rail, and either the channel cursor advances (semantic rejection) or the track is marked degraded (structural corruption). The producer is the single source of truth; correct behaviour is to republish a valid op.
 

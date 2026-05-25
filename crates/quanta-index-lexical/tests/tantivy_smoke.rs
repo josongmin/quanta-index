@@ -11,8 +11,8 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    ChunkId, LexicalChannelOp, LqDirectiveSet, LqExpr, LqFilterSet, LqOptionSet, LqQuery,
-    ManifestGeneration, RepoId, RevisionId, UpsertChunk,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LqExpr, LqLeaf, LqOptions, LqQuery,
+    LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, UpsertChunk,
 };
 use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
@@ -31,22 +31,38 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-fn upsert(chunk_id: &str, text: &str) -> LexicalChannelOp {
-    LexicalChannelOp::UpsertChunk(UpsertChunk {
+fn encode_chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let record = ChunkRecord {
+        repo_relative_path: RepoRelativePath::new(""),
+        language: String::new().into_boxed_str(),
+        start_line: 0,
+        end_line: 0,
+        snippet: text.to_string().into_boxed_str(),
+    };
+    let mut payload = Vec::new();
+    ciborium::into_writer(&record, &mut payload)
+        .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
+    Ok(payload)
+}
+
+fn upsert(chunk_id: &str, text: &str) -> Result<LexicalChannelOp, Box<dyn Error>> {
+    Ok(LexicalChannelOp::UpsertChunk(UpsertChunk {
         repo_id: repo(),
         revision_id: revision(),
         generation: generation(),
         chunk_id: ChunkId::new(chunk_id),
-        payload: text.as_bytes().to_vec(),
-    })
+        payload: encode_chunk_payload(text)?,
+    }))
 }
 
 fn make_query(expr: LqExpr) -> LqQuery {
     LqQuery {
+        lq_version: LQ_VERSION_TAG,
         expr,
-        filters: LqFilterSet::default(),
-        options: LqOptionSet::default(),
-        directives: LqDirectiveSet::default(),
+        filters: Vec::new(),
+        options: LqOptions::defaults(),
+        directives: Vec::new(),
+        source_span: LqSpan::eof(0),
     }
 }
 
@@ -56,16 +72,19 @@ fn tantivy_index_round_trip() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
     let ops = vec![
-        upsert("c1", "fox jumps"),
-        upsert("c2", "lazy dog"),
-        upsert("c3", "fox is quick"),
+        upsert("c1", "fox jumps")?,
+        upsert("c2", "lazy dog")?,
+        upsert("c3", "fox is quick")?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
 
     // 1) "fox" -> expects c1 and c3 (both contain "fox").
-    let fox_hits = searcher.search(&make_query(LqExpr::Raw("fox".to_string())), 10)?;
+    let fox_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("fox".to_string()))),
+        10,
+    )?;
     if fox_hits.len() != 2 {
         return Err(format!(
             "expected 2 candidates for `fox`, got {}: {:?}",
@@ -81,7 +100,10 @@ fn tantivy_index_round_trip() -> TestResult {
     }
 
     // 2) "lazy" -> expects only c2.
-    let lazy_hits = searcher.search(&make_query(LqExpr::Raw("lazy".to_string())), 10)?;
+    let lazy_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("lazy".to_string()))),
+        10,
+    )?;
     if lazy_hits.len() != 1 {
         return Err(format!("expected 1 candidate for `lazy`, got {}", lazy_hits.len()).into());
     }
@@ -94,8 +116,8 @@ fn tantivy_index_round_trip() -> TestResult {
 
     // 3) All([Raw("fox"), Raw("quick")]) -> expects only c3.
     let all_expr = LqExpr::All(vec![
-        LqExpr::Raw("fox".to_string()),
-        LqExpr::Raw("quick".to_string()),
+        LqExpr::Leaf(LqLeaf::Keyword("fox".to_string())),
+        LqExpr::Leaf(LqLeaf::Keyword("quick".to_string())),
     ]);
     let all_hits = searcher.search(&make_query(all_expr), 10)?;
     if all_hits.len() != 1 {
@@ -116,6 +138,30 @@ fn tantivy_index_round_trip() -> TestResult {
         .into());
     }
 
+    Ok(())
+}
+
+#[test]
+fn tantivy_search_all_materializes_full_scope() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert("c1", "scope needle one")?,
+        upsert("c2", "scope needle two")?,
+        upsert("c3", "scope needle three")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let hits = searcher.search_all(&make_query(LqExpr::Leaf(LqLeaf::Keyword(
+        "scope".to_string(),
+    ))))?;
+    let mut ids: Vec<String> = hits.into_iter().map(|c| c.candidate_id).collect();
+    ids.sort();
+    if ids != vec!["c1".to_string(), "c2".to_string(), "c3".to_string()] {
+        return Err(format!("expected full scope ids [c1, c2, c3], got {ids:?}").into());
+    }
     Ok(())
 }
 
@@ -145,7 +191,7 @@ fn writer_cache_evicts_lru_after_threshold() -> TestResult {
             revision_id: revision(),
             generation,
             chunk_id: ChunkId::new(&chunk_id),
-            payload: text.into_bytes(),
+            payload: encode_chunk_payload(&text)?,
         });
         adapter.build(&repo(), &revision(), generation, &[op])?;
     }
@@ -164,7 +210,10 @@ fn writer_cache_evicts_lru_after_threshold() -> TestResult {
     // dropped, so this read goes through `open_or_create_index`, not the cache).
     let gen0 = ManifestGeneration::new(0);
     let searcher = adapter.open(&repo(), &revision(), gen0)?;
-    let hits = searcher.search(&make_query(LqExpr::Raw("eviction-marker".to_string())), 10)?;
+    let hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("eviction-marker".to_string()))),
+        10,
+    )?;
     if hits.len() != 1 {
         return Err(format!(
             "expected 1 hit on evicted generation 0 after commit-on-evict, got {}",

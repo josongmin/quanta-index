@@ -23,14 +23,38 @@
 //! `memchr::memmem::find` verify step on the candidate documents — the
 //! trigram shard is a candidate authority, the verify pass is truth.
 //!
+//! ## Build patterns
+//!
+//! [`TrigramIndexBuilder`] supports three patterns, all of which finalise
+//! through the same [`TrigramIndexBuilder::finish`] surface:
+//!
+//! 1. **Scratch / append** — [`TrigramIndexBuilder::new`] then repeated
+//!    [`TrigramIndexBuilder::add_doc`]. NOT replay-safe; callers driving
+//!    a full snapshot rebuild use this pattern.
+//! 2. **Upsert-driven** — [`TrigramIndexBuilder::new`] then repeated
+//!    [`TrigramIndexBuilder::upsert_doc`] / [`TrigramIndexBuilder::remove_doc`].
+//!    Replay-safe: re-issuing `upsert_doc(doc_id, ...)` after a crash
+//!    REPLACES the prior content. Subscriber loops that consume
+//!    `UpsertChunk` / `DeleteChunk` events from the producer use this
+//!    pattern.
+//! 3. **Cross-generation incremental** —
+//!    [`TrigramIndexBuilder::from_prior`] with the previous generation's
+//!    [`TrigramIndex`] and a bumped generation id, then optional
+//!    [`TrigramIndexBuilder::upsert_doc`] / [`TrigramIndexBuilder::remove_doc`]
+//!    deltas. Lets gen N+1 inherit from gen N rather than rebuilding from
+//!    scratch.
+//!
+//! See `docs/ssot/producer-handoff.md` §3 for the producer/search-plane
+//! delta-handling contract these patterns satisfy.
+//!
 //! ## Guarantees
 //!
 //! - Wire shapes use hand-rolled `impl serde::Serialize` / `Deserialize`
 //!   per D18 (no proc-macro derives, semgrep-enforced).
 //! - Every failure returns a [`TrigramError`] carrying a closed
 //!   [`TrigramErrorCode`]; no silent failure / no silent fallback.
-//! - The same insertion sequence produces a byte-identical CBOR encoding
-//!   of the index.
+//! - The same upsert/remove sequence produces a byte-identical CBOR
+//!   encoding of the index. `upsert_doc` is idempotent and replay-safe.
 //! - Caps surface [`TrigramErrorCode::PlanLimitExceeded`] carrying a
 //!   [`LimitDimension`] tag; no silent degradation.
 

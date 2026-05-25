@@ -31,6 +31,31 @@
 //! - Every failure path returns a [`errors::HistoryError`] with a closed
 //!   [`errors::HistoryErrorCode`]; no silent failure, no silent fallback.
 //! - Same commit graph + same query → byte-identical commit set.
+//!
+//! ## Delta semantics (§3.6 incremental boundary)
+//!
+//! The [`commit_graph::CommitGraph`] mutators are the only delta surface
+//! that downstream search-side state derives from. They give:
+//!
+//! - [`commit_graph::CommitGraph::upsert_commit`][] — idempotent insert
+//!   or replace with strict parent validation. On overwrite, the prior
+//!   node is returned so any downstream by-parent cache can be
+//!   invalidated. Unknown parent in strict mode surfaces
+//!   [`errors::HistoryErrorCode::HistoryCommitParentUnknown`].
+//! - [`commit_graph::CommitGraph::remove_commit`][] — conservative
+//!   refuse on commits with in-graph children
+//!   ([`errors::HistoryErrorCode::HistoryCommitHasChildren`]). Used by
+//!   search-side prior-graph reuse; the channel layer never emits a
+//!   `DeleteCommit` op (AMB-PROD-3).
+//! - [`commit_graph::CommitGraph::from_prior`][] — full-state carry-over
+//!   with a fresh generation stamp. The AMB-PROD-3 fresh-generation
+//!   force-push handler.
+//! - [`commit_graph::CommitGraph::with_buffering`][] — enables
+//!   parent-not-yet-present resolution for producer ordering tolerance
+//!   (AMB-PROD-1). The pending queue surfaces via
+//!   [`commit_graph::CommitGraph::pending`].
+//! - [`manifest::ManifestLedger::remove_packet`][] — idempotent removal
+//!   of an applied trace by hash for revert / rollback flows.
 
 pub mod commit_graph;
 pub mod errors;

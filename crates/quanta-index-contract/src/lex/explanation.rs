@@ -30,8 +30,7 @@ pub struct ExplanationRow {
     pub contribution: f32,
 }
 
-const EXPLANATION_ROW_FIELDS: &[&str] =
-    &["signal_name", "signal_value", "weight", "contribution"];
+const EXPLANATION_ROW_FIELDS: &[&str] = &["signal_name", "signal_value", "weight", "contribution"];
 
 impl Serialize for ExplanationRow {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -93,13 +92,10 @@ impl<'de> Visitor<'de> for ExplanationRowVisitor {
                 other => return Err(de::Error::unknown_field(other, EXPLANATION_ROW_FIELDS)),
             }
         }
-        let signal_name =
-            signal_name.ok_or_else(|| de::Error::missing_field("signal_name"))?;
-        let signal_value =
-            signal_value.ok_or_else(|| de::Error::missing_field("signal_value"))?;
+        let signal_name = signal_name.ok_or_else(|| de::Error::missing_field("signal_name"))?;
+        let signal_value = signal_value.ok_or_else(|| de::Error::missing_field("signal_value"))?;
         let weight = weight.ok_or_else(|| de::Error::missing_field("weight"))?;
-        let contribution =
-            contribution.ok_or_else(|| de::Error::missing_field("contribution"))?;
+        let contribution = contribution.ok_or_else(|| de::Error::missing_field("contribution"))?;
         Ok(ExplanationRow {
             signal_name: signal_name.into_boxed_str(),
             signal_value,
@@ -134,8 +130,7 @@ pub struct SearchExplanation {
     pub strategy: Box<str>,
 }
 
-const SEARCH_EXPLANATION_FIELDS: &[&str] =
-    &["contributions", "ranker_weights_hash", "strategy"];
+const SEARCH_EXPLANATION_FIELDS: &[&str] = &["contributions", "ranker_weights_hash", "strategy"];
 
 impl Serialize for SearchExplanation {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -193,8 +188,8 @@ impl<'de> Visitor<'de> for SearchExplanationVisitor {
         }
         let contributions =
             contributions.ok_or_else(|| de::Error::missing_field("contributions"))?;
-        let ranker_weights_hash = ranker_weights_hash
-            .ok_or_else(|| de::Error::missing_field("ranker_weights_hash"))?;
+        let ranker_weights_hash =
+            ranker_weights_hash.ok_or_else(|| de::Error::missing_field("ranker_weights_hash"))?;
         let strategy = strategy.ok_or_else(|| de::Error::missing_field("strategy"))?;
         Ok(SearchExplanation {
             contributions,

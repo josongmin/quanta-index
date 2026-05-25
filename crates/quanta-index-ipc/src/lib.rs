@@ -14,4 +14,6 @@ pub use codec::{
     IpcError, MAX_FRAME_BODY_BYTES, decode_request, decode_response, encode_request,
     encode_response,
 };
-pub use server::{QueryDispatcher, ShutdownHandle, UdsServer, send_request};
+pub use server::{
+    IpcDispatcher, RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer, send_request,
+};

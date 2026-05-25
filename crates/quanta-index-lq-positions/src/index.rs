@@ -80,6 +80,16 @@ impl PositionsIndex {
         })
     }
 
+    /// Iterate the term keys in byte-lex order.
+    ///
+    /// Used by [`crate::builder::PositionsBuilder::from_prior`] to import
+    /// every term's posting list into a fresh builder. The returned
+    /// iterator yields `&str` borrowed against `self`; iteration order is
+    /// the canonical `BTreeMap` byte-lex order.
+    pub fn terms(&self) -> impl Iterator<Item = &str> {
+        self.by_term.keys().map(Box::as_ref)
+    }
+
     /// Borrow the raw delta-varint posting list bytes for `term`, if present.
     ///
     /// Returns `None` for terms not in the index (no entries were added under
