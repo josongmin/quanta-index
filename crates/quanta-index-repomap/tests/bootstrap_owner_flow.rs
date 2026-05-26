@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unreachable,
+    reason = "test fixtures use invariant literal constructors for language and symbol kinds"
+)]
+
 use std::fs;
 
 use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
@@ -10,6 +15,20 @@ use quanta_index_contract::{
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
+
+fn rust_language() -> LanguageCode {
+    match LanguageCode::new("rust") {
+        Ok(language) => language,
+        Err(err) => unreachable!("valid language: {err}"),
+    }
+}
+
+fn symbol_kind(name: &str) -> SymbolKindCode {
+    match SymbolKindCode::new(name) {
+        Ok(symbol_kind) => symbol_kind,
+        Err(err) => unreachable!("valid symbol kind `{name}`: {err}"),
+    }
+}
 
 fn sample_bundle() -> RepoMapSourceBundle {
     RepoMapSourceBundle::new(
@@ -48,7 +67,7 @@ fn sample_bundle() -> RepoMapSourceBundle {
             owner_path: RepoRelativePath::new("src/lib.rs"),
             local_name: "OwnerAlpha".to_string(),
             qualified_name: "src::lib::OwnerAlpha".to_string(),
-            symbol_kind: SymbolKindCode::new("service").expect("valid symbol kind"),
+            symbol_kind: symbol_kind("service"),
         },
     ))
     .with_node(RepoMapNode::Symbol(
@@ -57,14 +76,14 @@ fn sample_bundle() -> RepoMapSourceBundle {
             owner_path: RepoRelativePath::new("src/lib.rs"),
             local_name: "OwnerBeta".to_string(),
             qualified_name: "src::lib::OwnerBeta".to_string(),
-            symbol_kind: SymbolKindCode::new("struct").expect("valid symbol kind"),
+            symbol_kind: symbol_kind("struct"),
         },
     ))
     .with_node(RepoMapNode::Chunk(
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://alpha"),
             owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 0,
             end_byte: 90,
             start_line: 1,
@@ -78,7 +97,7 @@ fn sample_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://beta"),
             owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 91,
             end_byte: 150,
             start_line: 10,
@@ -92,7 +111,7 @@ fn sample_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://runtime"),
             owner_path: RepoRelativePath::new("src/runtime/mod.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 151,
             end_byte: 200,
             start_line: 17,

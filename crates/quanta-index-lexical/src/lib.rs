@@ -637,11 +637,11 @@ fn load_repo_metadata_snapshot(
             "lexical: repo metadata decode {}: {message}",
             path.display()
         )),
-        other @ CoreError::Typed { .. }
-        | other @ CoreError::NotReady(_)
-        | other @ CoreError::NotImplemented(_)
-        | other @ CoreError::NotFound(_)
-        | other @ CoreError::Storage(_) => other,
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => other,
     })
 }
 
@@ -1699,8 +1699,10 @@ impl TantivySearcher {
     }
 
     fn full_recall_limit(&self, requested: usize, limit: usize) -> usize {
-        usize::try_from(self.reader.searcher().num_docs())
-            .map_or_else(|| requested.max(limit), |docs| requested.max(limit).max(docs))
+        usize::try_from(self.reader.searcher().num_docs()).map_or_else(
+            |_| requested.max(limit),
+            |docs| requested.max(limit).max(docs),
+        )
     }
 
     fn effective_limit(&self, query: &LqQuery, requested: usize) -> usize {

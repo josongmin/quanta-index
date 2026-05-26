@@ -1,10 +1,9 @@
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     RepoId, RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    TextQueryRequest, TextQuerySyntax,
 };
 
-use crate::{QuantaIndex, SdkError, SemanticVector};
+use crate::{QuantaIndex, SdkError, SemanticVector, text_query_builder::VectorQueryBuilderState};
 
 pub struct SearchNamespace<'a> {
     client: &'a QuantaIndex,
@@ -65,60 +64,50 @@ impl<'a> SearchNamespace<'a> {
 
 pub struct HybridQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: Option<String>,
-    vector: Option<SemanticVector>,
-    selection: Option<GenerationSelector>,
-    top_k: Option<u32>,
+    state: VectorQueryBuilderState,
 }
 
 impl<'a> HybridQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            syntax: TextQuerySyntax::Native,
-            query_text: None,
-            vector: None,
-            selection: None,
-            top_k: None,
+            state: VectorQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Native;
-        self.query_text = Some(query_text.into());
+        self.state.text_leg = Some((crate::TextQuerySyntax::Native, query_text.into()));
         self
     }
 
     #[must_use]
     pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Sourcegraph;
-        self.query_text = Some(query_text.into());
+        self.state.text_leg = Some((crate::TextQuerySyntax::Sourcegraph, query_text.into()));
         self
     }
 
     #[must_use]
     pub fn vector(mut self, vector: Vec<f32>) -> Self {
-        self.vector = Some(SemanticVector::Inline(vector));
+        self.state.vector = Some(SemanticVector::Inline(vector));
         self
     }
 
     #[must_use]
     pub fn vector_handle(mut self, handle: impl Into<String>) -> Self {
-        self.vector = Some(SemanticVector::Handle(handle.into()));
+        self.state.vector = Some(SemanticVector::Handle(handle.into()));
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -127,45 +116,12 @@ impl<'a> HybridQueryBuilder<'a> {
 
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
     pub fn execute(self) -> Result<HybridQueryResponse, SdkError> {
-        let query_text = self
-            .query_text
-            .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
-        let vector_ref = self
-            .vector
-            .ok_or_else(|| SdkError::Usage("hybrid semantic vector is required".to_string()))?
-            .into_ref()?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("hybrid generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("hybrid top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection.clone());
-        let (text_generation, text_generation_selector) =
-            QuantaIndex::selection_to_fields(selection);
-        dispatch_hybrid_query_request_v1(
-            self.client,
-            HybridQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: self.syntax,
-                    query_text,
-                    generation: text_generation,
-                    generation_selector: text_generation_selector,
-                    top_k,
-                },
-                semantic_query_text: None,
-                semantic_vector: None,
-                semantic_vector_ref: Some(vector_ref),
-                generation,
-                generation_selector,
-                top_k,
-            },
-        )
+        dispatch_hybrid_query_request_v1(self.client, self.state.build_hybrid_request()?)
     }
 }
 

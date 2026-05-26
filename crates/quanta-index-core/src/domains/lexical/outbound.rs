@@ -1,6 +1,7 @@
+use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
-    BatchPublishReceipt, LexicalCandidate, LexicalChannelOp, LexicalIngestBatch, LqQuery,
-    ManifestGeneration, RepoId, RevisionId, SymbolCandidate,
+    BatchPublishReceipt, LexicalCandidate, LexicalIngestBatch, LqQuery, ManifestGeneration, RepoId,
+    RevisionId, SymbolCandidate,
 };
 
 use crate::error::CoreError;

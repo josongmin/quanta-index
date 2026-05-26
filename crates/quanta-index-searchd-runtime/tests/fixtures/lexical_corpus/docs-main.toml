@@ -1,0 +1,40 @@
+[[doc]]
+id = "alpha_content"
+path = "src/lib.rs"
+content = "fn alpha_content_needle() {}"
+
+[[doc]]
+id = "beta_pathonly"
+path = "config/path_only_needle.toml"
+content = "value = 1"
+
+[[doc]]
+id = "gamma_py_same"
+path = "scripts/helper.py"
+content = "def alpha_content_needle(): pass"
+
+[[doc]]
+id = "delta_phrase"
+path = "docs/colors.md"
+content = "the lemon yellow banana ripens"
+
+[[doc]]
+id = "epsilon_regex"
+path = "src/version.rs"
+content = "const VERSION: &str = \"v1.2.3-rc.4\";"
+
+[[doc]]
+id = "zeta_raw"
+path = "src/raw.rs"
+content = "let foo_bar_baz = 0;"
+
+[[doc]]
+id = "eta_trigram_bait"
+path = "src/bait.rs"
+content = "let needle_xx = 1;"
+
+[[doc]]
+id = "theta_symbol"
+path = "src/sym.rs"
+content = "pub fn MyTypeSymbol(arg: i32) -> i32 { arg }"
+symbol_name = "MyTypeSymbol"

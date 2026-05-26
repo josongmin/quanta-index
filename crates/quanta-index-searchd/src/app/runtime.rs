@@ -1,14 +1,16 @@
 //! Composed runtime artefacts. Built once per daemon process.
 
 use std::sync::{Arc, RwLock};
+use std::{fs, path::Path};
 
 use anyhow::Result;
 use memchr::memchr_iter;
 use quanta_index_channel::{LexicalWalSubscriber, SemanticWalSubscriber};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    ManifestGeneration, RepoId, RevisionId, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -273,7 +275,11 @@ fn compile_live_structural_pattern(
         LqStructuralErrorCode::StrLangNotSupported => {
             StructuralError::LangNotSupported(lang.to_string())
         }
-        _ => StructuralError::InvalidRequest(err.to_string()),
+        LqStructuralErrorCode::StrParseFail
+        | LqStructuralErrorCode::StrInvalidMetavar
+        | LqStructuralErrorCode::PlanLimitExceeded => {
+            StructuralError::InvalidRequest(err.to_string())
+        }
     })
 }
 
@@ -287,13 +293,19 @@ fn lower_live_authority_pattern(
     })
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers use map_err with an owned structural error"
+)]
 fn map_live_authority_error(err: LqStructuralError) -> StructuralError {
     match err.code {
         LqStructuralErrorCode::StrLangNotSupported => {
             StructuralError::LangNotSupported(err.detail.to_string())
         }
         LqStructuralErrorCode::StrParseFail => StructuralError::ShardUnavailable,
-        _ => StructuralError::ProducerExecution(err.to_string()),
+        LqStructuralErrorCode::StrInvalidMetavar | LqStructuralErrorCode::PlanLimitExceeded => {
+            StructuralError::ProducerExecution(err.to_string())
+        }
     }
 }
 
@@ -411,6 +423,7 @@ impl SearchdRuntime {
             activation_catalog,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
+        bootstrap_persisted_lexical_readiness(&ledger, config.state_root())?;
         let dispatcher = ChannelDispatcher::new(
             lex_sub,
             sem_sub,
@@ -498,4 +511,62 @@ impl SearchdRuntime {
             repo_map_query_port,
         })
     }
+}
+
+fn bootstrap_persisted_lexical_readiness(
+    ledger: &Arc<RwLock<Ledger>>,
+    state_root: &Path,
+) -> Result<()> {
+    let lexical_root = state_root.join("indexes").join("lexical");
+    if !lexical_root.exists() {
+        return Ok(());
+    }
+    let mut guard = ledger
+        .write()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned during lexical bootstrap: {err}"))?;
+    let mut max_generation: Option<ManifestGeneration> = None;
+    for repo_entry in fs::read_dir(&lexical_root)? {
+        let repo_entry = repo_entry?;
+        if !repo_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let repo_id = RepoId::new(repo_entry.file_name().to_string_lossy().into_owned());
+        for revision_entry in fs::read_dir(repo_entry.path())? {
+            let revision_entry = revision_entry?;
+            if !revision_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let revision_id =
+                RevisionId::new(revision_entry.file_name().to_string_lossy().into_owned());
+            for generation_entry in fs::read_dir(revision_entry.path())? {
+                let generation_entry = generation_entry?;
+                if !generation_entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let name = generation_entry.file_name().to_string_lossy().into_owned();
+                let Some(suffix) = name.strip_prefix('g') else {
+                    continue;
+                };
+                let Ok(raw_generation) = suffix.parse::<u64>() else {
+                    continue;
+                };
+                let generation = ManifestGeneration::new(raw_generation);
+                guard.record_track_seal(
+                    &repo_id,
+                    &revision_id,
+                    SearchPlaneTrackKind::Lexical,
+                    generation,
+                );
+                max_generation = match max_generation {
+                    Some(current) if current.get() >= generation.get() => Some(current),
+                    _ => Some(generation),
+                };
+            }
+        }
+    }
+    if let Some(max_generation) = max_generation {
+        guard.lexical_seal(max_generation);
+    }
+    drop(guard);
+    Ok(())
 }

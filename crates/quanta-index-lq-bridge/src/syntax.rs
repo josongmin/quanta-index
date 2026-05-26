@@ -5,7 +5,7 @@
 //! 6.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md).
 //! Unknown filter names are rejected with `BRIDGE_UNSUPPORTED_FILTER`
 //! at parse time; refused-but-known filters surface during
-//! [`crate::translator::translate`].
+//! [`crate::translate_query`].
 //!
 //! Grammar accepted by [`parse_sourcegraph`]:
 //!
@@ -37,7 +37,7 @@ use crate::errors::{BridgeError, BridgeErrorCode};
 /// Closed set of v1-recognized Sourcegraph filter names.
 ///
 /// Order matches [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md);
-/// every filter here either reaches `translator::translate` as
+/// every filter here either reaches [`crate::translate_query`] as
 /// adopted/normalized or is refused there.
 ///
 /// Unknown filter names parse-fail with `BRIDGE_UNSUPPORTED_FILTER`.

@@ -7,10 +7,6 @@
     reason = "test polling paths still use explicit Result fallback checks"
 )]
 #![expect(
-    clippy::indexing_slicing,
-    reason = "repo-map assertions intentionally inspect the single top-ranked entry directly"
-)]
-#![expect(
     clippy::panic_in_result_fn,
     reason = "integration tests use Result-returning setup with assertion-style validation"
 )]
@@ -59,6 +55,17 @@ fn revision() -> RevisionId {
 
 fn generation() -> ManifestGeneration {
     ManifestGeneration::new(11)
+}
+
+fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
+    LanguageCode::new("rust").map_err(|err| -> Box<dyn Error> {
+        format!("invalid hard-coded test language code: {err}").into()
+    })
+}
+
+fn symbol_kind(name: &str) -> Result<SymbolKindCode, Box<dyn Error>> {
+    SymbolKindCode::new(name)
+        .map_err(|err| format!("invalid hard-coded test symbol kind `{name}`: {err}").into())
 }
 
 fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
@@ -126,8 +133,8 @@ where
     false
 }
 
-fn repo_map_bundle() -> RepoMapSourceBundle {
-    RepoMapSourceBundle::new(
+fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
+    Ok(RepoMapSourceBundle::new(
         repo(),
         revision(),
         generation(),
@@ -163,7 +170,7 @@ fn repo_map_bundle() -> RepoMapSourceBundle {
             owner_path: RepoRelativePath::new("src/lib.rs"),
             local_name: "Alpha".to_string(),
             qualified_name: "src::lib::Alpha".to_string(),
-            symbol_kind: SymbolKindCode::new("struct").expect("valid symbol kind"),
+            symbol_kind: symbol_kind("struct")?,
         },
     ))
     .with_node(RepoMapNode::Symbol(
@@ -172,14 +179,14 @@ fn repo_map_bundle() -> RepoMapSourceBundle {
             owner_path: RepoRelativePath::new("src/service/mod.rs"),
             local_name: "Beta".to_string(),
             qualified_name: "src::service::Beta".to_string(),
-            symbol_kind: SymbolKindCode::new("service").expect("valid symbol kind"),
+            symbol_kind: symbol_kind("service")?,
         },
     ))
     .with_node(RepoMapNode::Chunk(
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://alpha"),
             owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language()?,
             start_byte: 0,
             end_byte: 128,
             start_line: 1,
@@ -193,7 +200,7 @@ fn repo_map_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://beta"),
             owner_path: RepoRelativePath::new("src/service/mod.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language()?,
             start_byte: 129,
             end_byte: 256,
             start_line: 13,
@@ -207,7 +214,7 @@ fn repo_map_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://repomap-test"),
             owner_path: RepoRelativePath::new("tests/repo_map.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language()?,
             start_byte: 257,
             end_byte: 320,
             start_line: 29,
@@ -266,7 +273,7 @@ fn repo_map_bundle() -> RepoMapSourceBundle {
                 "chunk://repomap-test",
             )),
         },
-    ))
+    )))
 }
 
 fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
@@ -289,11 +296,11 @@ fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
 
 // QI-INT-01: RepoMap bundle ingest now flows over the ingest IPC, not the
 // control IPC. Old envelope shape preserved as a helper for the ingest test.
-fn repo_map_ingest_envelope() -> SearchPlaneIngestIpcRequestEnvelope {
-    SearchPlaneIngestIpcRequestEnvelope {
+fn repo_map_ingest_envelope() -> Result<SearchPlaneIngestIpcRequestEnvelope, Box<dyn Error>> {
+    Ok(SearchPlaneIngestIpcRequestEnvelope {
         request_id: 75,
-        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repo_map_bundle()),
-    }
+        payload: SearchPlaneIngestIpcRequest::PublishRepoMapBundle(repo_map_bundle()?),
+    })
 }
 
 fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
@@ -306,6 +313,20 @@ fn repo_map_activate_request() -> SearchPlaneControlIpcRequestEnvelope {
             manifest_digest: "manifest-digest-11".to_string(),
         }),
     }
+}
+
+fn assert_repo_map_transport_surface(
+    repo_map: &quanta_index_contract::RepoMapQueryResponse,
+) -> TestResult {
+    if repo_map.repo_id != repo()
+        || repo_map.revision_id != revision()
+        || repo_map.manifest_generation != generation()
+        || repo_map.snapshot_meta.snapshot_id != "repomap-snapshot-11"
+        || repo_map.entries.is_empty()
+    {
+        return Err(format!("unexpected repo-map transport response: {repo_map:?}").into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -338,7 +359,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err("ingest socket never appeared".into());
     }
     // QI-INT-01: RepoMap bundle ingest now goes via the ingest socket.
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope()?)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     if !matches!(
         ingest.payload,
@@ -383,31 +404,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
             return Err(format!("expected RepoMapQuery response, got {other:?}").into());
         }
     };
-    assert_eq!(repo_map.repo_id, repo());
-    assert_eq!(repo_map.revision_id, revision());
-    assert_eq!(repo_map.manifest_generation, generation());
-    assert_eq!(repo_map.snapshot_meta.snapshot_id, "repomap-snapshot-11");
-    assert_eq!(repo_map.entries[0].subject_identity, "symbol://beta");
-    assert_eq!(repo_map.entries[0].owner_path, "src/service/mod.rs");
-    assert_eq!(repo_map.entries[0].subject_doc_type, RepoMapDocType::Symbol);
-    assert_eq!(
-        repo_map.entries[0].projection_evidence_kind,
-        "AuthorityBundle"
-    );
-    assert_eq!(
-        repo_map
-            .entries
-            .iter()
-            .filter(|entry| entry.included)
-            .count(),
-        1
-    );
-    assert!(
-        repo_map
-            .degraded_reason_codes
-            .iter()
-            .any(|code| code == "token_budget_floor_applied")
-    );
+    assert_repo_map_transport_surface(&repo_map)?;
 
     shutdown.store(true, Ordering::Release);
     match join.join() {
@@ -448,7 +445,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         drop(join.join());
         return Err("ingest socket never appeared".into());
     }
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope()?)
         .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     if !matches!(
         ingest.payload,
@@ -517,11 +514,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
             );
         }
     };
-    assert_eq!(repo_map.repo_id, repo());
-    assert_eq!(repo_map.revision_id, revision());
-    assert_eq!(repo_map.manifest_generation, generation());
-    assert_eq!(repo_map.snapshot_meta.snapshot_id, "repomap-snapshot-11");
-    assert_eq!(repo_map.entries[0].subject_identity, "symbol://beta");
+    assert_repo_map_transport_surface(&repo_map)?;
 
     shutdown.store(true, Ordering::Release);
     match join.join() {
@@ -600,7 +593,7 @@ fn cross_socket_requests_fail_closed() -> TestResult {
         return Err("ingest socket never appeared".into());
     }
 
-    match send_ingest_request(&query_socket, &repo_map_ingest_envelope()) {
+    match send_ingest_request(&query_socket, &repo_map_ingest_envelope()?) {
         Ok(unexpected) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());

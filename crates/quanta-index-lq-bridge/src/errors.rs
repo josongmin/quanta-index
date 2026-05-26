@@ -1,6 +1,6 @@
 //! Typed errors for the BRIDGE-01 Sourcegraph → LQ translator.
 //!
-//! Every refusal path in [`crate::syntax`], [`crate::translator`],
+//! Every refusal path in [`crate::syntax`], [`crate::translate_query`],
 //! [`crate::version`], and [`crate::candidate`] maps to exactly one
 //! [`BridgeErrorCode`] variant. No silent failure, no silent fallback,
 //! no panic. Per CLAUDE.md § Agent change posture (`breaking-first`)

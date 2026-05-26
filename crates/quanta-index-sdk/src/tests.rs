@@ -693,10 +693,7 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
     };
     assert_eq!(first.candidate_id, "sym-1");
     assert_eq!(first.symbol_kind.as_str(), "function");
-    assert_eq!(
-        first.symbol_kind_family,
-        Some(SymbolKindFamily::Callable)
-    );
+    assert_eq!(first.symbol_kind_family, Some(SymbolKindFamily::Callable));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert_eq!(
         captured.payload,

@@ -134,7 +134,7 @@ impl<'a> StructuralNamespace<'a> {
     }
 }
 
-pub struct StructuralNs;
+struct StructuralNs;
 
 impl crate::NamespaceIngest for StructuralNs {
     type Batch = StructuralBatch;

@@ -10,6 +10,41 @@ Follow-on packet:
 - [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sorucegraph/tickets/SDK-ENTRY-01.md)
 - purpose: after the baseline SDK / ingest IPC cutover below, force the remaining history / runtime / structural source-authority entry through `quanta-index-sdk` only. That follow-on keeps one external SDK front door, but uses dedicated typed namespaces and batches (`history`, `runtime`, `structural`) instead of overloading `LexicalBatch`.
 
+## Current source-truth status (2026-05-27)
+
+Landed on the current tree:
+
+- `searchctl` production query dispatch goes through `quanta-index-sdk`; the
+  non-test external consumer path no longer builds or sends raw IPC envelopes
+- `sdk_frontdoor` is the happy-path owner proof for lexical, semantic, hybrid,
+  explain, repo-map, history, runtime, and structural SDK front doors
+- `repo_map_end_to_end` is narrowed to raw IPC transport and persistence
+  invariants instead of owning public happy-path proof
+- history query authority now fails closed with exact typed codes:
+  `HISTORY_GENERATION_NOT_READY`, `HISTORY_PRODUCER_UNAVAILABLE`,
+  `HISTORY_SHARD_UNAVAILABLE`
+- `quanta-index-contract` root no longer re-exports `ChannelSeq`,
+  `LexicalChannelOp`, or `SemanticChannelOp`; `quanta-index-sdk` keeps generic
+  namespace and transport plumbing crate-internal
+
+Current residue after the public-surface closure program:
+
+- `searchd-runtime` and `search-plane` still depend on legacy channel
+  publishers/subscribers and mirror paths internally; the public SDK front
+  door is closed, but the composition root is not channel-free
+- semantic/hybrid public query schema still preserves the current
+  vector/handle contract; text-only public semantic ownership is deferred
+- broader lexical program residue remains open in `E2E-03`, `E2E-05`,
+  `E2E-06`, `E2E-07`, and `LXE-10`
+
+## SEM-OWN entry criteria (2026-05-27 freeze)
+
+- Lane A/B/C and the public-surface quarantine are green on current source
+- current vector-centric semantic/hybrid request surface is treated as stable
+  present truth, not as a partially-landed text-only migration
+- docs/tracker refresh must land first; `SEM-OWN-00 -> 01 -> 02 -> 03 -> 04 ->
+  05` starts only after this packet is closed
+
 ## Follow-on decision lock
 
 These decisions are frozen before the source-authority follow-on starts:
@@ -36,14 +71,11 @@ These decisions are frozen before the source-authority follow-on starts:
    - `index:no` is accepted on the canonical route and fails closed with typed `NotImplemented`
    - `boost` is parser / carrier / planner-gate only; active ranking semantics stay out of scope for this packet
 
-## Live residue (entry condition)
+## Historical plan context
 
-1. SDK publish opens channel backend directly — [crates/quanta-index-sdk/src/lexical.rs:130](../../crates/quanta-index-sdk/src/lexical.rs#L130), [crates/quanta-index-sdk/src/semantic.rs:135](../../crates/quanta-index-sdk/src/semantic.rs#L135)
-2. SDK transport surface only exposes query / control — [crates/quanta-index-sdk/src/transport.rs:11](../../crates/quanta-index-sdk/src/transport.rs#L11)
-3. searchd only owns `query.sock` / `control.sock` — [crates/quanta-index-searchd/src/app/config.rs](../../crates/quanta-index-searchd/src/app/config.rs)
-4. split IPC contract has no ingest surface — [crates/quanta-index-contract/src/ipc/split.rs:23](../../crates/quanta-index-contract/src/ipc/split.rs#L23), [crates/quanta-index-contract/src/ipc/split.rs:66](../../crates/quanta-index-contract/src/ipc/split.rs#L66)
-5. RepoMap surface still uses `*V1` names — [crates/quanta-index-contract/src/repomap.rs:1](../../crates/quanta-index-contract/src/repomap.rs#L1)
-6. text / symbol query has no `top_k` — [crates/quanta-index-contract/src/query/requests.rs:19](../../crates/quanta-index-contract/src/query/requests.rs#L19), [crates/quanta-index-contract/src/query/requests.rs:450](../../crates/quanta-index-contract/src/query/requests.rs#L450)
+The Wave 1 / Wave 2 ticket inventory below is kept as the original execution
+plan. The former "entry condition" residue listed in this document is no
+longer current truth; the source-truth snapshot is the section above.
 
 ## Parallel lanes
 

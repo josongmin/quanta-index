@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
 use std::sync::Arc;
@@ -6,50 +7,41 @@ use std::time::Duration;
 
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
-    EngineTouched, GenerationPin, LexicalCandidate, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, RepoId, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, TextQueryResponse,
+    EngineTouched, GenerationPin, HybridQueryResponse, LexicalCandidate, ManifestGeneration,
+    PlannerStage, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapEntryDto,
+    RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
+    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
+    SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
+    SemanticVectorRef, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
 
-struct StubDispatcher;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SmokeScenario {
+    LexicalJson,
+    ExplainPretty,
+    SemanticJson,
+    HybridPretty,
+    RepoMapPretty,
+}
+
+struct ScenarioDispatcher {
+    scenario: SmokeScenario,
+}
+
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 
-impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for StubDispatcher {
+impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for ScenarioDispatcher {
     fn dispatch(&self, request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
-        match request {
-            SearchPlaneQueryIpcRequest::Text(payload) => {
-                let Some(generation) = payload.generation else {
-                    return error_response(
-                        "TEST_MISSING_GENERATION",
-                        "lexical request must carry generation",
-                    );
-                };
-                SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
-                    generation: generation.clone(),
-                    results: vec![stub_candidate(generation)],
-                })
-            }
-            SearchPlaneQueryIpcRequest::Explain(payload) => {
-                SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
-                    generation: payload.generation,
-                    explanation: stub_explanation(),
-                })
-            }
-            other @ (SearchPlaneQueryIpcRequest::Semantic(_)
-            | SearchPlaneQueryIpcRequest::Symbol(_)
-            | SearchPlaneQueryIpcRequest::Hybrid(_)
-            | SearchPlaneQueryIpcRequest::History(_)
-            | SearchPlaneQueryIpcRequest::Structural(_)
-            | SearchPlaneQueryIpcRequest::Bridge(_)
-            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
-            | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)) => error_response(
-                "TEST_UNSUPPORTED_REQUEST",
-                format!("unexpected request in test: {other:?}"),
-            ),
+        match self.scenario {
+            SmokeScenario::LexicalJson => dispatch_lexical_request(request),
+            SmokeScenario::ExplainPretty => dispatch_explain_request(request),
+            SmokeScenario::SemanticJson => dispatch_semantic_request(request),
+            SmokeScenario::HybridPretty => dispatch_hybrid_request(request),
+            SmokeScenario::RepoMapPretty => dispatch_repomap_request(request),
         }
     }
 }
@@ -63,6 +55,24 @@ fn lexical_json_roundtrip() {
 #[test]
 fn explain_pretty_roundtrip() {
     let result = explain_pretty_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn semantic_inline_vector_json_roundtrip() {
+    let result = semantic_inline_vector_json_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn hybrid_vector_handle_pretty_roundtrip() {
+    let result = hybrid_vector_handle_pretty_roundtrip_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn repomap_pretty_roundtrip() {
+    let result = repomap_pretty_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -91,9 +101,8 @@ fn semantic_with_scope_query_and_scope_top_k_parses_successfully() {
 }
 
 fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
-    let _tempdir = tempdir()?;
     let socket_path = unique_socket_path();
-    let shutdown = start_server(&socket_path)?;
+    let shutdown = start_server(&socket_path, SmokeScenario::LexicalJson)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
         .arg("lexical")
         .arg("--socket")
@@ -133,7 +142,7 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let candidate_path = tempdir.path().join("candidate.json");
     let candidate = stub_candidate(stub_generation());
     fs::write(&candidate_path, serde_json::to_vec_pretty(&candidate)?)?;
-    let shutdown = start_server(&socket_path)?;
+    let shutdown = start_server(&socket_path, SmokeScenario::ExplainPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
         .arg("explain")
         .arg("--socket")
@@ -160,6 +169,118 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     }
     if !stdout.contains("planner_trace:") {
         return Err(format!("missing planner trace in stdout: {stdout}").into());
+    }
+    Ok(())
+}
+
+fn semantic_inline_vector_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let shutdown = start_server(&socket_path, SmokeScenario::SemanticJson)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("semantic")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--output")
+        .arg("json")
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--query-vector")
+        .arg("[0.25,0.5,-0.75]")
+        .arg("--top-k")
+        .arg("10")
+        .arg("--scope-query")
+        .arg("repo:repo-1 file:src/lib.rs")
+        .arg("--scope-syntax")
+        .arg("sourcegraph")
+        .arg("--scope-top-k")
+        .arg("4")
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    if !stdout.contains("\"kind\": \"Semantic\"") {
+        return Err(format!("missing semantic response kind in stdout: {stdout}").into());
+    }
+    if !stdout.contains("\"candidate_id\": \"cand-1\"") {
+        return Err(format!("missing semantic candidate in stdout: {stdout}").into());
+    }
+    Ok(())
+}
+
+fn hybrid_vector_handle_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let shutdown = start_server(&socket_path, SmokeScenario::HybridPretty)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("hybrid")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--lexical-query")
+        .arg("symbol:RepoMapOwner")
+        .arg("--lexical-syntax")
+        .arg("sourcegraph")
+        .arg("--semantic-vector-handle")
+        .arg("vec-handle-9")
+        .arg("--top-k")
+        .arg("3")
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    if !stdout.contains("kind: hybrid") {
+        return Err(format!("missing hybrid kind in stdout: {stdout}").into());
+    }
+    if !stdout.contains("summary: hybrid explanation") {
+        return Err(format!("missing hybrid summary in stdout: {stdout}").into());
+    }
+    Ok(())
+}
+
+fn repomap_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = unique_socket_path();
+    let shutdown = start_server(&socket_path, SmokeScenario::RepoMapPretty)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("repomap")
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--repo-id")
+        .arg("repo-1")
+        .arg("--revision-id")
+        .arg("rev-1")
+        .arg("--manifest-generation")
+        .arg("11")
+        .arg("--query-text")
+        .arg("repo map focus")
+        .arg("--top-k")
+        .arg("5")
+        .arg("--token-budget")
+        .arg("2048")
+        .arg("--focus-subject")
+        .arg("subject-repomap:symbol")
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    if !stdout.contains("kind: repomap") {
+        return Err(format!("missing repomap kind in stdout: {stdout}").into());
+    }
+    if !stdout.contains("subject_identity=entry::ident") {
+        return Err(format!("missing repomap entry in stdout: {stdout}").into());
     }
     Ok(())
 }
@@ -288,17 +409,18 @@ fn semantic_with_scope_query_and_scope_top_k_parses_successfully_impl()
 
 fn start_server(
     socket_path: &std::path::Path,
+    scenario: SmokeScenario,
 ) -> Result<quanta_index_ipc::ShutdownHandle, Box<dyn std::error::Error>> {
     let server = UdsServer::bind(socket_path)?;
     let shutdown = server.shutdown_handle();
-    let dispatcher = Arc::new(StubDispatcher);
+    let dispatcher = Arc::new(ScenarioDispatcher { scenario });
     let _server_thread = std::thread::spawn(move || {
         match server.run::<
             SearchPlaneQueryIpcRequestEnvelope,
             SearchPlaneQueryIpcRequest,
             SearchPlaneQueryIpcResponseEnvelope,
             SearchPlaneQueryIpcResponse,
-            StubDispatcher,
+            ScenarioDispatcher,
         >(&dispatcher, Duration::from_millis(5))
         {
             Ok(()) | Err(_) => {}
@@ -321,6 +443,186 @@ fn unique_socket_path() -> std::path::PathBuf {
     };
     let sequence = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("qi-searchctl-test-{pid}-{nanos}-{sequence}.sock"))
+}
+
+fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Text(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected lexical request, got {request:?}"),
+        );
+    };
+    let Some(generation) = payload.generation else {
+        return error_response(
+            "TEST_MISSING_GENERATION",
+            "lexical request must carry generation",
+        );
+    };
+    SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        generation: generation.clone(),
+        results: vec![stub_candidate(generation)],
+    })
+}
+
+fn dispatch_explain_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Explain(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected explain request, got {request:?}"),
+        );
+    };
+    SearchPlaneQueryIpcResponse::Explain(SearchPlaneExplainQueryResponse {
+        generation: payload.generation,
+        explanation: stub_explanation(
+            "fused lexical explanation",
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        ),
+    })
+}
+
+fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Semantic(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected semantic request, got {request:?}"),
+        );
+    };
+    let expected_generation = stub_generation();
+    if payload.generation.as_ref() != Some(&expected_generation) {
+        return error_response(
+            "TEST_BAD_GENERATION",
+            format!("unexpected semantic generation: {:?}", payload.generation),
+        );
+    }
+    if payload.query_text.as_deref() != Some("0.25 0.5 -0.75") {
+        return error_response(
+            "TEST_BAD_QUERY_TEXT",
+            format!("unexpected semantic query_text: {:?}", payload.query_text),
+        );
+    }
+    if payload.query_vector.is_some() {
+        return error_response(
+            "TEST_LEGACY_VECTOR_FIELD",
+            "semantic request should not populate query_vector",
+        );
+    }
+    match payload.query_vector_ref.as_ref() {
+        Some(SemanticVectorRef::Inline(vector)) if vector == &vec![0.25, 0.5, -0.75] => {}
+        other => {
+            return error_response(
+                "TEST_BAD_VECTOR_REF",
+                format!("unexpected semantic vector ref: {other:?}"),
+            );
+        }
+    }
+    let Some(scope) = payload.lexical_scope.as_ref() else {
+        return error_response(
+            "TEST_MISSING_SCOPE",
+            "semantic request should carry lexical scope",
+        );
+    };
+    if scope.syntax != TextQuerySyntax::Sourcegraph
+        || scope.query_text != "repo:repo-1 file:src/lib.rs"
+        || scope.top_k != 4
+        || scope.generation.as_ref() != Some(&expected_generation)
+    {
+        return error_response(
+            "TEST_BAD_SCOPE",
+            format!("unexpected semantic lexical scope: {scope:?}"),
+        );
+    }
+    if payload.top_k != 10 {
+        return error_response(
+            "TEST_BAD_TOP_K",
+            format!("unexpected semantic top_k: {}", payload.top_k),
+        );
+    }
+    SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+        generation: expected_generation.clone(),
+        results: vec![stub_candidate(expected_generation)],
+        explanation: stub_explanation("semantic explanation", vec![EngineTouched::Semantic]),
+    })
+}
+
+fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::Hybrid(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected hybrid request, got {request:?}"),
+        );
+    };
+    let expected_generation = stub_generation();
+    if payload.generation.as_ref() != Some(&expected_generation) {
+        return error_response(
+            "TEST_BAD_GENERATION",
+            format!("unexpected hybrid generation: {:?}", payload.generation),
+        );
+    }
+    if payload.text_query.syntax != TextQuerySyntax::Sourcegraph
+        || payload.text_query.query_text != "symbol:RepoMapOwner"
+        || payload.text_query.top_k != 3
+        || payload.text_query.generation.as_ref() != Some(&expected_generation)
+    {
+        return error_response(
+            "TEST_BAD_TEXT_QUERY",
+            format!("unexpected hybrid text query: {:?}", payload.text_query),
+        );
+    }
+    if payload.semantic_query_text.is_some() || payload.semantic_vector.is_some() {
+        return error_response(
+            "TEST_LEGACY_SEMANTIC_FIELDS",
+            format!(
+                "hybrid request should not populate legacy semantic fields: {:?} {:?}",
+                payload.semantic_query_text, payload.semantic_vector
+            ),
+        );
+    }
+    match payload.semantic_vector_ref.as_ref() {
+        Some(SemanticVectorRef::Handle(handle)) if handle.as_ref() == "vec-handle-9" => {}
+        other => {
+            return error_response(
+                "TEST_BAD_VECTOR_HANDLE",
+                format!("unexpected hybrid semantic vector ref: {other:?}"),
+            );
+        }
+    }
+    if payload.top_k != 3 {
+        return error_response(
+            "TEST_BAD_TOP_K",
+            format!("unexpected hybrid top_k: {}", payload.top_k),
+        );
+    }
+    SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        generation: expected_generation.clone(),
+        results: vec![stub_candidate(expected_generation)],
+        explanation: stub_explanation(
+            "hybrid explanation",
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        ),
+    })
+}
+
+fn dispatch_repomap_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::RepoMapQuery(payload) = request else {
+        return error_response(
+            "TEST_UNEXPECTED_REQUEST",
+            format!("expected repomap request, got {request:?}"),
+        );
+    };
+    if payload.repo_id != RepoId::new("repo-1")
+        || payload.revision_id != RevisionId::new("rev-1")
+        || payload.manifest_generation != ManifestGeneration::new(11)
+        || payload.query_text != "repo map focus"
+        || payload.top_k != 5
+        || payload.token_budget != 2048
+        || payload.focus_subjects != vec![stub_repomap_focus_subject()]
+    {
+        return error_response(
+            "TEST_BAD_REPOMAP_REQUEST",
+            format!("unexpected repomap request: {payload:?}"),
+        );
+    }
+    SearchPlaneQueryIpcResponse::RepoMapQuery(stub_repomap_response())
 }
 
 fn error_response(code: &str, message: impl Into<String>) -> SearchPlaneQueryIpcResponse {
@@ -352,13 +654,13 @@ fn stub_candidate(generation: GenerationPin) -> LexicalCandidate {
     }
 }
 
-fn stub_explanation() -> SearchExplanation {
+fn stub_explanation(summary: &str, engines_touched: Vec<EngineTouched>) -> SearchExplanation {
     SearchExplanation {
         planner_trace: vec![PlannerTraceEntry {
             stage: PlannerStage::Merge,
             detail: "rrf fused lexical candidates".to_string(),
         }],
-        engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        engines_touched,
         early_stop_reason: None,
         contributions: vec![ExplanationRow {
             signal_name: "bm25".into(),
@@ -368,6 +670,64 @@ fn stub_explanation() -> SearchExplanation {
         }],
         ranker_weights_hash: [7_u8; 32],
         strategy: "rrf".to_string(),
-        summary: "fused lexical explanation".to_string(),
+        summary: summary.to_string(),
+    }
+}
+
+fn stub_repomap_focus_subject() -> RepoMapFocusSubjectDto {
+    RepoMapFocusSubjectDto {
+        subject_identity: "subject-repomap".to_string(),
+        subject_doc_type: RepoMapDocType::Symbol,
+    }
+}
+
+fn stub_repomap_snapshot_meta() -> RepoMapSnapshotMeta {
+    RepoMapSnapshotMeta {
+        snapshot_id: "snap-1".to_string(),
+        projection_version: 7,
+        authority_digest: "blake3:deadbeef".to_string(),
+        item_index_availability: RepoMapItemIndexAvailability::Full,
+        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        exactness_summary: RepoMapExactnessSummary::Exact,
+    }
+}
+
+fn stub_repomap_entry() -> RepoMapEntryDto {
+    RepoMapEntryDto {
+        subject_identity: "entry::ident".to_string(),
+        subject_doc_type: RepoMapDocType::Symbol,
+        subject_kind: "function".to_string(),
+        owner_path: "src/lib.rs".to_string(),
+        score: 0.875,
+        final_score_millis: 875,
+        included: true,
+        rank: 1,
+        importance_score_millis: 500,
+        utility_score_millis: 400,
+        freshness_score_millis: 300,
+        evidence_priority_millis: 200,
+        token_budget_hint: 1024,
+        contributing_signals: BTreeMap::from([
+            ("centrality".to_string(), 100_i64),
+            ("recency".to_string(), -3_i64),
+        ]),
+        projection_evidence_kind: "authoritative".to_string(),
+        projection_authority_artifact_id: "art-1".to_string(),
+        projection_authority_digest: "blake3:cafebabe".to_string(),
+        projection_status: "ok".to_string(),
+        redaction_state: RepoMapRedactionState::Unredacted,
+    }
+}
+
+fn stub_repomap_response() -> RepoMapQueryResponse {
+    RepoMapQueryResponse {
+        repo_id: RepoId::new("repo-1"),
+        revision_id: RevisionId::new("rev-1"),
+        manifest_generation: ManifestGeneration::new(11),
+        snapshot_meta: stub_repomap_snapshot_meta(),
+        entries: vec![stub_repomap_entry()],
+        dropped_entries_count: 1,
+        drop_reason_codes: vec!["token_budget".to_string()],
+        degraded_reason_codes: vec!["partial_authority".to_string()],
     }
 }

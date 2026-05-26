@@ -481,11 +481,12 @@ fn lexical_ops_for_batch(
     batch: &LexicalIngestBatch,
     include_seal: bool,
 ) -> Result<Vec<LexicalChannelOp>, CoreError> {
-    let mut ops = Vec::with_capacity(
-        batch.replace_scopes.len()
-            + batch.tombstone_scopes.len()
-            + if include_seal { 1 } else { 0 },
-    );
+    let op_capacity = batch
+        .replace_scopes
+        .len()
+        .saturating_add(batch.tombstone_scopes.len())
+        .saturating_add(usize::from(include_seal));
+    let mut ops = Vec::with_capacity(op_capacity);
     for scope in &batch.replace_scopes {
         ops.push(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
             repo_id: batch.repo_id.clone(),
@@ -530,11 +531,12 @@ fn semantic_ops_for_batch(
     batch: &SemanticIngestBatch,
     include_seal: bool,
 ) -> Result<Vec<SemanticChannelOp>, CoreError> {
-    let mut ops = Vec::with_capacity(
-        batch.replace_scopes.len()
-            + batch.tombstone_scopes.len()
-            + if include_seal { 1 } else { 0 },
-    );
+    let op_capacity = batch
+        .replace_scopes
+        .len()
+        .saturating_add(batch.tombstone_scopes.len())
+        .saturating_add(usize::from(include_seal));
+    let mut ops = Vec::with_capacity(op_capacity);
     for scope in &batch.replace_scopes {
         ops.push(SemanticChannelOp::ReplaceSemanticScope(
             ReplaceSemanticScope {
@@ -586,9 +588,13 @@ fn semantic_ops_for_batch(
 }
 
 fn history_ops_for_batch(batch: &HistoryIngestBatch) -> Result<Vec<LexicalChannelOp>, CoreError> {
-    let mut ops = Vec::with_capacity(
-        batch.commits.len() + batch.refs.len() + batch.tags.len() + batch.diff_hunks.len(),
-    );
+    let op_capacity = batch
+        .commits
+        .len()
+        .saturating_add(batch.refs.len())
+        .saturating_add(batch.tags.len())
+        .saturating_add(batch.diff_hunks.len());
+    let mut ops = Vec::with_capacity(op_capacity);
     for record in &batch.commits {
         ops.push(LexicalChannelOp::UpsertCommit(UpsertCommit {
             repo_id: batch.repo_id.clone(),
@@ -690,7 +696,11 @@ fn dirty_ops_for_batch(batch: &DirtyIngestBatch) -> Vec<LexicalChannelOp> {
 fn structural_ops_for_batch(
     batch: &StructuralIngestBatch,
 ) -> Result<Vec<LexicalChannelOp>, CoreError> {
-    let mut ops = Vec::with_capacity(batch.replace_scopes.len() + batch.tombstone_scopes.len());
+    let op_capacity = batch
+        .replace_scopes
+        .len()
+        .saturating_add(batch.tombstone_scopes.len());
+    let mut ops = Vec::with_capacity(op_capacity);
     for scope in &batch.replace_scopes {
         ops.push(LexicalChannelOp::ReplaceStructuralScope(
             ReplaceStructuralScope {
@@ -896,11 +906,13 @@ impl HistoryIngestPort for DirectHistoryMaterializer {
             ))
         })?;
         for op in &ops {
-            match op {
-                LexicalChannelOp::DeleteRef(_) | LexicalChannelOp::DeleteTag(_) => {
-                    receipt.accept_tombstone_scope();
-                }
-                _ => receipt.accept_replace_scope(),
+            if matches!(
+                op,
+                LexicalChannelOp::DeleteRef(_) | LexicalChannelOp::DeleteTag(_)
+            ) {
+                receipt.accept_tombstone_scope();
+            } else {
+                receipt.accept_replace_scope();
             }
             guard.apply_lexical_authority_op(op)?;
         }
@@ -935,9 +947,10 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
             CoreError::Storage(format!("direct dirty materialize: ledger poisoned: {err}"))
         })?;
         for op in &ops {
-            match op {
-                LexicalChannelOp::EvictDirty(_) => receipt.accept_tombstone_scope(),
-                _ => receipt.accept_replace_scope(),
+            if matches!(op, LexicalChannelOp::EvictDirty(_)) {
+                receipt.accept_tombstone_scope();
+            } else {
+                receipt.accept_replace_scope();
             }
             guard.apply_lexical_authority_op(op)?;
         }

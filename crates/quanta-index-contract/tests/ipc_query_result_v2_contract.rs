@@ -172,8 +172,8 @@ fn lexical_candidate() -> LexicalCandidate {
     }
 }
 
-fn symbol_candidate() -> SymbolCandidate {
-    SymbolCandidate {
+fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
+    Ok(SymbolCandidate {
         candidate_id: "sym-1".to_owned(),
         repo_id: RepoId::new("repo-1"),
         revision_id: RevisionId::new("rev-1"),
@@ -183,12 +183,9 @@ fn symbol_candidate() -> SymbolCandidate {
         end_line: 18,
         score: 0.875,
         snippet: "search_plane crate".to_owned(),
-        symbol_kind: match SymbolKindCode::new("function") {
-            Ok(symbol_kind) => symbol_kind,
-            Err(err) => panic!("canonical symbol kind: {err}"),
-        },
+        symbol_kind: SymbolKindCode::new("function")?,
         symbol_kind_family: Some(SymbolKindFamily::Callable),
-    }
+    })
 }
 
 fn semantic_request() -> SemanticQueryRequest {
@@ -697,7 +694,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
     let response =
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
-            results: vec![symbol_candidate()],
+            results: vec![symbol_candidate()?],
         });
 
     roundtrip_eq(&response)?;
@@ -826,24 +823,34 @@ fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRe
     let response =
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
             generation: generation_pin(),
-            results: vec![symbol_candidate()],
+            results: vec![symbol_candidate()?],
         });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
         let payload = field_value_mut(response_fields, "payload")?;
         let payload_fields = map_fields_mut(payload)?;
         let results = field_value_mut(payload_fields, "results")?;
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "ciborium::Value is non_exhaustive; keep a future-variant rejection arm"
+        )]
         let array = match results {
             ciborium::Value::Array(values) => values,
-            other @ ciborium::Value::Integer(_)
-            | other @ ciborium::Value::Bytes(_)
-            | other @ ciborium::Value::Float(_)
-            | other @ ciborium::Value::Text(_)
-            | other @ ciborium::Value::Bool(_)
-            | other @ ciborium::Value::Null
-            | other @ ciborium::Value::Tag(_, _)
-            | other @ ciborium::Value::Map(_) => {
+            other @ (ciborium::Value::Integer(_)
+            | ciborium::Value::Bytes(_)
+            | ciborium::Value::Float(_)
+            | ciborium::Value::Text(_)
+            | ciborium::Value::Bool(_)
+            | ciborium::Value::Null
+            | ciborium::Value::Tag(_, _)
+            | ciborium::Value::Map(_)) => {
                 return Err(format!("expected results array, got {other:?}").into());
+            }
+            other => {
+                return Err(format!(
+                    "expected results array, got future/non-exhaustive value {other:?}"
+                )
+                .into());
             }
         };
         let first = array

@@ -1084,6 +1084,7 @@ version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
  "quanta-index-ipc",
+ "quanta-index-sdk",
  "serde_json",
  "tempfile",
 ]
@@ -1110,6 +1111,7 @@ dependencies = [
  "anyhow",
  "ciborium",
  "quanta-index-channel",
+ "quanta-index-conformance",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
@@ -1122,6 +1124,7 @@ dependencies = [
  "quanta-index-semantic",
  "serde",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

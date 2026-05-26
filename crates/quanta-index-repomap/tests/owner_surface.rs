@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::unreachable,
+    reason = "test fixtures use invariant literal constructors for language codes"
+)]
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -10,6 +14,13 @@ use quanta_index_contract::{
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
+
+fn rust_language() -> LanguageCode {
+    match LanguageCode::new("rust") {
+        Ok(language) => language,
+        Err(err) => unreachable!("valid language: {err}"),
+    }
+}
 
 fn repo_id() -> RepoId {
     RepoId::new("repo-map-owner-test")
@@ -58,7 +69,7 @@ fn source_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://lib"),
             owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 0,
             end_byte: 100,
             start_line: 1,
@@ -72,7 +83,7 @@ fn source_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://main"),
             owner_path: RepoRelativePath::new("src/main.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 101,
             end_byte: 180,
             start_line: 11,
@@ -86,7 +97,7 @@ fn source_bundle() -> RepoMapSourceBundle {
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: quanta_index_contract::ChunkId::new("chunk://http"),
             owner_path: RepoRelativePath::new("src/http.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: rust_language(),
             start_byte: 181,
             end_byte: 240,
             start_line: 19,

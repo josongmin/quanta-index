@@ -76,7 +76,7 @@ impl<'a> RuntimeNamespace<'a> {
     }
 }
 
-pub struct RuntimeNs;
+struct RuntimeNs;
 
 impl crate::NamespaceIngest for RuntimeNs {
     type Batch = DirtyBatch;

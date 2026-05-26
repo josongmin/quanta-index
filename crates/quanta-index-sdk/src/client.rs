@@ -85,18 +85,15 @@ impl QuantaIndex {
         GenerationNamespace::new(self)
     }
 
-    /// QI-NS-01: generic namespace entry point. Returns a
-    /// [`crate::NamespaceHandle`] bound to this client. Used both by the
-    /// built-in sugar methods ([`Self::lexical`], [`Self::semantic`],
-    /// [`Self::repomap`]) and by downstream consumers that need to
-    /// register their own namespace marker — see the
-    /// `namespace` module docs.
+    /// Test-only generic namespace entry point used by SDK-local
+    /// namespace conformance tests.
+    #[cfg(test)]
     #[must_use]
-    pub fn ns<N>(&self) -> crate::NamespaceHandle<'_, N>
+    pub(crate) fn ns<N>(&self) -> crate::namespace::NamespaceHandle<'_, N>
     where
         N: ?Sized,
     {
-        crate::NamespaceHandle::new(self)
+        crate::namespace::NamespaceHandle::new(self)
     }
 
     pub(super) fn dispatch_query(

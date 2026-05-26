@@ -26,16 +26,17 @@ use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
 };
 use quanta_index_contract::lex::{
-    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+    CommitRecord, CommitSha, LanguageCode, ParseNode, ParseTreeRecord,
+    compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, DeleteChunk, EmbeddingId,
-    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle, LqVisibility,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    GenerationPin, HistoryQueryRequest, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle,
+    LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp, SemanticFullBundle,
     SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest, TextQueryRequest,
-    TextQuerySyntax, UpsertChunk, UpsertEmbedding, UpsertParseTree,
+    TextQuerySyntax, UpsertChunk, UpsertCommit, UpsertEmbedding, UpsertParseTree,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -124,6 +125,36 @@ fn chunk_payload_with_metadata(
     ciborium::into_writer(&record, &mut buf)
         .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
     Ok(buf)
+}
+
+fn encode_cbor<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut buf = Vec::new();
+    ciborium::into_writer(value, &mut buf)
+        .map_err(|err| -> Box<dyn Error> { format!("encode {label}: {err}").into() })?;
+    Ok(buf)
+}
+
+fn history_commit_sha() -> CommitSha {
+    CommitSha::from_bytes([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ])
+}
+
+fn history_commit_record() -> CommitRecord {
+    CommitRecord {
+        wire_version: 1,
+        sha: history_commit_sha(),
+        parents: Vec::new(),
+        author_time_ms: 11,
+        committer_time_ms: 12,
+        applied_at_ms: 13,
+        author: "alice".to_string().into_boxed_str(),
+        committer: "alice".to_string().into_boxed_str(),
+        message: "fix: sample".to_string().into_boxed_str(),
+        is_merge: false,
+        tags: vec!["v1.0.0".to_string().into_boxed_str()],
+    }
 }
 
 fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
@@ -587,6 +618,193 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
             candidate.start_line, candidate.end_line
         )
         .into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn history_query_returns_typed_generation_not_ready_error() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-history-generation-not-ready-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let err = wait_for_typed_error(
+        &socket,
+        &history_query("type:commit fix"),
+        READINESS_TIMEOUT,
+    )?;
+    if err.code != "HISTORY_GENERATION_NOT_READY" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected HISTORY_GENERATION_NOT_READY, got {}", err.code).into());
+    }
+    if !err.message.contains("not yet materialized") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected generation-not-ready message: {}", err.message).into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("history-fallback"),
+            payload: chunk_payload("fix only lives in lexical content")?,
+        }))?;
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-history-producer-unavailable-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &lex_query("fix"))
+            .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("lexical fixture never became queryable".into());
+    }
+
+    let err = wait_for_typed_error(&socket, &history_query("fix"), READINESS_TIMEOUT)?;
+    if err.code != "HISTORY_PRODUCER_UNAVAILABLE" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected HISTORY_PRODUCER_UNAVAILABLE, got {}", err.code).into());
+    }
+    if !err.message.contains("producer data is unavailable") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected producer-unavailable message: {}", err.message).into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("history-lex"),
+            payload: chunk_payload("history shard lexical proof")?,
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertCommit(UpsertCommit {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: encode_cbor(&history_commit_record(), "history commit")?,
+        }))?;
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-history-shard-unavailable-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &lex_query("history"))
+            .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("history lexical proof never became ready".into());
+    }
+
+    let err = wait_for_typed_error(
+        &socket,
+        &history_query("type:diff history"),
+        READINESS_TIMEOUT,
+    )?;
+    if err.code != "HISTORY_SHARD_UNAVAILABLE" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected HISTORY_SHARD_UNAVAILABLE, got {}", err.code).into());
+    }
+    if !err.message.contains("diff shard is unavailable") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected shard-unavailable message: {}", err.message).into());
     }
 
     shutdown.store(true, Ordering::Release);
@@ -2461,7 +2679,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         }),
     };
     let mut observed: Option<String> = None;
-    let saw_expected = wait_until(Duration::from_secs(2), || {
+    let saw_expected = wait_until(READINESS_TIMEOUT, || {
         match send_query_request(&socket, &request) {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => {
@@ -2962,5 +3180,51 @@ fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
             generation_selector: None,
             top_k: 50,
         }),
+    }
+}
+
+fn history_query(query_text: &str) -> SearchPlaneQueryIpcRequestEnvelope {
+    SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 0,
+        payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: query_text.to_string(),
+                generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    }
+}
+
+fn wait_for_typed_error(
+    socket: &Path,
+    request: &SearchPlaneQueryIpcRequestEnvelope,
+    timeout: Duration,
+) -> Result<quanta_index_contract::SearchPlaneIpcError, Box<dyn Error>> {
+    let mut last_observed = String::new();
+    if !wait_until(timeout, || match send_query_request(socket, request) {
+        Ok(response) => match response.payload {
+            SearchPlaneQueryIpcResponse::Error(err) => {
+                last_observed = err.code;
+                true
+            }
+            other => {
+                last_observed = format!("{other:?}");
+                false
+            }
+        },
+        Err(err) => {
+            last_observed = err.to_string();
+            false
+        }
+    }) {
+        return Err(format!("typed error never surfaced before timeout: {last_observed}").into());
+    }
+    let response = send_query_request(socket, request)?;
+    match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => Ok(err),
+        other => Err(format!("expected Error response after readiness wait, got {other:?}").into()),
     }
 }

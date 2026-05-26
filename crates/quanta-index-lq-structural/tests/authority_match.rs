@@ -1,3 +1,8 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "authority tests assert exact match cardinality before direct indexing"
+)]
+
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
 };

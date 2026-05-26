@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use toml::Value;
 
-use crate::corpus::{Corpus, CorpusRow, ExpectedShape, Gate};
+use crate::corpus::{Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeSyntax};
 use crate::errors::{ConformanceError, CorpusLoadError};
 
 /// Allow-listed row-level keys. Anything else triggers
@@ -32,6 +32,12 @@ const ALLOWED_ROW_KEYS: &[&str] = &[
     "persona",
     "engines",
     "filters",
+    "syntax",
+    "classification",
+    "fixture",
+    "expected_ids",
+    "top_k",
+    "runtime_error_code",
     "expected",
 ];
 
@@ -158,6 +164,12 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
     let persona = optional_string(table, "persona", path)?;
     let engines = parse_string_array(table, "engines", path)?;
     let filters = parse_string_array(table, "filters", path)?;
+    let syntax = optional_runtime_syntax(table, path)?;
+    let classification = optional_row_classification(table, path)?;
+    let fixture = optional_string(table, "fixture", path)?;
+    let expected_ids = parse_string_array(table, "expected_ids", path)?;
+    let top_k = optional_u32(table, "top_k", path)?;
+    let runtime_error_code = optional_string(table, "runtime_error_code", path)?;
 
     let expected_val = table
         .get("expected")
@@ -175,7 +187,58 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
         persona,
         engines,
         filters,
+        syntax,
+        classification,
+        fixture,
+        expected_ids,
+        top_k,
+        runtime_error_code,
     })
+}
+
+fn optional_runtime_syntax(
+    table: &toml::map::Map<String, Value>,
+    path: &str,
+) -> Result<Option<RuntimeSyntax>, CorpusLoadError> {
+    let Some(raw) = optional_string(table, "syntax", path)? else {
+        return Ok(None);
+    };
+    match raw.as_str() {
+        "native" => Ok(Some(RuntimeSyntax::Native)),
+        "sourcegraph" => Ok(Some(RuntimeSyntax::Sourcegraph)),
+        other => Err(CorpusLoadError::UnknownEnumValue {
+            path: path.to_owned(),
+            field: "syntax",
+            value: other.to_owned(),
+            allowed: &["native", "sourcegraph"],
+        }),
+    }
+}
+
+fn optional_row_classification(
+    table: &toml::map::Map<String, Value>,
+    path: &str,
+) -> Result<Option<RowClassification>, CorpusLoadError> {
+    let Some(raw) = optional_string(table, "classification", path)? else {
+        return Ok(None);
+    };
+    match raw.as_str() {
+        "runtime" => Ok(Some(RowClassification::Runtime)),
+        "parser_only" => Ok(Some(RowClassification::ParserOnly)),
+        "typed_unavailable" => Ok(Some(RowClassification::TypedUnavailable)),
+        "deferred_external_producer" => Ok(Some(RowClassification::DeferredExternalProducer)),
+        other => Err(CorpusLoadError::UnknownEnumValue {
+            path: path.to_owned(),
+            field: "classification",
+            value: other.to_owned(),
+            allowed: &[
+                "runtime",
+                "parser_only",
+                "typed_unavailable",
+                "deferred_external_producer",
+            ],
+        }),
+    }
 }
 
 fn parse_gate(
@@ -442,6 +505,12 @@ mod tests {
                     persona: None,
                     engines: Vec::new(),
                     filters: Vec::new(),
+                    syntax: None,
+                    classification: None,
+                    fixture: None,
+                    expected_ids: Vec::new(),
+                    top_k: None,
+                    runtime_error_code: None,
                 }
             },
             Clone::clone,
@@ -493,6 +562,67 @@ mod tests {
         assert_eq!(row.id, "SYN-01");
         assert_eq!(row.gate, Gate::Active);
         assert_eq!(row.expected, ExpectedShape::Multi { min: 1, max: None });
+        assert_eq!(row.syntax, None);
+        assert_eq!(row.classification, None);
+        assert!(row.expected_ids.is_empty());
+        assert_eq!(row.top_k, None);
+        assert_eq!(row.runtime_error_code, None);
+    }
+
+    #[test]
+    fn runtime_metadata_fields_parse() {
+        let raw = r#"
+            [[row]]
+            id = "RT-01"
+            query = "alpha_content_needle"
+            gate = "active"
+            engines = ["lexical_content"]
+            syntax = "sourcegraph"
+            classification = "runtime"
+            fixture = "docs.toml"
+            expected_ids = ["alpha", "beta"]
+            top_k = 7
+            runtime_error_code = "LEX_FILTER_FORK_UNAVAILABLE"
+
+            [row.expected]
+            kind = "multi"
+            min = 2
+            max = 2
+        "#;
+        let corpus = expect_ok(parse_corpus(raw, p()));
+        let row = first_row(&corpus);
+        assert_eq!(row.syntax, Some(RuntimeSyntax::Sourcegraph));
+        assert_eq!(row.classification, Some(RowClassification::Runtime));
+        assert_eq!(row.fixture.as_deref(), Some("docs.toml"));
+        assert_eq!(
+            row.expected_ids,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        assert_eq!(row.top_k, Some(7));
+        assert_eq!(
+            row.runtime_error_code.as_deref(),
+            Some("LEX_FILTER_FORK_UNAVAILABLE")
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_classification_rejected() {
+        let raw = r#"
+            [[row]]
+            id = "BAD-CLASS"
+            query = "alpha"
+            gate = "active"
+            classification = "bogus"
+
+            [row.expected]
+            kind = "single"
+        "#;
+        let err = expect_err(parse_corpus(raw, p()));
+        assert!(matches!(
+            err,
+            CorpusLoadError::UnknownEnumValue { field, value, .. }
+                if field == "classification" && value == "bogus"
+        ));
     }
 
     #[test]

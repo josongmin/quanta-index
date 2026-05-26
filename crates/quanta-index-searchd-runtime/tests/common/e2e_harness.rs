@@ -44,12 +44,14 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
-    RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, StructuralQueryRequest, SymbolId, TextQueryRequest,
-    TextQuerySyntax, UpsertChunk, UpsertParseTree, UpsertSymbol,
+    RepoId, RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivateGenerationRequest,
+    SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
+    StructuralQueryRequest, SymbolId, TextQueryRequest, TextQuerySyntax, UpsertChunk,
+    UpsertParseTree, UpsertSymbol,
 };
 use quanta_index_ipc::send_request;
+use quanta_index_search_plane::ActivationCatalog;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
@@ -109,6 +111,15 @@ pub(super) struct E2eQueryResult {
 pub(super) struct E2eTypedError {
     pub(super) code: String,
     pub(super) message: String,
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "sibling test modules import this private-module harness surface"
+)]
+pub(super) struct E2eExplainResult {
+    pub(super) explanation: Option<SearchExplanation>,
+    pub(super) typed_error: Option<E2eTypedError>,
 }
 
 impl E2eRuntime {
@@ -183,6 +194,23 @@ impl E2eRuntime {
 
     pub(super) fn generation_pin(&self) -> GenerationPin {
         GenerationPin::new(self.repo(), self.revision(), self.current_generation())
+    }
+
+    pub(super) fn activate_last_sealed_generation(&self) -> AnyResult<()> {
+        let Some(pin) = self.last_sealed_pin() else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: cannot activate before any generation has been sealed"
+            ));
+        };
+        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
+        catalog.activate(&SearchPlaneActivateGenerationRequest {
+            repo_id: pin.repo_id,
+            revision_id: pin.revision_id,
+            manifest_generation: pin.manifest_generation,
+            manifest_digest: "e2e-harness-activation".to_string(),
+            tracks: vec![SearchPlaneTrackKind::Lexical],
+        })?;
+        Ok(())
     }
 
     /// Ingest one chunk through the real `LexicalChannelOp` publish path.
@@ -629,6 +657,97 @@ impl E2eRuntime {
         }
     }
 
+    pub(super) fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let pin = GenerationPin::new(
+            candidate.repo_id.clone(),
+            candidate.revision_id.clone(),
+            candidate.manifest_generation,
+        );
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
+                generation: pin,
+                candidate,
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eExplainResult {
+                    explanation: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => {
+                let message = if readiness_reached {
+                    err.to_string()
+                } else {
+                    format!("readiness timeout before IPC response: {err}")
+                };
+                return E2eExplainResult {
+                    explanation: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "IPC_TRANSPORT".to_string(),
+                        message,
+                    }),
+                };
+            }
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Explain(explain) => E2eExplainResult {
+                explanation: Some(explain.explanation),
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eExplainResult {
+                explanation: None,
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_explain_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_explain_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_explain_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_explain_response("History"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_explain_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
+                unexpected_explain_response("RepoMapQuery")
+            }
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_explain_response("RuntimeMetadata")
+            }
+        }
+    }
+
     fn last_sealed_pin(&self) -> Option<GenerationPin> {
         if self.generation_counter <= 1 {
             None
@@ -639,6 +758,16 @@ impl E2eRuntime {
                 ManifestGeneration::new(self.generation_counter.saturating_sub(1)),
             ))
         }
+    }
+}
+
+fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
+    E2eExplainResult {
+        explanation: None,
+        typed_error: Some(E2eTypedError {
+            code: "UNEXPECTED_RESPONSE".to_string(),
+            message: format!("expected Explain, got {kind}"),
+        }),
     }
 }
 

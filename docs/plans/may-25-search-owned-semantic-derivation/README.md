@@ -1,12 +1,27 @@
 # Search-owned Semantic Derivation
 
-Status: `proposed`
-Date: `2026-05-25`
-Scope: breaking-first semantic ownership inversion for `quanta-index`
+Status: `deferred-follow-on`
+Date: `2026-05-27`
+Scope: target-state semantic ownership inversion for `quanta-index` after the
+current public-surface closure packet
+
+This document is not shipped source truth for the current tree. It records the
+target design for the later `SEM-OWN` wave.
 
 ---
 
-## 1. Final decision
+## 1. Current tree truth (2026-05-27)
+
+- external producer-facing semantic ingest is still live; the current tree has
+  not inverted semantic ownership into `quanta-index`
+- public semantic/hybrid query contracts still accept vector/handle inputs via
+  the current `query_vector_ref` / `semantic_vector_ref` request fields
+- `searchctl` still exposes `--query-vector`,
+  `--query-vector-handle`, `--semantic-vector`, and
+  `--semantic-vector-handle`
+- `sdk_frontdoor` proof uses that current vector/handle contract on purpose
+
+## 2. Target decision if `SEM-OWN` starts
 
 `quanta-index` owns both corpus embedding and query embedding.
 
@@ -23,9 +38,9 @@ This decision intentionally keeps:
 
 But it inverts semantic ownership only.
 
-## 2. External interfaces
+## 3. Target external interfaces
 
-### 2.1 Producer -> `quanta-index`
+### 3.1 Producer -> `quanta-index`
 
 Accepted external inputs:
 
@@ -45,20 +60,19 @@ Forbidden external inputs:
 - producer-side corpus embedding model selection
 - producer-side semantic manifest authorship
 
-### 2.2 Search query clients -> `quanta-index`
+### 3.2 Search query clients -> `quanta-index`
 
-Public query surface becomes text-only for semantic paths.
+Target public query surface becomes text-only for semantic paths.
 
 - `semantic(query_text, top_k, generation, lexical_scope?)`
 - `hybrid(lexical_query, semantic_query_text, top_k, generation)`
 
-Public vector/handle query surfaces are removed from the main request schema.
-If a debug/admin vector surface is kept, it is not part of the stable user
-query contract.
+Current tree truth: public vector/handle query surfaces are still present. The
+text-only contract below is deferred until `SEM-OWN`.
 
-## 3. Canonical data model
+## 4. Canonical data model
 
-### 3.1 Corpus unit
+### 4.1 Corpus unit
 
 Semantic retrieval identity is `chunk_id`.
 
@@ -70,7 +84,7 @@ Reasons:
 
 `symbol` stays an auxiliary index, not the primary semantic corpus identity.
 
-### 3.2 External chunk payload
+### 4.2 External chunk payload
 
 The canonical producer payload is:
 
@@ -87,7 +101,7 @@ pub struct ChunkRecord {
 `text` is the canonical source for both lexical indexing and semantic
 derivation. The old `snippet` field is removed rather than shimmed.
 
-### 3.3 Internal semantic manifest
+### 4.3 Internal semantic manifest
 
 Each semantic generation carries an internal manifest:
 
@@ -112,7 +126,7 @@ integer. It must fingerprint every embedding-affecting rendering decision:
 - truncation policy
 - language-specific rendering policy
 
-### 3.4 Stable chunk identity contract
+### 4.4 Stable chunk identity contract
 
 `chunk_id` is a stable semantic-region identity, not a line-range identity.
 
@@ -130,7 +144,7 @@ Initial delivery rule:
   than incremental. Full-generation rebuild is acceptable. False incremental
   reuse is not.
 
-## 4. Internal components
+## 5. Internal components
 
 Required internal surfaces:
 
@@ -152,7 +166,7 @@ Canonical worker flow:
 5. publish internal `UpsertEmbedding` / `DeleteEmbedding`
 6. write semantic manifest + semantic seal after all chunk jobs complete
 
-## 5. Invariants
+## 6. Invariants
 
 - `embedding_id == chunk_id`
 - one semantic generation uses exactly one `(provider, model, dim, render_policy_hash, query_normalization_hash)`
@@ -167,12 +181,16 @@ Canonical worker flow:
 - semantic seal carries an explicit completeness proof
 - blocked activation reasons are typed, not free-form log strings
 
-## 6. Current delivery boundary
+## 7. Delivery boundary
 
-The first delivery is intentionally narrower than the full long-term semantic
-platform.
+Current tree, not shipped:
 
-Shipped now:
+- search-owned corpus embedding derivation
+- search-owned query embedding
+- manifest-guided semantic freeze authored by `quanta-index`
+- semantic job lifecycle persistence owned by the search plane
+
+Target state if `SEM-OWN` lands:
 
 - chunk-owned semantic corpus
 - search-owned corpus embedding
@@ -182,7 +200,7 @@ Shipped now:
 - query embedding cache contract
 - semantic job lifecycle persistence
 
-Deferred but structurally prepared:
+Deferred even after that target state:
 
 - symbol-projection semantic lane
 - more advanced semantic-region identity generation
@@ -190,7 +208,7 @@ Deferred but structurally prepared:
 - multi-tier query embedding caches
 - richer rendering-policy introspection beyond a stable hash
 
-## 7. Why the previous shape is being replaced
+## 8. Why the previous shape is being replaced
 
 The older semantic design optimized for a pure "producer-authored everything"
 split. That is still reasonable for parse trees, history records, and symbol
@@ -206,7 +224,7 @@ Semantic vectors are tightly coupled to search-owned concerns:
 
 Those concerns belong inside `quanta-index`.
 
-## 8. Execution units
+## 9. Execution units
 
 Ticket pack:
 
@@ -227,7 +245,13 @@ Wave order:
 5. query text embedding cutover
 6. cleanup + proof
 
-## 9. Non-goals
+Entry condition before this pack starts:
+
+- current public-surface closure packet is closed
+- current vector/handle semantic contract is documented as present truth
+- no current-tree README claims semantic ownership is already shipped
+
+## 10. Non-goals
 
 - symbol-owned semantic corpus as the primary design
 - per-request model override

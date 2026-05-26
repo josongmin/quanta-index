@@ -40,7 +40,8 @@ impl<'a> RepoMapNamespace<'a> {
         }
     }
 
-    /// Sugar for `client.ns::<RepoMapNs>().publish(bundle)`. See QI-NS-01.
+    /// Typed repo-map publish entry point backed by the crate-private
+    /// namespace trait owner. See QI-NS-01.
     ///
     /// QI-INT-01: repo-map publish goes through the ingest IPC, not
     /// control. The control surface's `RepoMapIngest` variant has been
@@ -79,7 +80,7 @@ impl<'a> RepoMapNamespace<'a> {
 /// [`RepoMapMutationAck`] rather than `BatchPublishReceipt` because the
 /// repo-map publish is a one-shot bundle ingest, not a streamed batch
 /// with a channel sequence range.
-pub struct RepoMapNs;
+struct RepoMapNs;
 
 impl crate::NamespaceIngest for RepoMapNs {
     type Batch = RepoMapSourceBundle;

@@ -1,29 +1,23 @@
-//! Generic namespace registry (QI-NS-01).
-//!
-//! Producer-facing extension point. Adding a new namespace (e.g. a derived
-//! index family that lives alongside lexical / semantic / repomap) requires
-//! exactly three things:
-//!
-//! 1. **One typed batch DTO + ingest variant in `quanta-index-contract`** —
-//!    extend [`SearchPlaneIngestIpcRequest`] / `Response` with one new
-//!    variant. (Symmetric on the query side if the namespace exposes a
-//!    typed query path.)
-//!
-//! 2. **One marker type + trait impl in this crate (or downstream)** —
-//!    `pub struct MyNs;` plus `impl NamespaceIngest for MyNs { ... }` and/or
-//!    `impl NamespaceQuery for MyNs { ... }`.
-//!
-//! 3. **No edit to SDK core** — `QuantaIndex::ns::<N>()` is generic over the
-//!    marker. The composition root, dispatcher, and transports do not
-//!    learn about new namespaces. This satisfies the CLAUDE.md
-//!    Open/Closed rule for variant edges ("adding a new IPC variant must
-//!    not force a sprawling edit across encode + decode + match + factory +
-//!    test all at once").
-//!
-//! Built-in namespaces ([`LexicalNs`], [`SemanticNs`], [`RepoMapNs`]) are
-//! defined via the same trait surface; the existing `client.lexical()` etc.
-//! sugar methods delegate to the marker-impl paths so behavior is uniform.
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private namespace infrastructure is shared across sibling SDK modules"
+)]
 
+//! Internal namespace capability traits (QI-NS-01).
+//!
+//! This module is the crate-private owner for the SDK's typed namespace
+//! dispatch traits:
+//!
+//! - [`NamespaceIngest`] for publish-style namespace operations
+//! - [`NamespaceQuery`] for query-builder namespace operations
+//!
+//! Built-in namespaces such as lexical, semantic, and repo-map implement
+//! these traits directly. Production code uses the typed `client.lexical()`,
+//! `client.semantic()`, and sibling namespace surfaces. The generic
+//! [`NamespaceHandle`] below is test-only and exists only to prove that the
+//! trait split remains open for internal namespace conformance tests.
+
+#[cfg(test)]
 use std::marker::PhantomData;
 
 use crate::{QuantaIndex, SdkError};
@@ -42,7 +36,7 @@ use crate::{QuantaIndex, SdkError};
 /// - rejecting cross-namespace responses with a typed
 ///   [`SdkError::Protocol`] (no silent fallback per CLAUDE.md safety
 ///   rules).
-pub trait NamespaceIngest {
+pub(crate) trait NamespaceIngest {
     /// SDK-side batch shape. Typically an idiomatic builder type
     /// (`LexicalBatch`, `SemanticBatch`, etc.).
     type Batch;
@@ -62,7 +56,7 @@ pub trait NamespaceIngest {
 /// Examples include syntax, generation selection, `top_k`, and the typed
 /// response returned by `execute()`. The associated `QueryBuilder<'a>` GAT
 /// ties the builder's lifetime to the SDK client reference.
-pub trait NamespaceQuery {
+pub(crate) trait NamespaceQuery {
     /// Per-namespace builder type. Each namespace defines its own; there
     /// is no fat shared trait (ISP). The builder is responsible for
     /// dispatching through `QuantaIndex::dispatch_query` when its
@@ -75,12 +69,13 @@ pub trait NamespaceQuery {
     fn query(client: &QuantaIndex) -> Self::QueryBuilder<'_>;
 }
 
-/// Handle returned by [`QuantaIndex::ns`].
+/// Test-only handle returned by [`QuantaIndex::ns`].
 ///
 /// This wrapper gates `.publish` and `.query` on which capabilities the marker
 /// `N` implements. Calling `.publish` on a namespace that does not implement
 /// [`NamespaceIngest`] is a compile-time error.
-pub struct NamespaceHandle<'a, N>
+#[cfg(test)]
+pub(crate) struct NamespaceHandle<'a, N>
 where
     N: ?Sized,
 {
@@ -90,6 +85,7 @@ where
     _marker: PhantomData<fn() -> N>,
 }
 
+#[cfg(test)]
 impl<'a, N> NamespaceHandle<'a, N>
 where
     N: ?Sized,
@@ -100,18 +96,9 @@ where
             _marker: PhantomData,
         }
     }
-
-    /// Underlying SDK client. Exposed for callers that want to drop back
-    /// to the `lexical()` / `semantic()` sugar within the same scope.
-    ///
-    /// Returns the borrow tied to the client lifetime `'a`, not to
-    /// `&self`, so callers can hold the reference past the handle.
-    #[must_use]
-    pub const fn client(&self) -> &'a QuantaIndex {
-        self.client
-    }
 }
 
+#[cfg(test)]
 impl<N> NamespaceHandle<'_, N>
 where
     N: NamespaceIngest + ?Sized,
@@ -119,11 +106,12 @@ where
     /// Publish a typed batch through the namespace's ingest path. Errors
     /// from the wire surface as [`SdkError::Remote`]; cross-namespace
     /// responses surface as [`SdkError::Protocol`].
-    pub fn publish(&self, batch: &N::Batch) -> Result<N::Receipt, SdkError> {
+    pub(crate) fn publish(&self, batch: &N::Batch) -> Result<N::Receipt, SdkError> {
         N::publish(self.client, batch)
     }
 }
 
+#[cfg(test)]
 impl<'a, N> NamespaceHandle<'a, N>
 where
     N: NamespaceQuery + ?Sized,
@@ -139,7 +127,7 @@ where
     /// etc. already return `QueryBuilder<'a>`; this method matches them so
     /// callers can hold the builder past the handle scope.
     #[must_use]
-    pub fn query(&self) -> N::QueryBuilder<'a> {
+    pub(crate) fn query(&self) -> N::QueryBuilder<'a> {
         N::query(self.client)
     }
 }
@@ -155,10 +143,7 @@ mod tests {
         reason = "mutex guard lifetime in namespace tests is intentionally local and harmless"
     )]
 
-    //! Custom-namespace round-trip. Verifies that a downstream marker
-    //! can be defined entirely outside the SDK core, route through
-    //! `client.ns::<MyNs>()`, and that the SDK core / dispatcher need no
-    //! edits.
+    //! Namespace trait conformance tests for the test-only generic handle.
 
     use std::sync::{Arc, Mutex};
 
@@ -174,10 +159,7 @@ mod tests {
     use super::*;
     use crate::{BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport};
 
-    /// Downstream marker used only in this test module.
-    ///
-    /// It composes through `client.ns::<DownstreamLexicalNs>()` without any
-    /// edit to the namespace module, client, or transports.
+    /// Test-local marker used only in this module.
     struct DownstreamLexicalNs;
 
     impl NamespaceIngest for DownstreamLexicalNs {
@@ -186,9 +168,8 @@ mod tests {
 
         fn publish(client: &QuantaIndex, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
             // Reuse the LexicalNs implementation so the wire path is
-            // exercised exactly once. A real downstream namespace would
-            // construct its own typed ingest variant.
-            <crate::LexicalNs as NamespaceIngest>::publish(client, batch)
+            // exercised exactly once.
+            <crate::lexical::LexicalNs as NamespaceIngest>::publish(client, batch)
         }
     }
 
@@ -302,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn downstream_marker_routes_through_ns_handle() {
+    fn test_local_marker_routes_through_ns_handle() {
         let ingest = Arc::new(StubIngestTransport {
             requests: Mutex::new(Vec::new()),
             response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
@@ -313,7 +294,7 @@ mod tests {
         let receipt = client
             .ns::<DownstreamLexicalNs>()
             .publish(&fixture_batch())
-            .expect("downstream publish must succeed");
+            .expect("test-local publish must succeed");
         assert_eq!(receipt.generation, ManifestGeneration::new(1));
         let captured = ingest
             .requests
@@ -354,7 +335,7 @@ mod tests {
         });
         let ns_client = make_client(Arc::clone(&ns_ingest));
         let _ns_receipt = ns_client
-            .ns::<crate::LexicalNs>()
+            .ns::<crate::lexical::LexicalNs>()
             .publish(&batch)
             .expect("ns publish must succeed");
 
@@ -397,7 +378,7 @@ mod tests {
             response: Mutex::new(None),
         }));
         let _builder = client
-            .ns::<crate::LexicalNs>()
+            .ns::<crate::lexical::LexicalNs>()
             .query()
             .native("anchor")
             .top_k(1);

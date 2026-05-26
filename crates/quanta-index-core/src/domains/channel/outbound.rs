@@ -1,4 +1,5 @@
-use quanta_index_contract::{ChannelSeq, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::channel::ChannelSeq;
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 
 use crate::error::CoreError;
 

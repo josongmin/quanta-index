@@ -563,11 +563,9 @@ fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
         10,
     )?;
     if !reversed_phrase_hits.is_empty() {
-        return Err(format!(
-            "expected 0 hits for reversed phrase, got {:?}",
-            reversed_phrase_hits
-        )
-        .into());
+        return Err(
+            format!("expected 0 hits for reversed phrase, got {reversed_phrase_hits:?}").into(),
+        );
     }
 
     Ok(())
@@ -608,15 +606,18 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
         ))),
         10,
     )?;
-    if exact_hits.len() != 1 || exact_hits[0].candidate_id != "alpha" {
+    let Some(exact_hit) = exact_hits.first() else {
+        return Err("expected indexed_text-backed phrase hit [alpha], got []".into());
+    };
+    if exact_hits.len() != 1 || exact_hit.candidate_id != "alpha" {
         return Err(
             format!("expected indexed_text-backed phrase hit [alpha], got {exact_hits:?}").into(),
         );
     }
-    if exact_hits[0].snippet != "preview only" {
+    if exact_hit.snippet != "preview only" {
         return Err(format!(
             "expected returned snippet to stay preview text, got {:?}",
-            exact_hits[0].snippet
+            exact_hit.snippet
         )
         .into());
     }
@@ -638,7 +639,10 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
     )));
     sensitive_hit.options.case = Some(LqCase::Sensitive);
     let sensitive_hit_hits = searcher.search(&sensitive_hit, 10)?;
-    if sensitive_hit_hits.len() != 1 || sensitive_hit_hits[0].candidate_id != "alpha" {
+    let Some(sensitive_hit) = sensitive_hit_hits.first() else {
+        return Err("expected case:yes exact-case phrase hit [alpha], got []".into());
+    };
+    if sensitive_hit_hits.len() != 1 || sensitive_hit.candidate_id != "alpha" {
         return Err(format!(
             "expected case:yes exact-case phrase hit [alpha], got {sensitive_hit_hits:?}"
         )
@@ -714,8 +718,7 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
     )?;
     if !false_positive_hits.is_empty() {
         return Err(format!(
-            "expected 0 hits for regex false-positive bait, got {:?}",
-            false_positive_hits
+            "expected 0 hits for regex false-positive bait, got {false_positive_hits:?}"
         )
         .into());
     }
@@ -758,16 +761,19 @@ fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
         ))),
         10,
     )?;
-    if regex_hits.len() != 1 || regex_hits[0].candidate_id != "alpha" {
+    let Some(regex_hit) = regex_hits.first() else {
+        return Err("expected authoritative indexed_text regex hit [alpha], got []".into());
+    };
+    if regex_hits.len() != 1 || regex_hit.candidate_id != "alpha" {
         return Err(format!(
             "expected authoritative indexed_text regex hit [alpha], got {regex_hits:?}"
         )
         .into());
     }
-    if regex_hits[0].snippet != "preview only" {
+    if regex_hit.snippet != "preview only" {
         return Err(format!(
             "expected returned snippet to stay preview text, got {:?}",
-            regex_hits[0].snippet
+            regex_hit.snippet
         )
         .into());
     }

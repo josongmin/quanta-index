@@ -170,6 +170,9 @@ rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
 
+rust-test-full-corpus:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
+
 rust-test-pyramid:
     @just rust-test-unit
     @just rust-test-integration

@@ -116,18 +116,18 @@ fn well_formed(query: &LqQuery) -> bool {
         }
         let next = depth.saturating_add(1);
         match expr {
-            LqExpr::Empty => true,
-            LqExpr::Leaf(
+            LqExpr::Empty
+            | LqExpr::Leaf(
                 LqLeaf::Keyword(_)
                 | LqLeaf::Phrase(_)
                 | LqLeaf::RawString(_)
                 | LqLeaf::Regex(_)
                 | LqLeaf::StructuralBlock(_)
                 | LqLeaf::Predicate { .. },
-            ) => true,
+            )
+            | LqExpr::SemanticVector { .. } => true,
             LqExpr::Not(inner) => walk(inner, next),
             LqExpr::All(xs) | LqExpr::Any(xs) => xs.iter().all(|x| walk(x, next)),
-            LqExpr::SemanticVector { .. } => true,
         }
     }
     walk(&query.expr, 0)

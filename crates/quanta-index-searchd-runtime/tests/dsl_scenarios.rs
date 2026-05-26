@@ -23,10 +23,10 @@ use quanta_index_channel::{
 };
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
-    EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalChannelOp,
-    LexicalFullBundle, LqVisibility, ManifestGeneration, PlannerStage, RepoId, RepoRelativePath,
-    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EarlyStopReason,
+    EmbeddingId, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
+    LexicalChannelOp, LexicalFullBundle, LqVisibility, ManifestGeneration, PlannerStage, RepoId,
+    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp,
     SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
     UpsertEmbedding,
@@ -1123,6 +1123,116 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         return Err(format!(
             "unexpected hybrid explanation summary: {}",
             explanation.summary
+        )
+        .into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        for (id, payload) in [
+            ("alpha", "scope alpha keep"),
+            ("beta", "scope beta keep"),
+            ("gamma", "scope gamma keep"),
+        ] {
+            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(id),
+                payload: chunk_payload(payload)?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+    {
+        let publisher = open_semantic_publisher(state_root)?;
+        let _ = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: Vec::new(),
+        }))?;
+        for (id, vector) in [
+            ("alpha", vec![1.0_f32, 0.0_f32]),
+            ("beta", vec![0.9_f32, 0.1_f32]),
+            ("gamma", vec![0.8_f32, 0.2_f32]),
+        ] {
+            let _ = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                embedding_id: EmbeddingId::new(id),
+                payload: float_vec_to_bytes(&vector)?,
+            }))?;
+        }
+        let _ = publisher.seal(repo(), revision(), generation())?;
+    }
+
+    let (socket, shutdown, join) = start_runtime(state_root, "dsl-hybrid-count-reached")?;
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 5,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "scope".to_string(),
+                generation: Some(pin()),
+                generation_selector: None,
+                top_k: 50,
+            },
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
+            semantic_vector: None,
+            semantic_vector_ref: None,
+            generation: Some(pin()),
+            generation_selector: None,
+            top_k: 2,
+        }),
+    };
+    if !wait_for_non_error(&socket, &request) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("hybrid count-reached query never became ready".into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let explanation = match response.payload {
+        SearchPlaneQueryIpcResponse::Hybrid(hybrid) => {
+            if hybrid.results.len() != 2 {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err(format!(
+                    "expected exactly 2 fused results after top_k cap, got {}",
+                    hybrid.results.len()
+                )
+                .into());
+            }
+            hybrid.explanation
+        }
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Hybrid, got {other:?}").into());
+        }
+    };
+    if explanation.early_stop_reason != Some(EarlyStopReason::CountReached) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected count_reached early_stop_reason, got {:?}",
+            explanation.early_stop_reason
         )
         .into());
     }

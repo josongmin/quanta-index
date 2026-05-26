@@ -134,7 +134,7 @@ impl<'a> HistoryNamespace<'a> {
     }
 }
 
-pub struct HistoryNs;
+struct HistoryNs;
 
 impl crate::NamespaceIngest for HistoryNs {
     type Batch = HistoryBatch;

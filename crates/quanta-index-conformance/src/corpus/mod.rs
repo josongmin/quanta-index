@@ -9,4 +9,4 @@ pub mod loader;
 mod model;
 
 pub use loader::load_corpus;
-pub use model::{Corpus, CorpusRow, ExpectedShape, Gate};
+pub use model::{Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeSyntax};

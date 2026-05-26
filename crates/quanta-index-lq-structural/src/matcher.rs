@@ -561,7 +561,7 @@ fn collect_authority_candidates<'a>(
     for child in &node.children {
         collect_authority_candidates(pattern, child, ancestors, source, out)?;
     }
-    let _ = ancestors.pop();
+    let _popped: Option<&ParseNode> = ancestors.pop();
     Ok(())
 }
 
@@ -595,7 +595,8 @@ fn inside_patterns_match(
     for pattern in patterns {
         let mut matched = false;
         for (idx, ancestor) in ancestors.iter().enumerate() {
-            if match_pattern_at_node(pattern, ancestor, &ancestors[..idx], source)?.is_some() {
+            let prefix = ancestors.get(..idx).unwrap_or(&[]);
+            if match_pattern_at_node(pattern, ancestor, prefix, source)?.is_some() {
                 matched = true;
                 break;
             }
@@ -614,7 +615,8 @@ fn outside_patterns_match(
 ) -> Result<bool, StructuralError> {
     for pattern in patterns {
         for (idx, ancestor) in ancestors.iter().enumerate() {
-            if match_pattern_at_node(pattern, ancestor, &ancestors[..idx], source)?.is_some() {
+            let prefix = ancestors.get(..idx).unwrap_or(&[]);
+            if match_pattern_at_node(pattern, ancestor, prefix, source)?.is_some() {
                 return Ok(true);
             }
         }
@@ -650,7 +652,7 @@ fn constraints_match(
     Ok(true)
 }
 
-fn extract_source_text<'a>(source: &'a str, span: ByteSpan) -> Result<&'a str, StructuralError> {
+fn extract_source_text(source: &str, span: ByteSpan) -> Result<&str, StructuralError> {
     let start = usize::try_from(span.start()).map_err(|err| {
         StructuralError::new(
             StructuralErrorCode::StrParseFail,
@@ -705,7 +707,10 @@ fn match_group_pattern(
         return Ok(Some(binding));
     }
     if significant.len() == 1 {
-        return match_node_pattern(significant[0], node, binding);
+        let Some(single) = significant.first().copied() else {
+            return Ok(Some(binding));
+        };
+        return match_node_pattern(single, node, binding);
     }
 
     let mut cursor: usize = 0;
@@ -735,9 +740,11 @@ fn match_group_pattern(
     if cursor >= significant.len() {
         return Ok(Some(binding));
     }
-    let remaining = &significant[cursor..];
+    let Some(remaining) = significant.get(cursor..) else {
+        return Ok(Some(binding));
+    };
     if remaining.len() == 1
-        && let PatternNode::Group(sequence_children) = remaining[0]
+        && let Some(PatternNode::Group(sequence_children)) = remaining.first().copied()
     {
         let unwrapped = significant_children(sequence_children);
         return match_child_sequence(&unwrapped, &node.children, binding);
@@ -807,7 +814,7 @@ fn match_child_sequence_from(
             }
             Ok(None)
         }
-        pattern => {
+        pattern @ (PatternNode::Literal(_) | PatternNode::Metavar(_) | PatternNode::Group(_)) => {
             let Some(tree_child) = tree_children.get(tree_index) else {
                 return Ok(None);
             };

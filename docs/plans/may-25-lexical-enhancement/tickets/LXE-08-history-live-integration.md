@@ -1,6 +1,6 @@
 # LXE-08 - History Live Integration
 
-Status: `partial-implemented`
+Status: `completed`
 Priority: `P1`
 Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md), [LXE-06](LXE-06-symbol-select-type-execution.md)
 
@@ -31,8 +31,9 @@ remaining fail-closed when producer history data is absent.
   unavailable/not-ready codes when history data or readiness is missing.
 - `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`: prove the live
   positive commit/diff path against indexed fixture data.
-- `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`: own any future
-  typed not-ready/shard-unavailable history rows once they exist.
+- `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`: own typed
+  generation-not-ready / producer-unavailable / shard-unavailable history rows
+  against the raw runtime harness.
 
 ## Work items
 
@@ -54,7 +55,8 @@ remaining fail-closed when producer history data is absent.
 
 - contract round-trip tests for commit/diff carriers.
 - unit tests for history planner routing.
-- typed unavailable tests when no history shard exists.
+- typed unavailable tests when no history authority exists or a required shard
+  is not materialized.
 - runtime positive proof in `sdk_frontdoor.rs` for `type:commit` and
   `type:diff`.
 - any absent-authority history rail must be proven in runtime tests, not only
@@ -66,8 +68,11 @@ Covered by `E2E-04`:
 
 - active `type:commit` returns a `CommitCandidate` on indexed fixture data.
 - active `type:diff` returns a `DiffCandidate` on indexed fixture data.
-- history absent-authority/not-ready runtime rows remain open until proved in
-  `tests/end_to_end.rs` or an equivalent real harness.
+- history absent-authority/not-ready/shard-unavailable runtime rows are proven
+  in `tests/end_to_end.rs` and surfaced through the public SDK front door in
+  `tests/sdk_frontdoor.rs`.
+- deeper history-authority corruption is still unclaimed; current runtime truth
+  proves shard-materialization absence, not an additional integrity taxonomy.
 
 ## DoD
 
@@ -76,10 +81,16 @@ Covered by `E2E-04`:
 - commit/diff carriers are part of active `results::*`.
 - producer absence, when asserted, is a typed runtime status, not a log-only
   condition.
+- public SDK and raw IPC runtime rails both prove:
+  - `HISTORY_GENERATION_NOT_READY`
+  - `HISTORY_PRODUCER_UNAVAILABLE`
+  - `HISTORY_SHARD_UNAVAILABLE`
 
 ## Failure modes
 
 - treating history as lexical content search over commit text.
 - marking history done because only the active positive path exists while the
   absent-authority runtime matrix is still unproven.
+- claiming a deeper corruption-specific history error when the runtime only
+  exposes shard materialization absence.
 - returning generic internal error instead of typed not-ready/unavailable.

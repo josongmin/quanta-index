@@ -2,10 +2,13 @@ use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId,
     RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchScopeKey,
     SemanticIngestBatch, SemanticQueryRequest, SemanticQueryResponse, SemanticReplaceScope,
-    SemanticTombstoneScope, SemanticVectorRef, TextQueryRequest,
+    SemanticTombstoneScope, SemanticVectorRef,
 };
 
-use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax};
+use crate::{
+    BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax,
+    text_query_builder::VectorQueryBuilderState,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SemanticVector {
@@ -138,13 +141,15 @@ impl<'a> SemanticNamespace<'a> {
         Self { client }
     }
 
-    /// Sugar for `client.ns::<SemanticNs>().query()`. See QI-NS-01.
+    /// Typed semantic query entry point backed by the crate-private
+    /// namespace trait owner. See QI-NS-01.
     #[must_use]
     pub fn query(&self) -> SemanticQueryBuilder<'a> {
         <SemanticNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// Sugar for `client.ns::<SemanticNs>().publish(batch)`. See QI-NS-01.
+    /// Typed semantic publish entry point backed by the crate-private
+    /// namespace trait owner. See QI-NS-01.
     pub fn publish(&self, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
         <SemanticNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
@@ -160,7 +165,7 @@ impl<'a> SemanticNamespace<'a> {
 }
 
 /// QI-NS-01: marker type for the built-in semantic namespace.
-pub struct SemanticNs;
+struct SemanticNs;
 
 impl crate::NamespaceIngest for SemanticNs {
     type Batch = SemanticBatch;
@@ -208,61 +213,50 @@ impl crate::NamespaceQuery for SemanticNs {
 
 pub struct SemanticQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    vector: Option<SemanticVector>,
-    selection: Option<GenerationSelector>,
-    scope: Option<(TextQuerySyntax, String)>,
-    top_k: Option<u32>,
-    /// QI-QRY-01: explicit lexical-scope candidate cap. Distinct from
-    /// the outer semantic `top_k` (final recall cap). When `scope` is
-    /// set, `scope_top_k` MUST also be set — see [`execute`].
-    scope_top_k: Option<u32>,
+    state: VectorQueryBuilderState,
 }
 
 impl<'a> SemanticQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            vector: None,
-            selection: None,
-            scope: None,
-            top_k: None,
-            scope_top_k: None,
+            state: VectorQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn vector(mut self, vector: Vec<f32>) -> Self {
-        self.vector = Some(SemanticVector::Inline(vector));
+        self.state.vector = Some(SemanticVector::Inline(vector));
         self
     }
 
     #[must_use]
     pub fn vector_handle(mut self, handle: impl Into<String>) -> Self {
-        self.vector = Some(SemanticVector::Handle(handle.into()));
+        self.state.vector = Some(SemanticVector::Handle(handle.into()));
         self
     }
 
     #[must_use]
     pub fn scope_native(mut self, query_text: impl Into<String>) -> Self {
-        self.scope = Some((TextQuerySyntax::Native, query_text.into()));
+        self.state.scope_leg = Some((TextQuerySyntax::Native, query_text.into()));
         self
     }
 
     #[must_use]
     pub fn scope_sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.scope = Some((TextQuerySyntax::Sourcegraph, query_text.into()));
+        self.state.scope_leg = Some((TextQuerySyntax::Sourcegraph, query_text.into()));
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: quanta_index_contract::GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -271,7 +265,7 @@ impl<'a> SemanticQueryBuilder<'a> {
 
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
@@ -284,66 +278,12 @@ impl<'a> SemanticQueryBuilder<'a> {
     /// scope stage.
     #[must_use]
     pub fn scope_top_k(mut self, scope_top_k: u32) -> Self {
-        self.scope_top_k = Some(scope_top_k);
+        self.state.scope_top_k = Some(scope_top_k);
         self
     }
 
     pub fn execute(self) -> Result<SemanticQueryResponse, SdkError> {
-        let vector_ref = self
-            .vector
-            .ok_or_else(|| SdkError::Usage("semantic vector is required".to_string()))?
-            .into_ref()?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("semantic generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection.clone());
-        let lexical_scope = match (self.scope, self.scope_top_k) {
-            (Some((syntax, query_text)), Some(scope_top_k)) => {
-                let (scope_generation, scope_generation_selector) =
-                    QuantaIndex::selection_to_fields(selection);
-                Some(TextQueryRequest {
-                    syntax,
-                    query_text,
-                    generation: scope_generation,
-                    generation_selector: scope_generation_selector,
-                    top_k: scope_top_k,
-                })
-            }
-            (Some(_), None) => {
-                return Err(SdkError::Usage(
-                    "semantic lexical scope is set but scope_top_k is missing; \
-                     scope_top_k is the lexical candidate cap and must be supplied \
-                     explicitly when scope_native / scope_sourcegraph is used"
-                        .to_string(),
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(SdkError::Usage(
-                    "semantic scope_top_k is set but no lexical scope was \
-                     configured; call scope_native(...) or scope_sourcegraph(...) \
-                     to enable the lexical scope stage"
-                        .to_string(),
-                ));
-            }
-            (None, None) => None,
-        };
-        dispatch_semantic_query_request_v1(
-            self.client,
-            SemanticQueryRequest {
-                // QI-QRY-01 phase 2: vector path is authoritative; no text
-                // filler. `query_vector_ref` carries the typed handle / inline.
-                query_text: None,
-                query_vector: None,
-                query_vector_ref: Some(vector_ref),
-                generation,
-                generation_selector,
-                lexical_scope,
-                top_k,
-            },
-        )
+        dispatch_semantic_query_request_v1(self.client, self.state.build_semantic_request()?)
     }
 }
 

@@ -1,6 +1,6 @@
 # E2E-04 - History/Structural E2E
 
-Status: `partial-implemented`
+Status: `completed`
 Priority: `P1`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-08](LXE-08-history-live-integration.md), [LXE-09](LXE-09-structural-live-integration.md)
 
@@ -26,8 +26,8 @@ fail-closed paths on materialized parse-tree/chunk authority.
   active/pinned positive rows for commit, diff, and structural surfaces plus
   structural typed errors visible through the SDK front door.
 - `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`: own structural
-  typed not-ready/shard-unavailable rows and any future history
-  absent-authority runtime proof.
+  typed not-ready/shard-unavailable rows and history absent-authority runtime
+  proof.
 - `crates/quanta-index-search-plane/src/query_dispatcher.rs`: expose typed
   structural invalid-request boundaries and the runtime routes asserted by the
   tests.
@@ -56,8 +56,8 @@ fail-closed paths on materialized parse-tree/chunk authority.
 - structural query without materialized authority returns
   `STR_GENERATION_NOT_READY`.
 - orphaned parse-tree/chunk authority returns `STR_SHARD_UNAVAILABLE`.
-- history absent-authority/not-ready runtime rows remain open until a real
-  harness assertion lands.
+- history absent-authority/not-ready/shard-unavailable runtime rows are proven
+  on the same real harness class as the structural negatives.
 
 ## Test plan
 
@@ -74,8 +74,8 @@ fail-closed paths on materialized parse-tree/chunk authority.
 - structural typed negative matrix is proven end-to-end.
 - no structural row returns empty success for missing parse-tree/chunk
   authority.
-- history absent-authority/not-ready behavior stays explicitly open until it is
-  proven by the same runtime class of test.
+- history absent-authority/not-ready/shard-unavailable behavior is proven by
+  the same runtime class of test as the structural negatives.
 
 ## Failure modes
 
@@ -85,6 +85,6 @@ fail-closed paths on materialized parse-tree/chunk authority.
   runtime actually applies them before matching.
 - treating the current structural truthful subset as proof of full structural
   semantics.
-- treating history positive rows as proof that history absent-authority runtime
-  behavior is already covered.
+- treating history positive rows as proof that a deeper corruption-specific
+  history taxonomy already exists.
 - hiding producer absence behind generic internal errors.

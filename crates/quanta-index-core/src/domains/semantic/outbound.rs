@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
+use quanta_index_contract::channel::SemanticChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
-    SemanticChannelOp, SemanticIngestBatch,
+    SemanticIngestBatch,
 };
 
 use crate::error::CoreError;

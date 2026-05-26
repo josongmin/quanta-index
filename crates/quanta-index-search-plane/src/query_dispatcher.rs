@@ -11,8 +11,8 @@ use crate::{
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate, EngineTouched,
-    GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
+    BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason,
+    EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
     HybridQueryResponse, LQ_VERSION_TAG, LqCase, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery,
     LqSpan, LqStructuralBlock, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage,
     PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
@@ -41,6 +41,9 @@ const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
+const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
+const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
+const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
 
 pub struct SearchPlaneDispatcher {
     lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
@@ -173,10 +176,19 @@ impl SearchPlaneDispatcher {
         } else {
             searcher.search(&query_vector, request.top_k)?
         };
+        let early_stop_reason = scope_candidate_ids.as_ref().and_then(|scope_ids| {
+            let limit = top_k_limit(request.top_k);
+            if scope_ids.len() > results.len() && results.len() == limit {
+                Some(EarlyStopReason::CountReached)
+            } else {
+                None
+            }
+        });
         let explanation = build_semantic_response_explanation(
             scope_candidate_ids.as_ref().map_or(0, BTreeSet::len),
             scope_candidate_ids.is_some(),
             results.len(),
+            early_stop_reason,
         );
         Ok(SemanticQueryResponse {
             generation: pin,
@@ -221,13 +233,29 @@ impl SearchPlaneDispatcher {
         )?;
         let sem_results =
             sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        let fused_universe_size = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .chain(
+                sem_results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str()),
+            )
+            .collect::<BTreeSet<_>>()
+            .len();
         let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k);
+        let early_stop_reason = if fused_universe_size > fused.len() {
+            Some(EarlyStopReason::CountReached)
+        } else {
+            None
+        };
         let explanation = build_hybrid_response_explanation(
             lexical_ids.len(),
             lex_results.len(),
             sem_results.len(),
             fused.len(),
             internal_top_k,
+            early_stop_reason,
         );
         Ok(HybridQueryResponse {
             generation: pin,
@@ -306,14 +334,7 @@ impl SearchPlaneDispatcher {
             .ledger
             .read()
             .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
-        let history_state = guard
-            .history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "history: generation {} is not materialized",
-                    pin.manifest_generation.get()
-                ))
-            })?;
+        let history_state = resolve_history_state(&guard, &pin, &lowered)?;
         let (commits, diffs) =
             execute_history_query(&pin, &lowered, history_state, request.text_query.top_k)?;
         drop(guard);
@@ -656,92 +677,246 @@ const fn default_top_k() -> u32 {
     50
 }
 
-fn validate_history_query(query: &LqQuery) -> Result<(), CoreError> {
-    for filter in &query.filters {
-        match filter {
-            LqFilter::Type { kind } => match kind {
-                LqType::Commit | LqType::Diff => {}
-                LqType::File | LqType::Path | LqType::Symbol | LqType::Repo => {
-                    return Err(CoreError::NotImplemented(format!(
-                        "history: type filter `{}` is not executable on the current adapter set",
-                        kind.as_str()
-                    )));
-                }
-            },
-            LqFilter::File { .. }
-            | LqFilter::Rev { .. }
-            | LqFilter::Author { .. }
-            | LqFilter::Committer { .. }
-            | LqFilter::Message { .. }
-            | LqFilter::Content { .. } => {}
-            LqFilter::Repo { .. }
-            | LqFilter::Lang { .. }
-            | LqFilter::Select { .. }
-            | LqFilter::Dirty { .. }
-            | LqFilter::Fork { .. }
-            | LqFilter::Archived { .. }
-            | LqFilter::Visibility { .. }
-            | LqFilter::Context { .. } => {
-                return Err(CoreError::NotImplemented(
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExecutableTextPlaneValidationState {
+    saw_dirty: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutableTextPlanePolicy {
+    History,
+    RuntimeMetadata,
+}
+
+impl ExecutableTextPlanePolicy {
+    const fn plane_name(self) -> &'static str {
+        match self {
+            Self::History => "history",
+            Self::RuntimeMetadata => "runtime metadata",
+        }
+    }
+
+    fn validate_filter(
+        self,
+        filter: &LqFilter,
+        state: &mut ExecutableTextPlaneValidationState,
+    ) -> Result<(), CoreError> {
+        match self {
+            Self::History => match filter {
+                LqFilter::Type { kind } => match kind {
+                    LqType::Commit | LqType::Diff => Ok(()),
+                    LqType::File | LqType::Path | LqType::Symbol | LqType::Repo => {
+                        Err(CoreError::NotImplemented(format!(
+                            "history: type filter `{}` is not executable on the current adapter set",
+                            kind.as_str()
+                        )))
+                    }
+                },
+                LqFilter::File { .. }
+                | LqFilter::Rev { .. }
+                | LqFilter::Author { .. }
+                | LqFilter::Committer { .. }
+                | LqFilter::Message { .. }
+                | LqFilter::Content { .. } => Ok(()),
+                LqFilter::Repo { .. }
+                | LqFilter::Lang { .. }
+                | LqFilter::Select { .. }
+                | LqFilter::Dirty { .. }
+                | LqFilter::Fork { .. }
+                | LqFilter::Archived { .. }
+                | LqFilter::Visibility { .. }
+                | LqFilter::Context { .. } => Err(CoreError::NotImplemented(
                     "history: one or more filters are not executable on the current adapter set"
                         .to_string(),
-                ));
+                )),
+            },
+            Self::RuntimeMetadata => match filter {
+                LqFilter::Dirty { mode } => {
+                    state.saw_dirty = true;
+                    if matches!(mode, LqYesNoOnly::No) {
+                        return Err(CoreError::NotImplemented(
+                            "runtime metadata: dirty:no is not executable without a clean-document universe"
+                                .to_string(),
+                        ));
+                    }
+                    Ok(())
+                }
+                LqFilter::File { .. } | LqFilter::Lang { .. } | LqFilter::Content { .. } => {
+                    Ok(())
+                }
+                LqFilter::Repo { .. }
+                | LqFilter::Rev { .. }
+                | LqFilter::Author { .. }
+                | LqFilter::Committer { .. }
+                | LqFilter::Message { .. }
+                | LqFilter::Type { .. }
+                | LqFilter::Select { .. }
+                | LqFilter::Fork { .. }
+                | LqFilter::Archived { .. }
+                | LqFilter::Visibility { .. }
+                | LqFilter::Context { .. } => Err(CoreError::NotImplemented(
+                    "runtime metadata: one or more filters are not executable on the current adapter set"
+                        .to_string(),
+                )),
+            },
+        }
+    }
+
+    fn finalize(self, state: ExecutableTextPlaneValidationState) -> Result<(), CoreError> {
+        match self {
+            Self::History => Ok(()),
+            Self::RuntimeMetadata => {
+                if !state.saw_dirty {
+                    return Err(CoreError::InvalidContract(
+                        "runtime metadata: dirty:{yes|only} filter is required".to_string(),
+                    ));
+                }
+                Ok(())
             }
         }
     }
-    validate_executable_text_surface(&query.expr, "history")?;
+}
+
+fn validate_executable_text_query(
+    query: &LqQuery,
+    policy: ExecutableTextPlanePolicy,
+) -> Result<(), CoreError> {
+    let mut state = ExecutableTextPlaneValidationState::default();
+    for filter in &query.filters {
+        policy.validate_filter(filter, &mut state)?;
+    }
+    policy.finalize(state)?;
+    validate_executable_text_surface(&query.expr, policy.plane_name())?;
     for filter in &query.filters {
         if let LqFilter::Content { leaf } = filter {
-            validate_leaf_surface(leaf, "history")?;
+            validate_leaf_surface(leaf, policy.plane_name())?;
         }
     }
     Ok(())
 }
 
-fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {
-    let mut saw_dirty = false;
-    for filter in &query.filters {
-        match filter {
-            LqFilter::Dirty { mode } => {
-                saw_dirty = true;
-                if matches!(mode, LqYesNoOnly::No) {
-                    return Err(CoreError::NotImplemented(
-                        "runtime metadata: dirty:no is not executable without a clean-document universe"
-                            .to_string(),
-                    ));
-                }
-            }
-            LqFilter::File { .. } | LqFilter::Lang { .. } | LqFilter::Content { .. } => {}
-            LqFilter::Repo { .. }
-            | LqFilter::Rev { .. }
-            | LqFilter::Author { .. }
-            | LqFilter::Committer { .. }
-            | LqFilter::Message { .. }
-            | LqFilter::Type { .. }
-            | LqFilter::Select { .. }
-            | LqFilter::Fork { .. }
-            | LqFilter::Archived { .. }
-            | LqFilter::Visibility { .. }
-            | LqFilter::Context { .. } => {
-                return Err(CoreError::NotImplemented(
-                    "runtime metadata: one or more filters are not executable on the current adapter set"
-                        .to_string(),
-                ));
+fn validate_history_query(query: &LqQuery) -> Result<(), CoreError> {
+    validate_executable_text_query(query, ExecutableTextPlanePolicy::History)
+}
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "history shard readiness is modeled as four independent materialization bits"
+)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HistoryShardRequirements {
+    commits: bool,
+    refs: bool,
+    tags: bool,
+    diff_hunks: bool,
+}
+
+fn resolve_history_state<'a>(
+    ledger: &'a Ledger,
+    pin: &GenerationPin,
+    query: &LqQuery,
+) -> Result<&'a HistoryAuthorityState, CoreError> {
+    let Some(history_state) =
+        ledger.history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+    else {
+        let lexical_materialized = ledger.track_materialized(
+            &pin.repo_id,
+            &pin.revision_id,
+            SearchPlaneTrackKind::Lexical,
+        );
+        return Err(history_absent_error(pin, lexical_materialized));
+    };
+    ensure_history_shards_ready(history_state, query)?;
+    Ok(history_state)
+}
+
+fn history_absent_error(
+    pin: &GenerationPin,
+    lexical_materialized: Option<ManifestGeneration>,
+) -> CoreError {
+    match lexical_materialized {
+        Some(materialized) if materialized.get() >= pin.manifest_generation.get() => {
+            CoreError::Typed {
+                code: ERR_HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                message: format!(
+                    "history: producer data is unavailable for generation {}",
+                    pin.manifest_generation.get()
+                ),
             }
         }
+        _ => CoreError::Typed {
+            code: ERR_HISTORY_GENERATION_NOT_READY.to_string(),
+            message: format!(
+                "history: generation {} is not yet materialized",
+                pin.manifest_generation.get()
+            ),
+        },
     }
-    if !saw_dirty {
-        return Err(CoreError::InvalidContract(
-            "runtime metadata: dirty:{yes|only} filter is required".to_string(),
+}
+
+fn ensure_history_shards_ready(
+    state: &HistoryAuthorityState,
+    query: &LqQuery,
+) -> Result<(), CoreError> {
+    let requirements = history_shard_requirements(query);
+    if requirements.commits && !state.commits_materialized() {
+        return Err(history_shard_unavailable(
+            "history: commit shard is unavailable for the requested query",
         ));
     }
-    validate_executable_text_surface(&query.expr, "runtime metadata")?;
-    for filter in &query.filters {
-        if let LqFilter::Content { leaf } = filter {
-            validate_leaf_surface(leaf, "runtime metadata")?;
-        }
+    if requirements.refs && !state.refs_materialized() {
+        return Err(history_shard_unavailable(
+            "history: ref shard is unavailable for the requested query",
+        ));
+    }
+    if requirements.tags && !state.tags_materialized() {
+        return Err(history_shard_unavailable(
+            "history: tag shard is unavailable for the requested query",
+        ));
+    }
+    if requirements.diff_hunks && !state.diff_hunks_materialized() {
+        return Err(history_shard_unavailable(
+            "history: diff shard is unavailable for the requested query",
+        ));
     }
     Ok(())
+}
+
+fn history_shard_requirements(query: &LqQuery) -> HistoryShardRequirements {
+    let mut requirements = match history_query_type(query) {
+        Some(LqType::Commit) => HistoryShardRequirements {
+            commits: true,
+            ..HistoryShardRequirements::default()
+        },
+        Some(LqType::Diff) | None => HistoryShardRequirements {
+            commits: true,
+            diff_hunks: true,
+            ..HistoryShardRequirements::default()
+        },
+        Some(LqType::File | LqType::Path | LqType::Symbol | LqType::Repo) => {
+            HistoryShardRequirements::default()
+        }
+    };
+    for filter in &query.filters {
+        if let LqFilter::Rev { spec } = filter
+            && CommitSha::from_hex(spec).is_err()
+        {
+            requirements.refs = true;
+            requirements.tags = true;
+        }
+    }
+    requirements
+}
+
+fn history_shard_unavailable(message: impl Into<String>) -> CoreError {
+    CoreError::Typed {
+        code: ERR_HISTORY_SHARD_UNAVAILABLE.to_string(),
+        message: message.into(),
+    }
+}
+
+fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {
+    validate_executable_text_query(query, ExecutableTextPlanePolicy::RuntimeMetadata)
 }
 
 fn lower_structural_query_request(
@@ -1488,6 +1663,7 @@ fn build_semantic_response_explanation(
     scope_candidate_count: usize,
     scoped: bool,
     result_count: usize,
+    early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
     let mut planner_trace = vec![PlannerTraceEntry {
         stage: PlannerStage::Plan,
@@ -1518,7 +1694,7 @@ fn build_semantic_response_explanation(
     SearchExplanation {
         planner_trace,
         engines_touched,
-        early_stop_reason: None,
+        early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
         strategy: if scoped {
@@ -1536,6 +1712,7 @@ fn build_hybrid_response_explanation(
     semantic_hits: usize,
     fused_hits: usize,
     internal_top_k: u32,
+    early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
     SearchExplanation {
         planner_trace: vec![
@@ -1555,7 +1732,7 @@ fn build_hybrid_response_explanation(
             },
         ],
         engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
-        early_stop_reason: None,
+        early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
         strategy: "rrf".to_string(),
@@ -1656,16 +1833,21 @@ pub fn make_pin(
 mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
-    use super::{FailClosedStructuralProducer, SearchPlaneDispatcher, make_pin};
+    use super::{
+        ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
+        ERR_HISTORY_SHARD_UNAVAILABLE, FailClosedStructuralProducer, SearchPlaneDispatcher,
+        make_pin,
+    };
     use crate::{ActivationCatalog, Ledger};
-    use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily};
+    use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
-        BridgeQueryRequest, GenerationPin, HybridQueryRequest, LexicalCandidate,
-        ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary,
-        RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryRequest,
-        RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath,
-        RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
-        SemanticVectorRef, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
+        BridgeQueryRequest, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+        LexicalCandidate, LexicalChannelOp, ManifestGeneration, RepoId, RepoMapDocType,
+        RepoMapEntryDto, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapQueryResponse,
+        RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId,
+        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
+        SemanticVectorRef, SymbolCandidate, TextQueryRequest, TextQuerySyntax, UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -1675,6 +1857,14 @@ mod tests {
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn encode_cbor<T: serde::Serialize>(
+        value: &T,
+    ) -> Result<Vec<u8>, ciborium::ser::Error<std::io::Error>> {
+        let mut buf: Vec<u8> = Vec::new();
+        ciborium::into_writer(value, &mut buf)?;
+        Ok(buf)
+    }
 
     struct RejectLexicalOpener;
 
@@ -1825,6 +2015,69 @@ mod tests {
         Arc::new(RwLock::new(ledger))
     }
 
+    fn history_commit_sha() -> CommitSha {
+        CommitSha::from_bytes([
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba,
+            0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76,
+        ])
+    }
+
+    fn history_commit_record() -> CommitRecord {
+        CommitRecord {
+            wire_version: 1,
+            sha: history_commit_sha(),
+            parents: Vec::new(),
+            author_time_ms: 1,
+            committer_time_ms: 2,
+            applied_at_ms: 3,
+            author: "alice".to_string().into_boxed_str(),
+            committer: "alice".to_string().into_boxed_str(),
+            message: "fix: history lane".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: Vec::new(),
+        }
+    }
+
+    fn history_query_request(query_text: &str) -> SearchPlaneQueryIpcRequest {
+        SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: query_text.to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            },
+        })
+    }
+
+    fn history_dispatcher_with_ledger(
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>> {
+        Ok(SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger,
+            test_activation_catalog()?,
+        ))
+    }
+
+    fn ledger_with_history_ops(
+        ops: Vec<LexicalChannelOp>,
+    ) -> Result<Arc<RwLock<Ledger>>, Box<dyn std::error::Error>> {
+        let ledger = ready_ledger();
+        {
+            let mut guard = ledger
+                .write()
+                .map_err(|err| format!("history test ledger poisoned: {err}"))?;
+            for op in ops {
+                guard.apply_lexical_authority_op(&op)?;
+            }
+        }
+        Ok(ledger)
+    }
+
     fn candidate(id: &str, score: f32) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: id.to_string(),
@@ -1839,6 +2092,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::panic,
+        reason = "test fixture uses a canonical symbol kind literal"
+    )]
     fn symbol_candidate(id: &str, score: f32) -> SymbolCandidate {
         SymbolCandidate {
             candidate_id: id.to_string(),
@@ -1850,7 +2107,10 @@ mod tests {
             end_line: 1,
             score,
             snippet: "MySymbol crate".to_string(),
-            symbol_kind: SymbolKindCode::new("function").expect("test symbol kind is canonical"),
+            symbol_kind: match SymbolKindCode::new("function") {
+                Ok(symbol_kind) => symbol_kind,
+                Err(err) => panic!("test symbol kind is canonical: {err}"),
+            },
             symbol_kind_family: Some(SymbolKindFamily::Callable),
         }
     }
@@ -2249,6 +2509,7 @@ mod tests {
                 "lexical opener must not execute for SG structural lexical rejection".into(),
             );
         }
+        drop(guard);
         Ok(())
     }
 
@@ -2822,7 +3083,18 @@ mod tests {
                     return Err(format!("unexpected symbol candidate: {first:?}").into());
                 }
             }
-            other => return Err(format!("expected Symbol response, got {other:?}").into()),
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Symbol response, got {other:?}").into());
+            }
         }
 
         let guard = state
@@ -2834,6 +3106,57 @@ mod tests {
                 guard.symbol_top_ks
             )
             .into());
+        }
+        drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_maps_generation_not_ready_before_lexical_materialization() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(Arc::new(RwLock::new(Ledger::default())))?;
+
+        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_GENERATION_NOT_READY {
+            return Err(format!("expected {ERR_HISTORY_GENERATION_NOT_READY}, got {code}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_maps_producer_unavailable_after_lexical_ready() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
+
+        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_PRODUCER_UNAVAILABLE {
+            return Err(format!("expected {ERR_HISTORY_PRODUCER_UNAVAILABLE}, got {code}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_maps_shard_unavailable_for_missing_diff_shard() -> TestResult {
+        let commit_payload = encode_cbor(&history_commit_record())?;
+        let dispatcher = history_dispatcher_with_ledger(ledger_with_history_ops(vec![
+            LexicalChannelOp::UpsertCommit(UpsertCommit {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("rev-map-ipc"),
+                generation: ManifestGeneration::new(9),
+                payload: commit_payload,
+            }),
+        ])?)?;
+
+        let response = dispatcher.dispatch(history_query_request("type:diff history"));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_SHARD_UNAVAILABLE {
+            return Err(format!("expected {ERR_HISTORY_SHARD_UNAVAILABLE}, got {code}").into());
         }
         Ok(())
     }
@@ -3035,7 +3358,18 @@ mod tests {
                     .into());
                 }
             }
-            other => return Err(format!("expected Structural response, got {other:?}").into()),
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
         }
         if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
             return Err("producer readiness must run for executable structural filters".into());
@@ -3122,7 +3456,16 @@ mod tests {
                     .into());
                 }
             }
-            other => {
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!(
                     "expected Structural response for SG structural route, got {other:?}"
                 )

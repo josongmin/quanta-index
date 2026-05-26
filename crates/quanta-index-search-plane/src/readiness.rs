@@ -473,6 +473,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                 );
+                state.note_commits_materialized();
                 for parent in &record.parents {
                     if !state.commits.contains_key(parent) {
                         return Err(CoreError::Typed {
@@ -493,6 +494,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                 );
+                state.note_refs_materialized();
                 if !state.commits.contains_key(&sha) {
                     return Err(CoreError::Typed {
                         code: "HISTORY_REF_NOT_FOUND".to_string(),
@@ -505,10 +507,13 @@ impl Ledger {
                 let _previous = state.refs.insert(payload.name.clone(), sha);
             }
             LexicalChannelOp::DeleteRef(payload) => {
-                let _removed = self
-                    .history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
-                    .refs
-                    .remove(payload.name.as_ref());
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                state.note_refs_materialized();
+                let _removed = state.refs.remove(payload.name.as_ref());
             }
             LexicalChannelOp::UpsertTag(payload) => {
                 let sha = CommitSha::from_bytes(payload.sha);
@@ -517,6 +522,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                 );
+                state.note_tags_materialized();
                 if !state.commits.contains_key(&sha) {
                     return Err(CoreError::Typed {
                         code: "HISTORY_REF_NOT_FOUND".to_string(),
@@ -529,10 +535,13 @@ impl Ledger {
                 let _previous = state.tags.insert(payload.name.clone(), sha);
             }
             LexicalChannelOp::DeleteTag(payload) => {
-                let _removed = self
-                    .history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
-                    .tags
-                    .remove(payload.name.as_ref());
+                let state = self.history_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                state.note_tags_materialized();
+                let _removed = state.tags.remove(payload.name.as_ref());
             }
             LexicalChannelOp::UpsertDiffHunk(payload) => {
                 let record: DiffHunkRecord = decode_record(&payload.payload, "diff_hunk")?;
@@ -542,6 +551,7 @@ impl Ledger {
                     &payload.revision_id,
                     payload.generation,
                 );
+                state.note_diff_hunks_materialized();
                 if !state.commits.contains_key(&commit_sha) {
                     return Err(CoreError::Typed {
                         code: "HISTORY_REF_NOT_FOUND".to_string(),
@@ -772,15 +782,39 @@ struct TrackAuthorityKey {
     track: SearchPlaneTrackKind,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "history authority tracks four independently materialized shard families"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct HistoryAuthorityState {
     commits: BTreeMap<CommitSha, CommitRecord>,
     refs: BTreeMap<Box<str>, CommitSha>,
     tags: BTreeMap<Box<str>, CommitSha>,
     diff_hunks: BTreeMap<HistoryDiffKey, DiffHunkRecord>,
+    commits_materialized: bool,
+    refs_materialized: bool,
+    tags_materialized: bool,
+    diff_hunks_materialized: bool,
 }
 
 impl HistoryAuthorityState {
+    fn note_commits_materialized(&mut self) {
+        self.commits_materialized = true;
+    }
+
+    fn note_refs_materialized(&mut self) {
+        self.refs_materialized = true;
+    }
+
+    fn note_tags_materialized(&mut self) {
+        self.tags_materialized = true;
+    }
+
+    fn note_diff_hunks_materialized(&mut self) {
+        self.diff_hunks_materialized = true;
+    }
+
     #[must_use]
     pub fn commits(&self) -> &BTreeMap<CommitSha, CommitRecord> {
         &self.commits
@@ -799,6 +833,26 @@ impl HistoryAuthorityState {
     #[must_use]
     pub fn diff_hunks(&self) -> &BTreeMap<HistoryDiffKey, DiffHunkRecord> {
         &self.diff_hunks
+    }
+
+    #[must_use]
+    pub const fn commits_materialized(&self) -> bool {
+        self.commits_materialized
+    }
+
+    #[must_use]
+    pub const fn refs_materialized(&self) -> bool {
+        self.refs_materialized
+    }
+
+    #[must_use]
+    pub const fn tags_materialized(&self) -> bool {
+        self.tags_materialized
+    }
+
+    #[must_use]
+    pub const fn diff_hunks_materialized(&self) -> bool {
+        self.diff_hunks_materialized
     }
 }
 

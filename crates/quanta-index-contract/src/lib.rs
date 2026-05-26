@@ -20,6 +20,11 @@
 #[macro_use]
 mod macros;
 
+/// Internal legacy channel surface used by `searchd` composition-root,
+/// replay, and restart recovery paths.
+///
+/// External producer/query callers should use typed DTOs under `ipc`, `query`,
+/// `repomap`, and `results` instead of importing channel ops from this module.
 pub mod channel;
 pub mod ipc;
 pub mod query;

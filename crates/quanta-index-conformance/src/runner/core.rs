@@ -283,6 +283,12 @@ mod tests {
             persona: None,
             engines: Vec::new(),
             filters: Vec::new(),
+            syntax: None,
+            classification: None,
+            fixture: None,
+            expected_ids: Vec::new(),
+            top_k: None,
+            runtime_error_code: None,
         }
     }
 

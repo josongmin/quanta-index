@@ -41,15 +41,35 @@ This is not a docs-only cleanup. The program is complete only when:
   separately closed on the same current tree. The remaining status here is the
   broader whole-program queue, not a May-26 residue-pack reopen.
 - Program status remains `partial-execution-live`: `E2E-03`, `E2E-05`,
-  `E2E-06`, `E2E-07`, plus residual `LXE-08`/`LXE-10` scope are not closed by
-  this rerun.
+  `E2E-06`, `E2E-07`, plus residual `LXE-10` scope are not closed by this
+  rerun.
 - This is a current live-source proof refresh, not a frozen-tree release claim.
+
+## 1.6 Public-surface closure refresh (2026-05-27)
+
+Landed in the same current-tree window:
+
+- `searchctl` now sends production lexical/semantic/hybrid/explain/repo-map
+  queries through `quanta-index-sdk`; raw query IPC assembly is no longer the
+  non-test consumer path
+- `sdk_frontdoor` owns the public SDK happy-path proof, including lexical,
+  semantic, hybrid, explain, repo-map, history, runtime, and structural rows
+- `repo_map_end_to_end` is narrowed to raw IPC transport/persistence
+  invariants instead of public happy-path authority
+- history authority now fails closed with exact codes
+  `HISTORY_GENERATION_NOT_READY`, `HISTORY_PRODUCER_UNAVAILABLE`,
+  `HISTORY_SHARD_UNAVAILABLE`
+
+This refresh closes public-surface residue around the SDK front door and
+history taxonomy. It does not close the broader engine/program residue tracked
+below.
 
 ## 2. Current truth to freeze first
 
 `LXE-00` produced the current executable matrix; any remaining ticket work must
 still be re-frozen against live source before new completion claims are made.
-Known risk areas from the latest local review:
+
+Engine residue on the latest local review:
 
 - `crates/quanta-index-lexical/src/lib.rs` has filters that are ignored or
   returned as `NotImplemented`.
@@ -75,6 +95,14 @@ Known risk areas from the latest local review:
   outside `repo:` / `file:` / `lang:`, remain typed `STR_INVALID_REQUEST`.
 - existing hard-case tests are useful but are not sufficient if they do not
   write records into the real storage/index path and query the reopened index.
+
+Public-surface residue that remains intentionally open:
+
+- semantic/hybrid still expose the current vector/handle request contract;
+  text-only semantic ownership is deferred to the separate `SEM-OWN` follow-on
+- internal `searchd-runtime` composition still uses legacy channel
+  publisher/subscriber wiring and mirror paths even though the public SDK front
+  door is closed
 
 Facts above are current guardrails, not blanket completion claims. Remaining
 tickets still need line-backed source and runtime proof before they can be

@@ -18,13 +18,19 @@ use quanta_index_contract::lex::{
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind, SymbolId,
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId,
+    RepoMapActivateGenerationRequest, RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge,
+    RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
+    RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, SearchPlaneTrackKind, SymbolId,
 };
 use quanta_index_sdk::{
-    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
-    ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex, RepoRelativePath, SdkError,
-    SearchScopeKey, SearchScopeSurface, StructuralBatch,
+    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
+    EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract, EmbeddingNormalization,
+    EmbeddingRecord, LexicalBatch, OwnerDocKind, ParseNode, ParseRoleTag, ParseTreeRecord,
+    QuantaIndex, RepoRelativePath, SdkError, SearchScopeKey, SearchScopeSurface, SemanticBatch,
+    StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
@@ -137,6 +143,29 @@ fn history_batch() -> quanta_index_sdk::HistoryBatch {
         )
 }
 
+fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
+    quanta_index_sdk::HistoryBatch::new(
+        repo(),
+        revision(),
+        generation(),
+        "batch:history-sdk-commit-only",
+    )
+    .manifest_digest("manifest:history-sdk-commit-only")
+    .commit(CommitRecord {
+        wire_version: 1,
+        sha: commit_sha(),
+        parents: Vec::new(),
+        author_time_ms: 21,
+        committer_time_ms: 22,
+        applied_at_ms: 23,
+        author: "alice".to_string().into_boxed_str(),
+        committer: "alice".to_string().into_boxed_str(),
+        message: "todo: shard gap".to_string().into_boxed_str(),
+        is_merge: false,
+        tags: Vec::new(),
+    })
+}
+
 fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
     Ok(LexicalBatch::replace_generation(
         repo(),
@@ -150,41 +179,84 @@ fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
             doc_surface: SearchScopeSurface::File,
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         },
-        "scope:lexical",
+        "scope:lexical-lib",
         vec![
-            ChunkRecord {
-                chunk_id: ChunkId::new("chunk-dirty"),
-                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-                language: rust_language()?,
-                start_byte: 0,
-                end_byte: 12,
-                start_line: 1,
-                end_line: 1,
-                snippet: "todo!()".to_string().into_boxed_str(),
-                indexed_text: "todo!()".to_string().into_boxed_str(),
-                text_digest: "text:digest".to_string().into_boxed_str(),
-                shape_digest: "shape:digest".to_string().into_boxed_str(),
-                structural: None,
-                parent_chunk_id: None,
-            },
-            ChunkRecord {
-                chunk_id: ChunkId::new("chunk-tree"),
-                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-                language: rust_language()?,
-                start_byte: 0,
-                end_byte: 12,
-                start_line: 1,
-                end_line: 1,
-                snippet: "fn main() {}".to_string().into_boxed_str(),
-                indexed_text: "fn main() {}".to_string().into_boxed_str(),
-                text_digest: "text:tree".to_string().into_boxed_str(),
-                shape_digest: "shape:tree".to_string().into_boxed_str(),
-                structural: None,
-                parent_chunk_id: None,
-            },
+            lexical_chunk(
+                "chunk-dirty",
+                "src/lib.rs",
+                "todo!()",
+                "text:digest",
+                "shape:digest",
+                12,
+            )?,
+            lexical_chunk(
+                "chunk-tree",
+                "src/lib.rs",
+                "fn main() {}",
+                "text:tree",
+                "shape:tree",
+                12,
+            )?,
         ],
         vec![symbol_record()?],
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
+        },
+        "scope:lexical-alpha",
+        vec![lexical_chunk(
+            "alpha",
+            "src/alpha.rs",
+            "sphinx of quartz",
+            "text:alpha",
+            "shape:alpha",
+            16,
+        )?],
+        Vec::new(),
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/beta.rs"),
+        },
+        "scope:lexical-beta",
+        vec![lexical_chunk(
+            "beta",
+            "src/beta.rs",
+            "sphinx riddles",
+            "text:beta",
+            "shape:beta",
+            14,
+        )?],
+        Vec::new(),
     ))
+}
+
+fn lexical_chunk(
+    chunk_id: &str,
+    path: &str,
+    snippet: &str,
+    text_digest: &str,
+    shape_digest: &str,
+    end_byte: u32,
+) -> Result<ChunkRecord, Box<dyn Error>> {
+    Ok(ChunkRecord {
+        chunk_id: ChunkId::new(chunk_id),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: rust_language()?,
+        start_byte: 0,
+        end_byte,
+        start_line: 1,
+        end_line: 1,
+        snippet: snippet.to_string().into_boxed_str(),
+        indexed_text: snippet.to_string().into_boxed_str(),
+        text_digest: text_digest.to_string().into_boxed_str(),
+        shape_digest: shape_digest.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+    })
 }
 
 fn symbol_record() -> Result<SymbolRecord, Box<dyn Error>> {
@@ -227,6 +299,235 @@ fn dirty_batch() -> DirtyBatch {
         payload_hash: [7; 32],
     })
     .delete(ChunkId::new("chunk-evict"))
+}
+
+fn semantic_batch() -> Result<SemanticBatch, Box<dyn Error>> {
+    Ok(SemanticBatch::replace_generation(
+        repo(),
+        revision(),
+        generation(),
+        "manifest:semantic",
+        "batch:semantic",
+        semantic_model_contract(),
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
+        },
+        "scope:semantic-alpha",
+        vec![semantic_embedding(
+            "alpha",
+            "src/alpha.rs",
+            "sphinx of quartz",
+            vec![1.0, 0.0],
+        )?],
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/beta.rs"),
+        },
+        "scope:semantic-beta",
+        vec![semantic_embedding(
+            "beta",
+            "src/beta.rs",
+            "sphinx riddles",
+            vec![0.0, 1.0],
+        )?],
+    ))
+}
+
+fn semantic_model_contract() -> EmbeddingModelContract {
+    EmbeddingModelContract {
+        model_id: "text-embed".into(),
+        model_version: Some("1".into()),
+        dimension: 2,
+        normalization: EmbeddingNormalization::L2Unit,
+        distance_metric: EmbeddingDistanceMetric::Cosine,
+        policy_digest: "policy:semantic-sdk".into(),
+        view_policy_digest: Some("view:semantic-sdk".into()),
+    }
+}
+
+fn semantic_embedding(
+    embedding_id: &str,
+    path: &str,
+    snippet: &str,
+    vector: Vec<f32>,
+) -> Result<EmbeddingRecord, Box<dyn Error>> {
+    Ok(EmbeddingRecord {
+        embedding_id: EmbeddingId::new(embedding_id),
+        owner_kind: OwnerDocKind::Chunk,
+        owner_id: embedding_id.to_string().into_boxed_str(),
+        source_doc_id: embedding_id.to_string().into_boxed_str(),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: rust_language()?,
+        symbol_kind: None,
+        start_byte: 0,
+        end_byte: u32::try_from(snippet.len()).map_err(|err| -> Box<dyn Error> {
+            format!("snippet byte length does not fit into u32: {err}").into()
+        })?,
+        start_line: 1,
+        end_line: 1,
+        snippet: snippet.to_string().into_boxed_str(),
+        embedding_input_digest: format!("embedding-input:{embedding_id}").into_boxed_str(),
+        vector_digest: format!("vector:{embedding_id}").into_boxed_str(),
+        view_kind: "raw_chunk".to_string().into_boxed_str(),
+        vector,
+    })
+}
+
+fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
+    let symbol_kind = SymbolKindCode::new("struct").map_err(|err| -> Box<dyn Error> {
+        format!("invalid repo-map symbol kind: {err}").into()
+    })?;
+    Ok(RepoMapSourceBundle::new(
+        repo(),
+        revision(),
+        generation(),
+        "manifest-digest-sdk",
+        "repomap-snapshot-sdk",
+        1,
+        "e".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: quanta_index_contract::FileId::new("file://src/lib.rs"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        line_count: 110,
+    }))
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: quanta_index_contract::FileId::new("file://src/service/mod.rs"),
+        repo_relative_path: RepoRelativePath::new("src/service/mod.rs"),
+        line_count: 170,
+    }))
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: quanta_index_contract::FileId::new("file://tests/repo_map.rs"),
+        repo_relative_path: RepoRelativePath::new("tests/repo_map.rs"),
+        line_count: 70,
+    }))
+    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
+        symbol_id: SymbolId::new("symbol://alpha"),
+        owner_path: RepoRelativePath::new("src/lib.rs"),
+        local_name: "Alpha".to_string(),
+        qualified_name: "src::lib::Alpha".to_string(),
+        symbol_kind: symbol_kind.clone(),
+    }))
+    .with_node(RepoMapNode::Symbol(RepoMapSymbolNode {
+        symbol_id: SymbolId::new("symbol://beta"),
+        owner_path: RepoRelativePath::new("src/service/mod.rs"),
+        local_name: "Beta".to_string(),
+        qualified_name: "src::service::Beta".to_string(),
+        symbol_kind,
+    }))
+    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
+        chunk_id: ChunkId::new("chunk://alpha"),
+        owner_path: RepoRelativePath::new("src/lib.rs"),
+        language: rust_language()?,
+        start_byte: 0,
+        end_byte: 128,
+        start_line: 1,
+        end_line: 12,
+        token_count: 64,
+        preview_text: "Alpha library owner index".to_string(),
+        exactness: RepoMapChunkExactness::Exact,
+    }))
+    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
+        chunk_id: ChunkId::new("chunk://beta"),
+        owner_path: RepoRelativePath::new("src/service/mod.rs"),
+        language: rust_language()?,
+        start_byte: 129,
+        end_byte: 256,
+        start_line: 13,
+        end_line: 28,
+        token_count: 96,
+        preview_text: "Beta service owner query entrypoint".to_string(),
+        exactness: RepoMapChunkExactness::Exact,
+    }))
+    .with_node(RepoMapNode::Chunk(RepoMapChunkNode {
+        chunk_id: ChunkId::new("chunk://repomap-test"),
+        owner_path: RepoRelativePath::new("tests/repo_map.rs"),
+        language: rust_language()?,
+        start_byte: 257,
+        end_byte: 320,
+        start_line: 29,
+        end_line: 35,
+        token_count: 40,
+        preview_text: "repo map integration test".to_string(),
+        exactness: RepoMapChunkExactness::Approximate,
+    }))
+    .with_edge(RepoMapEdge::Contains(RepoMapContainsEdge {
+        container: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
+        contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+    }))
+    .with_edge(RepoMapEdge::Contains(RepoMapContainsEdge {
+        container: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+            "file://src/service/mod.rs",
+        )),
+        contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+    }))
+    .with_edge(RepoMapEdge::Call(quanta_index_contract::RepoMapCallEdge {
+        caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+        callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+    }))
+    .with_edge(RepoMapEdge::Call(quanta_index_contract::RepoMapCallEdge {
+        caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+        callee: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+            "file://tests/repo_map.rs",
+        )),
+    }))
+    .with_edge(RepoMapEdge::Import(
+        quanta_index_contract::RepoMapImportEdge {
+            importer: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+                "file://src/service/mod.rs",
+            )),
+            imported: RepoMapNodeRef::File(quanta_index_contract::FileId::new("file://src/lib.rs")),
+        },
+    ))
+    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
+        owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://alpha")),
+    }))
+    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
+        owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://beta")),
+    }))
+    .with_edge(RepoMapEdge::OwnsChunk(RepoMapOwnsChunkEdge {
+        owner: RepoMapNodeRef::File(quanta_index_contract::FileId::new(
+            "file://tests/repo_map.rs",
+        )),
+        chunk: RepoMapNodeRef::Chunk(ChunkId::new("chunk://repomap-test")),
+    })))
+}
+
+fn repo_map_activate_request() -> RepoMapActivateGenerationRequest {
+    RepoMapActivateGenerationRequest {
+        repo_id: repo(),
+        revision_id: revision(),
+        manifest_generation: generation(),
+        manifest_digest: "manifest-digest-sdk".to_string(),
+    }
+}
+
+fn repo_map_query_request() -> RepoMapQueryRequest {
+    RepoMapQueryRequest {
+        repo_id: repo(),
+        revision_id: revision(),
+        manifest_generation: generation(),
+        query_text: "service owner".to_string(),
+        top_k: 1,
+        token_budget: 90,
+        focus_subjects: vec![RepoMapFocusSubjectDto {
+            subject_identity: "symbol://beta".to_string(),
+            subject_doc_type: RepoMapDocType::Symbol,
+        }],
+    }
 }
 
 fn structural_batch_with_chunk(chunk_id: ChunkId) -> Result<StructuralBatch, Box<dyn Error>> {
@@ -304,6 +605,16 @@ fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
     }
 }
 
+fn expect_sdk_error<T>(
+    result: Result<T, SdkError>,
+    context: &str,
+) -> Result<SdkError, Box<dyn Error>> {
+    match result {
+        Ok(_) => Err(format!("{context}: unexpectedly succeeded").into()),
+        Err(err) => Ok(err),
+    }
+}
+
 fn wait_for_sdk_ready<T, F>(timeout: Duration, mut run: F) -> Result<T, SdkError>
 where
     F: FnMut() -> Result<T, SdkError>,
@@ -369,6 +680,46 @@ fn assert_single_symbol_candidate(
     Ok(())
 }
 
+fn assert_repo_map_happy_path(
+    response: &quanta_index_contract::RepoMapQueryResponse,
+) -> TestResult {
+    if response.repo_id != repo()
+        || response.revision_id != revision()
+        || response.manifest_generation != generation()
+        || response.snapshot_meta.snapshot_id != "repomap-snapshot-sdk"
+    {
+        return Err(format!("unexpected repo-map response envelope: {response:?}").into());
+    }
+    let entry = response
+        .entries
+        .first()
+        .ok_or_else(|| "missing repo-map entry".to_string())?;
+    if entry.subject_identity != "symbol://beta"
+        || entry.owner_path != "src/service/mod.rs"
+        || entry.subject_doc_type != RepoMapDocType::Symbol
+        || entry.projection_evidence_kind != "AuthorityBundle"
+    {
+        return Err(format!("unexpected repo-map entry: {entry:?}").into());
+    }
+    if response
+        .entries
+        .iter()
+        .filter(|entry| entry.included)
+        .count()
+        != 1
+    {
+        return Err(format!("unexpected repo-map inclusion set: {response:?}").into());
+    }
+    if !response
+        .degraded_reason_codes
+        .iter()
+        .any(|code| code == "token_budget_floor_applied")
+    {
+        return Err(format!("missing repo-map degraded reason: {response:?}").into());
+    }
+    Ok(())
+}
+
 fn wait_for_symbol_query<F>(
     timeout: Duration,
     run: F,
@@ -382,7 +733,7 @@ where
 }
 
 #[test]
-fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestResult {
+fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     let dir = tempfile::tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -409,16 +760,25 @@ fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestRe
     )?;
 
     let lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
     let history_receipt = client.history().publish(&history_batch())?;
     let dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let structural_receipt = client.structural().publish(&structural_batch()?)?;
+    let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
 
     if lexical_receipt.generation != generation()
-        || lexical_receipt.accepted_replace_scopes != 1
+        || lexical_receipt.accepted_replace_scopes != 3
         || lexical_receipt.accepted_tombstone_scopes != 0
     {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical receipt: {lexical_receipt:?}").into());
+    }
+    if semantic_receipt.generation != generation()
+        || semantic_receipt.accepted_replace_scopes != 2
+        || semantic_receipt.accepted_tombstone_scopes != 0
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected semantic receipt: {semantic_receipt:?}").into());
     }
     if history_receipt.generation != generation()
         || history_receipt.accepted_replace_scopes != 4
@@ -441,6 +801,166 @@ fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestRe
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected structural receipt: {structural_receipt:?}").into());
     }
+    if repo_map_receipt.repo_id != repo()
+        || repo_map_receipt.revision_id != revision()
+        || repo_map_receipt.manifest_generation != generation()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected repo-map receipt: {repo_map_receipt:?}").into());
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let runtime = build_runtime(build_config(dir.path()))?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("sdk-frontdoor-search".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_TIMEOUT, || {
+        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
+    }) {
+        stop_runtime(&shutdown, join)?;
+        return Err("sdk frontdoor sockets never appeared".into());
+    }
+
+    let client = QuantaIndex::connect(
+        ConnectOptions::from_state_root(dir.path())
+            .with_query_socket(query_socket)
+            .with_control_socket(control_socket)
+            .with_ingest_socket(ingest_socket),
+    )?;
+
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
+    let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
+    if repo_map_receipt.manifest_generation != generation() {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected repo-map publish ack: {repo_map_receipt:?}").into());
+    }
+
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:sdk-frontdoor")
+            .tracks([
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Semantic,
+            ])
+            .commit()
+    })?;
+    let repo_map_activation = client.repomap().activate(repo_map_activate_request())?;
+    if repo_map_activation.manifest_generation != generation() {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected repo-map activate ack: {repo_map_activation:?}").into());
+    }
+
+    let lexical = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("todo")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_candidate = lexical
+        .results
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing lexical candidate".to_string())?;
+    if lexical.generation != pin()
+        || lexical_candidate.candidate_id != "chunk-dirty"
+        || lexical_candidate.repo_relative_path.as_str() != "src/lib.rs"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected lexical response: {lexical:?}").into());
+    }
+
+    let explain = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client.search().explain(pin(), lexical_candidate.clone())
+    })?;
+    if explain.generation != pin()
+        || !explain.explanation.summary.contains("present")
+        || !explain.explanation.summary.contains("chunk-dirty")
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected explain response: {explain:?}").into());
+    }
+
+    let semantic = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .semantic()
+                .query()
+                .vector_handle("alpha")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let semantic_top = semantic
+        .results
+        .first()
+        .ok_or_else(|| "missing semantic candidate".to_string())?;
+    if semantic.generation != pin()
+        || semantic_top.candidate_id != "alpha"
+        || semantic.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected semantic response: {semantic:?}").into());
+    }
+
+    let hybrid = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .search()
+                .hybrid()
+                .sourcegraph("sphinx")
+                .vector_handle("alpha")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let hybrid_top = hybrid
+        .results
+        .first()
+        .ok_or_else(|| "missing hybrid candidate".to_string())?;
+    if hybrid.generation != pin()
+        || hybrid_top.candidate_id != "alpha"
+        || hybrid.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected hybrid response: {hybrid:?}").into());
+    }
+
+    let repo_map = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.repomap().query(repo_map_query_request()),
+        |response| response.manifest_generation == generation() && !response.entries.is_empty(),
+    )?;
+    assert_repo_map_happy_path(&repo_map)?;
 
     stop_runtime(&shutdown, join)
 }
@@ -1078,6 +1598,74 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         )
         .into());
     }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let runtime = build_runtime(build_config(dir.path()))?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("sdk-frontdoor-history-errors".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_TIMEOUT, || {
+        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
+    }) {
+        stop_runtime(&shutdown, join)?;
+        return Err("sdk frontdoor sockets never appeared".into());
+    }
+
+    let client = QuantaIndex::connect(
+        ConnectOptions::from_state_root(dir.path())
+            .with_query_socket(query_socket)
+            .with_control_socket(control_socket)
+            .with_ingest_socket(ingest_socket),
+    )?;
+
+    let generation_not_ready = expect_sdk_error(
+        client
+            .history()
+            .query()
+            .sourcegraph("type:commit fix")
+            .pinned(pin())
+            .top_k(5)
+            .execute(),
+        "history query without materialized authority should fail",
+    )?;
+    expect_remote_code(generation_not_ready, "HISTORY_GENERATION_NOT_READY")?;
+
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let producer_unavailable = expect_sdk_error(
+        client
+            .history()
+            .query()
+            .sourcegraph("todo")
+            .pinned(pin())
+            .top_k(5)
+            .execute(),
+        "history query should not fall back to lexical content",
+    )?;
+    expect_remote_code(producer_unavailable, "HISTORY_PRODUCER_UNAVAILABLE")?;
+
+    let _history_receipt = client.history().publish(&history_commit_only_batch())?;
+    let shard_unavailable = expect_sdk_error(
+        client
+            .history()
+            .query()
+            .sourcegraph("type:diff todo")
+            .pinned(pin())
+            .top_k(5)
+            .execute(),
+        "history diff query should fail when diff shard is absent",
+    )?;
+    expect_remote_code(shard_unavailable, "HISTORY_SHARD_UNAVAILABLE")?;
 
     stop_runtime(&shutdown, join)
 }

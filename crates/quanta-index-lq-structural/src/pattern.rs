@@ -116,14 +116,10 @@ impl PatternNode {
     /// Collect every metavariable name reachable from this node.
     pub(crate) fn collect_metavars(&self, into: &mut BTreeSet<MetaVar>) {
         match self {
-            Self::Literal(_) => {}
-            Self::Metavar(m) => {
+            Self::Metavar(m) | Self::HoleMany(m) => {
                 let _inserted: bool = into.insert(m.clone());
             }
-            Self::HoleMany(m) => {
-                let _inserted: bool = into.insert(m.clone());
-            }
-            Self::WildcardMany => {}
+            Self::Literal(_) | Self::WildcardMany => {}
             Self::Group(children) => {
                 for c in children {
                     c.collect_metavars(into);

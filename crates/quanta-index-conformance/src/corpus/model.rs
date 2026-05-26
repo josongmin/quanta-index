@@ -32,6 +32,40 @@ pub struct CorpusRow {
     pub engines: Vec<String>,
     /// Optional filter tags carried for downstream attribution.
     pub filters: Vec<String>,
+    /// Optional runtime syntax for rows promoted into the live
+    /// searchd-runtime corpus rail.
+    pub syntax: Option<RuntimeSyntax>,
+    /// Optional runtime classification. Parser-only and external-producer
+    /// rows stay in the same machine-readable corpus but must not be counted
+    /// as runtime pass/fail rows.
+    pub classification: Option<RowClassification>,
+    /// Optional named fixture bundle consumed by the runtime rail.
+    pub fixture: Option<String>,
+    /// Optional exact corpus-id set asserted by the runtime rail.
+    pub expected_ids: Vec<String>,
+    /// Optional runtime `top_k` override for rows executed against the live
+    /// daemon.
+    pub top_k: Option<u32>,
+    /// Optional typed runtime error code for rows executed against the live
+    /// daemon. Kept separate from `ExpectedShape::Error`, which remains the
+    /// parser/conformance placeholder enum surface.
+    pub runtime_error_code: Option<String>,
+}
+
+/// Runtime syntax tag for rows promoted into the live daemon rail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeSyntax {
+    Native,
+    Sourcegraph,
+}
+
+/// Runtime-corpus classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowClassification {
+    Runtime,
+    ParserOnly,
+    TypedUnavailable,
+    DeferredExternalProducer,
 }
 
 /// Gating discipline for a row.

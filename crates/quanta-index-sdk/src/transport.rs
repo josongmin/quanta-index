@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private transports are shared through the SDK root and tests only"
+)]
+
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
@@ -9,14 +14,14 @@ use quanta_index_ipc::send_request;
 
 use crate::SdkError;
 
-pub trait QueryTransport: Send + Sync {
+pub(crate) trait QueryTransport: Send + Sync {
     fn send(
         &self,
         request: SearchPlaneQueryIpcRequestEnvelope,
     ) -> Result<SearchPlaneQueryIpcResponseEnvelope, SdkError>;
 }
 
-pub trait ControlTransport: Send + Sync {
+pub(crate) trait ControlTransport: Send + Sync {
     fn send(
         &self,
         request: SearchPlaneControlIpcRequestEnvelope,
@@ -24,20 +29,20 @@ pub trait ControlTransport: Send + Sync {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UdsQueryTransport {
+pub(crate) struct UdsQueryTransport {
     socket_path: PathBuf,
 }
 
 impl UdsQueryTransport {
     #[must_use]
-    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
         }
     }
 
     #[must_use]
-    pub fn socket_path(&self) -> &Path {
+    pub(crate) fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 }
@@ -52,20 +57,20 @@ impl QueryTransport for UdsQueryTransport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UdsControlTransport {
+pub(crate) struct UdsControlTransport {
     socket_path: PathBuf,
 }
 
 impl UdsControlTransport {
     #[must_use]
-    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
         }
     }
 
     #[must_use]
-    pub fn socket_path(&self) -> &Path {
+    pub(crate) fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 }
@@ -84,7 +89,7 @@ impl ControlTransport for UdsControlTransport {
 /// The SDK's `publish()` paths route through this trait so the producer never
 /// opens a channel publisher directly. `quanta-index-channel` is
 /// intentionally absent from the SDK's `Cargo.toml` dependency surface.
-pub trait IngestTransport: Send + Sync {
+pub(crate) trait IngestTransport: Send + Sync {
     fn send(
         &self,
         request: SearchPlaneIngestIpcRequestEnvelope,
@@ -92,20 +97,20 @@ pub trait IngestTransport: Send + Sync {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UdsIngestTransport {
+pub(crate) struct UdsIngestTransport {
     socket_path: PathBuf,
 }
 
 impl UdsIngestTransport {
     #[must_use]
-    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
         }
     }
 
     #[must_use]
-    pub fn socket_path(&self) -> &Path {
+    pub(crate) fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 }

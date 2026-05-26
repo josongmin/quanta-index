@@ -1,0 +1,168 @@
+[[row]]
+id = "runtime_native_content_term"
+query = "alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["content"]
+syntax = "native"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_file_filter"
+query = "file:src/lib.rs alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["file"]
+syntax = "native"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_regex"
+query = "/v\\d+\\.\\d+\\.\\d+/"
+gate = "active"
+engines = ["lexical_regex"]
+filters = ["regex"]
+syntax = "native"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["epsilon_regex"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_raw_substring"
+query = "'oo_ba'"
+gate = "active"
+engines = ["lexical_raw"]
+filters = ["raw"]
+syntax = "native"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["zeta_raw"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_type_symbol"
+query = "type:symbol MyTypeSymbol"
+gate = "active"
+engines = ["lexical_symbol"]
+filters = ["type:symbol"]
+syntax = "native"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["theta_symbol"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_select_symbol"
+query = "select:symbol MyTypeSymbol"
+gate = "active"
+engines = ["lexical_symbol", "sourcegraph_lowering"]
+filters = ["select:symbol"]
+syntax = "sourcegraph"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = ["theta_symbol"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_phrase_negative"
+query = "\"banana lemon\""
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["phrase"]
+syntax = "sourcegraph"
+classification = "runtime"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "typed_unavailable_native_fork"
+query = "fork:no alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["fork"]
+syntax = "native"
+classification = "typed_unavailable"
+fixture = "docs-main.toml"
+top_k = 10
+runtime_error_code = "LEX_FILTER_FORK_UNAVAILABLE"
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "typed_unavailable_sourcegraph_visibility"
+query = "visibility:public alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["visibility"]
+syntax = "sourcegraph"
+classification = "typed_unavailable"
+fixture = "docs-main.toml"
+top_k = 10
+runtime_error_code = "LEX_FILTER_VISIBILITY_UNAVAILABLE"
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "parser_only_structural_match"
+query = "repo:repo-e2e file:src/lib.rs lang:rust match { function_item { { identifier :[name] } } }"
+gate = "pending"
+gating_ticket = "E2E-04"
+engines = ["structural_parser"]
+filters = ["structural"]
+syntax = "sourcegraph"
+classification = "parser_only"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "deferred_history_external_producer"
+query = "type:commit alpha_content_needle"
+gate = "blocked"
+gating_ticket = "EXT-HISTORY-FIXTURE"
+engines = ["history"]
+filters = ["type:commit"]
+syntax = "sourcegraph"
+classification = "deferred_external_producer"
+fixture = "docs-main.toml"
+expected_ids = ["commit-alpha"]
+top_k = 10
+
+[row.expected]
+kind = "single"

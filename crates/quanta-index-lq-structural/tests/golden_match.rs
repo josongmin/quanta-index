@@ -5,6 +5,11 @@
 //! envelope or [`StructuralBinding`] iteration order will break the golden
 //! and force a deliberate update.
 
+#![expect(
+    clippy::indexing_slicing,
+    reason = "golden tests pin exact row cardinality before direct indexing"
+)]
+
 use std::collections::BTreeMap;
 
 use quanta_index_contract::lex::{
@@ -105,10 +110,10 @@ fn golden_authority_match_returns_pinned_row() {
         "rust",
     );
     let matcher = TruthfulSubsetAuthorityMatcher::new();
-    let got = match matcher.match_authority(
-        (&pattern).try_into().unwrap_or_else(|_| fatal("lower")),
-        StructuralAuthorityView::new(source, &tree),
-    ) {
+    let Ok(lowered) = (&pattern).try_into() else {
+        fatal("lower");
+    };
+    let got = match matcher.match_authority(lowered, StructuralAuthorityView::new(source, &tree)) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };

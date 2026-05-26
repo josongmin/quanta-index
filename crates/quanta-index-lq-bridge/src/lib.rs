@@ -19,7 +19,8 @@
 //!   shaping. It does **not** embed an LQ executor, a sink router, or
 //!   an `OTel` emitter.
 //! * Subset table buckets (adopted / normalized / refused) are codified
-//!   in [`crate::translator`].
+//!   by the bridge translator implementation exported as
+//!   [`translate_query`].
 //!
 //! ## Discipline
 //!

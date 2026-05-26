@@ -21,6 +21,10 @@ pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreErr
     lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Lexical)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private lowering helpers are shared across sibling modules"
+)]
 pub(crate) fn lower_sourcegraph_structural_query_text(
     query_text: &str,
 ) -> Result<LqQuery, CoreError> {
@@ -83,7 +87,7 @@ fn lower_sourcegraph_structural_shape(
         });
     }
     let structural_body = match &query.expr {
-        LqExpr::Leaf(LqLeaf::Keyword(body)) | LqExpr::Leaf(LqLeaf::Phrase(body)) => body.clone(),
+        LqExpr::Leaf(LqLeaf::Keyword(body) | LqLeaf::Phrase(body)) => body.clone(),
         LqExpr::Empty => {
             return Err(CoreError::Typed {
                 code: BridgeErrorCode::BridgeTranslateFail
@@ -104,9 +108,9 @@ fn lower_sourcegraph_structural_shape(
                         .to_string(),
             });
         }
-        LqExpr::Leaf(LqLeaf::RawString(_))
-        | LqExpr::Leaf(LqLeaf::StructuralBlock(_))
-        | LqExpr::Leaf(LqLeaf::Predicate { .. })
+        LqExpr::Leaf(
+            LqLeaf::RawString(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. },
+        )
         | LqExpr::Not(_)
         | LqExpr::All(_)
         | LqExpr::Any(_)

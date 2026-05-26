@@ -26,8 +26,10 @@ quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 
 [dev-dependencies]
 ciborium = { workspace = true }
+quanta-index-conformance = { version = "0.1.0", path = "../quanta-index-conformance" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 serde = { workspace = true }
 tempfile.workspace = true
+toml = { workspace = true }

@@ -9,7 +9,7 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
 - **Phase 1** — LXE-02 planner IR scaffold + LXE-09 structural domain + E2E-00 harness skeleton: DONE (10 tests pass)
 - **Phase 2** — LXE-04 regex/trigram + LXE-05 phrase + LXE-06 symbol planner scaffolds: DONE (15 new tests pass)
 - **Phase 3** — LXE-03 filter execution + LXE-05/06 planner-arm integration: DONE (12 new tests, total 31 lexical lib tests pass)
-- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE for the live lexical subset; remaining scope is `LXE-07`, `LXE-08`, `LXE-10`, and contract polish
+- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE for the live lexical subset; remaining scope is `LXE-07`, `LXE-10`, and contract polish
 - **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, and the currently landed structural/history slice of `E2E-04`: DONE; `E2E-03`, `E2E-05`, `E2E-06`, `E2E-07` remain
 
 ## Current code-backed snapshot (2026-05-27)
@@ -121,7 +121,7 @@ Defined at [lq-norm/src/ast.rs:223](../../../crates/quanta-index-lq-norm/src/ast
 | `Context { name }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
 | `Content { leaf }` | content engine | delegates to the active leaf execution path | `partial` |
 
-`type:` enum values from `LqType`: `File`, `Path`, `Symbol`, `Commit`, `Diff`, `Repo`. `File`/`Path`/`Symbol` have live route proof here. `Commit`/`Diff` remain history-owned (`pending[LXE-08]`), and `Repo` stays typed unavailable on the lexical rail.
+`type:` enum values from `LqType`: `File`, `Path`, `Symbol`, `Commit`, `Diff`, `Repo`. `File`/`Path`/`Symbol` have live route proof here. `Commit`/`Diff` execute on the dedicated history route with runtime proof under `LXE-08`, and `Repo` stays typed unavailable on the lexical rail.
 
 `select:` enum values from `LqSelect`: `Repo`, `File`, `Path`, `Symbol`, `Content`, `ContentMatch`. `Repo`/`File`/`Content`/`Symbol` have live proof; `Path` / `ContentMatch` are not yet separately proven in this matrix.
 
@@ -158,7 +158,7 @@ Translator at [lq-bridge/src/translator.rs](../../../crates/quanta-index-lq-brid
 | `case:yes/no` | `LqCase` | `executed` |
 | `count:N` | `LqCountBound::Bounded` | `executed` |
 | `count:all` | `LqCountBound::All` | `executed` |
-| `type:file` / `type:symbol` / `type:commit` / `type:diff` | `LqFilter::Type` | `partial[LXE-08]` (file live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth; commit/diff `pending[LXE-08]`) |
+| `type:file` / `type:symbol` / `type:commit` / `type:diff` | `LqFilter::Type` | `executed[truthful-subset]` (file live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth; commit/diff live on the dedicated history route with runtime proof) |
 | `select:file` / `select:content` / `select:symbol` | `LqFilter::Select` | `partial` (file/content live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier) |
 | `patterntype:literal` | `LqPatternType::Literal` + `LqLeaf::RawString` | `executed` |
 | `patterntype:regexp` | `LqPatternType::Regexp` + `LqLeaf::Regex` | `executed` |
@@ -207,9 +207,9 @@ Current shape at [contract/src/lex/explanation.rs](../../../crates/quanta-index-
 
 | Surface | Typed code | Evidence | Status |
 | --- | --- | --- | --- |
-| History generation not materialized | `NOT_READY` (current runtime surface) | [query_dispatcher.rs:324](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L324) | `partial[LXE-08]` — target-specific `HISTORY_*` runtime codes remain unproven |
-| History producer-specific unavailable taxonomy | `HISTORY_PRODUCER_UNAVAILABLE`, `HISTORY_GENERATION_NOT_READY` | [lexical/src/filters.rs:156](../../../crates/quanta-index-lexical/src/filters.rs#L156) | `pending[LXE-08]` runtime cutover |
-| History shard unavailable | `HISTORY_SHARD_UNAVAILABLE` | LXE-08 | `pending[LXE-08]` |
+| History generation not materialized | `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:823](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L823), [end_to_end.rs:632](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L632) | `executed` |
+| History producer-specific unavailable taxonomy | `HISTORY_PRODUCER_UNAVAILABLE`, `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:815](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L815), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:675](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L675) | `executed` |
+| History shard unavailable | `HISTORY_SHARD_UNAVAILABLE` | [query_dispatcher.rs:888](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L888), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:742](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L742) | `executed[truthful-subset]` — proven for required shard materialization absence; deeper authority-corruption taxonomy is not yet modeled |
 | Structural unsupported lang | `STR_LANG_NOT_SUPPORTED` | [sdk_frontdoor.rs:656](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L656) | `executed` |
 | Structural generation not ready | `STR_GENERATION_NOT_READY` | [end_to_end.rs:2239](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2239) | `executed` |
 | Structural shard unavailable | `STR_SHARD_UNAVAILABLE` | [end_to_end.rs:2305](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2305) | `executed` |
@@ -245,9 +245,9 @@ Current shape at [contract/src/lex/explanation.rs](../../../crates/quanta-index-
   — correct behavior (lexical adapter shouldn't execute vectors) but LXE-07
   must confirm the routing to semantic engine is wired, not silently dropped.
 - **Type/select proof remainder**: `type:symbol` / `select:symbol` now have a
-  distinct public carrier plus `symbol_kind` truth, but `select:path` /
-  `select:content.match` are still not separately proven and history-owned
-  `type:commit` / `type:diff` remain under `LXE-08`.
+  distinct public carrier plus `symbol_kind` truth, and history-owned
+  `type:commit` / `type:diff` now have public/runtime proof. `select:path` /
+  `select:content.match` are still not separately proven.
 - **Structural live surface is still narrower than full public semantics**:
   the current authority-owned matcher now executes root-anchored tree-walk,
   variadic sibling capture / wildcard skip, and `where` / `inside` /

@@ -22,7 +22,9 @@ pub mod mocks;
 pub mod report;
 pub mod runner;
 
-pub use corpus::{Corpus, CorpusRow, ExpectedShape, Gate, load_corpus};
+pub use corpus::{
+    Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeSyntax, load_corpus,
+};
 pub use errors::{ConformanceError, CorpusLoadError};
 pub use report::render_junit;
 pub use runner::{

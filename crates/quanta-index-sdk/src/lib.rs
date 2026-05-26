@@ -17,7 +17,7 @@ mod search;
 pub(crate) mod semantic;
 mod structural;
 mod symbol;
-mod text_query_builder;
+pub(crate) mod text_query_builder;
 mod transport;
 
 pub use batch::{BatchMode, BatchReceipt};
@@ -26,21 +26,17 @@ pub use config::ConnectOptions;
 pub use error::SdkError;
 pub use generations::GenerationNamespace;
 pub use history::{
-    DiffHunkMutation, HistoryBatch, HistoryNamespace, HistoryNs, HistoryQueryBuilder, RefMutation,
+    DiffHunkMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
 };
-pub use lexical::{LexicalBatch, LexicalNamespace, LexicalNs, LexicalQueryBuilder};
-pub use namespace::{NamespaceHandle, NamespaceIngest, NamespaceQuery};
-pub use repomap::{RepoMapNamespace, RepoMapNs};
-pub use runtime::{
-    DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeNs, RuntimeQueryBuilder,
-};
+pub use lexical::{LexicalBatch, LexicalNamespace, LexicalQueryBuilder};
+pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
+pub use repomap::RepoMapNamespace;
+pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridQueryBuilder, SearchNamespace};
-pub use semantic::{
-    SemanticBatch, SemanticNamespace, SemanticNs, SemanticQueryBuilder, SemanticVector,
-};
-pub use structural::{StructuralBatch, StructuralNamespace, StructuralNs, StructuralQueryBuilder};
+pub use semantic::{SemanticBatch, SemanticNamespace, SemanticQueryBuilder, SemanticVector};
+pub use structural::{StructuralBatch, StructuralNamespace, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
-pub use transport::{
+pub(crate) use transport::{
     ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
     UdsQueryTransport,
 };
@@ -51,8 +47,8 @@ pub use quanta_index_contract::lex::{
     SymbolSpan,
 };
 pub use quanta_index_contract::{
-    ChannelSeq, ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric,
-    EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
+    ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric, EmbeddingId,
+    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
     LexicalCandidate, LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind,
     RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode,

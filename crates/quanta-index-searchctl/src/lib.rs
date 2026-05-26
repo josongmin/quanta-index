@@ -13,12 +13,11 @@ use std::process::ExitCode;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, SemanticVectorRef, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
 };
-use quanta_index_ipc::send_request;
+use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
 const REQUEST_ID: u64 = 1;
 const EXIT_TRANSPORT: u8 = 1;
@@ -55,18 +54,16 @@ where
     I: IntoIterator<Item = T>,
     T: Into<String>,
 {
-    let parsed = ParsedCommand::parse(args)?;
-    let response: SearchPlaneQueryIpcResponseEnvelope =
-        send_request(&parsed.socket_path, &parsed.request)
-            .map_err(|error| CliError::transport(format!("ipc request failed: {error}")))?;
-    if response.request_id != parsed.request.request_id {
-        return Err(CliError::protocol(format!(
-            "response request_id {} != request {}",
-            response.request_id, parsed.request.request_id
-        )));
-    }
-    validate_response_kind(parsed.kind, &response)?;
-    render_response(parsed.output, &response, stdout)?;
+    let ParsedCommand {
+        kind,
+        output,
+        connect_options,
+        request,
+    } = ParsedCommand::parse(args)?;
+    let client = QuantaIndex::connect(connect_options).map_err(map_sdk_error)?;
+    let response = dispatch_query_request(&client, request)?;
+    validate_response_kind(kind, &response)?;
+    render_response(output, &response, stdout)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -134,39 +131,40 @@ impl CommonOptions {
         }
     }
 
-    fn resolve_socket_path(&self) -> CliResult<PathBuf> {
-        if let Some(socket) = &self.socket_override {
-            return Ok(socket.clone());
+    fn resolve_connect_options(&self) -> ConnectOptions {
+        match (&self.state_root_override, &self.socket_override) {
+            (Some(state_root), Some(query_socket)) => {
+                ConnectOptions::from_state_root(state_root.clone())
+                    .with_query_socket(query_socket.clone())
+            }
+            (Some(state_root), None) => ConnectOptions::from_state_root(state_root.clone()),
+            (None, Some(query_socket)) => ConnectOptions::default()
+                .with_query_socket(query_socket.clone())
+                .with_control_socket(query_socket.with_file_name("control.sock"))
+                .with_ingest_socket(query_socket.with_file_name("ingest.sock")),
+            (None, None) => ConnectOptions::default(),
         }
-        let state_root = if let Some(root) = &self.state_root_override {
-            root.clone()
-        } else if let Ok(explicit) = std::env::var("QUANTA_INDEX_STATE_ROOT") {
-            PathBuf::from(explicit)
-        } else if let Ok(cache_root) = std::env::var("QUANTA_INDEX_CACHE_ROOT") {
-            PathBuf::from(cache_root).join("state")
-        } else {
-            let home = std::env::var("HOME").map_err(|_err| {
-                CliError::usage(
-                    "cannot resolve socket path: set --socket, --state-root, HOME, or QUANTA_INDEX_*"
-                        .to_string(),
-                )
-            })?;
-            #[cfg(target_os = "macos")]
-            let default_root = PathBuf::from(home).join("Library/Caches/quanta-index/state");
-            #[cfg(not(target_os = "macos"))]
-            let default_root = PathBuf::from(home).join(".cache/quanta-index/state");
-            default_root
-        };
-        Ok(state_root.join("search-plane").join("query.sock"))
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CliRequest {
+    Lexical(TextQueryRequest),
+    Semantic(SemanticQueryRequest),
+    Hybrid(HybridQueryRequest),
+    Explain {
+        generation: GenerationPin,
+        candidate: LexicalCandidate,
+    },
+    RepoMap(RepoMapQueryRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct ParsedCommand {
     kind: CommandKind,
     output: OutputMode,
-    socket_path: PathBuf,
-    request: SearchPlaneQueryIpcRequestEnvelope,
+    connect_options: ConnectOptions,
+    request: CliRequest,
 }
 
 impl ParsedCommand {
@@ -215,11 +213,8 @@ impl ParsedCommand {
         Ok(Self {
             kind,
             output: common.output,
-            socket_path: common.resolve_socket_path()?,
-            request: SearchPlaneQueryIpcRequestEnvelope {
-                request_id: REQUEST_ID,
-                payload,
-            },
+            connect_options: common.resolve_connect_options(),
+            request: payload,
         })
     }
 }
@@ -255,14 +250,13 @@ impl PinnedGenerationArgs {
     }
 }
 
-fn parse_lexical(
+fn parse_query_command_flags(
     common: &mut CommonOptions,
+    generation_args: &mut PinnedGenerationArgs,
     rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut generation_args = PinnedGenerationArgs::default();
-    let mut syntax: Option<TextQuerySyntax> = None;
-    let mut query_text: Option<String> = None;
-    let mut top_k: Option<u32> = None;
+    command: &str,
+    mut parse_local: impl FnMut(&str, &mut VecDeque<String>) -> CliResult<bool>,
+) -> CliResult<()> {
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
@@ -270,19 +264,48 @@ fn parse_lexical(
         if generation_args.parse_flag(&current, rest)? {
             continue;
         }
-        match current.as_str() {
-            "--syntax" => syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?),
-            "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
-            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
-            other => return Err(CliError::usage(format!("unknown lexical flag `{other}`"))),
+        if parse_local(&current, rest)? {
+            continue;
         }
+        return Err(CliError::usage(format!(
+            "unknown {command} flag `{current}`"
+        )));
     }
+    Ok(())
+}
+
+fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    let mut generation_args = PinnedGenerationArgs::default();
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "lexical",
+        |current, rest| match current {
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
     let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
-    Ok(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+    Ok(CliRequest::Lexical(TextQueryRequest {
         syntax,
         query_text,
         generation: Some(generation),
@@ -294,7 +317,7 @@ fn parse_lexical(
 fn parse_semantic(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
+) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut query_text: Option<String> = None;
     let mut query_vector: Option<Vec<f32>> = None;
@@ -303,28 +326,43 @@ fn parse_semantic(
     let mut scope_query_text: Option<String> = None;
     let mut scope_syntax: Option<TextQuerySyntax> = None;
     let mut scope_top_k: Option<u32> = None;
-    while let Some(current) = rest.pop_front() {
-        if common.parse_flag(&current, rest)? {
-            continue;
-        }
-        if generation_args.parse_flag(&current, rest)? {
-            continue;
-        }
-        match current.as_str() {
-            "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
-            "--query-vector" => query_vector = Some(parse_f32_vector_flag(rest, "--query-vector")?),
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "semantic",
+        |current, rest| match current {
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--query-vector" => {
+                query_vector = Some(parse_f32_vector_flag(rest, "--query-vector")?);
+                Ok(true)
+            }
             "--query-vector-handle" => {
                 query_vector_handle = Some(take_value(rest, "--query-vector-handle")?);
+                Ok(true)
             }
-            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
-            "--scope-query" => scope_query_text = Some(take_value(rest, "--scope-query")?),
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            "--scope-query" => {
+                scope_query_text = Some(take_value(rest, "--scope-query")?);
+                Ok(true)
+            }
             "--scope-syntax" => {
                 scope_syntax = Some(parse_syntax(&take_value(rest, "--scope-syntax")?)?);
+                Ok(true)
             }
-            "--scope-top-k" => scope_top_k = Some(parse_u32_flag(rest, "--scope-top-k")?),
-            other => return Err(CliError::usage(format!("unknown semantic flag `{other}`"))),
-        }
-    }
+            "--scope-top-k" => {
+                scope_top_k = Some(parse_u32_flag(rest, "--scope-top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let lexical_scope = match (scope_query_text, scope_syntax) {
         (None, None) => {
@@ -368,7 +406,7 @@ fn parse_semantic(
         "--query-vector",
         "--query-vector-handle",
     )?;
-    Ok(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+    Ok(CliRequest::Semantic(SemanticQueryRequest {
         query_text: (!query_text.is_empty()).then_some(query_text),
         query_vector: None,
         query_vector_ref,
@@ -379,10 +417,7 @@ fn parse_semantic(
     }))
 }
 
-fn parse_hybrid(
-    common: &mut CommonOptions,
-    rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
+fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut lexical_query_text: Option<String> = None;
     let mut lexical_syntax: Option<TextQuerySyntax> = None;
@@ -390,29 +425,39 @@ fn parse_hybrid(
     let mut semantic_vector: Option<Vec<f32>> = None;
     let mut semantic_vector_handle: Option<String> = None;
     let mut top_k: Option<u32> = None;
-    while let Some(current) = rest.pop_front() {
-        if common.parse_flag(&current, rest)? {
-            continue;
-        }
-        if generation_args.parse_flag(&current, rest)? {
-            continue;
-        }
-        match current.as_str() {
-            "--lexical-query" => lexical_query_text = Some(take_value(rest, "--lexical-query")?),
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "hybrid",
+        |current, rest| match current {
+            "--lexical-query" => {
+                lexical_query_text = Some(take_value(rest, "--lexical-query")?);
+                Ok(true)
+            }
             "--lexical-syntax" => {
                 lexical_syntax = Some(parse_syntax(&take_value(rest, "--lexical-syntax")?)?);
+                Ok(true)
             }
-            "--semantic-query" => semantic_query_text = Some(take_value(rest, "--semantic-query")?),
+            "--semantic-query" => {
+                semantic_query_text = Some(take_value(rest, "--semantic-query")?);
+                Ok(true)
+            }
             "--semantic-vector" => {
                 semantic_vector = Some(parse_f32_vector_flag(rest, "--semantic-vector")?);
+                Ok(true)
             }
             "--semantic-vector-handle" => {
                 semantic_vector_handle = Some(take_value(rest, "--semantic-vector-handle")?);
+                Ok(true)
             }
-            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
-            other => return Err(CliError::usage(format!("unknown hybrid flag `{other}`"))),
-        }
-    }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let text_query_top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
     let text_query = TextQueryRequest {
@@ -432,7 +477,7 @@ fn parse_hybrid(
         "--semantic-vector",
         "--semantic-vector-handle",
     )?;
-    Ok(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+    Ok(CliRequest::Hybrid(HybridQueryRequest {
         text_query,
         semantic_query_text: (!semantic_query_text.is_empty()).then_some(semantic_query_text),
         semantic_vector: None,
@@ -443,75 +488,74 @@ fn parse_hybrid(
     }))
 }
 
-fn parse_explain(
-    common: &mut CommonOptions,
-    rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
+fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut candidate_json: Option<String> = None;
-    while let Some(current) = rest.pop_front() {
-        if common.parse_flag(&current, rest)? {
-            continue;
-        }
-        if generation_args.parse_flag(&current, rest)? {
-            continue;
-        }
-        match current.as_str() {
-            "--candidate-json" => candidate_json = Some(take_value(rest, "--candidate-json")?),
-            other => return Err(CliError::usage(format!("unknown explain flag `{other}`"))),
-        }
-    }
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "explain",
+        |current, rest| match current {
+            "--candidate-json" => {
+                candidate_json = Some(take_value(rest, "--candidate-json")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
     let generation = generation_args.into_generation_pin()?;
     let candidate_path =
         candidate_json.ok_or_else(|| CliError::usage("missing --candidate-json".to_string()))?;
-    Ok(SearchPlaneQueryIpcRequest::Explain(
-        SearchPlaneExplainQueryRequest {
-            generation,
-            candidate: read_candidate_json(&candidate_path)?,
-        },
-    ))
+    Ok(CliRequest::Explain {
+        generation,
+        candidate: read_candidate_json(&candidate_path)?,
+    })
 }
 
-fn parse_repomap(
-    common: &mut CommonOptions,
-    rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
+fn parse_repomap(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut token_budget: Option<u32> = None;
     let mut focus_subjects: Vec<RepoMapFocusSubjectDto> = Vec::new();
-    while let Some(current) = rest.pop_front() {
-        if common.parse_flag(&current, rest)? {
-            continue;
-        }
-        if generation_args.parse_flag(&current, rest)? {
-            continue;
-        }
-        match current.as_str() {
-            "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
-            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
-            "--token-budget" => token_budget = Some(parse_u32_flag(rest, "--token-budget")?),
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "repomap",
+        |current, rest| match current {
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            "--token-budget" => {
+                token_budget = Some(parse_u32_flag(rest, "--token-budget")?);
+                Ok(true)
+            }
             "--focus-subject" => {
                 focus_subjects.push(parse_focus_subject(&take_value(rest, "--focus-subject")?)?);
+                Ok(true)
             }
-            other => return Err(CliError::usage(format!("unknown repomap flag `{other}`"))),
-        }
-    }
-    let generation = generation_args.into_generation_pin()?;
-    Ok(SearchPlaneQueryIpcRequest::RepoMapQuery(
-        RepoMapQueryRequest {
-            repo_id: generation.repo_id,
-            revision_id: generation.revision_id,
-            manifest_generation: generation.manifest_generation,
-            query_text: query_text
-                .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
-            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-            token_budget: token_budget
-                .ok_or_else(|| CliError::usage("missing --token-budget".to_string()))?,
-            focus_subjects,
+            _ => Ok(false),
         },
-    ))
+    )?;
+    let generation = generation_args.into_generation_pin()?;
+    Ok(CliRequest::RepoMap(RepoMapQueryRequest {
+        repo_id: generation.repo_id,
+        revision_id: generation.revision_id,
+        manifest_generation: generation.manifest_generation,
+        query_text: query_text
+            .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
+        top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
+        token_budget: token_budget
+            .ok_or_else(|| CliError::usage("missing --token-budget".to_string()))?,
+        focus_subjects,
+    }))
 }
 
 fn parse_generation_pin(
@@ -543,6 +587,60 @@ fn parse_u32_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u32> {
             "{flag} requires an unsigned integer, got `{value}`: {err}"
         ))
     })
+}
+
+fn dispatch_query_request(
+    client: &QuantaIndex,
+    request: CliRequest,
+) -> CliResult<SearchPlaneQueryIpcResponseEnvelope> {
+    let payload = match request {
+        CliRequest::Lexical(text) => SearchPlaneQueryIpcResponse::Text(
+            client
+                .lexical()
+                .query_request(text)
+                .map_err(map_sdk_error)?,
+        ),
+        CliRequest::Semantic(semantic) => SearchPlaneQueryIpcResponse::Semantic(
+            client
+                .semantic()
+                .query_request(semantic)
+                .map_err(map_sdk_error)?,
+        ),
+        CliRequest::Hybrid(hybrid) => SearchPlaneQueryIpcResponse::Hybrid(
+            client
+                .search()
+                .hybrid_request(hybrid)
+                .map_err(map_sdk_error)?,
+        ),
+        CliRequest::RepoMap(repomap) => SearchPlaneQueryIpcResponse::RepoMapQuery(
+            client.repomap().query(repomap).map_err(map_sdk_error)?,
+        ),
+        CliRequest::Explain {
+            generation,
+            candidate,
+        } => SearchPlaneQueryIpcResponse::Explain(
+            client
+                .search()
+                .explain(generation, candidate)
+                .map_err(map_sdk_error)?,
+        ),
+    };
+    Ok(SearchPlaneQueryIpcResponseEnvelope {
+        request_id: REQUEST_ID,
+        payload,
+    })
+}
+
+fn map_sdk_error(error: SdkError) -> CliError {
+    match error {
+        SdkError::Usage(message) => CliError::usage(message),
+        SdkError::Protocol(message) => CliError::protocol(message),
+        SdkError::Serialization(message) => {
+            CliError::protocol(format!("ipc serialization failed: {message}"))
+        }
+        SdkError::Transport(error) => CliError::transport(format!("ipc request failed: {error}")),
+        SdkError::Remote { code, message } => CliError::remote(format!("{code}: {message}")),
+    }
 }
 
 fn parse_u64_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u64> {
@@ -1162,7 +1260,7 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Semantic(request) = parsed.request.payload else {
+        let CliRequest::Semantic(request) = parsed.request else {
             panic!("expected semantic payload");
         };
         assert_eq!(request.query_text, Some("1 0 2.5".to_string()));
@@ -1200,7 +1298,7 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Hybrid(request) = parsed.request.payload else {
+        let CliRequest::Hybrid(request) = parsed.request else {
             panic!("expected hybrid payload");
         };
         assert_eq!(request.semantic_query_text, Some("1 0 2.5".to_string()));
@@ -1260,7 +1358,7 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Semantic(request) = parsed.request.payload else {
+        let CliRequest::Semantic(request) = parsed.request else {
             panic!("expected semantic payload");
         };
         assert_eq!(request.query_text, None);
@@ -1298,7 +1396,7 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Hybrid(request) = parsed.request.payload else {
+        let CliRequest::Hybrid(request) = parsed.request else {
             panic!("expected hybrid payload");
         };
         assert_eq!(request.semantic_query_text, None);
@@ -1334,7 +1432,7 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Text(request) = parsed.request.payload else {
+        let CliRequest::Lexical(request) = parsed.request else {
             panic!("expected lexical text payload");
         };
         assert_eq!(request.syntax, TextQuerySyntax::Sourcegraph);
@@ -1343,6 +1441,38 @@ mod tests {
         assert_eq!(
             request.generation.map(|pin| pin.manifest_generation.get()),
             Some(7)
+        );
+    }
+
+    #[test]
+    fn explicit_socket_override_builds_sdk_connect_options() {
+        let parsed = ParsedCommand::parse([
+            "--socket",
+            "/tmp/quanta/query.sock",
+            "lexical",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "needle",
+            "--top-k",
+            "3",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        assert_eq!(
+            parsed.connect_options,
+            ConnectOptions::default()
+                .with_query_socket("/tmp/quanta/query.sock")
+                .with_control_socket("/tmp/quanta/control.sock")
+                .with_ingest_socket("/tmp/quanta/ingest.sock")
         );
     }
 

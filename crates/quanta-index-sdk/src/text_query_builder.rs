@@ -1,16 +1,24 @@
-use quanta_index_contract::{GenerationSelector, TextQueryRequest, TextQuerySyntax};
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private query builders share this state across sibling modules"
+)]
 
-use crate::{QuantaIndex, SdkError};
+use quanta_index_contract::{
+    GenerationPin, GenerationSelector, HybridQueryRequest, SemanticQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
+};
 
-pub(super) struct TextQueryBuilderState {
-    pub(super) syntax: TextQuerySyntax,
-    pub(super) query_text: Option<String>,
-    pub(super) selection: Option<GenerationSelector>,
-    pub(super) top_k: Option<u32>,
+use crate::{QuantaIndex, SdkError, semantic::SemanticVector};
+
+pub(crate) struct TextQueryBuilderState {
+    pub(crate) syntax: TextQuerySyntax,
+    pub(crate) query_text: Option<String>,
+    pub(crate) selection: Option<GenerationSelector>,
+    pub(crate) top_k: Option<u32>,
 }
 
 impl TextQueryBuilderState {
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             syntax: TextQuerySyntax::Native,
             query_text: None,
@@ -19,7 +27,7 @@ impl TextQueryBuilderState {
         }
     }
 
-    pub(super) fn build_request(self, plane: &str) -> Result<TextQueryRequest, SdkError> {
+    pub(crate) fn build_request(self, plane: &str) -> Result<TextQueryRequest, SdkError> {
         let query_text = self
             .query_text
             .ok_or_else(|| SdkError::Usage(format!("{plane} query text is required")))?;
@@ -37,5 +45,114 @@ impl TextQueryBuilderState {
             generation_selector,
             top_k,
         })
+    }
+}
+
+pub(crate) struct VectorQueryBuilderState {
+    pub(crate) selection: Option<GenerationSelector>,
+    pub(crate) top_k: Option<u32>,
+    pub(crate) vector: Option<SemanticVector>,
+    pub(crate) text_leg: Option<(TextQuerySyntax, String)>,
+    pub(crate) scope_leg: Option<(TextQuerySyntax, String)>,
+    pub(crate) scope_top_k: Option<u32>,
+}
+
+impl VectorQueryBuilderState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            selection: None,
+            top_k: None,
+            vector: None,
+            text_leg: None,
+            scope_leg: None,
+            scope_top_k: None,
+        }
+    }
+
+    pub(crate) fn build_semantic_request(self) -> Result<SemanticQueryRequest, SdkError> {
+        let vector_ref = self
+            .vector
+            .ok_or_else(|| SdkError::Usage("semantic vector is required".to_string()))?
+            .into_ref()?;
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("semantic generation selection is required".to_string())
+        })?;
+        let top_k = self
+            .top_k
+            .ok_or_else(|| SdkError::Usage("semantic top_k is required".to_string()))?;
+        let (generation, generation_selector) = Self::selection_fields(selection);
+        let lexical_scope = match (self.scope_leg, self.scope_top_k) {
+            (Some((syntax, query_text)), Some(scope_top_k)) => Some(TextQueryRequest {
+                syntax,
+                query_text,
+                generation: generation.clone(),
+                generation_selector: generation_selector.clone(),
+                top_k: scope_top_k,
+            }),
+            (Some(_), None) => {
+                return Err(SdkError::Usage(
+                    "semantic lexical scope is set but scope_top_k is missing; \
+                     scope_top_k is the lexical candidate cap and must be supplied \
+                     explicitly when scope_native / scope_sourcegraph is used"
+                        .to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(SdkError::Usage(
+                    "semantic scope_top_k is set but no lexical scope was \
+                     configured; call scope_native(...) or scope_sourcegraph(...) \
+                     to enable the lexical scope stage"
+                        .to_string(),
+                ));
+            }
+            (None, None) => None,
+        };
+        Ok(SemanticQueryRequest {
+            query_text: None,
+            query_vector: None,
+            query_vector_ref: Some(vector_ref),
+            generation,
+            generation_selector,
+            lexical_scope,
+            top_k,
+        })
+    }
+
+    pub(crate) fn build_hybrid_request(self) -> Result<HybridQueryRequest, SdkError> {
+        let (syntax, query_text) = self
+            .text_leg
+            .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
+        let vector_ref = self
+            .vector
+            .ok_or_else(|| SdkError::Usage("hybrid semantic vector is required".to_string()))?
+            .into_ref()?;
+        let selection = self.selection.ok_or_else(|| {
+            SdkError::Usage("hybrid generation selection is required".to_string())
+        })?;
+        let top_k = self
+            .top_k
+            .ok_or_else(|| SdkError::Usage("hybrid top_k is required".to_string()))?;
+        let (generation, generation_selector) = Self::selection_fields(selection);
+        Ok(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
+                query_text,
+                generation: generation.clone(),
+                generation_selector: generation_selector.clone(),
+                top_k,
+            },
+            semantic_query_text: None,
+            semantic_vector: None,
+            semantic_vector_ref: Some(vector_ref),
+            generation,
+            generation_selector,
+            top_k,
+        })
+    }
+
+    fn selection_fields(
+        selection: GenerationSelector,
+    ) -> (Option<GenerationPin>, Option<GenerationSelector>) {
+        QuantaIndex::selection_to_fields(selection)
     }
 }

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private marker type stays visible across sibling SDK modules only"
+)]
+
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
     ChunkRecord, GenerationSelector, LexicalIngestBatch, LexicalReplaceScope,
@@ -108,13 +113,15 @@ impl<'a> LexicalNamespace<'a> {
         Self { client }
     }
 
-    /// Sugar for `client.ns::<LexicalNs>().query()`. See QI-NS-01.
+    /// Typed lexical query entry point backed by the crate-private
+    /// namespace trait owner. See QI-NS-01.
     #[must_use]
     pub fn query(&self) -> LexicalQueryBuilder<'a> {
         <LexicalNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// Sugar for `client.ns::<LexicalNs>().publish(batch)`. See QI-NS-01.
+    /// Typed lexical publish entry point backed by the crate-private
+    /// namespace trait owner. See QI-NS-01.
     pub fn publish(&self, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
         <LexicalNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
@@ -128,10 +135,9 @@ impl<'a> LexicalNamespace<'a> {
 
 /// QI-NS-01 marker type for the built-in lexical namespace.
 ///
-/// The `client.lexical()` sugar delegates here through
-/// [`crate::NamespaceIngest`] and [`crate::NamespaceQuery`]. Downstream
-/// callers can use `client.ns::<LexicalNs>()` directly.
-pub struct LexicalNs;
+/// The `client.lexical()` surface delegates here through
+/// [`crate::NamespaceIngest`] and [`crate::NamespaceQuery`].
+pub(crate) struct LexicalNs;
 
 impl crate::NamespaceIngest for LexicalNs {
     type Batch = LexicalBatch;
