@@ -1,12 +1,7 @@
-//! `SymbolKind` / `SymbolRelationship` / `SymbolSpan` / `SymbolRecord`.
+//! `SymbolKindCode` / `SymbolKindFamily` / `SymbolRelationship` /
+//! `SymbolSpan` / `SymbolRecord`.
 //!
-//! Wire shape: [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-//! §3.4 — the CBOR decoded form of `UpsertSymbol.payload` is a `SymbolRecord`.
-//!
-//! `SymbolKind` ships the v1 12-variant set per producer-handoff §3.4.2 +
-//! LEX-05 §3.3. The longer 20-variant set listed in LEX-05 for v2 is **not**
-//! landed here; growing the set requires a coordinated `wire_version` bump per
-//! producer-handoff §5.
+//! Wire shape: producer-authored symbol rows for lexical publish.
 
 use core::fmt;
 
@@ -16,89 +11,146 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use super::lang::LangId;
+use super::lang::LanguageCode;
+use crate::query::LqVisibility;
+use crate::{RepoRelativePath, SymbolId};
 
-/// Producer-supplied symbol category.
-///
-/// Closed v1 set per [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-/// §3.4.2. Pinned at 12 variants; v2 expansion is gated on the §8 handshake.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SymbolKind {
-    Function,
-    Method,
-    Class,
-    Struct,
-    Enum,
-    Trait,
-    Interface,
-    Variable,
-    Constant,
-    Module,
-    Macro,
-    TypeAlias,
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SymbolKindCode(Box<str>);
+
+impl SymbolKindCode {
+    #[must_use]
+    pub fn from_code_str(value: &str) -> Option<Self> {
+        Self::new(value).into_iter().next()
+    }
+
+    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
+        let value = value.into();
+        validate_symbol_kind_code(value.as_str())?;
+        Ok(Self(value.into_boxed_str()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> Box<str> {
+        self.0
+    }
 }
 
-impl SymbolKind {
+impl fmt::Display for SymbolKindCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for SymbolKindCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+struct SymbolKindCodeVisitor;
+
+impl Visitor<'_> for SymbolKindCodeVisitor {
+    type Value = SymbolKindCode;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a canonical lowercase snake_case SymbolKindCode string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        SymbolKindCode::new(value).map_err(de::Error::custom)
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        SymbolKindCode::new(value).map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolKindCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(SymbolKindCodeVisitor)
+    }
+}
+
+fn validate_symbol_kind_code(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() {
+        return Err("symbol kind code must not be empty");
+    }
+    let Some(first) = value.as_bytes().first().copied() else {
+        return Err("symbol kind code must not be empty");
+    };
+    if !first.is_ascii_lowercase() {
+        return Err("symbol kind code must start with a lowercase ASCII letter");
+    }
+    for byte in value.bytes() {
+        let ok = byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_';
+        if !ok {
+            return Err("symbol kind code must be lowercase snake_case ASCII");
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SymbolKindFamily {
+    Callable,
+    Type,
+    Module,
+    Value,
+    Macro,
+}
+
+impl SymbolKindFamily {
     pub const ALL: &'static [Self] = &[
-        Self::Function,
-        Self::Method,
-        Self::Class,
-        Self::Struct,
-        Self::Enum,
-        Self::Trait,
-        Self::Interface,
-        Self::Variable,
-        Self::Constant,
+        Self::Callable,
+        Self::Type,
         Self::Module,
+        Self::Value,
         Self::Macro,
-        Self::TypeAlias,
     ];
 
     #[must_use]
     pub const fn as_code_str(self) -> &'static str {
         match self {
-            Self::Function => "Function",
-            Self::Method => "Method",
-            Self::Class => "Class",
-            Self::Struct => "Struct",
-            Self::Enum => "Enum",
-            Self::Trait => "Trait",
-            Self::Interface => "Interface",
-            Self::Variable => "Variable",
-            Self::Constant => "Constant",
+            Self::Callable => "Callable",
+            Self::Type => "Type",
             Self::Module => "Module",
+            Self::Value => "Value",
             Self::Macro => "Macro",
-            Self::TypeAlias => "TypeAlias",
         }
     }
 
     #[must_use]
     pub fn from_code_str(value: &str) -> Option<Self> {
         match value {
-            "Function" => Some(Self::Function),
-            "Method" => Some(Self::Method),
-            "Class" => Some(Self::Class),
-            "Struct" => Some(Self::Struct),
-            "Enum" => Some(Self::Enum),
-            "Trait" => Some(Self::Trait),
-            "Interface" => Some(Self::Interface),
-            "Variable" => Some(Self::Variable),
-            "Constant" => Some(Self::Constant),
+            "Callable" => Some(Self::Callable),
+            "Type" => Some(Self::Type),
             "Module" => Some(Self::Module),
+            "Value" => Some(Self::Value),
             "Macro" => Some(Self::Macro),
-            "TypeAlias" => Some(Self::TypeAlias),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for SymbolKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_code_str())
-    }
-}
-
-impl Serialize for SymbolKind {
+impl Serialize for SymbolKindFamily {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -107,37 +159,21 @@ impl Serialize for SymbolKind {
     }
 }
 
-struct SymbolKindVisitor;
+struct SymbolKindFamilyVisitor;
 
-impl Visitor<'_> for SymbolKindVisitor {
-    type Value = SymbolKind;
+impl Visitor<'_> for SymbolKindFamilyVisitor {
+    type Value = SymbolKindFamily;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SymbolKind code string")
+        formatter.write_str("a SymbolKindFamily code string")
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        SymbolKind::from_code_str(value).ok_or_else(|| {
-            de::Error::unknown_variant(
-                value,
-                &[
-                    "Function",
-                    "Method",
-                    "Class",
-                    "Struct",
-                    "Enum",
-                    "Trait",
-                    "Interface",
-                    "Variable",
-                    "Constant",
-                    "Module",
-                    "Macro",
-                    "TypeAlias",
-                ],
-            )
+        SymbolKindFamily::from_code_str(value).ok_or_else(|| {
+            de::Error::unknown_variant(value, &["Callable", "Type", "Module", "Value", "Macro"])
         })
     }
 
@@ -149,17 +185,15 @@ impl Visitor<'_> for SymbolKindVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for SymbolKind {
+impl<'de> Deserialize<'de> for SymbolKindFamily {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_str(SymbolKindVisitor)
+        deserializer.deserialize_str(SymbolKindFamilyVisitor)
     }
 }
 
-/// Definition vs reference. Per LEX-05 §3.5 the producer pre-classifies every
-/// symbol record into one of these two roles.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SymbolRelationship {
     Def,
@@ -236,13 +270,6 @@ impl<'de> Deserialize<'de> for SymbolRelationship {
     }
 }
 
-/// Symbol span coordinates per producer-handoff §3.4.1.
-///
-/// All offsets are producer-authoritative; the search side does not recompute
-/// them. `byte_end >= byte_start` and `line_end >= line_start` are wire-level
-/// invariants and the producer is the source of truth; this scaffold does
-/// **not** enforce them at deserialize time so that callers can route
-/// invalid records through the typed `SYMBOL_RECORD_INVALID` path explicitly.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SymbolSpan {
     pub path: Box<str>,
@@ -322,17 +349,14 @@ impl<'de> Visitor<'de> for SymbolSpanVisitor {
                 other => return Err(de::Error::unknown_field(other, SYMBOL_SPAN_FIELDS)),
             }
         }
-        let path = path.ok_or_else(|| de::Error::missing_field("path"))?;
-        let byte_start = byte_start.ok_or_else(|| de::Error::missing_field("byte_start"))?;
-        let byte_end = byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?;
-        let line_start = line_start.ok_or_else(|| de::Error::missing_field("line_start"))?;
-        let line_end = line_end.ok_or_else(|| de::Error::missing_field("line_end"))?;
         Ok(SymbolSpan {
-            path: path.into_boxed_str(),
-            byte_start,
-            byte_end,
-            line_start,
-            line_end,
+            path: path
+                .ok_or_else(|| de::Error::missing_field("path"))?
+                .into_boxed_str(),
+            byte_start: byte_start.ok_or_else(|| de::Error::missing_field("byte_start"))?,
+            byte_end: byte_end.ok_or_else(|| de::Error::missing_field("byte_end"))?,
+            line_start: line_start.ok_or_else(|| de::Error::missing_field("line_start"))?,
+            line_end: line_end.ok_or_else(|| de::Error::missing_field("line_end"))?,
         })
     }
 }
@@ -356,31 +380,34 @@ impl fmt::Display for SymbolSpan {
     }
 }
 
-/// Producer-authored symbol record per producer-handoff §3.4.1.
-///
-/// `wire_version` is locked at 1 for the v1 cutover; bumps require a §5
-/// coordinated cutover. Out-of-range values surface as `SYMBOL_RECORD_INVALID`
-/// at the decode site (LEX-05); this scaffold does not enforce the range here.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolRecord {
-    pub wire_version: u32,
-    pub name: Box<str>,
-    pub kind: SymbolKind,
-    pub span: SymbolSpan,
-    pub lang: LangId,
-    pub parent: Option<Box<str>>,
-    pub container_name: Option<Box<str>>,
+    pub symbol_id: SymbolId,
+    pub repo_relative_path: RepoRelativePath,
+    pub language: LanguageCode,
+    pub symbol_kind: SymbolKindCode,
+    pub symbol_kind_family: Option<SymbolKindFamily>,
+    pub local_name: Box<str>,
+    pub qualified_name: Box<str>,
+    pub signature: Option<Box<str>>,
+    pub visibility: Option<LqVisibility>,
+    pub definition_span: SymbolSpan,
+    pub container_qualified_name: Option<Box<str>>,
     pub relationship: SymbolRelationship,
 }
 
 const SYMBOL_RECORD_FIELDS: &[&str] = &[
-    "wire_version",
-    "name",
-    "kind",
-    "span",
-    "lang",
-    "parent",
-    "container_name",
+    "symbol_id",
+    "repo_relative_path",
+    "language",
+    "symbol_kind",
+    "symbol_kind_family",
+    "local_name",
+    "qualified_name",
+    "signature",
+    "visibility",
+    "definition_span",
+    "container_qualified_name",
     "relationship",
 ];
 
@@ -389,14 +416,21 @@ impl Serialize for SymbolRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SymbolRecord", 8)?;
-        state.serialize_field("wire_version", &self.wire_version)?;
-        state.serialize_field("name", self.name.as_ref())?;
-        state.serialize_field("kind", &self.kind)?;
-        state.serialize_field("span", &self.span)?;
-        state.serialize_field("lang", &self.lang)?;
-        state.serialize_field("parent", &self.parent.as_deref())?;
-        state.serialize_field("container_name", &self.container_name.as_deref())?;
+        let mut state = serializer.serialize_struct("SymbolRecord", 12)?;
+        state.serialize_field("symbol_id", &self.symbol_id)?;
+        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("language", &self.language)?;
+        state.serialize_field("symbol_kind", &self.symbol_kind)?;
+        state.serialize_field("symbol_kind_family", &self.symbol_kind_family)?;
+        state.serialize_field("local_name", self.local_name.as_ref())?;
+        state.serialize_field("qualified_name", self.qualified_name.as_ref())?;
+        state.serialize_field("signature", &self.signature.as_deref())?;
+        state.serialize_field("visibility", &self.visibility)?;
+        state.serialize_field("definition_span", &self.definition_span)?;
+        state.serialize_field(
+            "container_qualified_name",
+            &self.container_qualified_name.as_deref(),
+        )?;
         state.serialize_field("relationship", &self.relationship)?;
         state.end()
     }
@@ -415,57 +449,85 @@ impl<'de> Visitor<'de> for SymbolRecordVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut wire_version: Option<u32> = None;
-        let mut name: Option<String> = None;
-        let mut kind: Option<SymbolKind> = None;
-        let mut span: Option<SymbolSpan> = None;
-        let mut lang: Option<LangId> = None;
-        let mut parent: Option<Option<String>> = None;
-        let mut container_name: Option<Option<String>> = None;
+        let mut symbol_id: Option<SymbolId> = None;
+        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut language: Option<LanguageCode> = None;
+        let mut symbol_kind: Option<SymbolKindCode> = None;
+        let mut symbol_kind_family: Option<Option<SymbolKindFamily>> = None;
+        let mut local_name: Option<String> = None;
+        let mut qualified_name: Option<String> = None;
+        let mut signature: Option<Option<String>> = None;
+        let mut visibility: Option<Option<LqVisibility>> = None;
+        let mut definition_span: Option<SymbolSpan> = None;
+        let mut container_qualified_name: Option<Option<String>> = None;
         let mut relationship: Option<SymbolRelationship> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "wire_version" => {
-                    if wire_version.is_some() {
-                        return Err(de::Error::duplicate_field("wire_version"));
+                "symbol_id" => {
+                    if symbol_id.is_some() {
+                        return Err(de::Error::duplicate_field("symbol_id"));
                     }
-                    wire_version = Some(map.next_value()?);
+                    symbol_id = Some(map.next_value()?);
                 }
-                "name" => {
-                    if name.is_some() {
-                        return Err(de::Error::duplicate_field("name"));
+                "repo_relative_path" => {
+                    if repo_relative_path.is_some() {
+                        return Err(de::Error::duplicate_field("repo_relative_path"));
                     }
-                    name = Some(map.next_value()?);
+                    repo_relative_path = Some(map.next_value()?);
                 }
-                "kind" => {
-                    if kind.is_some() {
-                        return Err(de::Error::duplicate_field("kind"));
+                "language" => {
+                    if language.is_some() {
+                        return Err(de::Error::duplicate_field("language"));
                     }
-                    kind = Some(map.next_value()?);
+                    language = Some(map.next_value()?);
                 }
-                "span" => {
-                    if span.is_some() {
-                        return Err(de::Error::duplicate_field("span"));
+                "symbol_kind" => {
+                    if symbol_kind.is_some() {
+                        return Err(de::Error::duplicate_field("symbol_kind"));
                     }
-                    span = Some(map.next_value()?);
+                    symbol_kind = Some(map.next_value()?);
                 }
-                "lang" => {
-                    if lang.is_some() {
-                        return Err(de::Error::duplicate_field("lang"));
+                "symbol_kind_family" => {
+                    if symbol_kind_family.is_some() {
+                        return Err(de::Error::duplicate_field("symbol_kind_family"));
                     }
-                    lang = Some(map.next_value()?);
+                    symbol_kind_family = Some(map.next_value()?);
                 }
-                "parent" => {
-                    if parent.is_some() {
-                        return Err(de::Error::duplicate_field("parent"));
+                "local_name" => {
+                    if local_name.is_some() {
+                        return Err(de::Error::duplicate_field("local_name"));
                     }
-                    parent = Some(map.next_value()?);
+                    local_name = Some(map.next_value()?);
                 }
-                "container_name" => {
-                    if container_name.is_some() {
-                        return Err(de::Error::duplicate_field("container_name"));
+                "qualified_name" => {
+                    if qualified_name.is_some() {
+                        return Err(de::Error::duplicate_field("qualified_name"));
                     }
-                    container_name = Some(map.next_value()?);
+                    qualified_name = Some(map.next_value()?);
+                }
+                "signature" => {
+                    if signature.is_some() {
+                        return Err(de::Error::duplicate_field("signature"));
+                    }
+                    signature = Some(map.next_value()?);
+                }
+                "visibility" => {
+                    if visibility.is_some() {
+                        return Err(de::Error::duplicate_field("visibility"));
+                    }
+                    visibility = Some(map.next_value()?);
+                }
+                "definition_span" => {
+                    if definition_span.is_some() {
+                        return Err(de::Error::duplicate_field("definition_span"));
+                    }
+                    definition_span = Some(map.next_value()?);
+                }
+                "container_qualified_name" => {
+                    if container_qualified_name.is_some() {
+                        return Err(de::Error::duplicate_field("container_qualified_name"));
+                    }
+                    container_qualified_name = Some(map.next_value()?);
                 }
                 "relationship" => {
                     if relationship.is_some() {
@@ -476,24 +538,30 @@ impl<'de> Visitor<'de> for SymbolRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, SYMBOL_RECORD_FIELDS)),
             }
         }
-        let wire_version = wire_version.ok_or_else(|| de::Error::missing_field("wire_version"))?;
-        let name = name.ok_or_else(|| de::Error::missing_field("name"))?;
-        let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
-        let span = span.ok_or_else(|| de::Error::missing_field("span"))?;
-        let lang = lang.ok_or_else(|| de::Error::missing_field("lang"))?;
-        let parent = parent.ok_or_else(|| de::Error::missing_field("parent"))?;
-        let container_name =
-            container_name.ok_or_else(|| de::Error::missing_field("container_name"))?;
-        let relationship = relationship.ok_or_else(|| de::Error::missing_field("relationship"))?;
         Ok(SymbolRecord {
-            wire_version,
-            name: name.into_boxed_str(),
-            kind,
-            span,
-            lang,
-            parent: parent.map(String::into_boxed_str),
-            container_name: container_name.map(String::into_boxed_str),
-            relationship,
+            symbol_id: symbol_id.ok_or_else(|| de::Error::missing_field("symbol_id"))?,
+            repo_relative_path: repo_relative_path
+                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            language: language.ok_or_else(|| de::Error::missing_field("language"))?,
+            symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
+            symbol_kind_family: symbol_kind_family
+                .ok_or_else(|| de::Error::missing_field("symbol_kind_family"))?,
+            local_name: local_name
+                .ok_or_else(|| de::Error::missing_field("local_name"))?
+                .into_boxed_str(),
+            qualified_name: qualified_name
+                .ok_or_else(|| de::Error::missing_field("qualified_name"))?
+                .into_boxed_str(),
+            signature: signature
+                .ok_or_else(|| de::Error::missing_field("signature"))?
+                .map(String::into_boxed_str),
+            visibility: visibility.ok_or_else(|| de::Error::missing_field("visibility"))?,
+            definition_span: definition_span
+                .ok_or_else(|| de::Error::missing_field("definition_span"))?,
+            container_qualified_name: container_qualified_name
+                .ok_or_else(|| de::Error::missing_field("container_qualified_name"))?
+                .map(String::into_boxed_str),
+            relationship: relationship.ok_or_else(|| de::Error::missing_field("relationship"))?,
         })
     }
 }
@@ -512,7 +580,11 @@ impl fmt::Display for SymbolRecord {
         write!(
             formatter,
             "{} {} @ {} ({}/{})",
-            self.kind, self.name, self.span, self.lang, self.relationship,
+            self.symbol_kind,
+            self.qualified_name,
+            self.definition_span,
+            self.language,
+            self.relationship,
         )
     }
 }

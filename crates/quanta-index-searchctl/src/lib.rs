@@ -12,9 +12,9 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapFocusSubjectDto, RepoMapQueryRequest,
-    RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
+    RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest,
     SemanticVectorRef, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
@@ -707,6 +707,18 @@ fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
     })
 }
 
+fn parse_repomap_doc_type(value: &str) -> CliResult<RepoMapDocType> {
+    match value {
+        "File" | "file" => Ok(RepoMapDocType::File),
+        "Module" | "module" => Ok(RepoMapDocType::Module),
+        "Symbol" | "symbol" => Ok(RepoMapDocType::Symbol),
+        "Chunk" | "chunk" => Ok(RepoMapDocType::Chunk),
+        other => Err(CliError::usage(format!(
+            "unsupported repo-map doc type `{other}`; expected file|module|symbol|chunk"
+        ))),
+    }
+}
+
 fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
     let (subject_identity, subject_doc_type) = value.split_once(':').ok_or_else(|| {
         CliError::usage(format!(
@@ -720,7 +732,7 @@ fn parse_focus_subject(value: &str) -> CliResult<RepoMapFocusSubjectDto> {
     }
     Ok(RepoMapFocusSubjectDto {
         subject_identity: subject_identity.to_string(),
-        subject_doc_type: subject_doc_type.to_string(),
+        subject_doc_type: parse_repomap_doc_type(subject_doc_type)?,
     })
 }
 
@@ -871,7 +883,7 @@ fn render_pretty(
                     "{}. subject_identity={} doc_type={} kind={} owner_path={} rank={} included={} score={} final_score_millis={}",
                     display_index,
                     entry.subject_identity,
-                    entry.subject_doc_type,
+                    entry.subject_doc_type.as_code_str(),
                     entry.subject_kind,
                     entry.owner_path,
                     entry.rank,
@@ -885,7 +897,7 @@ fn render_pretty(
                     entry.projection_authority_artifact_id,
                     entry.projection_authority_digest,
                     entry.projection_status,
-                    entry.redaction_state
+                    entry.redaction_state.as_code_str()
                 ))?;
                 if !entry.contributing_signals.is_empty() {
                     let pairs = entry
@@ -1176,7 +1188,7 @@ mod tests {
             return;
         };
         assert_eq!(focus.subject_identity, "subject-1");
-        assert_eq!(focus.subject_doc_type, "file");
+        assert_eq!(focus.subject_doc_type, RepoMapDocType::File);
     }
 
     #[test]

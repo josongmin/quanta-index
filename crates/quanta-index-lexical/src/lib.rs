@@ -38,9 +38,10 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    ChunkRecord, LexicalCandidate, LexicalChannelOp, LexicalRepoMetadataRecord, LqExpr,
-    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    BatchIngestMode, ChunkRecord, LexicalCandidate, LexicalChannelOp, LexicalRepoMetadataRecord,
+    LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery,
+    LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
@@ -292,6 +293,52 @@ fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
 }
 
+fn decode_replace_scope_payload(
+    bytes: &[u8],
+) -> Result<
+    (
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::LexicalReplaceScope,
+    ),
+    CoreError,
+> {
+    ciborium::from_reader::<
+        (
+            BatchIngestMode,
+            Option<ManifestGeneration>,
+            quanta_index_contract::LexicalReplaceScope,
+        ),
+        _,
+    >(bytes)
+    .map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: replace scope payload decode: {err}"))
+    })
+}
+
+fn decode_tombstone_scope_payload(
+    bytes: &[u8],
+) -> Result<
+    (
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::LexicalTombstoneScope,
+    ),
+    CoreError,
+> {
+    ciborium::from_reader::<
+        (
+            BatchIngestMode,
+            Option<ManifestGeneration>,
+            quanta_index_contract::LexicalTombstoneScope,
+        ),
+        _,
+    >(bytes)
+    .map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: tombstone scope payload decode: {err}"))
+    })
+}
+
 /// Legacy `FullBundle` placeholder payload.
 ///
 /// Older producers used the literal `b"manifest"` as an opaque marker.
@@ -446,6 +493,54 @@ fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result<Index, Cor
         .map_err(|err| CoreError::Storage(format!("lexical: open generation index: {err}")))
 }
 
+fn copy_generation_directory(src: &Path, dst: &Path) -> Result<(), CoreError> {
+    if !src.exists() {
+        return Err(CoreError::NotReady(format!(
+            "lexical: base generation missing at {}",
+            src.display()
+        )));
+    }
+    std::fs::create_dir_all(dst).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: create cloned generation directory {}: {err}",
+            dst.display()
+        ))
+    })?;
+    for entry in std::fs::read_dir(src).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: list base generation directory {}: {err}",
+            src.display()
+        ))
+    })? {
+        let entry = entry.map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: read base generation entry {}: {err}",
+                src.display()
+            ))
+        })?;
+        let entry_path = entry.path();
+        let target_path = dst.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: inspect base generation entry {}: {err}",
+                entry_path.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            copy_generation_directory(&entry_path, &target_path)?;
+            continue;
+        }
+        let _bytes_copied: u64 = std::fs::copy(&entry_path, &target_path).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: copy {} -> {}: {err}",
+                entry_path.display(),
+                target_path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Tantivy-backed lexical adapter.
 pub struct LexicalAdapter {
     state_root: PathBuf,
@@ -536,6 +631,65 @@ impl LexicalAdapter {
         load_repo_metadata_snapshot(&self.repo_metadata_path(key))
     }
 
+    fn prepare_generation_for_ops(
+        &self,
+        key: &GenKey,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError> {
+        let target_path = self.index_path(key);
+        if target_path.exists() {
+            return Ok(());
+        }
+        for op in ops {
+            let base_generation = match op {
+                LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                    let (_mode, base_generation, _scope) =
+                        decode_replace_scope_payload(&payload.payload)?;
+                    base_generation
+                }
+                LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                    let (_mode, base_generation, _scope) =
+                        decode_tombstone_scope_payload(&payload.payload)?;
+                    base_generation
+                }
+                LexicalChannelOp::FullBundle(_)
+                | LexicalChannelOp::UpsertChunk(_)
+                | LexicalChannelOp::DeleteChunk(_)
+                | LexicalChannelOp::UpsertSymbol(_)
+                | LexicalChannelOp::DeleteSymbol(_)
+                | LexicalChannelOp::Seal(_)
+                | LexicalChannelOp::UpsertCommit(_)
+                | LexicalChannelOp::UpsertRef(_)
+                | LexicalChannelOp::UpsertTag(_)
+                | LexicalChannelOp::DeleteRef(_)
+                | LexicalChannelOp::DeleteTag(_)
+                | LexicalChannelOp::UpsertDirty(_)
+                | LexicalChannelOp::EvictDirty(_)
+                | LexicalChannelOp::UpsertParseTree(_)
+                | LexicalChannelOp::DeleteParseTree(_)
+                | LexicalChannelOp::ReplaceStructuralScope(_)
+                | LexicalChannelOp::TombstoneStructuralScope(_)
+                | LexicalChannelOp::UpsertDiffHunk(_) => continue,
+            };
+            if let Some(base_generation) = base_generation {
+                let base_key = GenKey {
+                    repo_id: key.repo_id.clone(),
+                    revision_id: key.revision_id.clone(),
+                    generation: base_generation,
+                };
+                copy_generation_directory(&self.index_path(&base_key), &target_path)?;
+            }
+            break;
+        }
+        Ok(())
+    }
+
+    fn delete_scope_docs(&self, writer: &IndexWriter, repo_relative_path: &RepoRelativePath) {
+        let term =
+            Term::from_field_text(self.fields.repo_relative_path, repo_relative_path.as_str());
+        let _opstamp = writer.delete_term(term);
+    }
+
     fn apply_op(
         &self,
         writer: &IndexWriter,
@@ -557,7 +711,7 @@ impl LexicalAdapter {
                     &self.fields,
                     &mut doc,
                     chunk.repo_relative_path.as_str(),
-                    Some(chunk.language.as_ref()),
+                    Some(chunk.language.as_str()),
                 );
                 doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
                 doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
@@ -586,16 +740,22 @@ impl LexicalAdapter {
                 add_metadata_fields(
                     &self.fields,
                     &mut doc,
-                    symbol.span.path.as_ref(),
-                    Some(symbol.lang.as_code_str()),
+                    symbol.repo_relative_path.as_str(),
+                    Some(symbol.language.as_str()),
                 );
-                doc.add_u64(self.fields.start_line, u64::from(symbol.span.line_start));
-                doc.add_u64(self.fields.end_line, u64::from(symbol.span.line_end));
-                let snippet = match symbol.container_name.as_deref() {
+                doc.add_u64(
+                    self.fields.start_line,
+                    u64::from(symbol.definition_span.line_start),
+                );
+                doc.add_u64(
+                    self.fields.end_line,
+                    u64::from(symbol.definition_span.line_end),
+                );
+                let snippet = match symbol.container_qualified_name.as_deref() {
                     Some(container) if !container.is_empty() => {
-                        format!("{} {}", symbol.name.as_ref(), container)
+                        format!("{} {}", symbol.local_name.as_ref(), container)
                     }
-                    _ => symbol.name.as_ref().to_string(),
+                    _ => symbol.local_name.as_ref().to_string(),
                 };
                 doc.add_text(self.fields.chunk_text, &snippet);
                 let _opstamp = writer
@@ -607,6 +767,68 @@ impl LexicalAdapter {
                 let term =
                     Term::from_field_text(self.fields.candidate_id, delete.symbol_id.as_str());
                 let _opstamp = writer.delete_term(term);
+                Ok(true)
+            }
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_replace_scope_payload(&payload.payload)?;
+                self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
+                for chunk in &scope.chunks {
+                    let mut doc = TantivyDocument::new();
+                    doc.add_text(self.fields.candidate_id, chunk.chunk_id.as_str());
+                    doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                    doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                    doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
+                    add_metadata_fields(
+                        &self.fields,
+                        &mut doc,
+                        chunk.repo_relative_path.as_str(),
+                        Some(chunk.language.as_str()),
+                    );
+                    doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
+                    doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
+                    doc.add_text(self.fields.chunk_text, chunk.snippet.as_ref());
+                    let _opstamp = writer.add_document(doc).map_err(|err| {
+                        CoreError::Storage(format!("lexical: add_document: {err}"))
+                    })?;
+                }
+                for symbol in &scope.symbols {
+                    let mut doc = TantivyDocument::new();
+                    doc.add_text(self.fields.candidate_id, symbol.symbol_id.as_str());
+                    doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                    doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                    doc.add_text(self.fields.doc_kind, SYMBOL_DOC_KIND);
+                    add_metadata_fields(
+                        &self.fields,
+                        &mut doc,
+                        symbol.repo_relative_path.as_str(),
+                        Some(symbol.language.as_str()),
+                    );
+                    doc.add_u64(
+                        self.fields.start_line,
+                        u64::from(symbol.definition_span.line_start),
+                    );
+                    doc.add_u64(
+                        self.fields.end_line,
+                        u64::from(symbol.definition_span.line_end),
+                    );
+                    let snippet = match symbol.container_qualified_name.as_deref() {
+                        Some(container) if !container.is_empty() => {
+                            format!("{} {}", symbol.local_name.as_ref(), container)
+                        }
+                        _ => symbol.local_name.as_ref().to_string(),
+                    };
+                    doc.add_text(self.fields.chunk_text, &snippet);
+                    let _opstamp = writer.add_document(doc).map_err(|err| {
+                        CoreError::Storage(format!("lexical: add_document: {err}"))
+                    })?;
+                }
+                Ok(true)
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_tombstone_scope_payload(&payload.payload)?;
+                self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
                 Ok(true)
             }
             // FullBundle/Seal carry no document-level effect (dispatcher's
@@ -639,6 +861,8 @@ impl LexicalAdapter {
             | LexicalChannelOp::EvictDirty(_)
             | LexicalChannelOp::UpsertParseTree(_)
             | LexicalChannelOp::DeleteParseTree(_)
+            | LexicalChannelOp::ReplaceStructuralScope(_)
+            | LexicalChannelOp::TombstoneStructuralScope(_)
             | LexicalChannelOp::UpsertDiffHunk(_) => Ok(false),
         }
     }
@@ -671,6 +895,7 @@ impl LexicalIndexBuildPort for LexicalAdapter {
             revision_id: revision.clone(),
             generation,
         };
+        self.prepare_generation_for_ops(&key, ops)?;
         let handle = self.writer_handle(&key)?;
         self.commit_ops_under_lock(&handle, &key, ops)
     }
@@ -1184,6 +1409,10 @@ impl TantivySearcher {
             | LqFilter::File { .. }
             | LqFilter::Lang { .. }
             | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Dirty { .. }
             | LqFilter::Type { .. }
             | LqFilter::Select { .. }
             | LqFilter::Content { .. } => Ok(None),
@@ -1278,6 +1507,38 @@ impl TantivySearcher {
                     return Err(CoreError::Typed {
                         code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
                         message: "lexical: rev filter requires history producer".to_string(),
+                    });
+                }
+                LqFilter::Author { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::AUTHOR_UNAVAILABLE.to_string(),
+                        message:
+                            "lexical: author filter is not executable on the current adapter set"
+                                .to_string(),
+                    });
+                }
+                LqFilter::Committer { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::COMMITTER_UNAVAILABLE.to_string(),
+                        message:
+                            "lexical: committer filter is not executable on the current adapter set"
+                                .to_string(),
+                    });
+                }
+                LqFilter::Message { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::MESSAGE_UNAVAILABLE.to_string(),
+                        message:
+                            "lexical: message filter is not executable on the current adapter set"
+                                .to_string(),
+                    });
+                }
+                LqFilter::Dirty { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::DIRTY_UNAVAILABLE.to_string(),
+                        message:
+                            "lexical: dirty filter is not executable on the current adapter set"
+                                .to_string(),
                     });
                 }
                 other @ (LqFilter::Repo { .. }
@@ -1475,6 +1736,26 @@ impl TantivySearcher {
             LqFilter::Rev { .. } => Err(CoreError::Typed {
                 code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
                 message: "lexical: rev filter requires history producer".to_string(),
+            }),
+            LqFilter::Author { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::AUTHOR_UNAVAILABLE.to_string(),
+                message: "lexical: author filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Committer { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::COMMITTER_UNAVAILABLE.to_string(),
+                message: "lexical: committer filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Message { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::MESSAGE_UNAVAILABLE.to_string(),
+                message: "lexical: message filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Dirty { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::DIRTY_UNAVAILABLE.to_string(),
+                message: "lexical: dirty filter is not executable on the current adapter set"
+                    .to_string(),
             }),
             // Type/Select are doc-kind routing concerns handled in
             // `prepare_query_for_doc_kind`; they should never reach

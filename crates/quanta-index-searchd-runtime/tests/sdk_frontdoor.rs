@@ -13,11 +13,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use quanta_index_contract::lex::LangId;
-use quanta_index_contract::{ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::{
+    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneTrackKind,
+};
 use quanta_index_sdk::{
-    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, ParseNode,
-    ParseRoleTag, ParseTreeRecord, QuantaIndex, SdkError, StructuralBatch,
+    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
+    ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex, RepoRelativePath, SdkError,
+    SearchScopeKey, SearchScopeSurface, StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
@@ -129,6 +133,39 @@ fn history_batch() -> quanta_index_sdk::HistoryBatch {
         )
 }
 
+fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
+    Ok(LexicalBatch::replace_generation(
+        repo(),
+        revision(),
+        generation(),
+        "manifest:lexical",
+        "batch:lexical",
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
+        "scope:lexical",
+        vec![ChunkRecord {
+            chunk_id: ChunkId::new("chunk-dirty"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 1,
+            snippet: "todo!()".to_string().into_boxed_str(),
+            indexed_text: "todo!()".to_string().into_boxed_str(),
+            text_digest: "text:digest".to_string().into_boxed_str(),
+            shape_digest: "shape:digest".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+        }],
+        Vec::new(),
+    ))
+}
+
 fn dirty_batch() -> DirtyBatch {
     DirtyBatch::new(repo(), revision(), generation())
         .upsert(DirtyRecord {
@@ -140,29 +177,49 @@ fn dirty_batch() -> DirtyBatch {
         .delete(ChunkId::new("chunk-evict"))
 }
 
-fn structural_batch() -> StructuralBatch {
-    StructuralBatch::new(repo(), revision(), generation())
-        .upsert(
-            ChunkId::new("chunk-tree"),
-            ParseTreeRecord {
-                wire_version: 1,
-                lang: LangId::Rust,
-                root: ParseNode {
-                    kind: "function_item".to_string().into_boxed_str(),
-                    byte_start: 0,
-                    byte_end: 10,
-                    children: Vec::new(),
-                },
-                source_hash: [9; 32],
-                role_tag_schema_version: 1,
-                role_tags: vec![ParseRoleTag {
-                    role: "expr".to_string().into_boxed_str(),
-                    byte_start: 0,
-                    byte_end: 4,
-                }],
+fn structural_batch() -> Result<StructuralBatch, Box<dyn Error>> {
+    Ok(StructuralBatch::replace_generation(
+        repo(),
+        revision(),
+        generation(),
+        "manifest:structural",
+        "batch:structural",
+    )
+    .replace_tree(
+        structural_scope(),
+        "scope:structural",
+        ChunkId::new("chunk-tree"),
+        ParseTreeRecord {
+            wire_version: 1,
+            lang: rust_language()?,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 10,
+                children: Vec::new(),
             },
-        )
-        .delete(ChunkId::new("chunk-drop"))
+            source_hash: [9; 32],
+            role_tag_schema_version: 1,
+            role_tags: vec![ParseRoleTag {
+                role: "expr".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 4,
+            }],
+        },
+    ))
+}
+
+fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
+    LanguageCode::new("rust").map_err(|err| -> Box<dyn Error> {
+        format!("invalid hard-coded test language code: {err}").into()
+    })
+}
+
+fn structural_scope() -> SearchScopeKey {
+    SearchScopeKey {
+        doc_surface: SearchScopeSurface::Chunk,
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+    }
 }
 
 fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
@@ -174,6 +231,25 @@ fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
         | SdkError::Transport(_)
         | SdkError::Remote { .. }) => {
             Err(format!("expected remote code {expected}, got {other:?}").into())
+        }
+    }
+}
+
+fn wait_for_sdk_ready<T, F>(timeout: Duration, mut run: F) -> Result<T, SdkError>
+where
+    F: FnMut() -> Result<T, SdkError>,
+{
+    let start = Instant::now();
+    loop {
+        match run() {
+            Ok(value) => return Ok(value),
+            Err(SdkError::Remote { code, message })
+                if code == "NOT_READY" && start.elapsed() < timeout =>
+            {
+                drop(message);
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
         }
     }
 }
@@ -207,26 +283,35 @@ fn sdk_publish_frontdoor_routes_history_dirty_and_structural_batches() -> TestRe
 
     let history_receipt = client.history().publish(&history_batch())?;
     let dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
-    let structural_receipt = client.structural().publish(&structural_batch())?;
+    let structural_receipt = client.structural().publish(&structural_batch()?)?;
 
-    if history_receipt.first_seq.is_none() || history_receipt.last_seq.is_none() {
+    if history_receipt.generation != generation()
+        || history_receipt.accepted_replace_scopes != 4
+        || history_receipt.accepted_tombstone_scopes != 0
+    {
         stop_runtime(&shutdown, join)?;
-        return Err("history receipt missing sequence range".into());
+        return Err(format!("unexpected history receipt: {history_receipt:?}").into());
     }
-    if dirty_receipt.first_seq.is_none() || dirty_receipt.last_seq.is_none() {
+    if dirty_receipt.generation != generation()
+        || dirty_receipt.accepted_replace_scopes != 1
+        || dirty_receipt.accepted_tombstone_scopes != 1
+    {
         stop_runtime(&shutdown, join)?;
-        return Err("dirty receipt missing sequence range".into());
+        return Err(format!("unexpected dirty receipt: {dirty_receipt:?}").into());
     }
-    if structural_receipt.first_seq.is_none() || structural_receipt.last_seq.is_none() {
+    if structural_receipt.generation != generation()
+        || structural_receipt.accepted_replace_scopes != 1
+        || structural_receipt.accepted_tombstone_scopes != 0
+    {
         stop_runtime(&shutdown, join)?;
-        return Err("structural receipt missing sequence range".into());
+        return Err(format!("unexpected structural receipt: {structural_receipt:?}").into());
     }
 
     stop_runtime(&shutdown, join)
 }
 
 #[test]
-fn sdk_query_frontdoor_surfaces_current_fail_closed_codes() -> TestResult {
+fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResult {
     let dir = tempfile::tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -252,37 +337,93 @@ fn sdk_query_frontdoor_surfaces_current_fail_closed_codes() -> TestResult {
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let Err(history_err) = client
-        .history()
-        .query()
-        .native("type:commit author:alice")
-        .pinned(pin())
-        .top_k(5)
-        .execute()
-    else {
-        stop_runtime(&shutdown, join)?;
-        return Err("history query unexpectedly succeeded".into());
-    };
-    expect_remote_code(history_err, "HISTORY_PRODUCER_UNAVAILABLE")?;
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _history_receipt = client.history().publish(&history_batch())?;
+    let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:lexical")
+            .track(SearchPlaneTrackKind::Lexical)
+            .commit()
+    })?;
 
-    let Err(runtime_err) = client
-        .runtime()
-        .query()
-        .sourcegraph("dirty:yes")
-        .pinned(pin())
-        .top_k(3)
-        .execute()
-    else {
+    let history_commit = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .history()
+            .query()
+            .sourcegraph("type:commit author:alice fix")
+            .active(repo(), revision())
+            .top_k(5)
+            .execute()
+    })?;
+    if history_commit.generation != pin()
+        || history_commit.commits.len() != 1
+        || !history_commit.diffs.is_empty()
+    {
         stop_runtime(&shutdown, join)?;
-        return Err("runtime metadata query unexpectedly succeeded".into());
-    };
-    expect_remote_code(runtime_err, "NOT_IMPLEMENTED")?;
+        return Err(format!("unexpected history commit response: {history_commit:?}").into());
+    }
+    let commit = history_commit
+        .commits
+        .first()
+        .ok_or_else(|| "missing history commit candidate".to_string())?;
+    if commit.author != "alice" || commit.message != "fix: sample" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected history commit candidate: {commit:?}").into());
+    }
+
+    let history_diff = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .history()
+            .query()
+            .native("type:diff todo")
+            .active(repo(), revision())
+            .top_k(5)
+            .execute()
+    })?;
+    if history_diff.generation != pin()
+        || !history_diff.commits.is_empty()
+        || history_diff.diffs.len() != 1
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected history diff response: {history_diff:?}").into());
+    }
+
+    let runtime_query = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .runtime()
+            .query()
+            .sourcegraph("dirty:yes todo")
+            .active(repo(), revision())
+            .top_k(3)
+            .execute()
+    })?;
+    if runtime_query.generation != pin() || runtime_query.results.len() != 1 {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected runtime response: {runtime_query:?}").into());
+    }
+    let runtime_candidate = runtime_query
+        .results
+        .first()
+        .ok_or_else(|| "missing runtime candidate".to_string())?;
+    if runtime_candidate.candidate_id != "chunk-dirty"
+        || runtime_candidate.repo_relative_path.as_str() != "src/lib.rs"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected runtime candidate: {runtime_candidate:?}").into());
+    }
 
     let Err(structural_err) = client
         .structural()
         .query()
         .native("match { :[x] }")
-        .pinned(pin())
+        .active(repo(), revision())
         .top_k(2)
         .execute()
     else {

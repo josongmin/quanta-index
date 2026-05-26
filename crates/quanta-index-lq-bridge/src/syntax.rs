@@ -49,11 +49,15 @@ pub enum SgFilter {
     File(Box<str>),
     Path(Box<str>),
     Lang(Box<str>),
+    Author(Box<str>),
+    Committer(Box<str>),
+    Message(Box<str>),
     Type(Box<str>),
     Case(Box<str>),
     Select(Box<str>),
     Count(Box<str>),
     Patterntype(Box<str>),
+    Dirty(Box<str>),
     Fork(Box<str>),
     Archived(Box<str>),
     Content(Box<str>),
@@ -73,11 +77,15 @@ impl SgFilter {
             Self::File(_) => "file",
             Self::Path(_) => "path",
             Self::Lang(_) => "lang",
+            Self::Author(_) => "author",
+            Self::Committer(_) => "committer",
+            Self::Message(_) => "message",
             Self::Type(_) => "type",
             Self::Case(_) => "case",
             Self::Select(_) => "select",
             Self::Count(_) => "count",
             Self::Patterntype(_) => "patterntype",
+            Self::Dirty(_) => "dirty",
             Self::Fork(_) => "fork",
             Self::Archived(_) => "archived",
             Self::Content(_) => "content",
@@ -97,11 +105,15 @@ impl SgFilter {
             | Self::File(v)
             | Self::Path(v)
             | Self::Lang(v)
+            | Self::Author(v)
+            | Self::Committer(v)
+            | Self::Message(v)
             | Self::Type(v)
             | Self::Case(v)
             | Self::Select(v)
             | Self::Count(v)
             | Self::Patterntype(v)
+            | Self::Dirty(v)
             | Self::Fork(v)
             | Self::Archived(v)
             | Self::Content(v)
@@ -124,11 +136,15 @@ impl SgFilter {
             "file" => Self::File(v),
             "path" => Self::Path(v),
             "lang" => Self::Lang(v),
+            "author" => Self::Author(v),
+            "committer" => Self::Committer(v),
+            "message" => Self::Message(v),
             "type" => Self::Type(v),
             "case" => Self::Case(v),
             "select" => Self::Select(v),
             "count" => Self::Count(v),
             "patterntype" => Self::Patterntype(v),
+            "dirty" => Self::Dirty(v),
             "fork" => Self::Fork(v),
             "archived" => Self::Archived(v),
             "content" => Self::Content(v),

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{
-    RepoMapChunkRecordDto, RepoMapFileIndexRecord, RepoMapGraphEdgeDto, RepoMapSnapshotMeta,
-    RepoMapSourceBundle, RepoMapSymbolRecordDto,
+    RepoMapChunkExactness, RepoMapChunkRecordDto, RepoMapDocType, RepoMapFileIndexRecord,
+    RepoMapGraphCoverageClass, RepoMapGraphEdgeDto, RepoMapItemIndexAvailability,
+    RepoMapSnapshotMeta, RepoMapSourceBundle, RepoMapSymbolRecordDto,
 };
 
 use crate::model::{RepoMapEntryV1, RepoMapSnapshotV1};
@@ -19,7 +20,7 @@ struct GraphStatsV1 {
 struct ChunkStatsV1 {
     token_total: u32,
     preview_fragments: Vec<String>,
-    exactness_markers: Vec<String>,
+    exactness_markers: Vec<RepoMapChunkExactness>,
 }
 
 impl RepoMapMaterializer {
@@ -29,9 +30,9 @@ impl RepoMapMaterializer {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
             authority_digest: bundle.authority_digest.clone(),
-            item_index_availability: bundle.item_index_availability.clone(),
-            graph_coverage_class: bundle.graph_coverage_class.clone(),
-            exactness_summary: bundle.exactness_summary.clone(),
+            item_index_availability: bundle.item_index_availability,
+            graph_coverage_class: bundle.graph_coverage_class,
+            exactness_summary: bundle.exactness_summary,
         };
         let projection_status = projection_status(bundle);
         let call_stats = graph_stats(&bundle.call_edges);
@@ -153,13 +154,18 @@ fn build_file_entry(
             .collect::<Vec<_>>()
             .join(" "),
         chunk_stats.preview_fragments.join(" "),
-        chunk_stats.exactness_markers.join(" "),
-        bundle.item_index_availability.clone(),
-        bundle.graph_coverage_class.clone(),
+        chunk_stats
+            .exactness_markers
+            .iter()
+            .map(|marker| marker.as_code_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        bundle.item_index_availability.as_code_str().to_string(),
+        bundle.graph_coverage_class.as_code_str().to_string(),
     ]);
     RepoMapEntryV1 {
         subject_identity: file.file_identity.clone(),
-        subject_doc_type: "File".to_string(),
+        subject_doc_type: RepoMapDocType::File,
         subject_kind: file.file_kind.clone(),
         owner_path,
         score: score_from_millis(final_score_millis),
@@ -205,7 +211,7 @@ fn build_file_entry(
         ),
         projection_authority_digest: bundle.authority_digest.clone(),
         projection_status: projection_status.to_string(),
-        redaction_state: bundle.redaction_state.clone(),
+        redaction_state: bundle.redaction_state,
         search_text,
         source_symbol_count: symbol_count,
         source_chunk_token_total: chunk_stats.token_total,
@@ -260,12 +266,17 @@ fn build_symbol_entry(
         symbol.subject_kind.clone(),
         symbol.owner_path.clone(),
         chunk_stats.preview_fragments.join(" "),
-        chunk_stats.exactness_markers.join(" "),
-        bundle.exactness_summary.clone(),
+        chunk_stats
+            .exactness_markers
+            .iter()
+            .map(|marker| marker.as_code_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        bundle.exactness_summary.as_code_str().to_string(),
     ]);
     RepoMapEntryV1 {
         subject_identity: symbol.subject_identity.clone(),
-        subject_doc_type: symbol.subject_doc_type.clone(),
+        subject_doc_type: symbol.subject_doc_type,
         subject_kind: symbol.subject_kind.clone(),
         owner_path: symbol.owner_path.clone(),
         score: score_from_millis(final_score_millis),
@@ -307,7 +318,7 @@ fn build_symbol_entry(
         ),
         projection_authority_digest: bundle.authority_digest.clone(),
         projection_status: projection_status.to_string(),
-        redaction_state: bundle.redaction_state.clone(),
+        redaction_state: bundle.redaction_state,
         search_text,
         source_symbol_count: 1,
         source_chunk_token_total: chunk_stats.token_total,
@@ -356,11 +367,7 @@ fn accumulate_chunk(stats: &mut ChunkStatsV1, chunk: &RepoMapChunkRecordDto) {
             .preview_fragments
             .push(chunk.preview_text.trim().to_string());
     }
-    if !chunk.exactness.trim().is_empty() {
-        stats
-            .exactness_markers
-            .push(chunk.exactness.trim().to_string());
-    }
+    stats.exactness_markers.push(chunk.exactness);
 }
 
 fn total_degree(stats: &GraphStatsV1) -> u32 {
@@ -368,36 +375,45 @@ fn total_degree(stats: &GraphStatsV1) -> u32 {
 }
 
 fn freshness_score(bundle: &RepoMapSourceBundle) -> u32 {
-    let item_index = bundle.item_index_availability.to_ascii_lowercase();
-    let coverage = bundle.graph_coverage_class.to_ascii_lowercase();
-    if (item_index.contains("available") || item_index.contains("full"))
-        && (coverage.contains("complete") || coverage.contains("full"))
-    {
+    if matches!(
+        bundle.item_index_availability,
+        RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full
+    ) && matches!(
+        bundle.graph_coverage_class,
+        RepoMapGraphCoverageClass::Complete | RepoMapGraphCoverageClass::Full
+    ) {
         return 860;
     }
-    if item_index.contains("partial") || coverage.contains("partial") {
+    if matches!(
+        bundle.item_index_availability,
+        RepoMapItemIndexAvailability::Partial
+    ) || matches!(
+        bundle.graph_coverage_class,
+        RepoMapGraphCoverageClass::Partial
+    ) {
         return 620;
     }
     500
 }
 
 fn projection_status(bundle: &RepoMapSourceBundle) -> String {
-    let item_index = bundle.item_index_availability.to_ascii_lowercase();
-    let coverage = bundle.graph_coverage_class.to_ascii_lowercase();
-    if (item_index.contains("available") || item_index.contains("full"))
-        && (coverage.contains("complete") || coverage.contains("full"))
-    {
+    if matches!(
+        bundle.item_index_availability,
+        RepoMapItemIndexAvailability::Available | RepoMapItemIndexAvailability::Full
+    ) && matches!(
+        bundle.graph_coverage_class,
+        RepoMapGraphCoverageClass::Complete | RepoMapGraphCoverageClass::Full
+    ) {
         return "Complete".to_string();
     }
     "Partial".to_string()
 }
 
 fn exactness_signal(bundle: &RepoMapSourceBundle, chunk_stats: &ChunkStatsV1) -> u32 {
-    let mut score: u32 = if bundle
-        .exactness_summary
-        .to_ascii_lowercase()
-        .contains("exact")
-    {
+    let mut score: u32 = if matches!(
+        bundle.exactness_summary,
+        quanta_index_contract::RepoMapExactnessSummary::Exact
+    ) {
         140
     } else {
         40
@@ -405,7 +421,7 @@ fn exactness_signal(bundle: &RepoMapSourceBundle, chunk_stats: &ChunkStatsV1) ->
     if chunk_stats
         .exactness_markers
         .iter()
-        .any(|marker| marker.to_ascii_lowercase().contains("exact"))
+        .any(|marker| matches!(marker, RepoMapChunkExactness::Exact))
     {
         score = score.saturating_add(80);
     }

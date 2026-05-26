@@ -161,7 +161,14 @@ fn apply_lex(
         .map_err(|err| anyhow::anyhow!("lexical authority materialize: {err}"))?;
     if matches!(event.op, LexicalChannelOp::Seal(_)) {
         guard.lexical_seal(generation);
+        guard.record_track_seal(
+            &repo,
+            &revision,
+            quanta_index_contract::SearchPlaneTrackKind::Lexical,
+            generation,
+        );
     }
+    drop(guard);
     Ok(())
 }
 
@@ -182,6 +189,12 @@ fn apply_sem(
             .write()
             .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
         guard.semantic_seal(generation);
+        guard.record_track_seal(
+            &repo,
+            &revision,
+            quanta_index_contract::SearchPlaneTrackKind::Semantic,
+            generation,
+        );
     }
     Ok(())
 }
@@ -194,9 +207,13 @@ mod tests {
         BundleChannelPublisher, open_lexical_publisher, open_lexical_subscriber,
         open_semantic_publisher, open_semantic_subscriber,
     };
+    use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
-        ChunkId, EmbeddingId, LexicalChannelOp, ManifestGeneration, RepoId, RevisionId,
-        SemanticChannelOp, UpsertChunk, UpsertEmbedding,
+        BatchIngestMode, ChunkId, ChunkRecord, EmbeddingDistanceMetric, EmbeddingId,
+        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, LexicalChannelOp,
+        LexicalReplaceScope, ManifestGeneration, OwnerDocKind, ReplaceLexicalScope,
+        ReplaceSemanticScope, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
+        SearchScopeSurface, SemanticChannelOp, SemanticReplaceScope,
     };
     use quanta_index_core::CoreError;
 
@@ -233,6 +250,8 @@ mod tests {
                     LexicalChannelOp::DeleteChunk(_) => "delete_chunk",
                     LexicalChannelOp::UpsertSymbol(_) => "upsert_symbol",
                     LexicalChannelOp::DeleteSymbol(_) => "delete_symbol",
+                    LexicalChannelOp::ReplaceLexicalScope(_) => "replace_lexical_scope",
+                    LexicalChannelOp::TombstoneLexicalScope(_) => "tombstone_lexical_scope",
                     LexicalChannelOp::Seal(_) => "seal",
                     LexicalChannelOp::UpsertCommit(_) => "upsert_commit",
                     LexicalChannelOp::UpsertRef(_) => "upsert_ref",
@@ -243,6 +262,8 @@ mod tests {
                     LexicalChannelOp::EvictDirty(_) => "evict_dirty",
                     LexicalChannelOp::UpsertParseTree(_) => "upsert_parse_tree",
                     LexicalChannelOp::DeleteParseTree(_) => "delete_parse_tree",
+                    LexicalChannelOp::ReplaceStructuralScope(_) => "replace_structural_scope",
+                    LexicalChannelOp::TombstoneStructuralScope(_) => "tombstone_structural_scope",
                     LexicalChannelOp::UpsertDiffHunk(_) => "upsert_diff_hunk",
                 };
                 guard.push(label.to_string());
@@ -277,6 +298,8 @@ mod tests {
                     SemanticChannelOp::FullBundle(_) => "full",
                     SemanticChannelOp::UpsertEmbedding(_) => "upsert_embedding",
                     SemanticChannelOp::DeleteEmbedding(_) => "delete_embedding",
+                    SemanticChannelOp::ReplaceSemanticScope(_) => "replace_semantic_scope",
+                    SemanticChannelOp::TombstoneSemanticScope(_) => "tombstone_semantic_scope",
                     SemanticChannelOp::Seal(_) => "seal",
                 };
                 guard.push(label.to_string());
@@ -297,6 +320,75 @@ mod tests {
         ManifestGeneration::new(5)
     }
 
+    fn scope_key() -> SearchScopeKey {
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        }
+    }
+
+    fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>> {
+        LanguageCode::new("rust")
+            .map_err(|err| format!("invalid hard-coded test language code: {err}").into())
+    }
+
+    fn chunk_record() -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        Ok(ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 3,
+            start_line: 1,
+            end_line: 1,
+            snippet: "lex".to_string().into_boxed_str(),
+            indexed_text: "lex".to_string().into_boxed_str(),
+            text_digest: "text:1".to_string().into_boxed_str(),
+            shape_digest: "shape:1".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+        })
+    }
+
+    fn embedding_record() -> Result<EmbeddingRecord, Box<dyn std::error::Error>> {
+        Ok(EmbeddingRecord {
+            embedding_id: EmbeddingId::new("emb-1"),
+            owner_kind: OwnerDocKind::Chunk,
+            owner_id: "chunk-1".to_string().into_boxed_str(),
+            source_doc_id: "chunk-1".to_string().into_boxed_str(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            symbol_kind: None,
+            start_byte: 0,
+            end_byte: 3,
+            start_line: 1,
+            end_line: 1,
+            snippet: "lex".to_string().into_boxed_str(),
+            embedding_input_digest: "input:1".to_string().into_boxed_str(),
+            vector_digest: "vector:1".to_string().into_boxed_str(),
+            view_kind: "raw_chunk".to_string().into_boxed_str(),
+            vector: vec![0.1, 0.2, 0.3],
+        })
+    }
+
+    fn model_contract() -> EmbeddingModelContract {
+        EmbeddingModelContract {
+            model_id: "test-model".to_string().into_boxed_str(),
+            model_version: None,
+            dimension: 3,
+            normalization: EmbeddingNormalization::None,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            policy_digest: "policy:test".to_string().into_boxed_str(),
+            view_policy_digest: None,
+        }
+    }
+
+    fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(value, &mut buf)?;
+        Ok(buf)
+    }
+
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -304,25 +396,45 @@ mod tests {
     )]
     fn poll_once_updates_ledger_and_replays_both_tracks() -> TestResult {
         let dir = tempfile::tempdir()?;
+        let chunk_payload = encode_cbor(&(
+            BatchIngestMode::ReplaceGeneration,
+            None::<ManifestGeneration>,
+            LexicalReplaceScope {
+                scope: scope_key(),
+                scope_digest: "scope:lexical".to_string(),
+                chunks: vec![chunk_record()?],
+                symbols: Vec::new(),
+            },
+        ))?;
         let lex_pub = open_lexical_publisher(dir.path())?;
-        let _lex_upsert_seq = lex_pub.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-            repo_id: repo_id(),
-            revision_id: revision_id(),
-            generation: generation(),
-            chunk_id: ChunkId::new("chunk-1"),
-            payload: b"lex".to_vec(),
-        }))?;
-        let _lex_seal_seq = lex_pub.seal(repo_id(), revision_id(), generation())?;
-
-        let sem_pub = open_semantic_publisher(dir.path())?;
-        let _sem_upsert_seq =
-            sem_pub.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
+        let _lex_upsert_seq =
+            lex_pub.publish(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
                 repo_id: repo_id(),
                 revision_id: revision_id(),
                 generation: generation(),
-                embedding_id: EmbeddingId::new("emb-1"),
-                payload: vec![1, 2, 3],
+                payload: chunk_payload,
             }))?;
+        let _lex_seal_seq = lex_pub.seal(repo_id(), revision_id(), generation())?;
+
+        let embedding_payload = encode_cbor(&(
+            BatchIngestMode::ReplaceGeneration,
+            None::<ManifestGeneration>,
+            model_contract(),
+            SemanticReplaceScope {
+                scope: scope_key(),
+                scope_digest: "scope:semantic".to_string(),
+                embeddings: vec![embedding_record()?],
+            },
+        ))?;
+        let sem_pub = open_semantic_publisher(dir.path())?;
+        let _sem_upsert_seq = sem_pub.publish(SemanticChannelOp::ReplaceSemanticScope(
+            ReplaceSemanticScope {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                payload: embedding_payload,
+            },
+        ))?;
         let _sem_seal_seq = sem_pub.seal(repo_id(), revision_id(), generation())?;
 
         let lex_builder = Arc::new(RecordingLexicalBuilder::default());
@@ -370,13 +482,21 @@ mod tests {
             )
             .into());
         }
+        let structural = guard
+            .structural_state(&repo_id(), &revision_id(), generation())
+            .ok_or_else(|| "expected structural authority state to materialize".to_string())?;
+        if !structural.chunks().contains_key(&ChunkId::new("chunk-1")) {
+            return Err(
+                "expected replayed lexical scope chunk in structural authority state".into(),
+            );
+        }
         drop(guard);
 
         let lex_calls = lex_builder
             .calls
             .lock()
             .map_err(|err| format!("lex calls poisoned: {err}"))?;
-        if lex_calls.as_slice() != ["upsert_chunk", "seal"] {
+        if lex_calls.as_slice() != ["replace_lexical_scope", "seal"] {
             return Err(format!("unexpected lexical calls: {:?}", lex_calls.as_slice()).into());
         }
         drop(lex_calls);
@@ -385,7 +505,7 @@ mod tests {
             .calls
             .lock()
             .map_err(|err| format!("sem calls poisoned: {err}"))?;
-        if sem_calls.as_slice() != ["upsert_embedding", "seal"] {
+        if sem_calls.as_slice() != ["replace_semantic_scope", "seal"] {
             return Err(format!("unexpected semantic calls: {:?}", sem_calls.as_slice()).into());
         }
         Ok(())

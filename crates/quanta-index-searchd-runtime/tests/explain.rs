@@ -23,6 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_channel::{BundleChannelPublisher, open_lexical_publisher};
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
     RepoId, RepoRelativePath, RevisionId, SearchPlaneExplainQueryRequest,
@@ -52,11 +53,22 @@ fn generation() -> ManifestGeneration {
 
 fn chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let record = ChunkRecord {
-        repo_relative_path: RepoRelativePath::new(""),
-        language: String::new().into_boxed_str(),
+        chunk_id: ChunkId::new("payload-chunk"),
+        repo_relative_path: RepoRelativePath::new("src/explain.txt"),
+        language: LanguageCode::new("text")
+            .map_err(|err| -> Box<dyn Error> { format!("invalid language code: {err}").into() })?,
+        start_byte: 0,
+        end_byte: u32::try_from(text.len()).map_err(|err| -> Box<dyn Error> {
+            format!("chunk text length overflow: {err}").into()
+        })?,
         start_line: 0,
         end_line: 0,
         snippet: text.to_string().into_boxed_str(),
+        indexed_text: text.to_string().into_boxed_str(),
+        text_digest: "text:explain".to_string().into_boxed_str(),
+        shape_digest: "shape:explain".to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)

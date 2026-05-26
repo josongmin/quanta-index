@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
-    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto, RepoMapQueryRequest,
-    RepoMapSourceBundle, RevisionId,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    RepoMapChunkRecordDto, RepoMapDocType, RepoMapEdgeKind, RepoMapExactnessSummary,
+    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass, RepoMapGraphEdgeDto,
+    RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -28,10 +30,10 @@ fn source_bundle() -> RepoMapSourceBundle {
         snapshot_id: "snapshot-17".to_string(),
         projection_version: 3,
         authority_digest: "auth-digest-17".to_string(),
-        item_index_availability: "full".to_string(),
-        graph_coverage_class: "complete".to_string(),
-        exactness_summary: "owner-surface-exact".to_string(),
-        redaction_state: "Unredacted".to_string(),
+        item_index_availability: RepoMapItemIndexAvailability::Full,
+        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        exactness_summary: RepoMapExactnessSummary::Exact,
+        redaction_state: RepoMapRedactionState::Unredacted,
         file_indices: vec![
             RepoMapFileIndexRecord {
                 file_identity: "src/lib.rs".to_string(),
@@ -59,18 +61,18 @@ fn source_bundle() -> RepoMapSourceBundle {
             RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs".to_string(),
                 to_identity: "src/main.rs".to_string(),
-                edge_kind: "call".to_string(),
+                edge_kind: RepoMapEdgeKind::Call,
             },
             RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs".to_string(),
                 to_identity: "src/http.rs".to_string(),
-                edge_kind: "call".to_string(),
+                edge_kind: RepoMapEdgeKind::Call,
             },
         ],
         import_edges: vec![RepoMapGraphEdgeDto {
             from_identity: "src/main.rs".to_string(),
             to_identity: "src/lib.rs".to_string(),
-            edge_kind: "import".to_string(),
+            edge_kind: RepoMapEdgeKind::Import,
         }],
         chunk_records: vec![
             RepoMapChunkRecordDto {
@@ -78,21 +80,21 @@ fn source_bundle() -> RepoMapSourceBundle {
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 120,
                 preview_text: "owner path library orchestrates query ranking".to_string(),
-                exactness: "Exact".to_string(),
+                exactness: RepoMapChunkExactness::Exact,
             },
             RepoMapChunkRecordDto {
                 subject_identity: "src/main.rs".to_string(),
                 owner_path: "src/main.rs".to_string(),
                 token_count: 84,
                 preview_text: "main entrypoint owner path".to_string(),
-                exactness: "Exact".to_string(),
+                exactness: RepoMapChunkExactness::Exact,
             },
             RepoMapChunkRecordDto {
                 subject_identity: "src/http.rs".to_string(),
                 owner_path: "src/http.rs".to_string(),
                 token_count: 56,
                 preview_text: "http owner surface fallback".to_string(),
-                exactness: "Approximate".to_string(),
+                exactness: RepoMapChunkExactness::Approximate,
             },
         ],
     }
@@ -159,7 +161,7 @@ fn ingest_bundle_materializes_snapshot_and_serves_query() {
 
     let response_result = store.read_query_snapshot(&query_request(vec![RepoMapFocusSubjectDto {
         subject_identity: "src/lib.rs".to_string(),
-        subject_doc_type: "File".to_string(),
+        subject_doc_type: RepoMapDocType::File,
     }]));
     assert!(
         response_result.is_ok(),

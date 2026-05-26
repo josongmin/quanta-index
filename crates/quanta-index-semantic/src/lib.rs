@@ -18,8 +18,8 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
-    EmbeddingRecord, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SemanticChannelOp,
+    BatchIngestMode, EmbeddingModelContract, EmbeddingRecord, LexicalCandidate, ManifestGeneration,
+    RepoId, RepoRelativePath, RevisionId, SemanticChannelOp,
 };
 use quanta_index_core::{
     CoreError, SemanticIndexBuildPort, SemanticIndexOpenPort,
@@ -107,6 +107,52 @@ impl InMemoryEmbeddingStore {
                         bucket.metadata.remove(delete.embedding_id.as_str());
                 }
             }
+            SemanticChannelOp::ReplaceSemanticScope(payload) => {
+                let (_mode, _base_generation, model_contract, scope) =
+                    decode_replace_scope_payload(&payload.payload)?;
+                let bucket = self.rows.entry(key).or_insert_with(GenBucket::new);
+                remove_scope_entries(bucket, &scope.scope.repo_relative_path);
+                for embedding in &scope.embeddings {
+                    let vector = embedding.vector.clone();
+                    SemanticPolicy::validate_query_vector(&vector)?;
+                    let expected_dim =
+                        usize::try_from(model_contract.dimension).map_err(|err| {
+                            CoreError::InvalidContract(format!(
+                                "semantic: model contract dimension overflow: {err}"
+                            ))
+                        })?;
+                    if vector.len() != expected_dim {
+                        return Err(CoreError::InvalidContract(format!(
+                            "semantic: embedding {} dim {} != contract dim {}",
+                            embedding.embedding_id.as_str(),
+                            vector.len(),
+                            expected_dim
+                        )));
+                    }
+                    if bucket.index.is_none() {
+                        bucket.index = Some(HnswIndex::new(vector.len()));
+                    }
+                    if let Some(index) = bucket.index.as_mut() {
+                        index.insert(embedding.embedding_id.as_str().to_string(), &vector)?;
+                    }
+                    let _prior: Option<EmbeddingMetadata> = bucket.metadata.insert(
+                        embedding.embedding_id.as_str().to_string(),
+                        EmbeddingMetadata {
+                            repo_relative_path: embedding.repo_relative_path.clone(),
+                            start_line: embedding.start_line,
+                            end_line: embedding.end_line,
+                            snippet: embedding.snippet.as_ref().to_string(),
+                        },
+                    );
+                }
+            }
+            SemanticChannelOp::TombstoneSemanticScope(payload) => {
+                let (_mode, _base_generation, _model_contract, scope) =
+                    decode_tombstone_scope_payload(&payload.payload)?;
+                if let Some(bucket) = self.rows.get_mut(&key) {
+                    remove_scope_entries(bucket, &scope.scope.repo_relative_path);
+                }
+            }
         }
         Ok(())
     }
@@ -124,6 +170,73 @@ struct DecodedEmbeddingPayload {
     end_line: u32,
     snippet: String,
     vector: Vec<f32>,
+}
+
+fn remove_scope_entries(bucket: &mut GenBucket, repo_relative_path: &RepoRelativePath) {
+    let remove_ids: Vec<String> = bucket
+        .metadata
+        .iter()
+        .filter(|(_candidate_id, metadata)| metadata.repo_relative_path == *repo_relative_path)
+        .map(|(candidate_id, _metadata)| candidate_id.clone())
+        .collect();
+    if let Some(index) = bucket.index.as_mut() {
+        for candidate_id in &remove_ids {
+            index.delete(candidate_id);
+        }
+    }
+    for candidate_id in remove_ids {
+        let _prior = bucket.metadata.remove(candidate_id.as_str());
+    }
+}
+
+fn decode_replace_scope_payload(
+    bytes: &[u8],
+) -> Result<
+    (
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        EmbeddingModelContract,
+        quanta_index_contract::SemanticReplaceScope,
+    ),
+    CoreError,
+> {
+    ciborium::from_reader::<
+        (
+            BatchIngestMode,
+            Option<ManifestGeneration>,
+            EmbeddingModelContract,
+            quanta_index_contract::SemanticReplaceScope,
+        ),
+        _,
+    >(bytes)
+    .map_err(|err| {
+        CoreError::InvalidContract(format!("semantic: replace scope payload decode: {err}"))
+    })
+}
+
+fn decode_tombstone_scope_payload(
+    bytes: &[u8],
+) -> Result<
+    (
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        EmbeddingModelContract,
+        quanta_index_contract::SemanticTombstoneScope,
+    ),
+    CoreError,
+> {
+    ciborium::from_reader::<
+        (
+            BatchIngestMode,
+            Option<ManifestGeneration>,
+            EmbeddingModelContract,
+            quanta_index_contract::SemanticTombstoneScope,
+        ),
+        _,
+    >(bytes)
+    .map_err(|err| {
+        CoreError::InvalidContract(format!("semantic: tombstone scope payload decode: {err}"))
+    })
 }
 
 fn decode_embedding_payload(bytes: &[u8]) -> Result<DecodedEmbeddingPayload, CoreError> {

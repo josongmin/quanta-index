@@ -19,7 +19,8 @@ impl BatchMode {
 
 /// QI-SDK-01: receipt for a batch publish.
 ///
-/// Alias for wire [`quanta_index_contract::BatchPublishReceipt`]. The SDK no
-/// longer synthesises a sequence range client-side; `searchd` is the
-/// authority and returns the inclusive range in the ingest response.
+/// Alias for wire [`quanta_index_contract::BatchPublishReceipt`]. The SDK does
+/// not synthesise publish acknowledgements client-side; `searchd` is the
+/// authority and returns generation/materialization scope counts in the ingest
+/// response.
 pub type BatchReceipt = quanta_index_contract::BatchPublishReceipt;

@@ -4,7 +4,7 @@
 //! headless CLIs can remain view-only while admin or producer surfaces bind to
 //! a separate control plane.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
@@ -14,7 +14,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
 
-use crate::ActivationCatalog;
+use crate::{ActivationCatalog, Ledger};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -30,6 +30,7 @@ pub struct SearchPlaneControlDispatcher {
     // no longer needs the port.
     repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     activation_catalog: Arc<ActivationCatalog>,
+    ledger: Arc<RwLock<Ledger>>,
 }
 
 impl SearchPlaneControlDispatcher {
@@ -37,10 +38,12 @@ impl SearchPlaneControlDispatcher {
     pub fn new(
         repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
         activation_catalog: Arc<ActivationCatalog>,
+        ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
         Self {
             repo_map_activate,
             activation_catalog,
+            ledger,
         }
     }
 
@@ -60,6 +63,32 @@ impl SearchPlaneControlDispatcher {
         &self,
         request: SearchPlaneActivateGenerationRequest,
     ) -> Result<SearchPlaneActivationAck, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        for track in &request.tracks {
+            let materialized = guard.track_sealed(&request.repo_id, &request.revision_id, *track);
+            match materialized {
+                Some(generation) if generation.get() >= request.manifest_generation.get() => {}
+                Some(generation) => {
+                    return Err(CoreError::NotReady(format!(
+                        "activate-generation: {track:?} materialized only up to {} for repo={} revision={}",
+                        generation.get(),
+                        request.repo_id.as_str(),
+                        request.revision_id.as_str(),
+                    )));
+                }
+                None => {
+                    return Err(CoreError::NotReady(format!(
+                        "activate-generation: no materialized {track:?} generation for repo={} revision={}",
+                        request.repo_id.as_str(),
+                        request.revision_id.as_str(),
+                    )));
+                }
+            }
+        }
+        drop(guard);
         self.activation_catalog.activate(&request)?;
         Ok(SearchPlaneActivationAck {
             repo_id: request.repo_id,
@@ -163,7 +192,7 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use super::SearchPlaneControlDispatcher;
     use quanta_index_contract::{
@@ -174,7 +203,7 @@ mod tests {
     use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
     use tempfile::tempdir;
 
-    use crate::ActivationCatalog;
+    use crate::{ActivationCatalog, Ledger};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -230,9 +259,30 @@ mod tests {
         // `ingest_dispatcher` tests for the ingest-side coverage.
         let dir = tempdir()?;
         let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        {
+            let mut guard = ledger
+                .write()
+                .map_err(|err| format!("ledger poisoned: {err}"))?;
+            let repo_id = RepoId::new("repo-map-ipc");
+            let revision_id = RevisionId::new("rev-map-ipc");
+            guard.record_track_seal(
+                &repo_id,
+                &revision_id,
+                SearchPlaneTrackKind::Lexical,
+                ManifestGeneration::new(11),
+            );
+            guard.record_track_seal(
+                &repo_id,
+                &revision_id,
+                SearchPlaneTrackKind::Semantic,
+                ManifestGeneration::new(11),
+            );
+        }
         let dispatcher = SearchPlaneControlDispatcher::new(
             Arc::new(StubRepoMapActivatePort),
             activation_catalog.clone(),
+            ledger,
         );
 
         let activate = into_repo_map_mutation_ack(dispatcher.dispatch(

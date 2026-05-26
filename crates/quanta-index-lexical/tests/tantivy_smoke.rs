@@ -11,7 +11,7 @@
 use std::error::Error;
 
 use quanta_index_contract::lex::{
-    LangId, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LexicalFullBundle,
@@ -36,23 +36,50 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-fn encode_chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    encode_chunk_payload_with_metadata("", "", 0, 0, text)
+fn language_code(code: &str) -> Result<LanguageCode, Box<dyn Error>> {
+    LanguageCode::new(code).map_err(|err| -> Box<dyn Error> {
+        format!("invalid language code `{code}`: {err}").into()
+    })
+}
+
+fn encode_chunk_payload(chunk_id: &str, text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    encode_chunk_payload_with_metadata(chunk_id, "", "", 0, 0, text)
 }
 
 fn encode_chunk_payload_with_metadata(
+    chunk_id: &str,
     repo_relative_path: &str,
     language: &str,
     start_line: u32,
     end_line: u32,
     text: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
+    let repo_relative_path = if repo_relative_path.is_empty() {
+        "src/smoke.txt"
+    } else {
+        repo_relative_path
+    };
+    let language = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
     let record = ChunkRecord {
+        chunk_id: ChunkId::new(chunk_id),
         repo_relative_path: RepoRelativePath::new(repo_relative_path),
-        language: language.to_string().into_boxed_str(),
+        language: language_code(language)?,
+        start_byte: 0,
+        end_byte: u32::try_from(text.len()).map_err(|err| -> Box<dyn Error> {
+            format!("chunk text length overflow: {err}").into()
+        })?,
         start_line,
         end_line,
         snippet: text.to_string().into_boxed_str(),
+        indexed_text: text.to_string().into_boxed_str(),
+        text_digest: format!("text:{chunk_id}").into_boxed_str(),
+        shape_digest: format!("shape:{chunk_id}").into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
     };
     let mut payload = Vec::new();
     ciborium::into_writer(&record, &mut payload)
@@ -79,26 +106,33 @@ fn encode_repo_metadata_payload(
 }
 
 fn encode_symbol_payload(
+    symbol_id: &str,
     path: &str,
-    language: LangId,
+    language: &str,
     name: &str,
     line_start: u32,
     line_end: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let record = SymbolRecord {
-        wire_version: 1,
-        name: name.into(),
-        kind: SymbolKind::Function,
-        span: SymbolSpan {
+        symbol_id: SymbolId::new(symbol_id),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: language_code(language)?,
+        symbol_kind: SymbolKindCode::new("function").map_err(|err| -> Box<dyn Error> {
+            format!("invalid symbol kind code: {err}").into()
+        })?,
+        symbol_kind_family: Some(SymbolKindFamily::Callable),
+        local_name: name.into(),
+        qualified_name: format!("crate::{name}").into_boxed_str(),
+        signature: None,
+        visibility: None,
+        definition_span: SymbolSpan {
             path: path.into(),
             byte_start: 0,
             byte_end: 8,
             line_start,
             line_end,
         },
-        lang: language,
-        parent: None,
-        container_name: None,
+        container_qualified_name: None,
         relationship: SymbolRelationship::Def,
     };
     let mut payload = Vec::new();
@@ -125,6 +159,7 @@ fn upsert_with_metadata(
         generation: generation(),
         chunk_id: ChunkId::new(chunk_id),
         payload: encode_chunk_payload_with_metadata(
+            chunk_id,
             repo_relative_path,
             language,
             start_line,
@@ -137,7 +172,7 @@ fn upsert_with_metadata(
 fn upsert_symbol(
     symbol_id: &str,
     path: &str,
-    language: LangId,
+    language: &str,
     name: &str,
     line_start: u32,
     line_end: u32,
@@ -147,7 +182,7 @@ fn upsert_symbol(
         revision_id: revision(),
         generation: generation(),
         symbol_id: SymbolId::new(symbol_id),
-        payload: encode_symbol_payload(path, language, name, line_start, line_end)?,
+        payload: encode_symbol_payload(symbol_id, path, language, name, line_start, line_end)?,
     }))
 }
 
@@ -384,14 +419,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
 
     let ops = vec![
         upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
-        upsert_symbol(
-            "sym-alpha",
-            "src/lib.rs",
-            LangId::Rust,
-            "needle_symbol",
-            4,
-            4,
-        )?,
+        upsert_symbol("sym-alpha", "src/lib.rs", "rust", "needle_symbol", 4, 4)?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
@@ -648,7 +676,7 @@ fn writer_cache_evicts_lru_after_threshold() -> TestResult {
             revision_id: revision(),
             generation,
             chunk_id: ChunkId::new(&chunk_id),
-            payload: encode_chunk_payload(&text)?,
+            payload: encode_chunk_payload(&chunk_id, &text)?,
         });
         adapter.build(&repo(), &revision(), generation, &[op])?;
     }

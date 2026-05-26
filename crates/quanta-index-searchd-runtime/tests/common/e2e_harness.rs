@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result as AnyResult;
 use ciborium::into_writer;
 use quanta_index_channel::{BundleChannelPublisher, LexicalWalPublisher, open_lexical_publisher};
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
     RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
@@ -200,11 +201,22 @@ impl E2eRuntime {
             self.request_id_counter.fetch_add(1, Ordering::Relaxed)
         ));
         let record = ChunkRecord {
+            chunk_id: chunk_id.clone(),
             repo_relative_path: RepoRelativePath::new(path),
-            language: language_from_path(path).to_string().into_boxed_str(),
+            language: LanguageCode::new(language_from_path(path)).map_err(|err| {
+                anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+            })?,
+            start_byte: 0,
+            end_byte: u32::try_from(content.len())
+                .map_err(|err| anyhow::anyhow!("e2e harness content length overflow: {err}"))?,
             start_line: 1,
             end_line: 2,
             snippet: content.to_string().into_boxed_str(),
+            indexed_text: content.to_string().into_boxed_str(),
+            text_digest: format!("text:{path}:{content}").into_boxed_str(),
+            shape_digest: format!("shape:{path}:{content}").into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
         };
         let mut buf: Vec<u8> = Vec::new();
         into_writer(&record, &mut buf)?;

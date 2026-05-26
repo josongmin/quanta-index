@@ -4,9 +4,10 @@
 //! lang constraints become executable [`FilterPlan`] fields; surface routing
 //! (`type:` / `select:`) delegates to [`crate::symbol::resolve_result_surface`];
 //! producer-dependent filters (`rev:`, `fork:`, `archived:`, `visibility:`,
-//! `context:`, and `type:commit/diff/repo` via the surface resolver) are
-//! recorded as typed unavailable so the executor can emit a typed-unavailable
-//! response — no filter is ever silently ignored.
+//! `context:`, history-only filters like `author:` / `committer:` / `message:`,
+//! runtime-only filters like `dirty:`, and `type:commit/diff/repo` via the
+//! surface resolver) are recorded as typed unavailable so the executor can emit
+//! a typed-unavailable response — no filter is ever silently ignored.
 //!
 //! Display / `std::error::Error` impls are hand-rolled per the workspace
 //! no-proc-macro-derive build-hygiene rule (`thiserror` may not be added to
@@ -146,6 +147,10 @@ pub mod codes {
     pub const VISIBILITY_UNAVAILABLE: &str = "LEX_FILTER_VISIBILITY_UNAVAILABLE";
     pub const CONTEXT_UNAVAILABLE: &str = "LEX_FILTER_CONTEXT_UNAVAILABLE";
     pub const REV_UNAVAILABLE: &str = "LEX_FILTER_REV_UNAVAILABLE";
+    pub const AUTHOR_UNAVAILABLE: &str = "LEX_FILTER_AUTHOR_UNAVAILABLE";
+    pub const COMMITTER_UNAVAILABLE: &str = "LEX_FILTER_COMMITTER_UNAVAILABLE";
+    pub const MESSAGE_UNAVAILABLE: &str = "LEX_FILTER_MESSAGE_UNAVAILABLE";
+    pub const DIRTY_UNAVAILABLE: &str = "LEX_FILTER_DIRTY_UNAVAILABLE";
     /// Matches the existing dispatcher code emitted for commit/diff/repo
     /// surfaces so producers and search-plane callers see one code per cause.
     pub const HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
@@ -317,6 +322,34 @@ const fn typed_unavailable_for_rev() -> TypedUnavailable {
     }
 }
 
+const fn typed_unavailable_for_author() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::AUTHOR_UNAVAILABLE,
+        reason: "author filter is not executable on the lexical rail",
+    }
+}
+
+const fn typed_unavailable_for_committer() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::COMMITTER_UNAVAILABLE,
+        reason: "committer filter is not executable on the lexical rail",
+    }
+}
+
+const fn typed_unavailable_for_message() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::MESSAGE_UNAVAILABLE,
+        reason: "message filter is not executable on the lexical rail",
+    }
+}
+
+const fn typed_unavailable_for_dirty() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::DIRTY_UNAVAILABLE,
+        reason: "dirty filter is not executable on the lexical rail",
+    }
+}
+
 /// Plan a flat filter list into an executable [`FilterPlan`].
 ///
 /// Single pass over `filters`; surface resolution is delegated to
@@ -376,6 +409,18 @@ pub fn plan_filters(
             LqFilter::Select { .. } | LqFilter::Content { .. } => {}
             LqFilter::Rev { .. } => {
                 typed_unavailable.push(typed_unavailable_for_rev());
+            }
+            LqFilter::Author { .. } => {
+                typed_unavailable.push(typed_unavailable_for_author());
+            }
+            LqFilter::Committer { .. } => {
+                typed_unavailable.push(typed_unavailable_for_committer());
+            }
+            LqFilter::Message { .. } => {
+                typed_unavailable.push(typed_unavailable_for_message());
+            }
+            LqFilter::Dirty { .. } => {
+                typed_unavailable.push(typed_unavailable_for_dirty());
             }
             LqFilter::Fork { mode } => {
                 typed_unavailable.push(typed_unavailable_for_fork(*mode));

@@ -13,12 +13,12 @@
 
 #![forbid(unsafe_code)]
 
-use quanta_index_contract::ChunkId;
 use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, CommitShaParseError, DirtyRecord, ExplanationRow, LangId,
-    LexicalErrorCode, ParseNode, ParseTreeRecord, SearchExplanation, SymbolKind, SymbolRecord,
+    CommitRecord, CommitSha, CommitShaParseError, DirtyRecord, ExplanationRow, LanguageCode,
+    LexicalErrorCode, ParseNode, ParseTreeRecord, SearchExplanation, SymbolKindCode, SymbolRecord,
     SymbolRelationship, SymbolSpan,
 };
+use quanta_index_contract::{ChunkId, RepoRelativePath, SymbolId};
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -50,66 +50,45 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// LangId
+// LanguageCode
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lang_id_has_five_variants() -> TestRes {
-    if LangId::ALL.len() != 5 {
-        return Err(format!("expected 5 variants, got {}", LangId::ALL.len()).into());
-    }
-    Ok(())
-}
-
-#[test]
-fn lang_id_code_strings_unique() -> TestRes {
-    let mut seen: Vec<&'static str> = Vec::new();
-    for variant in LangId::ALL {
-        let code = variant.as_code_str();
-        if seen.contains(&code) {
-            return Err(format!("duplicate code_str: {code}").into());
-        }
-        seen.push(code);
-    }
-    Ok(())
-}
-
-#[test]
-fn lang_id_from_code_str_roundtrips_every_variant() -> TestRes {
-    for variant in LangId::ALL {
-        let code = variant.as_code_str();
-        let parsed = LangId::from_code_str(code);
-        if parsed != Some(*variant) {
-            return Err(format!("from_code_str({code}) != Some({variant:?})").into());
+fn language_code_accepts_canonical_examples() -> TestRes {
+    for code in ["rust", "python", "typescript", "javascript", "go", "c++23"] {
+        let parsed = LanguageCode::new(code).map_err(str::to_string)?;
+        if parsed.as_str() != code {
+            return Err(format!("expected {code}, got {}", parsed.as_str()).into());
         }
     }
     Ok(())
 }
 
 #[test]
-fn lang_id_from_code_str_rejects_unknown() -> TestRes {
-    for bad in ["Java", "", "rust", "RUST", "C++"] {
-        if LangId::from_code_str(bad).is_some() {
-            return Err(format!("from_code_str({bad}) accepted unknown lang").into());
+fn language_code_rejects_non_canonical_forms() -> TestRes {
+    for bad in ["", "Rust", "RUST", "c#", "-rust", "rust lang"] {
+        if LanguageCode::from_code_str(bad).is_some() {
+            return Err(format!("from_code_str({bad}) accepted invalid language code").into());
         }
     }
     Ok(())
 }
 
 #[test]
-fn lang_id_cbor_roundtrip_every_variant() -> TestRes {
-    for variant in LangId::ALL {
-        roundtrip_eq(variant)?;
+fn language_code_cbor_roundtrip_examples() -> TestRes {
+    for code in ["rust", "python", "cpp", "ruby3"] {
+        let value = LanguageCode::new(code).map_err(str::to_string)?;
+        roundtrip_eq(&value)?;
     }
     Ok(())
 }
 
 #[test]
-fn lang_id_cbor_rejects_unknown_string() -> TestRes {
-    let bytes = encode(&"Java")?;
-    let result: Result<LangId, _> = ciborium::de::from_reader(bytes.as_slice());
+fn language_code_cbor_rejects_unknown_string_shape() -> TestRes {
+    let bytes = encode(&"Rust")?;
+    let result: Result<LanguageCode, _> = ciborium::de::from_reader(bytes.as_slice());
     if result.is_ok() {
-        return Err("unknown lang must fail-closed on the wire".into());
+        return Err("non-canonical language code must fail-closed on the wire".into());
     }
     Ok(())
 }
@@ -196,52 +175,42 @@ fn lexical_error_code_cbor_rejects_unknown() -> TestRes {
 }
 
 // ---------------------------------------------------------------------------
-// SymbolKind / SymbolRelationship
+// SymbolKindCode / SymbolRelationship
 // ---------------------------------------------------------------------------
 
 #[test]
-fn symbol_kind_has_twelve_variants() -> TestRes {
-    // v1 ship set per producer-handoff §3.4.2; v2 expansion to 20 is gated on
-    // a coordinated wire_version bump (AMB-PROD-5).
-    if SymbolKind::ALL.len() != 12 {
-        return Err(format!(
-            "expected 12 v1 SymbolKind variants, got {}",
-            SymbolKind::ALL.len()
-        )
-        .into());
-    }
-    Ok(())
-}
-
-#[test]
-fn symbol_kind_code_strings_unique() -> TestRes {
-    let mut seen: Vec<&'static str> = Vec::new();
-    for variant in SymbolKind::ALL.iter().copied() {
-        let code = variant.as_code_str();
-        if seen.contains(&code) {
-            return Err(format!("duplicate code_str: {code}").into());
-        }
-        seen.push(code);
-    }
-    Ok(())
-}
-
-#[test]
-fn symbol_kind_from_code_str_roundtrips() -> TestRes {
-    for variant in SymbolKind::ALL.iter().copied() {
-        let code = variant.as_code_str();
-        let parsed = SymbolKind::from_code_str(code);
-        if parsed != Some(variant) {
-            return Err(format!("from_code_str({code}) != Some({variant:?})").into());
+fn symbol_kind_code_accepts_canonical_examples() -> TestRes {
+    for code in ["function", "method", "type_alias", "http_handler2"] {
+        let parsed = SymbolKindCode::new(code).map_err(str::to_string)?;
+        if parsed.as_str() != code {
+            return Err(format!("expected {code}, got {}", parsed.as_str()).into());
         }
     }
     Ok(())
 }
 
 #[test]
-fn symbol_kind_cbor_roundtrip_every_variant() -> TestRes {
-    for variant in SymbolKind::ALL {
-        roundtrip_eq(variant)?;
+fn symbol_kind_code_rejects_non_canonical_forms() -> TestRes {
+    for bad in [
+        "",
+        "Function",
+        "type-alias",
+        "_hidden",
+        "123kind",
+        "bad kind",
+    ] {
+        if SymbolKindCode::from_code_str(bad).is_some() {
+            return Err(format!("from_code_str({bad}) accepted invalid symbol kind").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn symbol_kind_code_cbor_roundtrip_examples() -> TestRes {
+    for code in ["function", "method", "type_alias", "variable2"] {
+        let kind = SymbolKindCode::new(code).map_err(str::to_string)?;
+        roundtrip_eq(&kind)?;
     }
     Ok(())
 }
@@ -284,19 +253,23 @@ fn symbol_span_cbor_roundtrip() -> TestRes {
 #[test]
 fn symbol_record_cbor_roundtrip_with_parent_and_container() -> TestRes {
     let record = SymbolRecord {
-        wire_version: 1,
-        name: Box::from("compute"),
-        kind: SymbolKind::Function,
-        span: SymbolSpan {
+        symbol_id: SymbolId::new("sym-compute"),
+        repo_relative_path: RepoRelativePath::new("crates/foo/src/lib.rs"),
+        language: LanguageCode::new("rust").map_err(str::to_string)?,
+        symbol_kind: SymbolKindCode::new("function").map_err(str::to_string)?,
+        symbol_kind_family: None,
+        local_name: Box::from("compute"),
+        qualified_name: Box::from("foo::math::compute"),
+        signature: Some(Box::from("fn compute(x: i32) -> i32")),
+        visibility: None,
+        definition_span: SymbolSpan {
             path: Box::from("crates/foo/src/lib.rs"),
             byte_start: 0,
             byte_end: 42,
             line_start: 1,
             line_end: 8,
         },
-        lang: LangId::Rust,
-        parent: Some(Box::from("Computer")),
-        container_name: Some(Box::from("foo::math")),
+        container_qualified_name: Some(Box::from("foo::math")),
         relationship: SymbolRelationship::Def,
     };
     roundtrip_eq(&record)
@@ -305,19 +278,23 @@ fn symbol_record_cbor_roundtrip_with_parent_and_container() -> TestRes {
 #[test]
 fn symbol_record_cbor_roundtrip_with_none_optionals() -> TestRes {
     let record = SymbolRecord {
-        wire_version: 1,
-        name: Box::from("TOP_LEVEL"),
-        kind: SymbolKind::Constant,
-        span: SymbolSpan {
+        symbol_id: SymbolId::new("sym-top-level"),
+        repo_relative_path: RepoRelativePath::new("crates/foo/src/lib.rs"),
+        language: LanguageCode::new("rust").map_err(str::to_string)?,
+        symbol_kind: SymbolKindCode::new("constant").map_err(str::to_string)?,
+        symbol_kind_family: None,
+        local_name: Box::from("TOP_LEVEL"),
+        qualified_name: Box::from("TOP_LEVEL"),
+        signature: None,
+        visibility: None,
+        definition_span: SymbolSpan {
             path: Box::from("crates/foo/src/lib.rs"),
             byte_start: 100,
             byte_end: 110,
             line_start: 10,
             line_end: 10,
         },
-        lang: LangId::Rust,
-        parent: None,
-        container_name: None,
+        container_qualified_name: None,
         relationship: SymbolRelationship::Def,
     };
     roundtrip_eq(&record)
@@ -470,7 +447,7 @@ fn dirty_record_cbor_roundtrip() -> TestRes {
 fn parse_tree_record_cbor_roundtrip_flat() -> TestRes {
     let record = ParseTreeRecord {
         wire_version: 1,
-        lang: LangId::Rust,
+        lang: LanguageCode::new("rust").map_err(str::to_string)?,
         root: ParseNode {
             kind: Box::from("source_file"),
             byte_start: 0,
@@ -508,7 +485,7 @@ fn parse_tree_record_cbor_roundtrip_nested() -> TestRes {
     };
     let record = ParseTreeRecord {
         wire_version: 1,
-        lang: LangId::Python,
+        lang: LanguageCode::new("python").map_err(str::to_string)?,
         root: ParseNode {
             kind: Box::from("module"),
             byte_start: 0,

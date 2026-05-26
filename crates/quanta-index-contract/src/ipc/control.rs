@@ -12,16 +12,18 @@ use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 pub enum SearchPlaneTrackKind {
     Lexical,
     Semantic,
+    Structural,
 }
 
 impl SearchPlaneTrackKind {
-    const VARIANTS: &'static [&'static str] = &["Lexical", "Semantic"];
+    const VARIANTS: &'static [&'static str] = &["Lexical", "Semantic", "Structural"];
 
     #[must_use]
     pub const fn as_code_str(self) -> &'static str {
         match self {
             Self::Lexical => "Lexical",
             Self::Semantic => "Semantic",
+            Self::Structural => "Structural",
         }
     }
 }
@@ -51,6 +53,7 @@ impl Visitor<'_> for SearchPlaneTrackKindVisitor {
         match value {
             "Lexical" => Ok(SearchPlaneTrackKind::Lexical),
             "Semantic" => Ok(SearchPlaneTrackKind::Semantic),
+            "Structural" => Ok(SearchPlaneTrackKind::Structural),
             other => Err(de::Error::unknown_variant(
                 other,
                 SearchPlaneTrackKind::VARIANTS,
@@ -806,6 +809,7 @@ mod qi_act_01_tests {
         for track in [
             SearchPlaneTrackKind::Lexical,
             SearchPlaneTrackKind::Semantic,
+            SearchPlaneTrackKind::Structural,
         ] {
             let request = CurrentGenerationRequest {
                 repo_id: fixture_repo(),
@@ -864,9 +868,9 @@ mod qi_act_01_tests {
     #[test]
     fn track_readiness_record_round_trip() {
         let record = TrackReadinessRecord {
-            track: SearchPlaneTrackKind::Semantic,
+            track: SearchPlaneTrackKind::Structural,
             manifest_generation: ManifestGeneration::new(7),
-            manifest_digest: "digest-sem".to_string(),
+            manifest_digest: "digest-str".to_string(),
         };
         let Ok(bytes) = encode(&record) else {
             assert!(false, "failed to encode TrackReadinessRecord");
@@ -880,7 +884,7 @@ mod qi_act_01_tests {
     }
 
     #[test]
-    fn generation_status_report_round_trip_with_both_tracks() {
+    fn generation_status_report_round_trip_with_all_tracks() {
         let report = GenerationStatusReport {
             repo_id: fixture_repo(),
             revision_id: fixture_rev(),
@@ -895,6 +899,11 @@ mod qi_act_01_tests {
                     manifest_generation: ManifestGeneration::new(11),
                     manifest_digest: "sem".to_string(),
                 },
+                TrackReadinessRecord {
+                    track: SearchPlaneTrackKind::Structural,
+                    manifest_generation: ManifestGeneration::new(11),
+                    manifest_digest: "str".to_string(),
+                },
             ],
         };
         let Ok(bytes) = encode(&report) else {
@@ -906,7 +915,7 @@ mod qi_act_01_tests {
             return;
         };
         assert_eq!(decoded, report);
-        assert_eq!(decoded.tracks.len(), 2);
+        assert_eq!(decoded.tracks.len(), 3);
     }
 
     #[test]

@@ -37,8 +37,8 @@ use crate::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, ParseTreeRecord, SymbolRecord,
 };
 use crate::{
-    ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, ManifestGeneration, RepoId,
-    RepoMapMutationAck, RepoMapSourceBundle, RevisionId, SymbolId,
+    ChunkId, ChunkRecord, EmbeddingRecord, ManifestGeneration, RepoId, RepoMapMutationAck,
+    RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 
 use super::error::SearchPlaneIpcError;
@@ -108,669 +108,316 @@ impl<'de> Deserialize<'de> for BatchIngestMode {
 }
 
 // =============================================================================
-// Lexical chunk mutation
+// Search scope / lexical / semantic ingest batches
 // =============================================================================
 
-/// Upsert payload for a single lexical chunk inside a [`LexicalIngestBatch`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalChunkUpsert {
-    pub chunk_id: ChunkId,
-    pub record: ChunkRecord,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SearchScopeSurface {
+    File,
+    Module,
+    Chunk,
+    Symbol,
 }
 
-const LEXICAL_CHUNK_UPSERT_FIELDS: &[&str] = &["chunk_id", "record"];
+const SEARCH_SCOPE_SURFACE_VARIANTS: &[&str] = &["File", "Module", "Chunk", "Symbol"];
 
-impl Serialize for LexicalChunkUpsert {
+impl Serialize for SearchScopeSurface {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalChunkUpsert", 2)?;
-        state.serialize_field("chunk_id", &self.chunk_id)?;
-        state.serialize_field("record", &self.record)?;
-        state.end()
-    }
-}
-
-struct LexicalChunkUpsertVisitor;
-
-impl<'de> Visitor<'de> for LexicalChunkUpsertVisitor {
-    type Value = LexicalChunkUpsert;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalChunkUpsert map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut chunk_id: Option<ChunkId> = None;
-        let mut record: Option<ChunkRecord> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "chunk_id" => {
-                    if chunk_id.is_some() {
-                        return Err(de::Error::duplicate_field("chunk_id"));
-                    }
-                    chunk_id = Some(map.next_value()?);
-                }
-                "record" => {
-                    if record.is_some() {
-                        return Err(de::Error::duplicate_field("record"));
-                    }
-                    record = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(other, LEXICAL_CHUNK_UPSERT_FIELDS));
-                }
-            }
-        }
-        Ok(LexicalChunkUpsert {
-            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
-            record: record.ok_or_else(|| de::Error::missing_field("record"))?,
+        serializer.serialize_str(match self {
+            Self::File => "File",
+            Self::Module => "Module",
+            Self::Chunk => "Chunk",
+            Self::Symbol => "Symbol",
         })
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalChunkUpsert {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "LexicalChunkUpsert",
-            LEXICAL_CHUNK_UPSERT_FIELDS,
-            LexicalChunkUpsertVisitor,
-        )
-    }
-}
+struct SearchScopeSurfaceVisitor;
 
-/// Delete payload for a single lexical chunk inside a [`LexicalIngestBatch`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalChunkDelete {
-    pub chunk_id: ChunkId,
-}
-
-const LEXICAL_CHUNK_DELETE_FIELDS: &[&str] = &["chunk_id"];
-
-impl Serialize for LexicalChunkDelete {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("LexicalChunkDelete", 1)?;
-        state.serialize_field("chunk_id", &self.chunk_id)?;
-        state.end()
-    }
-}
-
-struct LexicalChunkDeleteVisitor;
-
-impl<'de> Visitor<'de> for LexicalChunkDeleteVisitor {
-    type Value = LexicalChunkDelete;
+impl Visitor<'_> for SearchScopeSurfaceVisitor {
+    type Value = SearchScopeSurface;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalChunkDelete map")
+        formatter.write_str("a SearchScopeSurface tag")
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
-        A: MapAccess<'de>,
+        E: de::Error,
     {
-        let mut chunk_id: Option<ChunkId> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "chunk_id" => {
-                    if chunk_id.is_some() {
-                        return Err(de::Error::duplicate_field("chunk_id"));
-                    }
-                    chunk_id = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(other, LEXICAL_CHUNK_DELETE_FIELDS));
-                }
-            }
-        }
-        Ok(LexicalChunkDelete {
-            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for LexicalChunkDelete {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "LexicalChunkDelete",
-            LEXICAL_CHUNK_DELETE_FIELDS,
-            LexicalChunkDeleteVisitor,
-        )
-    }
-}
-
-/// One mutation against the lexical chunk surface.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LexicalChunkMutation {
-    Upsert(LexicalChunkUpsert),
-    Delete(LexicalChunkDelete),
-}
-
-const LEXICAL_CHUNK_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
-
-impl Serialize for LexicalChunkMutation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Upsert(payload) => {
-                serializer.serialize_newtype_variant("LexicalChunkMutation", 0, "Upsert", payload)
-            }
-            Self::Delete(payload) => {
-                serializer.serialize_newtype_variant("LexicalChunkMutation", 1, "Delete", payload)
-            }
-        }
-    }
-}
-
-struct LexicalChunkMutationVisitor;
-
-impl<'de> Visitor<'de> for LexicalChunkMutationVisitor {
-    type Value = LexicalChunkMutation;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalChunkMutation enum")
-    }
-
-    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::EnumAccess<'de>,
-    {
-        let (tag, variant) = data.variant::<String>()?;
-        match tag.as_str() {
-            "Upsert" => Ok(LexicalChunkMutation::Upsert(variant.newtype_variant()?)),
-            "Delete" => Ok(LexicalChunkMutation::Delete(variant.newtype_variant()?)),
+        match value {
+            "File" => Ok(SearchScopeSurface::File),
+            "Module" => Ok(SearchScopeSurface::Module),
+            "Chunk" => Ok(SearchScopeSurface::Chunk),
+            "Symbol" => Ok(SearchScopeSurface::Symbol),
             other => Err(de::Error::unknown_variant(
                 other,
-                LEXICAL_CHUNK_MUTATION_VARIANTS,
+                SEARCH_SCOPE_SURFACE_VARIANTS,
             )),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalChunkMutation {
+impl<'de> Deserialize<'de> for SearchScopeSurface {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_enum(
-            "LexicalChunkMutation",
-            LEXICAL_CHUNK_MUTATION_VARIANTS,
-            LexicalChunkMutationVisitor,
-        )
+        deserializer.deserialize_str(SearchScopeSurfaceVisitor)
     }
 }
 
-// =============================================================================
-// Lexical symbol mutation
-// =============================================================================
-
-/// Upsert payload for a single lexical symbol inside a [`LexicalIngestBatch`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalSymbolUpsert {
-    pub symbol_id: SymbolId,
-    pub record: SymbolRecord,
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SearchScopeKey {
+    pub doc_surface: SearchScopeSurface,
+    pub repo_relative_path: RepoRelativePath,
 }
 
-const LEXICAL_SYMBOL_UPSERT_FIELDS: &[&str] = &["symbol_id", "record"];
+const SEARCH_SCOPE_KEY_FIELDS: &[&str] = &["doc_surface", "repo_relative_path"];
 
-impl Serialize for LexicalSymbolUpsert {
+impl Serialize for SearchScopeKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalSymbolUpsert", 2)?;
-        state.serialize_field("symbol_id", &self.symbol_id)?;
-        state.serialize_field("record", &self.record)?;
+        let mut state = serializer.serialize_struct("SearchScopeKey", 2)?;
+        state.serialize_field("doc_surface", &self.doc_surface)?;
+        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.end()
     }
 }
 
-struct LexicalSymbolUpsertVisitor;
+struct SearchScopeKeyVisitor;
 
-impl<'de> Visitor<'de> for LexicalSymbolUpsertVisitor {
-    type Value = LexicalSymbolUpsert;
+impl<'de> Visitor<'de> for SearchScopeKeyVisitor {
+    type Value = SearchScopeKey;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalSymbolUpsert map")
+        formatter.write_str("a SearchScopeKey map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut symbol_id: Option<SymbolId> = None;
-        let mut record: Option<SymbolRecord> = None;
+        let mut doc_surface: Option<SearchScopeSurface> = None;
+        let mut repo_relative_path: Option<RepoRelativePath> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "symbol_id" => {
-                    if symbol_id.is_some() {
-                        return Err(de::Error::duplicate_field("symbol_id"));
+                "doc_surface" => {
+                    if doc_surface.is_some() {
+                        return Err(de::Error::duplicate_field("doc_surface"));
                     }
-                    symbol_id = Some(map.next_value()?);
+                    doc_surface = Some(map.next_value()?);
                 }
-                "record" => {
-                    if record.is_some() {
-                        return Err(de::Error::duplicate_field("record"));
+                "repo_relative_path" => {
+                    if repo_relative_path.is_some() {
+                        return Err(de::Error::duplicate_field("repo_relative_path"));
                     }
-                    record = Some(map.next_value()?);
+                    repo_relative_path = Some(map.next_value()?);
                 }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        LEXICAL_SYMBOL_UPSERT_FIELDS,
-                    ));
-                }
+                other => return Err(de::Error::unknown_field(other, SEARCH_SCOPE_KEY_FIELDS)),
             }
         }
-        Ok(LexicalSymbolUpsert {
-            symbol_id: symbol_id.ok_or_else(|| de::Error::missing_field("symbol_id"))?,
-            record: record.ok_or_else(|| de::Error::missing_field("record"))?,
+        Ok(SearchScopeKey {
+            doc_surface: doc_surface.ok_or_else(|| de::Error::missing_field("doc_surface"))?,
+            repo_relative_path: repo_relative_path
+                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalSymbolUpsert {
+impl<'de> Deserialize<'de> for SearchScopeKey {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalSymbolUpsert",
-            LEXICAL_SYMBOL_UPSERT_FIELDS,
-            LexicalSymbolUpsertVisitor,
+            "SearchScopeKey",
+            SEARCH_SCOPE_KEY_FIELDS,
+            SearchScopeKeyVisitor,
         )
     }
 }
 
-/// Delete payload for a single lexical symbol inside a [`LexicalIngestBatch`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalSymbolDelete {
-    pub symbol_id: SymbolId,
+pub struct LexicalReplaceScope {
+    pub scope: SearchScopeKey,
+    pub scope_digest: String,
+    pub chunks: Vec<ChunkRecord>,
+    pub symbols: Vec<SymbolRecord>,
 }
 
-const LEXICAL_SYMBOL_DELETE_FIELDS: &[&str] = &["symbol_id"];
+const LEXICAL_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "chunks", "symbols"];
 
-impl Serialize for LexicalSymbolDelete {
+impl Serialize for LexicalReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalSymbolDelete", 1)?;
-        state.serialize_field("symbol_id", &self.symbol_id)?;
+        let mut state = serializer.serialize_struct("LexicalReplaceScope", 4)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("scope_digest", &self.scope_digest)?;
+        state.serialize_field("chunks", &self.chunks)?;
+        state.serialize_field("symbols", &self.symbols)?;
         state.end()
     }
 }
 
-struct LexicalSymbolDeleteVisitor;
+struct LexicalReplaceScopeVisitor;
 
-impl<'de> Visitor<'de> for LexicalSymbolDeleteVisitor {
-    type Value = LexicalSymbolDelete;
+impl<'de> Visitor<'de> for LexicalReplaceScopeVisitor {
+    type Value = LexicalReplaceScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalSymbolDelete map")
+        formatter.write_str("a LexicalReplaceScope map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut symbol_id: Option<SymbolId> = None;
+        let mut scope: Option<SearchScopeKey> = None;
+        let mut scope_digest: Option<String> = None;
+        let mut chunks: Option<Vec<ChunkRecord>> = None;
+        let mut symbols: Option<Vec<SymbolRecord>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "symbol_id" => {
-                    if symbol_id.is_some() {
-                        return Err(de::Error::duplicate_field("symbol_id"));
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
                     }
-                    symbol_id = Some(map.next_value()?);
+                    scope = Some(map.next_value()?);
+                }
+                "scope_digest" => {
+                    if scope_digest.is_some() {
+                        return Err(de::Error::duplicate_field("scope_digest"));
+                    }
+                    scope_digest = Some(map.next_value()?);
+                }
+                "chunks" => {
+                    if chunks.is_some() {
+                        return Err(de::Error::duplicate_field("chunks"));
+                    }
+                    chunks = Some(map.next_value()?);
+                }
+                "symbols" => {
+                    if symbols.is_some() {
+                        return Err(de::Error::duplicate_field("symbols"));
+                    }
+                    symbols = Some(map.next_value()?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        LEXICAL_SYMBOL_DELETE_FIELDS,
+                        LEXICAL_REPLACE_SCOPE_FIELDS,
                     ));
                 }
             }
         }
-        Ok(LexicalSymbolDelete {
-            symbol_id: symbol_id.ok_or_else(|| de::Error::missing_field("symbol_id"))?,
+        Ok(LexicalReplaceScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
+            chunks: chunks.ok_or_else(|| de::Error::missing_field("chunks"))?,
+            symbols: symbols.ok_or_else(|| de::Error::missing_field("symbols"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalSymbolDelete {
+impl<'de> Deserialize<'de> for LexicalReplaceScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalSymbolDelete",
-            LEXICAL_SYMBOL_DELETE_FIELDS,
-            LexicalSymbolDeleteVisitor,
+            "LexicalReplaceScope",
+            LEXICAL_REPLACE_SCOPE_FIELDS,
+            LexicalReplaceScopeVisitor,
         )
     }
 }
 
-/// One mutation against the lexical symbol surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LexicalSymbolMutation {
-    Upsert(LexicalSymbolUpsert),
-    Delete(LexicalSymbolDelete),
+pub struct LexicalTombstoneScope {
+    pub scope: SearchScopeKey,
 }
 
-const LEXICAL_SYMBOL_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
+const LEXICAL_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
 
-impl Serialize for LexicalSymbolMutation {
+impl Serialize for LexicalTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match self {
-            Self::Upsert(payload) => {
-                serializer.serialize_newtype_variant("LexicalSymbolMutation", 0, "Upsert", payload)
-            }
-            Self::Delete(payload) => {
-                serializer.serialize_newtype_variant("LexicalSymbolMutation", 1, "Delete", payload)
-            }
-        }
-    }
-}
-
-struct LexicalSymbolMutationVisitor;
-
-impl<'de> Visitor<'de> for LexicalSymbolMutationVisitor {
-    type Value = LexicalSymbolMutation;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalSymbolMutation enum")
-    }
-
-    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::EnumAccess<'de>,
-    {
-        let (tag, variant) = data.variant::<String>()?;
-        match tag.as_str() {
-            "Upsert" => Ok(LexicalSymbolMutation::Upsert(variant.newtype_variant()?)),
-            "Delete" => Ok(LexicalSymbolMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(
-                other,
-                LEXICAL_SYMBOL_MUTATION_VARIANTS,
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for LexicalSymbolMutation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_enum(
-            "LexicalSymbolMutation",
-            LEXICAL_SYMBOL_MUTATION_VARIANTS,
-            LexicalSymbolMutationVisitor,
-        )
-    }
-}
-
-// =============================================================================
-// Semantic embedding mutation
-// =============================================================================
-
-/// Upsert payload for a single semantic embedding inside a
-/// [`SemanticIngestBatch`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct SemanticEmbeddingUpsert {
-    pub embedding_id: EmbeddingId,
-    pub record: EmbeddingRecord,
-}
-
-const SEMANTIC_EMBEDDING_UPSERT_FIELDS: &[&str] = &["embedding_id", "record"];
-
-impl Serialize for SemanticEmbeddingUpsert {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SemanticEmbeddingUpsert", 2)?;
-        state.serialize_field("embedding_id", &self.embedding_id)?;
-        state.serialize_field("record", &self.record)?;
+        let mut state = serializer.serialize_struct("LexicalTombstoneScope", 1)?;
+        state.serialize_field("scope", &self.scope)?;
         state.end()
     }
 }
 
-struct SemanticEmbeddingUpsertVisitor;
+struct LexicalTombstoneScopeVisitor;
 
-impl<'de> Visitor<'de> for SemanticEmbeddingUpsertVisitor {
-    type Value = SemanticEmbeddingUpsert;
+impl<'de> Visitor<'de> for LexicalTombstoneScopeVisitor {
+    type Value = LexicalTombstoneScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SemanticEmbeddingUpsert map")
+        formatter.write_str("a LexicalTombstoneScope map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut embedding_id: Option<EmbeddingId> = None;
-        let mut record: Option<EmbeddingRecord> = None;
+        let mut scope: Option<SearchScopeKey> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "embedding_id" => {
-                    if embedding_id.is_some() {
-                        return Err(de::Error::duplicate_field("embedding_id"));
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
                     }
-                    embedding_id = Some(map.next_value()?);
-                }
-                "record" => {
-                    if record.is_some() {
-                        return Err(de::Error::duplicate_field("record"));
-                    }
-                    record = Some(map.next_value()?);
+                    scope = Some(map.next_value()?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        SEMANTIC_EMBEDDING_UPSERT_FIELDS,
+                        LEXICAL_TOMBSTONE_SCOPE_FIELDS,
                     ));
                 }
             }
         }
-        Ok(SemanticEmbeddingUpsert {
-            embedding_id: embedding_id.ok_or_else(|| de::Error::missing_field("embedding_id"))?,
-            record: record.ok_or_else(|| de::Error::missing_field("record"))?,
+        Ok(LexicalTombstoneScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for SemanticEmbeddingUpsert {
+impl<'de> Deserialize<'de> for LexicalTombstoneScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "SemanticEmbeddingUpsert",
-            SEMANTIC_EMBEDDING_UPSERT_FIELDS,
-            SemanticEmbeddingUpsertVisitor,
+            "LexicalTombstoneScope",
+            LEXICAL_TOMBSTONE_SCOPE_FIELDS,
+            LexicalTombstoneScopeVisitor,
         )
     }
 }
 
-/// Delete payload for a single semantic embedding inside a
-/// [`SemanticIngestBatch`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SemanticEmbeddingDelete {
-    pub embedding_id: EmbeddingId,
-}
-
-const SEMANTIC_EMBEDDING_DELETE_FIELDS: &[&str] = &["embedding_id"];
-
-impl Serialize for SemanticEmbeddingDelete {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SemanticEmbeddingDelete", 1)?;
-        state.serialize_field("embedding_id", &self.embedding_id)?;
-        state.end()
-    }
-}
-
-struct SemanticEmbeddingDeleteVisitor;
-
-impl<'de> Visitor<'de> for SemanticEmbeddingDeleteVisitor {
-    type Value = SemanticEmbeddingDelete;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SemanticEmbeddingDelete map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut embedding_id: Option<EmbeddingId> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "embedding_id" => {
-                    if embedding_id.is_some() {
-                        return Err(de::Error::duplicate_field("embedding_id"));
-                    }
-                    embedding_id = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEMANTIC_EMBEDDING_DELETE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SemanticEmbeddingDelete {
-            embedding_id: embedding_id.ok_or_else(|| de::Error::missing_field("embedding_id"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SemanticEmbeddingDelete {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SemanticEmbeddingDelete",
-            SEMANTIC_EMBEDDING_DELETE_FIELDS,
-            SemanticEmbeddingDeleteVisitor,
-        )
-    }
-}
-
-/// One mutation against the semantic embedding surface.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SemanticEmbeddingMutation {
-    Upsert(SemanticEmbeddingUpsert),
-    Delete(SemanticEmbeddingDelete),
-}
-
-const SEMANTIC_EMBEDDING_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
-
-impl Serialize for SemanticEmbeddingMutation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Upsert(payload) => serializer.serialize_newtype_variant(
-                "SemanticEmbeddingMutation",
-                0,
-                "Upsert",
-                payload,
-            ),
-            Self::Delete(payload) => serializer.serialize_newtype_variant(
-                "SemanticEmbeddingMutation",
-                1,
-                "Delete",
-                payload,
-            ),
-        }
-    }
-}
-
-struct SemanticEmbeddingMutationVisitor;
-
-impl<'de> Visitor<'de> for SemanticEmbeddingMutationVisitor {
-    type Value = SemanticEmbeddingMutation;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SemanticEmbeddingMutation enum")
-    }
-
-    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::EnumAccess<'de>,
-    {
-        let (tag, variant) = data.variant::<String>()?;
-        match tag.as_str() {
-            "Upsert" => Ok(SemanticEmbeddingMutation::Upsert(
-                variant.newtype_variant()?,
-            )),
-            "Delete" => Ok(SemanticEmbeddingMutation::Delete(
-                variant.newtype_variant()?,
-            )),
-            other => Err(de::Error::unknown_variant(
-                other,
-                SEMANTIC_EMBEDDING_MUTATION_VARIANTS,
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for SemanticEmbeddingMutation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_enum(
-            "SemanticEmbeddingMutation",
-            SEMANTIC_EMBEDDING_MUTATION_VARIANTS,
-            SemanticEmbeddingMutationVisitor,
-        )
-    }
-}
-
-// =============================================================================
-// Lexical / Semantic ingest batches
-// =============================================================================
-
-/// Typed lexical batch the producer sends to searchd's ingest dispatcher.
-///
-/// `manifest_payload` is opaque producer-side bookkeeping and is forwarded
-/// into `LexicalFullBundle::payload` when the dispatcher fans out to channel
-/// ops. Same opaqueness convention as the existing `LexicalFullBundle`
-/// channel field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
     pub mode: BatchIngestMode,
-    pub manifest_payload: Vec<u8>,
-    pub chunks: Vec<LexicalChunkMutation>,
-    pub symbols: Vec<LexicalSymbolMutation>,
+    pub replace_scopes: Vec<LexicalReplaceScope>,
+    pub tombstone_scopes: Vec<LexicalTombstoneScope>,
     pub seal: bool,
 }
 
@@ -778,10 +425,12 @@ const LEXICAL_INGEST_BATCH_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "generation",
+    "base_generation",
+    "manifest_digest",
+    "batch_digest",
     "mode",
-    "manifest_payload",
-    "chunks",
-    "symbols",
+    "replace_scopes",
+    "tombstone_scopes",
     "seal",
 ];
 
@@ -790,14 +439,16 @@ impl Serialize for LexicalIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalIngestBatch", 8)?;
+        let mut state = serializer.serialize_struct("LexicalIngestBatch", 10)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("base_generation", &self.base_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("mode", &self.mode)?;
-        state.serialize_field("manifest_payload", &Bytes::new(&self.manifest_payload))?;
-        state.serialize_field("chunks", &self.chunks)?;
-        state.serialize_field("symbols", &self.symbols)?;
+        state.serialize_field("replace_scopes", &self.replace_scopes)?;
+        state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
         state.end()
     }
@@ -819,10 +470,12 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
+        let mut base_generation: Option<Option<ManifestGeneration>> = None;
+        let mut manifest_digest: Option<String> = None;
+        let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
-        let mut manifest_payload: Option<Vec<u8>> = None;
-        let mut chunks: Option<Vec<LexicalChunkMutation>> = None;
-        let mut symbols: Option<Vec<LexicalSymbolMutation>> = None;
+        let mut replace_scopes: Option<Vec<LexicalReplaceScope>> = None;
+        let mut tombstone_scopes: Option<Vec<LexicalTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -844,30 +497,41 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
                     }
                     generation = Some(map.next_value()?);
                 }
+                "base_generation" => {
+                    if base_generation.is_some() {
+                        return Err(de::Error::duplicate_field("base_generation"));
+                    }
+                    base_generation = Some(map.next_value()?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(map.next_value()?);
+                }
+                "batch_digest" => {
+                    if batch_digest.is_some() {
+                        return Err(de::Error::duplicate_field("batch_digest"));
+                    }
+                    batch_digest = Some(map.next_value()?);
+                }
                 "mode" => {
                     if mode.is_some() {
                         return Err(de::Error::duplicate_field("mode"));
                     }
                     mode = Some(map.next_value()?);
                 }
-                "manifest_payload" => {
-                    if manifest_payload.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_payload"));
+                "replace_scopes" => {
+                    if replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("replace_scopes"));
                     }
-                    let bytes: ByteBuf = map.next_value()?;
-                    manifest_payload = Some(bytes.into_vec());
+                    replace_scopes = Some(map.next_value()?);
                 }
-                "chunks" => {
-                    if chunks.is_some() {
-                        return Err(de::Error::duplicate_field("chunks"));
+                "tombstone_scopes" => {
+                    if tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("tombstone_scopes"));
                     }
-                    chunks = Some(map.next_value()?);
-                }
-                "symbols" => {
-                    if symbols.is_some() {
-                        return Err(de::Error::duplicate_field("symbols"));
-                    }
-                    symbols = Some(map.next_value()?);
+                    tombstone_scopes = Some(map.next_value()?);
                 }
                 "seal" => {
                     if seal.is_some() {
@@ -884,11 +548,16 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            base_generation: base_generation
+                .ok_or_else(|| de::Error::missing_field("base_generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
-            manifest_payload: manifest_payload
-                .ok_or_else(|| de::Error::missing_field("manifest_payload"))?,
-            chunks: chunks.ok_or_else(|| de::Error::missing_field("chunks"))?,
-            symbols: symbols.ok_or_else(|| de::Error::missing_field("symbols"))?,
+            replace_scopes: replace_scopes
+                .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
+            tombstone_scopes: tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("tombstone_scopes"))?,
             seal: seal.ok_or_else(|| de::Error::missing_field("seal"))?,
         })
     }
@@ -907,15 +576,433 @@ impl<'de> Deserialize<'de> for LexicalIngestBatch {
     }
 }
 
-/// Typed semantic batch the producer sends to searchd's ingest dispatcher.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum EmbeddingNormalization {
+    None,
+    L2Unit,
+}
+
+const EMBEDDING_NORMALIZATION_VARIANTS: &[&str] = &["None", "L2Unit"];
+
+impl Serialize for EmbeddingNormalization {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::None => "None",
+            Self::L2Unit => "L2Unit",
+        })
+    }
+}
+
+struct EmbeddingNormalizationVisitor;
+
+impl Visitor<'_> for EmbeddingNormalizationVisitor {
+    type Value = EmbeddingNormalization;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an EmbeddingNormalization tag")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "None" => Ok(EmbeddingNormalization::None),
+            "L2Unit" => Ok(EmbeddingNormalization::L2Unit),
+            other => Err(de::Error::unknown_variant(
+                other,
+                EMBEDDING_NORMALIZATION_VARIANTS,
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbeddingNormalization {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(EmbeddingNormalizationVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum EmbeddingDistanceMetric {
+    Cosine,
+    Dot,
+    Euclidean,
+}
+
+const EMBEDDING_DISTANCE_METRIC_VARIANTS: &[&str] = &["Cosine", "Dot", "Euclidean"];
+
+impl Serialize for EmbeddingDistanceMetric {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Cosine => "Cosine",
+            Self::Dot => "Dot",
+            Self::Euclidean => "Euclidean",
+        })
+    }
+}
+
+struct EmbeddingDistanceMetricVisitor;
+
+impl Visitor<'_> for EmbeddingDistanceMetricVisitor {
+    type Value = EmbeddingDistanceMetric;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an EmbeddingDistanceMetric tag")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "Cosine" => Ok(EmbeddingDistanceMetric::Cosine),
+            "Dot" => Ok(EmbeddingDistanceMetric::Dot),
+            "Euclidean" => Ok(EmbeddingDistanceMetric::Euclidean),
+            other => Err(de::Error::unknown_variant(
+                other,
+                EMBEDDING_DISTANCE_METRIC_VARIANTS,
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbeddingDistanceMetric {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(EmbeddingDistanceMetricVisitor)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbeddingModelContract {
+    pub model_id: Box<str>,
+    pub model_version: Option<Box<str>>,
+    pub dimension: u32,
+    pub normalization: EmbeddingNormalization,
+    pub distance_metric: EmbeddingDistanceMetric,
+    pub policy_digest: Box<str>,
+    pub view_policy_digest: Option<Box<str>>,
+}
+
+const EMBEDDING_MODEL_CONTRACT_FIELDS: &[&str] = &[
+    "model_id",
+    "model_version",
+    "dimension",
+    "normalization",
+    "distance_metric",
+    "policy_digest",
+    "view_policy_digest",
+];
+
+impl Serialize for EmbeddingModelContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("EmbeddingModelContract", 7)?;
+        state.serialize_field("model_id", self.model_id.as_ref())?;
+        state.serialize_field("model_version", &self.model_version.as_deref())?;
+        state.serialize_field("dimension", &self.dimension)?;
+        state.serialize_field("normalization", &self.normalization)?;
+        state.serialize_field("distance_metric", &self.distance_metric)?;
+        state.serialize_field("policy_digest", self.policy_digest.as_ref())?;
+        state.serialize_field("view_policy_digest", &self.view_policy_digest.as_deref())?;
+        state.end()
+    }
+}
+
+struct EmbeddingModelContractVisitor;
+
+impl<'de> Visitor<'de> for EmbeddingModelContractVisitor {
+    type Value = EmbeddingModelContract;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an EmbeddingModelContract map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut model_id: Option<String> = None;
+        let mut model_version: Option<Option<String>> = None;
+        let mut dimension: Option<u32> = None;
+        let mut normalization: Option<EmbeddingNormalization> = None;
+        let mut distance_metric: Option<EmbeddingDistanceMetric> = None;
+        let mut policy_digest: Option<String> = None;
+        let mut view_policy_digest: Option<Option<String>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "model_id" => {
+                    if model_id.is_some() {
+                        return Err(de::Error::duplicate_field("model_id"));
+                    }
+                    model_id = Some(map.next_value()?);
+                }
+                "model_version" => {
+                    if model_version.is_some() {
+                        return Err(de::Error::duplicate_field("model_version"));
+                    }
+                    model_version = Some(map.next_value()?);
+                }
+                "dimension" => {
+                    if dimension.is_some() {
+                        return Err(de::Error::duplicate_field("dimension"));
+                    }
+                    dimension = Some(map.next_value()?);
+                }
+                "normalization" => {
+                    if normalization.is_some() {
+                        return Err(de::Error::duplicate_field("normalization"));
+                    }
+                    normalization = Some(map.next_value()?);
+                }
+                "distance_metric" => {
+                    if distance_metric.is_some() {
+                        return Err(de::Error::duplicate_field("distance_metric"));
+                    }
+                    distance_metric = Some(map.next_value()?);
+                }
+                "policy_digest" => {
+                    if policy_digest.is_some() {
+                        return Err(de::Error::duplicate_field("policy_digest"));
+                    }
+                    policy_digest = Some(map.next_value()?);
+                }
+                "view_policy_digest" => {
+                    if view_policy_digest.is_some() {
+                        return Err(de::Error::duplicate_field("view_policy_digest"));
+                    }
+                    view_policy_digest = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        EMBEDDING_MODEL_CONTRACT_FIELDS,
+                    ));
+                }
+            }
+        }
+        let dimension = dimension.ok_or_else(|| de::Error::missing_field("dimension"))?;
+        if dimension == 0 {
+            return Err(de::Error::invalid_value(
+                de::Unexpected::Unsigned(0),
+                &"a non-zero embedding dimension",
+            ));
+        }
+        Ok(EmbeddingModelContract {
+            model_id: model_id
+                .ok_or_else(|| de::Error::missing_field("model_id"))?
+                .into_boxed_str(),
+            model_version: model_version
+                .ok_or_else(|| de::Error::missing_field("model_version"))?
+                .map(String::into_boxed_str),
+            dimension,
+            normalization: normalization
+                .ok_or_else(|| de::Error::missing_field("normalization"))?,
+            distance_metric: distance_metric
+                .ok_or_else(|| de::Error::missing_field("distance_metric"))?,
+            policy_digest: policy_digest
+                .ok_or_else(|| de::Error::missing_field("policy_digest"))?
+                .into_boxed_str(),
+            view_policy_digest: view_policy_digest
+                .ok_or_else(|| de::Error::missing_field("view_policy_digest"))?
+                .map(String::into_boxed_str),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbeddingModelContract {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "EmbeddingModelContract",
+            EMBEDDING_MODEL_CONTRACT_FIELDS,
+            EmbeddingModelContractVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticReplaceScope {
+    pub scope: SearchScopeKey,
+    pub scope_digest: String,
+    pub embeddings: Vec<EmbeddingRecord>,
+}
+
+const SEMANTIC_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "embeddings"];
+
+impl Serialize for SemanticReplaceScope {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SemanticReplaceScope", 3)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("scope_digest", &self.scope_digest)?;
+        state.serialize_field("embeddings", &self.embeddings)?;
+        state.end()
+    }
+}
+
+struct SemanticReplaceScopeVisitor;
+
+impl<'de> Visitor<'de> for SemanticReplaceScopeVisitor {
+    type Value = SemanticReplaceScope;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticReplaceScope map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut scope: Option<SearchScopeKey> = None;
+        let mut scope_digest: Option<String> = None;
+        let mut embeddings: Option<Vec<EmbeddingRecord>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
+                    }
+                    scope = Some(map.next_value()?);
+                }
+                "scope_digest" => {
+                    if scope_digest.is_some() {
+                        return Err(de::Error::duplicate_field("scope_digest"));
+                    }
+                    scope_digest = Some(map.next_value()?);
+                }
+                "embeddings" => {
+                    if embeddings.is_some() {
+                        return Err(de::Error::duplicate_field("embeddings"));
+                    }
+                    embeddings = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEMANTIC_REPLACE_SCOPE_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SemanticReplaceScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
+            embeddings: embeddings.ok_or_else(|| de::Error::missing_field("embeddings"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticReplaceScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SemanticReplaceScope",
+            SEMANTIC_REPLACE_SCOPE_FIELDS,
+            SemanticReplaceScopeVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticTombstoneScope {
+    pub scope: SearchScopeKey,
+}
+
+const SEMANTIC_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
+
+impl Serialize for SemanticTombstoneScope {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SemanticTombstoneScope", 1)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.end()
+    }
+}
+
+struct SemanticTombstoneScopeVisitor;
+
+impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
+    type Value = SemanticTombstoneScope;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticTombstoneScope map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut scope: Option<SearchScopeKey> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
+                    }
+                    scope = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEMANTIC_TOMBSTONE_SCOPE_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SemanticTombstoneScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticTombstoneScope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SemanticTombstoneScope",
+            SEMANTIC_TOMBSTONE_SCOPE_FIELDS,
+            SemanticTombstoneScopeVisitor,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
     pub mode: BatchIngestMode,
-    pub manifest_payload: Vec<u8>,
-    pub embeddings: Vec<SemanticEmbeddingMutation>,
+    pub model_contract: EmbeddingModelContract,
+    pub replace_scopes: Vec<SemanticReplaceScope>,
+    pub tombstone_scopes: Vec<SemanticTombstoneScope>,
     pub seal: bool,
 }
 
@@ -923,9 +1010,13 @@ const SEMANTIC_INGEST_BATCH_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "generation",
+    "base_generation",
+    "manifest_digest",
+    "batch_digest",
     "mode",
-    "manifest_payload",
-    "embeddings",
+    "model_contract",
+    "replace_scopes",
+    "tombstone_scopes",
     "seal",
 ];
 
@@ -934,13 +1025,17 @@ impl Serialize for SemanticIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticIngestBatch", 7)?;
+        let mut state = serializer.serialize_struct("SemanticIngestBatch", 11)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("base_generation", &self.base_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("mode", &self.mode)?;
-        state.serialize_field("manifest_payload", &Bytes::new(&self.manifest_payload))?;
-        state.serialize_field("embeddings", &self.embeddings)?;
+        state.serialize_field("model_contract", &self.model_contract)?;
+        state.serialize_field("replace_scopes", &self.replace_scopes)?;
+        state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
         state.end()
     }
@@ -962,9 +1057,13 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
+        let mut base_generation: Option<Option<ManifestGeneration>> = None;
+        let mut manifest_digest: Option<String> = None;
+        let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
-        let mut manifest_payload: Option<Vec<u8>> = None;
-        let mut embeddings: Option<Vec<SemanticEmbeddingMutation>> = None;
+        let mut model_contract: Option<EmbeddingModelContract> = None;
+        let mut replace_scopes: Option<Vec<SemanticReplaceScope>> = None;
+        let mut tombstone_scopes: Option<Vec<SemanticTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -986,24 +1085,47 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
                     }
                     generation = Some(map.next_value()?);
                 }
+                "base_generation" => {
+                    if base_generation.is_some() {
+                        return Err(de::Error::duplicate_field("base_generation"));
+                    }
+                    base_generation = Some(map.next_value()?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(map.next_value()?);
+                }
+                "batch_digest" => {
+                    if batch_digest.is_some() {
+                        return Err(de::Error::duplicate_field("batch_digest"));
+                    }
+                    batch_digest = Some(map.next_value()?);
+                }
                 "mode" => {
                     if mode.is_some() {
                         return Err(de::Error::duplicate_field("mode"));
                     }
                     mode = Some(map.next_value()?);
                 }
-                "manifest_payload" => {
-                    if manifest_payload.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_payload"));
+                "model_contract" => {
+                    if model_contract.is_some() {
+                        return Err(de::Error::duplicate_field("model_contract"));
                     }
-                    let bytes: ByteBuf = map.next_value()?;
-                    manifest_payload = Some(bytes.into_vec());
+                    model_contract = Some(map.next_value()?);
                 }
-                "embeddings" => {
-                    if embeddings.is_some() {
-                        return Err(de::Error::duplicate_field("embeddings"));
+                "replace_scopes" => {
+                    if replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("replace_scopes"));
                     }
-                    embeddings = Some(map.next_value()?);
+                    replace_scopes = Some(map.next_value()?);
+                }
+                "tombstone_scopes" => {
+                    if tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("tombstone_scopes"));
+                    }
+                    tombstone_scopes = Some(map.next_value()?);
                 }
                 "seal" => {
                     if seal.is_some() {
@@ -1023,10 +1145,18 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            base_generation: base_generation
+                .ok_or_else(|| de::Error::missing_field("base_generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
-            manifest_payload: manifest_payload
-                .ok_or_else(|| de::Error::missing_field("manifest_payload"))?,
-            embeddings: embeddings.ok_or_else(|| de::Error::missing_field("embeddings"))?,
+            model_contract: model_contract
+                .ok_or_else(|| de::Error::missing_field("model_contract"))?,
+            replace_scopes: replace_scopes
+                .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
+            tombstone_scopes: tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("tombstone_scopes"))?,
             seal: seal.ok_or_else(|| de::Error::missing_field("seal"))?,
         })
     }
@@ -1630,32 +1760,32 @@ impl<'de> Deserialize<'de> for DirtyIngestBatch {
 // =============================================================================
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParseTreeUpsert {
+pub struct StructuralTreeRecord {
     pub chunk_id: ChunkId,
     pub record: ParseTreeRecord,
 }
 
-const PARSE_TREE_UPSERT_FIELDS: &[&str] = &["chunk_id", "record"];
+const STRUCTURAL_TREE_RECORD_FIELDS: &[&str] = &["chunk_id", "record"];
 
-impl Serialize for ParseTreeUpsert {
+impl Serialize for StructuralTreeRecord {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ParseTreeUpsert", 2)?;
+        let mut state = serializer.serialize_struct("StructuralTreeRecord", 2)?;
         state.serialize_field("chunk_id", &self.chunk_id)?;
         state.serialize_field("record", &self.record)?;
         state.end()
     }
 }
 
-struct ParseTreeUpsertVisitor;
+struct StructuralTreeRecordVisitor;
 
-impl<'de> Visitor<'de> for ParseTreeUpsertVisitor {
-    type Value = ParseTreeUpsert;
+impl<'de> Visitor<'de> for StructuralTreeRecordVisitor {
+    type Value = StructuralTreeRecord;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a ParseTreeUpsert map")
+        formatter.write_str("a StructuralTreeRecord map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -1668,144 +1798,184 @@ impl<'de> Visitor<'de> for ParseTreeUpsertVisitor {
             match key.as_str() {
                 "chunk_id" => chunk_id = Some(map.next_value()?),
                 "record" => record = Some(map.next_value()?),
-                other => return Err(de::Error::unknown_field(other, PARSE_TREE_UPSERT_FIELDS)),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        STRUCTURAL_TREE_RECORD_FIELDS,
+                    ));
+                }
             }
         }
-        Ok(ParseTreeUpsert {
+        Ok(StructuralTreeRecord {
             chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
             record: record.ok_or_else(|| de::Error::missing_field("record"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for ParseTreeUpsert {
+impl<'de> Deserialize<'de> for StructuralTreeRecord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "ParseTreeUpsert",
-            PARSE_TREE_UPSERT_FIELDS,
-            ParseTreeUpsertVisitor,
+            "StructuralTreeRecord",
+            STRUCTURAL_TREE_RECORD_FIELDS,
+            StructuralTreeRecordVisitor,
         )
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParseTreeDelete {
-    pub chunk_id: ChunkId,
+pub struct StructuralReplaceScope {
+    pub scope: SearchScopeKey,
+    pub scope_digest: String,
+    pub trees: Vec<StructuralTreeRecord>,
 }
 
-const PARSE_TREE_DELETE_FIELDS: &[&str] = &["chunk_id"];
+const STRUCTURAL_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "trees"];
 
-impl Serialize for ParseTreeDelete {
+impl Serialize for StructuralReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ParseTreeDelete", 1)?;
-        state.serialize_field("chunk_id", &self.chunk_id)?;
+        let mut state = serializer.serialize_struct("StructuralReplaceScope", 3)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("scope_digest", &self.scope_digest)?;
+        state.serialize_field("trees", &self.trees)?;
         state.end()
     }
 }
 
-struct ParseTreeDeleteVisitor;
+struct StructuralReplaceScopeVisitor;
 
-impl<'de> Visitor<'de> for ParseTreeDeleteVisitor {
-    type Value = ParseTreeDelete;
+impl<'de> Visitor<'de> for StructuralReplaceScopeVisitor {
+    type Value = StructuralReplaceScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a ParseTreeDelete map")
+        formatter.write_str("a StructuralReplaceScope map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut chunk_id: Option<ChunkId> = None;
+        let mut scope: Option<SearchScopeKey> = None;
+        let mut scope_digest: Option<String> = None;
+        let mut trees: Option<Vec<StructuralTreeRecord>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "chunk_id" => chunk_id = Some(map.next_value()?),
-                other => return Err(de::Error::unknown_field(other, PARSE_TREE_DELETE_FIELDS)),
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
+                    }
+                    scope = Some(map.next_value()?);
+                }
+                "scope_digest" => {
+                    if scope_digest.is_some() {
+                        return Err(de::Error::duplicate_field("scope_digest"));
+                    }
+                    scope_digest = Some(map.next_value()?);
+                }
+                "trees" => {
+                    if trees.is_some() {
+                        return Err(de::Error::duplicate_field("trees"));
+                    }
+                    trees = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        STRUCTURAL_REPLACE_SCOPE_FIELDS,
+                    ));
+                }
             }
         }
-        Ok(ParseTreeDelete {
-            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
+        Ok(StructuralReplaceScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
+            trees: trees.ok_or_else(|| de::Error::missing_field("trees"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for ParseTreeDelete {
+impl<'de> Deserialize<'de> for StructuralReplaceScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "ParseTreeDelete",
-            PARSE_TREE_DELETE_FIELDS,
-            ParseTreeDeleteVisitor,
+            "StructuralReplaceScope",
+            STRUCTURAL_REPLACE_SCOPE_FIELDS,
+            StructuralReplaceScopeVisitor,
         )
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ParseTreeMutation {
-    Upsert(ParseTreeUpsert),
-    Delete(ParseTreeDelete),
+pub struct StructuralTombstoneScope {
+    pub scope: SearchScopeKey,
 }
 
-const PARSE_TREE_MUTATION_VARIANTS: &[&str] = &["Upsert", "Delete"];
+const STRUCTURAL_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
 
-impl Serialize for ParseTreeMutation {
+impl Serialize for StructuralTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match self {
-            Self::Upsert(payload) => {
-                serializer.serialize_newtype_variant("ParseTreeMutation", 0, "Upsert", payload)
-            }
-            Self::Delete(payload) => {
-                serializer.serialize_newtype_variant("ParseTreeMutation", 1, "Delete", payload)
-            }
-        }
+        let mut state = serializer.serialize_struct("StructuralTombstoneScope", 1)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.end()
     }
 }
 
-struct ParseTreeMutationVisitor;
+struct StructuralTombstoneScopeVisitor;
 
-impl<'de> Visitor<'de> for ParseTreeMutationVisitor {
-    type Value = ParseTreeMutation;
+impl<'de> Visitor<'de> for StructuralTombstoneScopeVisitor {
+    type Value = StructuralTombstoneScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a ParseTreeMutation enum")
+        formatter.write_str("a StructuralTombstoneScope map")
     }
 
-    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
-        A: serde::de::EnumAccess<'de>,
+        A: MapAccess<'de>,
     {
-        let (tag, variant) = data.variant::<String>()?;
-        match tag.as_str() {
-            "Upsert" => Ok(ParseTreeMutation::Upsert(variant.newtype_variant()?)),
-            "Delete" => Ok(ParseTreeMutation::Delete(variant.newtype_variant()?)),
-            other => Err(de::Error::unknown_variant(
-                other,
-                PARSE_TREE_MUTATION_VARIANTS,
-            )),
+        let mut scope: Option<SearchScopeKey> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "scope" => {
+                    if scope.is_some() {
+                        return Err(de::Error::duplicate_field("scope"));
+                    }
+                    scope = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        STRUCTURAL_TOMBSTONE_SCOPE_FIELDS,
+                    ));
+                }
+            }
         }
+        Ok(StructuralTombstoneScope {
+            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+        })
     }
 }
 
-impl<'de> Deserialize<'de> for ParseTreeMutation {
+impl<'de> Deserialize<'de> for StructuralTombstoneScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_enum(
-            "ParseTreeMutation",
-            PARSE_TREE_MUTATION_VARIANTS,
-            ParseTreeMutationVisitor,
+        deserializer.deserialize_struct(
+            "StructuralTombstoneScope",
+            STRUCTURAL_TOMBSTONE_SCOPE_FIELDS,
+            StructuralTombstoneScopeVisitor,
         )
     }
 }
@@ -1815,21 +1985,44 @@ pub struct StructuralIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub trees: Vec<ParseTreeMutation>,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
+    pub mode: BatchIngestMode,
+    pub replace_scopes: Vec<StructuralReplaceScope>,
+    pub tombstone_scopes: Vec<StructuralTombstoneScope>,
+    pub seal: bool,
 }
 
-const STRUCTURAL_INGEST_BATCH_FIELDS: &[&str] = &["repo_id", "revision_id", "generation", "trees"];
+const STRUCTURAL_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "base_generation",
+    "manifest_digest",
+    "batch_digest",
+    "mode",
+    "replace_scopes",
+    "tombstone_scopes",
+    "seal",
+];
 
 impl Serialize for StructuralIngestBatch {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("StructuralIngestBatch", 4)?;
+        let mut state = serializer.serialize_struct("StructuralIngestBatch", 10)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
-        state.serialize_field("trees", &self.trees)?;
+        state.serialize_field("base_generation", &self.base_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("mode", &self.mode)?;
+        state.serialize_field("replace_scopes", &self.replace_scopes)?;
+        state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
+        state.serialize_field("seal", &self.seal)?;
         state.end()
     }
 }
@@ -1850,13 +2043,75 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
-        let mut trees: Option<Vec<ParseTreeMutation>> = None;
+        let mut base_generation: Option<Option<ManifestGeneration>> = None;
+        let mut manifest_digest: Option<String> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut mode: Option<BatchIngestMode> = None;
+        let mut replace_scopes: Option<Vec<StructuralReplaceScope>> = None;
+        let mut tombstone_scopes: Option<Vec<StructuralTombstoneScope>> = None;
+        let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
-                "generation" => generation = Some(map.next_value()?),
-                "trees" => trees = Some(map.next_value()?),
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "base_generation" => {
+                    if base_generation.is_some() {
+                        return Err(de::Error::duplicate_field("base_generation"));
+                    }
+                    base_generation = Some(map.next_value()?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(map.next_value()?);
+                }
+                "batch_digest" => {
+                    if batch_digest.is_some() {
+                        return Err(de::Error::duplicate_field("batch_digest"));
+                    }
+                    batch_digest = Some(map.next_value()?);
+                }
+                "mode" => {
+                    if mode.is_some() {
+                        return Err(de::Error::duplicate_field("mode"));
+                    }
+                    mode = Some(map.next_value()?);
+                }
+                "replace_scopes" => {
+                    if replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("replace_scopes"));
+                    }
+                    replace_scopes = Some(map.next_value()?);
+                }
+                "tombstone_scopes" => {
+                    if tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("tombstone_scopes"));
+                    }
+                    tombstone_scopes = Some(map.next_value()?);
+                }
+                "seal" => {
+                    if seal.is_some() {
+                        return Err(de::Error::duplicate_field("seal"));
+                    }
+                    seal = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -1869,7 +2124,17 @@ impl<'de> Visitor<'de> for StructuralIngestBatchVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            trees: trees.ok_or_else(|| de::Error::missing_field("trees"))?,
+            base_generation: base_generation
+                .ok_or_else(|| de::Error::missing_field("base_generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
+            replace_scopes: replace_scopes
+                .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
+            tombstone_scopes: tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("tombstone_scopes"))?,
+            seal: seal.ok_or_else(|| de::Error::missing_field("seal"))?,
         })
     }
 }
@@ -1893,26 +2158,37 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
 
 /// Server-side receipt for a successful batch publish.
 ///
-/// `first_seq` / `last_seq` are the inclusive channel sequence range assigned
-/// by searchd's channel publisher; `sealed` is true when the batch included a
-/// closing seal op.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Receipt truth is generation/materialization scoped, not channel-sequence
+/// scoped. The ingest path may internally fan out to multiple storage writes,
+/// but the producer-facing ack reports the generation and how many scope
+/// mutations were accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchPublishReceipt {
-    pub first_seq: Option<ChannelSeq>,
-    pub last_seq: Option<ChannelSeq>,
+    pub generation: ManifestGeneration,
+    pub manifest_digest: String,
+    pub accepted_replace_scopes: u32,
+    pub accepted_tombstone_scopes: u32,
     pub sealed: bool,
 }
 
-const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &["first_seq", "last_seq", "sealed"];
+const BATCH_PUBLISH_RECEIPT_FIELDS: &[&str] = &[
+    "generation",
+    "manifest_digest",
+    "accepted_replace_scopes",
+    "accepted_tombstone_scopes",
+    "sealed",
+];
 
 impl Serialize for BatchPublishReceipt {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("BatchPublishReceipt", 3)?;
-        state.serialize_field("first_seq", &self.first_seq)?;
-        state.serialize_field("last_seq", &self.last_seq)?;
+        let mut state = serializer.serialize_struct("BatchPublishReceipt", 5)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("accepted_replace_scopes", &self.accepted_replace_scopes)?;
+        state.serialize_field("accepted_tombstone_scopes", &self.accepted_tombstone_scopes)?;
         state.serialize_field("sealed", &self.sealed)?;
         state.end()
     }
@@ -1931,22 +2207,36 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut first_seq: Option<Option<ChannelSeq>> = None;
-        let mut last_seq: Option<Option<ChannelSeq>> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut manifest_digest: Option<String> = None;
+        let mut accepted_replace_scopes: Option<u32> = None;
+        let mut accepted_tombstone_scopes: Option<u32> = None;
         let mut sealed: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "first_seq" => {
-                    if first_seq.is_some() {
-                        return Err(de::Error::duplicate_field("first_seq"));
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
                     }
-                    first_seq = Some(map.next_value()?);
+                    generation = Some(map.next_value()?);
                 }
-                "last_seq" => {
-                    if last_seq.is_some() {
-                        return Err(de::Error::duplicate_field("last_seq"));
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
                     }
-                    last_seq = Some(map.next_value()?);
+                    manifest_digest = Some(map.next_value()?);
+                }
+                "accepted_replace_scopes" => {
+                    if accepted_replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("accepted_replace_scopes"));
+                    }
+                    accepted_replace_scopes = Some(map.next_value()?);
+                }
+                "accepted_tombstone_scopes" => {
+                    if accepted_tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("accepted_tombstone_scopes"));
+                    }
+                    accepted_tombstone_scopes = Some(map.next_value()?);
                 }
                 "sealed" => {
                     if sealed.is_some() {
@@ -1963,8 +2253,13 @@ impl<'de> Visitor<'de> for BatchPublishReceiptVisitor {
             }
         }
         Ok(BatchPublishReceipt {
-            first_seq: first_seq.ok_or_else(|| de::Error::missing_field("first_seq"))?,
-            last_seq: last_seq.ok_or_else(|| de::Error::missing_field("last_seq"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            accepted_replace_scopes: accepted_replace_scopes
+                .ok_or_else(|| de::Error::missing_field("accepted_replace_scopes"))?,
+            accepted_tombstone_scopes: accepted_tombstone_scopes
+                .ok_or_else(|| de::Error::missing_field("accepted_tombstone_scopes"))?,
             sealed: sealed.ok_or_else(|| de::Error::missing_field("sealed"))?,
         })
     }
@@ -1984,20 +2279,33 @@ impl<'de> Deserialize<'de> for BatchPublishReceipt {
 }
 
 impl BatchPublishReceipt {
-    /// Record one channel sequence into the receipt. Used by ingest dispatchers
-    /// after each successful channel `publish()`. Sequences are appended in
-    /// channel order; `first_seq` captures the earliest, `last_seq` the most
-    /// recent.
-    pub fn record(&mut self, seq: ChannelSeq) {
-        if self.first_seq.is_none() {
-            self.first_seq = Some(seq);
+    #[must_use]
+    pub fn empty_for(generation: ManifestGeneration, manifest_digest: impl Into<String>) -> Self {
+        Self {
+            generation,
+            manifest_digest: manifest_digest.into(),
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            sealed: false,
         }
-        self.last_seq = Some(seq);
     }
 
-    /// Flag the receipt as carrying a closing seal op.
+    pub fn accept_replace_scope(&mut self) {
+        self.accepted_replace_scopes = self.accepted_replace_scopes.saturating_add(1);
+    }
+
+    pub fn accept_tombstone_scope(&mut self) {
+        self.accepted_tombstone_scopes = self.accepted_tombstone_scopes.saturating_add(1);
+    }
+
     pub fn mark_sealed(&mut self) {
         self.sealed = true;
+    }
+}
+
+impl Default for BatchPublishReceipt {
+    fn default() -> Self {
+        Self::empty_for(ManifestGeneration::ZERO, String::new())
     }
 }
 
@@ -2423,101 +2731,6 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
 }
 
 // =============================================================================
-// Local byte-buffer helpers
-// =============================================================================
-//
-// `manifest_payload` is a `Vec<u8>` blob. Default serde on `Vec<u8>` emits a
-// CBOR array of integers; we want CBOR major type 2 (byte string) instead so
-// the wire stays tight and matches the existing channel-op payload encoding
-// (see `crate::channel::ops::serde_bytes_helper`). The two byte-buffer types
-// below produce that shape without pulling in the `serde_bytes` crate.
-
-struct Bytes<'a>(&'a [u8]);
-
-impl<'a> Bytes<'a> {
-    const fn new(value: &'a [u8]) -> Self {
-        Self(value)
-    }
-}
-
-impl Serialize for Bytes<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(self.0)
-    }
-}
-
-struct ByteBuf(Vec<u8>);
-
-impl ByteBuf {
-    fn into_vec(self) -> Vec<u8> {
-        self.0
-    }
-}
-
-struct ByteBufVisitor;
-
-impl<'de> Visitor<'de> for ByteBufVisitor {
-    type Value = ByteBuf;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a byte buffer")
-    }
-
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(ByteBuf(v.to_vec()))
-    }
-
-    fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(ByteBuf(v.to_vec()))
-    }
-
-    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(ByteBuf(v))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        // Tolerate decoders that surface `bytes` as a sequence of small
-        // integers (CBOR major type 4). Mirrors the existing
-        // `serde_bytes_helper` impl in `crate::channel::ops`.
-        let mut out: Vec<u8> = seq.size_hint().map_or_else(Vec::new, Vec::with_capacity);
-        while let Some(elem) = seq.next_element::<u16>()? {
-            let byte = u8::try_from(elem).map_err(|_err| {
-                <A::Error as de::Error>::invalid_value(
-                    de::Unexpected::Unsigned(u64::from(elem)),
-                    &"a byte value in [0, 255]",
-                )
-            })?;
-            out.push(byte);
-        }
-        Ok(ByteBuf(out))
-    }
-}
-
-impl<'de> Deserialize<'de> for ByteBuf {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_byte_buf(ByteBufVisitor)
-    }
-}
-
-// =============================================================================
 // Tests
 // =============================================================================
 
@@ -2533,10 +2746,10 @@ impl<'de> Deserialize<'de> for ByteBuf {
 mod tests {
     use super::*;
     use crate::lex::{
-        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
-        ParseTreeRecord,
+        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
+        ParseRoleTag, ParseTreeRecord,
     };
-    use crate::{ChunkRecord, EmbeddingRecord, RepoRelativePath};
+    use crate::{ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath};
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -2575,24 +2788,39 @@ mod tests {
 
     fn fixture_chunk_record() -> ChunkRecord {
         ChunkRecord {
+            chunk_id: fixture_chunk_id(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: "rust".to_string().into_boxed_str(),
+            language: LanguageCode::new("rust").unwrap(),
+            start_byte: 0,
+            end_byte: 12,
             start_line: 1,
             end_line: 10,
             snippet: "fn main() {}".to_string().into_boxed_str(),
+            indexed_text: "fn main() {}".to_string().into_boxed_str(),
+            text_digest: "text:feed".to_string().into_boxed_str(),
+            shape_digest: "shape:feed".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
         }
     }
 
     fn fixture_embedding_record() -> EmbeddingRecord {
         EmbeddingRecord {
-            owner_kind: "Function".to_string().into_boxed_str(),
+            embedding_id: fixture_embedding_id(),
+            owner_kind: crate::OwnerDocKind::Chunk,
             owner_id: "main".to_string().into_boxed_str(),
+            source_doc_id: "doc-1".to_string().into_boxed_str(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: LangId::Rust,
+            language: LanguageCode::new("rust").unwrap(),
             symbol_kind: None,
+            start_byte: 0,
+            end_byte: 12,
             start_line: 1,
             end_line: 10,
             snippet: "fn main() {}".to_string().into_boxed_str(),
+            embedding_input_digest: "input:feed".to_string().into_boxed_str(),
+            vector_digest: "vector:feed".to_string().into_boxed_str(),
+            view_kind: "raw_chunk".to_string().into_boxed_str(),
             vector: vec![0.1, 0.2, 0.3],
         }
     }
@@ -2645,7 +2873,7 @@ mod tests {
     fn fixture_parse_tree_record() -> ParseTreeRecord {
         ParseTreeRecord {
             wire_version: 1,
-            lang: LangId::Rust,
+            lang: LanguageCode::new("rust").unwrap(),
             root: ParseNode {
                 kind: "function_item".to_string().into_boxed_str(),
                 byte_start: 0,
@@ -2662,23 +2890,46 @@ mod tests {
         }
     }
 
+    fn fixture_scope_key() -> SearchScopeKey {
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        }
+    }
+
+    fn fixture_model_contract() -> EmbeddingModelContract {
+        EmbeddingModelContract {
+            model_id: "text-embed".to_string().into_boxed_str(),
+            model_version: Some("1".to_string().into_boxed_str()),
+            dimension: 3,
+            normalization: EmbeddingNormalization::L2Unit,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            policy_digest: "policy:feed".to_string().into_boxed_str(),
+            view_policy_digest: Some("view:feed".to_string().into_boxed_str()),
+        }
+    }
+
     fn fixture_lexical_batch() -> LexicalIngestBatch {
         LexicalIngestBatch {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
+            base_generation: None,
+            manifest_digest: "manifest:feed".to_string(),
+            batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
-            manifest_payload: vec![0xCA, 0xFE, 0xBA, 0xBE],
-            chunks: vec![
-                LexicalChunkMutation::Upsert(LexicalChunkUpsert {
-                    chunk_id: fixture_chunk_id(),
-                    record: fixture_chunk_record(),
-                }),
-                LexicalChunkMutation::Delete(LexicalChunkDelete {
-                    chunk_id: fixture_chunk_id(),
-                }),
-            ],
-            symbols: vec![],
+            replace_scopes: vec![LexicalReplaceScope {
+                scope: fixture_scope_key(),
+                scope_digest: "scope:feed".to_string(),
+                chunks: vec![fixture_chunk_record()],
+                symbols: vec![],
+            }],
+            tombstone_scopes: vec![LexicalTombstoneScope {
+                scope: SearchScopeKey {
+                    doc_surface: SearchScopeSurface::Symbol,
+                    repo_relative_path: RepoRelativePath::new("src/main.rs"),
+                },
+            }],
             seal: true,
         }
     }
@@ -2688,17 +2939,22 @@ mod tests {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
+            base_generation: Some(ManifestGeneration::new(6)),
+            manifest_digest: "manifest:feed".to_string(),
+            batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::Delta,
-            manifest_payload: vec![],
-            embeddings: vec![
-                SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
-                    embedding_id: fixture_embedding_id(),
-                    record: fixture_embedding_record(),
-                }),
-                SemanticEmbeddingMutation::Delete(SemanticEmbeddingDelete {
-                    embedding_id: fixture_embedding_id(),
-                }),
-            ],
+            model_contract: fixture_model_contract(),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: fixture_scope_key(),
+                scope_digest: "scope:feed".to_string(),
+                embeddings: vec![fixture_embedding_record()],
+            }],
+            tombstone_scopes: vec![SemanticTombstoneScope {
+                scope: SearchScopeKey {
+                    doc_surface: SearchScopeSurface::Chunk,
+                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
+                },
+            }],
             seal: false,
         }
     }
@@ -2744,15 +3000,25 @@ mod tests {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
-            trees: vec![
-                ParseTreeMutation::Upsert(ParseTreeUpsert {
+            base_generation: Some(ManifestGeneration::new(6)),
+            manifest_digest: "sha256:structural-manifest".to_string(),
+            batch_digest: "sha256:structural-batch".to_string(),
+            mode: BatchIngestMode::Delta,
+            replace_scopes: vec![StructuralReplaceScope {
+                scope: fixture_scope_key(),
+                scope_digest: "scope:structural-1".to_string(),
+                trees: vec![StructuralTreeRecord {
                     chunk_id: fixture_chunk_id(),
                     record: fixture_parse_tree_record(),
-                }),
-                ParseTreeMutation::Delete(ParseTreeDelete {
-                    chunk_id: ChunkId::new("chunk-drop"),
-                }),
-            ],
+                }],
+            }],
+            tombstone_scopes: vec![StructuralTombstoneScope {
+                scope: SearchScopeKey {
+                    doc_surface: SearchScopeSurface::Chunk,
+                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
+                },
+            }],
+            seal: true,
         }
     }
 
@@ -2763,41 +3029,6 @@ mod tests {
             let decoded: BatchIngestMode = decode(&bytes)?;
             assert_eq!(decoded, mode);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn lexical_chunk_mutation_round_trip() -> TestRes {
-        let mutation = LexicalChunkMutation::Upsert(LexicalChunkUpsert {
-            chunk_id: fixture_chunk_id(),
-            record: fixture_chunk_record(),
-        });
-        let bytes = encode(&mutation)?;
-        let decoded: LexicalChunkMutation = decode(&bytes)?;
-        assert_eq!(decoded, mutation);
-
-        let mutation = LexicalChunkMutation::Delete(LexicalChunkDelete {
-            chunk_id: fixture_chunk_id(),
-        });
-        let bytes = encode(&mutation)?;
-        let decoded: LexicalChunkMutation = decode(&bytes)?;
-        assert_eq!(decoded, mutation);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
-    )]
-    fn semantic_embedding_mutation_round_trip() -> TestRes {
-        let mutation = SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
-            embedding_id: fixture_embedding_id(),
-            record: fixture_embedding_record(),
-        });
-        let bytes = encode(&mutation)?;
-        let decoded: SemanticEmbeddingMutation = decode(&bytes)?;
-        assert_eq!(decoded, mutation);
         Ok(())
     }
 
@@ -2853,8 +3084,10 @@ mod tests {
     #[test]
     fn batch_publish_receipt_round_trip() -> TestRes {
         let receipt = BatchPublishReceipt {
-            first_seq: Some(ChannelSeq::new(1)),
-            last_seq: Some(ChannelSeq::new(42)),
+            generation: ManifestGeneration::new(9),
+            manifest_digest: "sha256:feed".to_string(),
+            accepted_replace_scopes: 2,
+            accepted_tombstone_scopes: 1,
             sealed: true,
         };
         let bytes = encode(&receipt)?;
@@ -2932,8 +3165,10 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 3,
             payload: SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt {
-                first_seq: Some(ChannelSeq::new(0)),
-                last_seq: Some(ChannelSeq::new(2)),
+                generation: ManifestGeneration::new(1),
+                manifest_digest: "digest-lex".to_string(),
+                accepted_replace_scopes: 1,
+                accepted_tombstone_scopes: 0,
                 sealed: true,
             }),
         };
@@ -2963,8 +3198,10 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 5,
             payload: SearchPlaneIngestIpcResponse::HistoryReceipt(BatchPublishReceipt {
-                first_seq: Some(ChannelSeq::new(2)),
-                last_seq: Some(ChannelSeq::new(7)),
+                generation: ManifestGeneration::new(3),
+                manifest_digest: "digest-hist".to_string(),
+                accepted_replace_scopes: 4,
+                accepted_tombstone_scopes: 0,
                 sealed: false,
             }),
         };
@@ -2979,8 +3216,10 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 6,
             payload: SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
-                first_seq: Some(ChannelSeq::new(1)),
-                last_seq: Some(ChannelSeq::new(2)),
+                generation: ManifestGeneration::new(4),
+                manifest_digest: "digest-dirty".to_string(),
+                accepted_replace_scopes: 1,
+                accepted_tombstone_scopes: 1,
                 sealed: false,
             }),
         };
@@ -2995,8 +3234,10 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 7,
             payload: SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
-                first_seq: Some(ChannelSeq::new(3)),
-                last_seq: Some(ChannelSeq::new(4)),
+                generation: ManifestGeneration::new(5),
+                manifest_digest: "digest-struct".to_string(),
+                accepted_replace_scopes: 1,
+                accepted_tombstone_scopes: 0,
                 sealed: false,
             }),
         };

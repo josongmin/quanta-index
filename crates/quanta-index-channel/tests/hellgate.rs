@@ -501,6 +501,10 @@ fn producer_can_publish_after_subscriber_open() -> TestResult {
         | LexicalChannelOp::EvictDirty(_)
         | LexicalChannelOp::UpsertParseTree(_)
         | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::ReplaceLexicalScope(_)
+        | LexicalChannelOp::TombstoneLexicalScope(_)
+        | LexicalChannelOp::ReplaceStructuralScope(_)
+        | LexicalChannelOp::TombstoneStructuralScope(_)
         | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(boxed(format!("expected FullBundle, got {:?}", evt.seq)));
         }

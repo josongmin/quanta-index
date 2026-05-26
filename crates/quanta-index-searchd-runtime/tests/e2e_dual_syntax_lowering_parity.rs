@@ -13,10 +13,13 @@
 //! 1. Both syntaxes return the **same** observed shape (same corpus ids in
 //!    the same order, OR the same typed error code).
 //! 2. The shape matches the row's `ExpectedOutcome` against the *current*
-//!    behavior (closed-loop: rows marked `ExpectedFailing` stay GREEN
-//!    while their `current_observation` continues to hold; when the owner
-//!    ticket lands and behavior diverges, the row flips RED and must be
-//!    promoted).
+//!    behavior:
+//!    - `Candidates` rows assert the exact corpus-id set.
+//!    - `TypedError` rows assert the exact stable error code.
+//!    - `ExpectedFailing` rows stay GREEN while their
+//!      `current_observation` continues to hold; when the owner ticket
+//!      lands and behavior diverges, the row flips RED and must be
+//!      promoted.
 //!
 //! Any divergence between the two syntaxes for a given row is a parity
 //! violation regardless of the wiring state of the underlying feature.
@@ -40,8 +43,13 @@ use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 /// corresponding variant in the same PR.
 #[derive(Clone, Debug)]
 enum ExpectedOutcome {
+    Candidates {
+        ids: &'static [&'static str],
+    },
     /// Both syntaxes must reject with this typed error code.
-    TypedError { code: &'static str },
+    TypedError {
+        code: &'static str,
+    },
     /// Wiring pending. Both syntaxes must currently exhibit
     /// `current_observation`. When the owner ticket lands, parity may still
     /// hold but the behavior changes — the assertion goes red and the row
@@ -117,29 +125,15 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "repo:repo-other parity_needle_alpha",
         lq_query: "repo:repo-other parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "repo: filter must exclude all rows when no repo matches; both syntaxes are silently overbroad today",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         id: "file_filter_parity",
         sg_query: "file:src/lib.rs parity_needle_alpha",
         lq_query: "file:src/lib.rs parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "file: filter must narrow content hits to src/lib.rs only; today both syntaxes are overbroad",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
         },
     },
     ParityScenario {
@@ -147,14 +141,8 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "lang:rust parity_needle_alpha",
         lq_query: "lang:rust parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "lang: filter must restrict to rust-only matches; today both syntaxes are overbroad",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path"],
         },
     },
     ParityScenario {
@@ -255,16 +243,16 @@ const SCENARIOS: &[ParityScenario] = &[
         },
     },
     ParityScenario {
-        id: "patterntype_literal_raw_substring_parity",
-        // The SG `patterntype:literal` plus a substring crossing a `_`
-        // boundary must route to raw substring; LQ `raw:"foo_bar"` is the
-        // equivalent native form.
-        sg_query: "patterntype:literal foo_bar",
-        lq_query: "raw:\"foo_bar\"",
+        id: "file_contains_raw_substring_parity",
+        // The shared executable raw-substring surface today is
+        // `file:contains('...')` on the SG side and a single-quoted raw
+        // string leaf on the native side.
+        sg_query: "file:contains('oo_ba')",
+        lq_query: "'oo_ba'",
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-04",
-            reason: "patterntype:literal must route to raw substring + trigram + verify; today neither syntax executes the raw substring path",
+            reason: "raw substring must route via trigram + exact verify for both syntaxes; current live path still returns empty on the shared executable surface",
             current_observation: CurrentObservation::Empty,
         },
     },
@@ -281,38 +269,48 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         id: "boolean_or_parity",
-        sg_query: "parity_needle_alpha or documentation",
+        sg_query: "parity_needle_alpha OR documentation",
         lq_query: "parity_needle_alpha OR documentation",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-02",
-            reason: "boolean OR must union for both syntaxes; planner IR pending",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path", "gamma_md"],
         },
     },
     ParityScenario {
         id: "negation_parity",
-        sg_query: "parity_needle_alpha -helper",
+        sg_query: "parity_needle_alpha NOT helper",
         lq_query: "parity_needle_alpha NOT helper",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-02",
-            reason: "negation must exclude matching docs for both syntaxes; planner IR pending",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
         },
     },
     ParityScenario {
-        id: "unsupported_sg_repohasfile_typed_error",
-        // `repohasfile:` is not in SgFilter (lq-bridge/src/syntax.rs:47+),
-        // so the translator must reject with BRIDGE_UNSUPPORTED_FILTER.
-        // The equivalent LQ form must also be rejected (no native
-        // `repohasfile:` filter exists, so the parser fails or the
-        // dispatcher rejects).
-        sg_query: "repohasfile:README.md parity_needle_alpha",
-        lq_query: "repohasfile:README.md parity_needle_alpha",
+        id: "repo_has_file_predicate_parity",
+        // Dual-syntax parity only compares live equivalent surfaces.
+        // The SG-only `repohasfile:` alias remains covered by bridge
+        // parser/translator tests; the active equivalent query here is the
+        // shared `repo:has.file(...)` predicate surface.
+        sg_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::ExpectedFailing {
+            owner_ticket: "LXE-03-predicate-extensions",
+            reason: "repo.has.file currently parses and lowers on both syntaxes, but the live text route still returns the overbroad content hit set instead of enforcing the predicate constraint",
+            current_observation: CurrentObservation::OverbroadIncludes(&[
+                "alpha_rust",
+                "beta_py",
+                "delta_other_path",
+            ]),
+        },
+    },
+    ParityScenario {
+        id: "select_repo_typed_error_parity",
+        sg_query: "select:repo parity_needle_alpha",
+        lq_query: "select:repo parity_needle_alpha",
         top_k: 10,
         expected: ExpectedOutcome::TypedError {
-            code: "BRIDGE_UNSUPPORTED_FILTER",
+            code: "NOT_IMPLEMENTED",
         },
     },
 ];
@@ -393,6 +391,29 @@ fn assess(
     }
 
     match &scenario.expected {
+        ExpectedOutcome::Candidates { ids } => {
+            if let Some(observed) = &sg.typed_error_code {
+                RowReport {
+                    id: scenario.id,
+                    failure: Some(format!(
+                        "expected Candidates ids={ids:?}, got typed error code={observed}"
+                    )),
+                }
+            } else if sg.corpus_ids == *ids {
+                RowReport {
+                    id: scenario.id,
+                    failure: None,
+                }
+            } else {
+                RowReport {
+                    id: scenario.id,
+                    failure: Some(format!(
+                        "expected Candidates ids={ids:?}, got ids={:?}",
+                        sg.corpus_ids
+                    )),
+                }
+            }
+        }
         ExpectedOutcome::TypedError { code } => match &sg.typed_error_code {
             Some(observed) if observed == code => RowReport {
                 id: scenario.id,
@@ -460,7 +481,6 @@ fn assess(
 }
 
 #[test]
-#[ignore = "pending LXE-03..06 dual-syntax parity audit matrix; run explicitly while closing that ticket pack"]
 fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;

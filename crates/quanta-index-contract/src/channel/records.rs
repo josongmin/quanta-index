@@ -1,30 +1,186 @@
-use core::fmt;
-
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
 };
 
-use crate::RepoRelativePath;
-use crate::lex::{LangId, SymbolKind};
+use crate::lex::{LanguageCode, SymbolKindCode};
 use crate::query::LqVisibility;
+use crate::{ChunkId, EmbeddingId, RepoRelativePath};
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ChunkStructuralMetadata {
+    pub variant_tag: Box<str>,
+    pub structural_kind_tag: Box<str>,
+    pub structural_pattern_kind: Box<str>,
+    pub structural_name: Box<str>,
+    pub structural_scope: Box<str>,
+    pub structural_matched_node: Box<str>,
+}
+
+const CHUNK_STRUCTURAL_METADATA_FIELDS: &[&str] = &[
+    "variant_tag",
+    "structural_kind_tag",
+    "structural_pattern_kind",
+    "structural_name",
+    "structural_scope",
+    "structural_matched_node",
+];
+
+impl Serialize for ChunkStructuralMetadata {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ChunkStructuralMetadata", 6)?;
+        state.serialize_field("variant_tag", self.variant_tag.as_ref())?;
+        state.serialize_field("structural_kind_tag", self.structural_kind_tag.as_ref())?;
+        state.serialize_field(
+            "structural_pattern_kind",
+            self.structural_pattern_kind.as_ref(),
+        )?;
+        state.serialize_field("structural_name", self.structural_name.as_ref())?;
+        state.serialize_field("structural_scope", self.structural_scope.as_ref())?;
+        state.serialize_field(
+            "structural_matched_node",
+            self.structural_matched_node.as_ref(),
+        )?;
+        state.end()
+    }
+}
+
+struct ChunkStructuralMetadataVisitor;
+
+impl<'de> Visitor<'de> for ChunkStructuralMetadataVisitor {
+    type Value = ChunkStructuralMetadata;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a ChunkStructuralMetadata map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut variant_tag: Option<String> = None;
+        let mut structural_kind_tag: Option<String> = None;
+        let mut structural_pattern_kind: Option<String> = None;
+        let mut structural_name: Option<String> = None;
+        let mut structural_scope: Option<String> = None;
+        let mut structural_matched_node: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "variant_tag" => {
+                    if variant_tag.is_some() {
+                        return Err(de::Error::duplicate_field("variant_tag"));
+                    }
+                    variant_tag = Some(map.next_value()?);
+                }
+                "structural_kind_tag" => {
+                    if structural_kind_tag.is_some() {
+                        return Err(de::Error::duplicate_field("structural_kind_tag"));
+                    }
+                    structural_kind_tag = Some(map.next_value()?);
+                }
+                "structural_pattern_kind" => {
+                    if structural_pattern_kind.is_some() {
+                        return Err(de::Error::duplicate_field("structural_pattern_kind"));
+                    }
+                    structural_pattern_kind = Some(map.next_value()?);
+                }
+                "structural_name" => {
+                    if structural_name.is_some() {
+                        return Err(de::Error::duplicate_field("structural_name"));
+                    }
+                    structural_name = Some(map.next_value()?);
+                }
+                "structural_scope" => {
+                    if structural_scope.is_some() {
+                        return Err(de::Error::duplicate_field("structural_scope"));
+                    }
+                    structural_scope = Some(map.next_value()?);
+                }
+                "structural_matched_node" => {
+                    if structural_matched_node.is_some() {
+                        return Err(de::Error::duplicate_field("structural_matched_node"));
+                    }
+                    structural_matched_node = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        CHUNK_STRUCTURAL_METADATA_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(ChunkStructuralMetadata {
+            variant_tag: variant_tag
+                .ok_or_else(|| de::Error::missing_field("variant_tag"))?
+                .into_boxed_str(),
+            structural_kind_tag: structural_kind_tag
+                .ok_or_else(|| de::Error::missing_field("structural_kind_tag"))?
+                .into_boxed_str(),
+            structural_pattern_kind: structural_pattern_kind
+                .ok_or_else(|| de::Error::missing_field("structural_pattern_kind"))?
+                .into_boxed_str(),
+            structural_name: structural_name
+                .ok_or_else(|| de::Error::missing_field("structural_name"))?
+                .into_boxed_str(),
+            structural_scope: structural_scope
+                .ok_or_else(|| de::Error::missing_field("structural_scope"))?
+                .into_boxed_str(),
+            structural_matched_node: structural_matched_node
+                .ok_or_else(|| de::Error::missing_field("structural_matched_node"))?
+                .into_boxed_str(),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ChunkStructuralMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "ChunkStructuralMetadata",
+            CHUNK_STRUCTURAL_METADATA_FIELDS,
+            ChunkStructuralMetadataVisitor,
+        )
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRecord {
+    pub chunk_id: ChunkId,
     pub repo_relative_path: RepoRelativePath,
-    pub language: Box<str>,
+    pub language: LanguageCode,
+    pub start_byte: u32,
+    pub end_byte: u32,
     pub start_line: u32,
     pub end_line: u32,
     pub snippet: Box<str>,
+    pub indexed_text: Box<str>,
+    pub text_digest: Box<str>,
+    pub shape_digest: Box<str>,
+    pub structural: Option<ChunkStructuralMetadata>,
+    pub parent_chunk_id: Option<ChunkId>,
 }
 
 const CHUNK_RECORD_FIELDS: &[&str] = &[
+    "chunk_id",
     "repo_relative_path",
     "language",
+    "start_byte",
+    "end_byte",
     "start_line",
     "end_line",
     "snippet",
+    "indexed_text",
+    "text_digest",
+    "shape_digest",
+    "structural",
+    "parent_chunk_id",
 ];
 
 impl Serialize for ChunkRecord {
@@ -32,12 +188,20 @@ impl Serialize for ChunkRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ChunkRecord", 5)?;
+        let mut state = serializer.serialize_struct("ChunkRecord", 13)?;
+        state.serialize_field("chunk_id", &self.chunk_id)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
-        state.serialize_field("language", self.language.as_ref())?;
+        state.serialize_field("language", &self.language)?;
+        state.serialize_field("start_byte", &self.start_byte)?;
+        state.serialize_field("end_byte", &self.end_byte)?;
         state.serialize_field("start_line", &self.start_line)?;
         state.serialize_field("end_line", &self.end_line)?;
         state.serialize_field("snippet", self.snippet.as_ref())?;
+        state.serialize_field("indexed_text", self.indexed_text.as_ref())?;
+        state.serialize_field("text_digest", self.text_digest.as_ref())?;
+        state.serialize_field("shape_digest", self.shape_digest.as_ref())?;
+        state.serialize_field("structural", &self.structural)?;
+        state.serialize_field("parent_chunk_id", &self.parent_chunk_id)?;
         state.end()
     }
 }
@@ -47,7 +211,7 @@ struct ChunkRecordVisitor;
 impl<'de> Visitor<'de> for ChunkRecordVisitor {
     type Value = ChunkRecord;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("a ChunkRecord map")
     }
 
@@ -55,13 +219,27 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
     where
         A: MapAccess<'de>,
     {
+        let mut chunk_id: Option<ChunkId> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
-        let mut language: Option<String> = None;
+        let mut language: Option<LanguageCode> = None;
+        let mut start_byte: Option<u32> = None;
+        let mut end_byte: Option<u32> = None;
         let mut start_line: Option<u32> = None;
         let mut end_line: Option<u32> = None;
         let mut snippet: Option<String> = None;
+        let mut indexed_text: Option<String> = None;
+        let mut text_digest: Option<String> = None;
+        let mut shape_digest: Option<String> = None;
+        let mut structural: Option<Option<ChunkStructuralMetadata>> = None;
+        let mut parent_chunk_id: Option<Option<ChunkId>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "chunk_id" => {
+                    if chunk_id.is_some() {
+                        return Err(de::Error::duplicate_field("chunk_id"));
+                    }
+                    chunk_id = Some(map.next_value()?);
+                }
                 "repo_relative_path" => {
                     if repo_relative_path.is_some() {
                         return Err(de::Error::duplicate_field("repo_relative_path"));
@@ -73,6 +251,18 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
                         return Err(de::Error::duplicate_field("language"));
                     }
                     language = Some(map.next_value()?);
+                }
+                "start_byte" => {
+                    if start_byte.is_some() {
+                        return Err(de::Error::duplicate_field("start_byte"));
+                    }
+                    start_byte = Some(map.next_value()?);
+                }
+                "end_byte" => {
+                    if end_byte.is_some() {
+                        return Err(de::Error::duplicate_field("end_byte"));
+                    }
+                    end_byte = Some(map.next_value()?);
                 }
                 "start_line" => {
                     if start_line.is_some() {
@@ -92,20 +282,63 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
                     }
                     snippet = Some(map.next_value()?);
                 }
+                "indexed_text" => {
+                    if indexed_text.is_some() {
+                        return Err(de::Error::duplicate_field("indexed_text"));
+                    }
+                    indexed_text = Some(map.next_value()?);
+                }
+                "text_digest" => {
+                    if text_digest.is_some() {
+                        return Err(de::Error::duplicate_field("text_digest"));
+                    }
+                    text_digest = Some(map.next_value()?);
+                }
+                "shape_digest" => {
+                    if shape_digest.is_some() {
+                        return Err(de::Error::duplicate_field("shape_digest"));
+                    }
+                    shape_digest = Some(map.next_value()?);
+                }
+                "structural" => {
+                    if structural.is_some() {
+                        return Err(de::Error::duplicate_field("structural"));
+                    }
+                    structural = Some(map.next_value()?);
+                }
+                "parent_chunk_id" => {
+                    if parent_chunk_id.is_some() {
+                        return Err(de::Error::duplicate_field("parent_chunk_id"));
+                    }
+                    parent_chunk_id = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, CHUNK_RECORD_FIELDS)),
             }
         }
         Ok(ChunkRecord {
+            chunk_id: chunk_id.ok_or_else(|| de::Error::missing_field("chunk_id"))?,
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
-            language: language
-                .ok_or_else(|| de::Error::missing_field("language"))?
-                .into_boxed_str(),
+            language: language.ok_or_else(|| de::Error::missing_field("language"))?,
+            start_byte: start_byte.ok_or_else(|| de::Error::missing_field("start_byte"))?,
+            end_byte: end_byte.ok_or_else(|| de::Error::missing_field("end_byte"))?,
             start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
             end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
             snippet: snippet
                 .ok_or_else(|| de::Error::missing_field("snippet"))?
                 .into_boxed_str(),
+            indexed_text: indexed_text
+                .ok_or_else(|| de::Error::missing_field("indexed_text"))?
+                .into_boxed_str(),
+            text_digest: text_digest
+                .ok_or_else(|| de::Error::missing_field("text_digest"))?
+                .into_boxed_str(),
+            shape_digest: shape_digest
+                .ok_or_else(|| de::Error::missing_field("shape_digest"))?
+                .into_boxed_str(),
+            structural: structural.ok_or_else(|| de::Error::missing_field("structural"))?,
+            parent_chunk_id: parent_chunk_id
+                .ok_or_else(|| de::Error::missing_field("parent_chunk_id"))?,
         })
     }
 }
@@ -149,7 +382,7 @@ struct LexicalRepoMetadataRecordVisitor;
 impl<'de> Visitor<'de> for LexicalRepoMetadataRecordVisitor {
     type Value = LexicalRepoMetadataRecord;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("a LexicalRepoMetadataRecord map")
     }
 
@@ -224,28 +457,170 @@ impl<'de> Deserialize<'de> for LexicalRepoMetadataRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OwnerDocKind {
+    File,
+    Module,
+    Symbol,
+    Chunk,
+    Callsite,
+    GraphEdge,
+    Dataflow,
+    Risk,
+    Test,
+    RepoMap,
+    ServiceMap,
+    OwnerMap,
+}
+
+impl OwnerDocKind {
+    pub const ALL: &'static [Self] = &[
+        Self::File,
+        Self::Module,
+        Self::Symbol,
+        Self::Chunk,
+        Self::Callsite,
+        Self::GraphEdge,
+        Self::Dataflow,
+        Self::Risk,
+        Self::Test,
+        Self::RepoMap,
+        Self::ServiceMap,
+        Self::OwnerMap,
+    ];
+
+    #[must_use]
+    pub const fn as_code_str(self) -> &'static str {
+        match self {
+            Self::File => "File",
+            Self::Module => "Module",
+            Self::Symbol => "Symbol",
+            Self::Chunk => "Chunk",
+            Self::Callsite => "Callsite",
+            Self::GraphEdge => "GraphEdge",
+            Self::Dataflow => "Dataflow",
+            Self::Risk => "Risk",
+            Self::Test => "Test",
+            Self::RepoMap => "RepoMap",
+            Self::ServiceMap => "ServiceMap",
+            Self::OwnerMap => "OwnerMap",
+        }
+    }
+
+    #[must_use]
+    pub fn from_code_str(value: &str) -> Option<Self> {
+        match value {
+            "File" => Some(Self::File),
+            "Module" => Some(Self::Module),
+            "Symbol" => Some(Self::Symbol),
+            "Chunk" => Some(Self::Chunk),
+            "Callsite" => Some(Self::Callsite),
+            "GraphEdge" => Some(Self::GraphEdge),
+            "Dataflow" => Some(Self::Dataflow),
+            "Risk" => Some(Self::Risk),
+            "Test" => Some(Self::Test),
+            "RepoMap" => Some(Self::RepoMap),
+            "ServiceMap" => Some(Self::ServiceMap),
+            "OwnerMap" => Some(Self::OwnerMap),
+            _ => None,
+        }
+    }
+}
+
+const OWNER_DOC_KIND_VARIANTS: &[&str] = &[
+    "File",
+    "Module",
+    "Symbol",
+    "Chunk",
+    "Callsite",
+    "GraphEdge",
+    "Dataflow",
+    "Risk",
+    "Test",
+    "RepoMap",
+    "ServiceMap",
+    "OwnerMap",
+];
+
+impl Serialize for OwnerDocKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_code_str())
+    }
+}
+
+struct OwnerDocKindVisitor;
+
+impl Visitor<'_> for OwnerDocKindVisitor {
+    type Value = OwnerDocKind;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("an OwnerDocKind code string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        OwnerDocKind::from_code_str(value)
+            .ok_or_else(|| de::Error::unknown_variant(value, OWNER_DOC_KIND_VARIANTS))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(value.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OwnerDocKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(OwnerDocKindVisitor)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingRecord {
-    pub owner_kind: Box<str>,
+    pub embedding_id: EmbeddingId,
+    pub owner_kind: OwnerDocKind,
     pub owner_id: Box<str>,
+    pub source_doc_id: Box<str>,
     pub repo_relative_path: RepoRelativePath,
-    pub language: LangId,
-    pub symbol_kind: Option<SymbolKind>,
+    pub language: LanguageCode,
+    pub symbol_kind: Option<SymbolKindCode>,
+    pub start_byte: u32,
+    pub end_byte: u32,
     pub start_line: u32,
     pub end_line: u32,
     pub snippet: Box<str>,
+    pub embedding_input_digest: Box<str>,
+    pub vector_digest: Box<str>,
+    pub view_kind: Box<str>,
     pub vector: Vec<f32>,
 }
 
 const EMBEDDING_RECORD_FIELDS: &[&str] = &[
+    "embedding_id",
     "owner_kind",
     "owner_id",
+    "source_doc_id",
     "repo_relative_path",
     "language",
     "symbol_kind",
+    "start_byte",
+    "end_byte",
     "start_line",
     "end_line",
     "snippet",
+    "embedding_input_digest",
+    "vector_digest",
+    "view_kind",
     "vector",
 ];
 
@@ -254,15 +629,25 @@ impl Serialize for EmbeddingRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("EmbeddingRecord", 9)?;
-        state.serialize_field("owner_kind", self.owner_kind.as_ref())?;
+        let mut state = serializer.serialize_struct("EmbeddingRecord", 16)?;
+        state.serialize_field("embedding_id", &self.embedding_id)?;
+        state.serialize_field("owner_kind", &self.owner_kind)?;
         state.serialize_field("owner_id", self.owner_id.as_ref())?;
+        state.serialize_field("source_doc_id", self.source_doc_id.as_ref())?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("language", &self.language)?;
         state.serialize_field("symbol_kind", &self.symbol_kind)?;
+        state.serialize_field("start_byte", &self.start_byte)?;
+        state.serialize_field("end_byte", &self.end_byte)?;
         state.serialize_field("start_line", &self.start_line)?;
         state.serialize_field("end_line", &self.end_line)?;
         state.serialize_field("snippet", self.snippet.as_ref())?;
+        state.serialize_field(
+            "embedding_input_digest",
+            self.embedding_input_digest.as_ref(),
+        )?;
+        state.serialize_field("vector_digest", self.vector_digest.as_ref())?;
+        state.serialize_field("view_kind", self.view_kind.as_ref())?;
         state.serialize_field("vector", &self.vector)?;
         state.end()
     }
@@ -273,7 +658,7 @@ struct EmbeddingRecordVisitor;
 impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
     type Value = EmbeddingRecord;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("an EmbeddingRecord map")
     }
 
@@ -281,17 +666,30 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut owner_kind: Option<String> = None;
+        let mut embedding_id: Option<EmbeddingId> = None;
+        let mut owner_kind: Option<OwnerDocKind> = None;
         let mut owner_id: Option<String> = None;
+        let mut source_doc_id: Option<String> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
-        let mut language: Option<LangId> = None;
-        let mut symbol_kind: Option<Option<SymbolKind>> = None;
+        let mut language: Option<LanguageCode> = None;
+        let mut symbol_kind: Option<Option<SymbolKindCode>> = None;
+        let mut start_byte: Option<u32> = None;
+        let mut end_byte: Option<u32> = None;
         let mut start_line: Option<u32> = None;
         let mut end_line: Option<u32> = None;
         let mut snippet: Option<String> = None;
+        let mut embedding_input_digest: Option<String> = None;
+        let mut vector_digest: Option<String> = None;
+        let mut view_kind: Option<String> = None;
         let mut vector: Option<Vec<f32>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "embedding_id" => {
+                    if embedding_id.is_some() {
+                        return Err(de::Error::duplicate_field("embedding_id"));
+                    }
+                    embedding_id = Some(map.next_value()?);
+                }
                 "owner_kind" => {
                     if owner_kind.is_some() {
                         return Err(de::Error::duplicate_field("owner_kind"));
@@ -303,6 +701,12 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                         return Err(de::Error::duplicate_field("owner_id"));
                     }
                     owner_id = Some(map.next_value()?);
+                }
+                "source_doc_id" => {
+                    if source_doc_id.is_some() {
+                        return Err(de::Error::duplicate_field("source_doc_id"));
+                    }
+                    source_doc_id = Some(map.next_value()?);
                 }
                 "repo_relative_path" => {
                     if repo_relative_path.is_some() {
@@ -322,6 +726,18 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                     }
                     symbol_kind = Some(map.next_value()?);
                 }
+                "start_byte" => {
+                    if start_byte.is_some() {
+                        return Err(de::Error::duplicate_field("start_byte"));
+                    }
+                    start_byte = Some(map.next_value()?);
+                }
+                "end_byte" => {
+                    if end_byte.is_some() {
+                        return Err(de::Error::duplicate_field("end_byte"));
+                    }
+                    end_byte = Some(map.next_value()?);
+                }
                 "start_line" => {
                     if start_line.is_some() {
                         return Err(de::Error::duplicate_field("start_line"));
@@ -340,6 +756,24 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                     }
                     snippet = Some(map.next_value()?);
                 }
+                "embedding_input_digest" => {
+                    if embedding_input_digest.is_some() {
+                        return Err(de::Error::duplicate_field("embedding_input_digest"));
+                    }
+                    embedding_input_digest = Some(map.next_value()?);
+                }
+                "vector_digest" => {
+                    if vector_digest.is_some() {
+                        return Err(de::Error::duplicate_field("vector_digest"));
+                    }
+                    vector_digest = Some(map.next_value()?);
+                }
+                "view_kind" => {
+                    if view_kind.is_some() {
+                        return Err(de::Error::duplicate_field("view_kind"));
+                    }
+                    view_kind = Some(map.next_value()?);
+                }
                 "vector" => {
                     if vector.is_some() {
                         return Err(de::Error::duplicate_field("vector"));
@@ -349,23 +783,43 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                 other => return Err(de::Error::unknown_field(other, EMBEDDING_RECORD_FIELDS)),
             }
         }
+        let vector = vector.ok_or_else(|| de::Error::missing_field("vector"))?;
+        if vector.is_empty() {
+            return Err(de::Error::invalid_length(
+                0,
+                &"a non-empty embedding vector",
+            ));
+        }
         Ok(EmbeddingRecord {
-            owner_kind: owner_kind
-                .ok_or_else(|| de::Error::missing_field("owner_kind"))?
-                .into_boxed_str(),
+            embedding_id: embedding_id.ok_or_else(|| de::Error::missing_field("embedding_id"))?,
+            owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
             owner_id: owner_id
                 .ok_or_else(|| de::Error::missing_field("owner_id"))?
+                .into_boxed_str(),
+            source_doc_id: source_doc_id
+                .ok_or_else(|| de::Error::missing_field("source_doc_id"))?
                 .into_boxed_str(),
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
             language: language.ok_or_else(|| de::Error::missing_field("language"))?,
             symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
+            start_byte: start_byte.ok_or_else(|| de::Error::missing_field("start_byte"))?,
+            end_byte: end_byte.ok_or_else(|| de::Error::missing_field("end_byte"))?,
             start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
             end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
             snippet: snippet
                 .ok_or_else(|| de::Error::missing_field("snippet"))?
                 .into_boxed_str(),
-            vector: vector.ok_or_else(|| de::Error::missing_field("vector"))?,
+            embedding_input_digest: embedding_input_digest
+                .ok_or_else(|| de::Error::missing_field("embedding_input_digest"))?
+                .into_boxed_str(),
+            vector_digest: vector_digest
+                .ok_or_else(|| de::Error::missing_field("vector_digest"))?
+                .into_boxed_str(),
+            view_kind: view_kind
+                .ok_or_else(|| de::Error::missing_field("view_kind"))?
+                .into_boxed_str(),
+            vector,
         })
     }
 }
@@ -385,11 +839,87 @@ impl<'de> Deserialize<'de> for EmbeddingRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::LexicalRepoMetadataRecord;
+    use super::{
+        ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, LexicalRepoMetadataRecord,
+        OwnerDocKind,
+    };
+    use crate::lex::LanguageCode;
     use crate::query::LqVisibility;
+    use crate::{ChunkId, EmbeddingId, RepoRelativePath};
+
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>> {
+        LanguageCode::new("rust")
+            .map_err(|err| -> Box<dyn std::error::Error> { err.to_string().into() })
+    }
 
     #[test]
-    fn lexical_repo_metadata_record_round_trip() {
+    fn chunk_record_round_trip() -> TestRes {
+        let record = ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 2,
+            snippet: "fn main() {}".into(),
+            indexed_text: "fn main() {}".into(),
+            text_digest: "text:abc".into(),
+            shape_digest: "shape:def".into(),
+            structural: Some(ChunkStructuralMetadata {
+                variant_tag: "node".into(),
+                structural_kind_tag: "function".into(),
+                structural_pattern_kind: "function_def".into(),
+                structural_name: "main".into(),
+                structural_scope: "crate".into(),
+                structural_matched_node: "fn main() {}".into(),
+            }),
+            parent_chunk_id: None,
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&record, &mut bytes)?;
+        let decoded: ChunkRecord = ciborium::from_reader(bytes.as_slice())?;
+        if decoded != record {
+            return Err(format!("decoded chunk record mismatch: {decoded:?} != {record:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn embedding_record_round_trip() -> TestRes {
+        let record = EmbeddingRecord {
+            embedding_id: EmbeddingId::new("emb-1"),
+            owner_kind: OwnerDocKind::Chunk,
+            owner_id: "chunk-1".into(),
+            source_doc_id: "doc-1".into(),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            symbol_kind: None,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 2,
+            snippet: "fn main() {}".into(),
+            embedding_input_digest: "input:abc".into(),
+            vector_digest: "vec:def".into(),
+            view_kind: "raw_chunk".into(),
+            vector: vec![0.1, 0.2],
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&record, &mut bytes)?;
+        let decoded: EmbeddingRecord = ciborium::from_reader(bytes.as_slice())?;
+        if decoded != record {
+            return Err(
+                format!("decoded embedding record mismatch: {decoded:?} != {record:?}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_repo_metadata_record_round_trip() -> TestRes {
         let record = LexicalRepoMetadataRecord {
             fork: false,
             archived: true,
@@ -397,12 +927,14 @@ mod tests {
             contexts: vec!["global".to_string(), "team/backend".to_string()],
         };
         let mut bytes = Vec::new();
-        let encoded = ciborium::into_writer(&record, &mut bytes);
-        assert!(encoded.is_ok(), "encode lexical repo metadata: {encoded:?}");
-        let decoded = ciborium::from_reader::<LexicalRepoMetadataRecord, _>(bytes.as_slice());
-        assert!(decoded.is_ok(), "decode lexical repo metadata: {decoded:?}");
-        if let Ok(decoded) = decoded {
-            assert_eq!(decoded, record);
+        ciborium::into_writer(&record, &mut bytes)?;
+        let decoded: LexicalRepoMetadataRecord = ciborium::from_reader(bytes.as_slice())?;
+        if decoded != record {
+            return Err(format!(
+                "decoded lexical repo metadata mismatch: {decoded:?} != {record:?}"
+            )
+            .into());
         }
+        Ok(())
     }
 }

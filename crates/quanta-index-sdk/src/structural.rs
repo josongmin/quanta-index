@@ -1,55 +1,115 @@
 use quanta_index_contract::lex::ParseTreeRecord;
 use quanta_index_contract::{
-    ChunkId, GenerationPin, GenerationSelector, ManifestGeneration, ParseTreeDelete,
-    ParseTreeMutation, ParseTreeUpsert, RepoId, RevisionId, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneStructuralQueryResponse, StructuralIngestBatch, StructuralQueryRequest,
-    TextQueryRequest, TextQuerySyntax,
+    ChunkId, GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
+    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
 
-use crate::{BatchReceipt, QuantaIndex, SdkError};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum StructuralBatchMutation {
-    Upsert {
-        chunk_id: ChunkId,
-        record: ParseTreeRecord,
-    },
-    Delete {
-        chunk_id: ChunkId,
-    },
-}
+use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
-    pub trees: Vec<StructuralBatchMutation>,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
+    pub mode: BatchMode,
+    pub replace_scopes: Vec<StructuralReplaceScope>,
+    pub tombstone_scopes: Vec<StructuralTombstoneScope>,
+    pub seal: bool,
 }
 
 impl StructuralBatch {
     #[must_use]
-    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
+    pub fn replace_generation(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
+    ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
-            trees: Vec::new(),
+            base_generation: None,
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
+            mode: BatchMode::ReplaceGeneration,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
         }
     }
 
     #[must_use]
-    pub fn upsert(mut self, chunk_id: ChunkId, record: ParseTreeRecord) -> Self {
-        self.trees
-            .push(StructuralBatchMutation::Upsert { chunk_id, record });
+    pub fn delta(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        base_generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            base_generation: Some(base_generation),
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
+            mode: BatchMode::Delta,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        }
+    }
+
+    #[must_use]
+    pub fn replace_scope(
+        mut self,
+        scope: SearchScopeKey,
+        scope_digest: impl Into<String>,
+        trees: Vec<StructuralTreeRecord>,
+    ) -> Self {
+        self.replace_scopes.push(StructuralReplaceScope {
+            scope,
+            scope_digest: scope_digest.into(),
+            trees,
+        });
         self
     }
 
     #[must_use]
-    pub fn delete(mut self, chunk_id: ChunkId) -> Self {
-        self.trees
-            .push(StructuralBatchMutation::Delete { chunk_id });
+    pub fn replace_tree(
+        mut self,
+        scope: SearchScopeKey,
+        scope_digest: impl Into<String>,
+        chunk_id: ChunkId,
+        record: ParseTreeRecord,
+    ) -> Self {
+        self.replace_scopes.push(StructuralReplaceScope {
+            scope,
+            scope_digest: scope_digest.into(),
+            trees: vec![StructuralTreeRecord { chunk_id, record }],
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn tombstone_scope(mut self, scope: SearchScopeKey) -> Self {
+        self.tombstone_scopes
+            .push(StructuralTombstoneScope { scope });
+        self
+    }
+
+    #[must_use]
+    pub fn without_seal(mut self) -> Self {
+        self.seal = false;
         self
     }
 }
@@ -84,23 +144,13 @@ impl crate::NamespaceIngest for StructuralNs {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
-            trees: batch
-                .trees
-                .iter()
-                .map(|tree| match tree {
-                    StructuralBatchMutation::Upsert { chunk_id, record } => {
-                        ParseTreeMutation::Upsert(ParseTreeUpsert {
-                            chunk_id: chunk_id.clone(),
-                            record: record.clone(),
-                        })
-                    }
-                    StructuralBatchMutation::Delete { chunk_id } => {
-                        ParseTreeMutation::Delete(ParseTreeDelete {
-                            chunk_id: chunk_id.clone(),
-                        })
-                    }
-                })
-                .collect(),
+            base_generation: batch.base_generation,
+            manifest_digest: batch.manifest_digest.clone(),
+            batch_digest: batch.batch_digest.clone(),
+            mode: batch.mode.to_wire(),
+            replace_scopes: batch.replace_scopes.clone(),
+            tombstone_scopes: batch.tombstone_scopes.clone(),
+            seal: batch.seal,
         };
         let response =
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire))?;

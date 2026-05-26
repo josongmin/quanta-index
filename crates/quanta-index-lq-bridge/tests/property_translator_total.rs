@@ -38,23 +38,27 @@ fn name_strategy() -> BoxedStrategy<String> {
 }
 
 fn sg_filter_strategy() -> impl Strategy<Value = SgFilter> {
-    (0u8..17u8, name_strategy()).prop_map(|(tag, v)| match tag {
+    (0u8..21u8, name_strategy()).prop_map(|(tag, v)| match tag {
         0 => SgFilter::Repo(v.into_boxed_str()),
         1 => SgFilter::File(v.into_boxed_str()),
         2 => SgFilter::Path(v.into_boxed_str()),
         3 => SgFilter::Lang(v.into_boxed_str()),
-        4 => SgFilter::Type(v.into_boxed_str()),
-        5 => SgFilter::Case(v.into_boxed_str()),
-        6 => SgFilter::Select(v.into_boxed_str()),
-        7 => SgFilter::Count(v.into_boxed_str()),
-        8 => SgFilter::Patterntype(v.into_boxed_str()),
-        9 => SgFilter::Fork(v.into_boxed_str()),
-        10 => SgFilter::Archived(v.into_boxed_str()),
-        11 => SgFilter::Content(v.into_boxed_str()),
-        12 => SgFilter::Visibility(v.into_boxed_str()),
-        13 => SgFilter::Context(v.into_boxed_str()),
-        14 => SgFilter::Index(v.into_boxed_str()),
-        15 => SgFilter::Boost(v.into_boxed_str()),
+        4 => SgFilter::Author(v.into_boxed_str()),
+        5 => SgFilter::Committer(v.into_boxed_str()),
+        6 => SgFilter::Message(v.into_boxed_str()),
+        7 => SgFilter::Type(v.into_boxed_str()),
+        8 => SgFilter::Case(v.into_boxed_str()),
+        9 => SgFilter::Select(v.into_boxed_str()),
+        10 => SgFilter::Count(v.into_boxed_str()),
+        11 => SgFilter::Patterntype(v.into_boxed_str()),
+        12 => SgFilter::Dirty(v.into_boxed_str()),
+        13 => SgFilter::Fork(v.into_boxed_str()),
+        14 => SgFilter::Archived(v.into_boxed_str()),
+        15 => SgFilter::Content(v.into_boxed_str()),
+        16 => SgFilter::Visibility(v.into_boxed_str()),
+        17 => SgFilter::Context(v.into_boxed_str()),
+        18 => SgFilter::Index(v.into_boxed_str()),
+        19 => SgFilter::Boost(v.into_boxed_str()),
         _ => SgFilter::Timeout(v.into_boxed_str()),
     })
 }

@@ -397,6 +397,24 @@ impl Parser<'_> {
                 });
                 Ok(())
             }
+            "author" => {
+                self.filters.push(LqFilter::Author {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
+            "committer" => {
+                self.filters.push(LqFilter::Committer {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
+            "message" => {
+                self.filters.push(LqFilter::Message {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
             "type" => {
                 if self.seen_type {
                     return Err(LqParseError::new(
@@ -425,6 +443,17 @@ impl Parser<'_> {
                     )
                 })?;
                 self.filters.push(LqFilter::Select { dim });
+                Ok(())
+            }
+            "dirty" => {
+                let mode = parse_yes_no_only(value).ok_or_else(|| {
+                    LqParseError::new(
+                        LqParseErrorCode::InvalidFilterValue,
+                        span,
+                        "dirty: value not in {yes,no,only}",
+                    )
+                })?;
+                self.filters.push(LqFilter::Dirty { mode });
                 Ok(())
             }
             "fork" => {

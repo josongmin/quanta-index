@@ -1,8 +1,8 @@
 use quanta_index_contract::{
-    EmbeddingId, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SemanticEmbeddingDelete,
-    SemanticEmbeddingMutation, SemanticEmbeddingUpsert, SemanticIngestBatch, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest,
+    EmbeddingModelContract, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId,
+    RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchScopeKey,
+    SemanticIngestBatch, SemanticQueryRequest, SemanticQueryResponse, SemanticReplaceScope,
+    SemanticTombstoneScope, SemanticVectorRef, TextQueryRequest,
 };
 
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax};
@@ -37,24 +37,17 @@ impl SemanticVector {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum EmbeddingMutation {
-    Upsert {
-        embedding_id: EmbeddingId,
-        record: EmbeddingRecord,
-    },
-    Delete {
-        embedding_id: EmbeddingId,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
     pub mode: BatchMode,
-    pub manifest_payload: Vec<u8>,
-    pub embeddings: Vec<EmbeddingMutation>,
+    pub model_contract: EmbeddingModelContract,
+    pub replace_scopes: Vec<SemanticReplaceScope>,
+    pub tombstone_scopes: Vec<SemanticTombstoneScope>,
     pub seal: bool,
 }
 
@@ -64,50 +57,68 @@ impl SemanticBatch {
         repo_id: RepoId,
         revision_id: RevisionId,
         generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
+        model_contract: EmbeddingModelContract,
     ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            base_generation: None,
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
             mode: BatchMode::ReplaceGeneration,
-            manifest_payload: Vec::new(),
-            embeddings: Vec::new(),
+            model_contract,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
             seal: true,
         }
     }
 
     #[must_use]
-    pub fn delta(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
+    pub fn delta(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        base_generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
+        model_contract: EmbeddingModelContract,
+    ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            base_generation: Some(base_generation),
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
             mode: BatchMode::Delta,
-            manifest_payload: Vec::new(),
-            embeddings: Vec::new(),
+            model_contract,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
             seal: true,
         }
     }
 
     #[must_use]
-    pub fn manifest_payload(mut self, payload: Vec<u8>) -> Self {
-        self.manifest_payload = payload;
-        self
-    }
-
-    #[must_use]
-    pub fn embedding_upsert(mut self, embedding_id: EmbeddingId, record: EmbeddingRecord) -> Self {
-        self.embeddings.push(EmbeddingMutation::Upsert {
-            embedding_id,
-            record,
+    pub fn replace_scope(
+        mut self,
+        scope: SearchScopeKey,
+        scope_digest: impl Into<String>,
+        embeddings: Vec<EmbeddingRecord>,
+    ) -> Self {
+        self.replace_scopes.push(SemanticReplaceScope {
+            scope,
+            scope_digest: scope_digest.into(),
+            embeddings,
         });
         self
     }
 
     #[must_use]
-    pub fn embedding_delete(mut self, embedding_id: EmbeddingId) -> Self {
-        self.embeddings
-            .push(EmbeddingMutation::Delete { embedding_id });
+    pub fn tombstone_scope(mut self, scope: SearchScopeKey) -> Self {
+        self.tombstone_scopes.push(SemanticTombstoneScope { scope });
         self
     }
 
@@ -151,9 +162,13 @@ impl crate::NamespaceIngest for SemanticNs {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
+            base_generation: batch.base_generation,
+            manifest_digest: batch.manifest_digest.clone(),
+            batch_digest: batch.batch_digest.clone(),
             mode: batch.mode.to_wire(),
-            manifest_payload: batch.manifest_payload.clone(),
-            embeddings: batch.embeddings.iter().map(map_embedding).collect(),
+            model_contract: batch.model_contract.clone(),
+            replace_scopes: batch.replace_scopes.clone(),
+            tombstone_scopes: batch.tombstone_scopes.clone(),
             seal: batch.seal,
         };
         let response = client.dispatch_ingest(
@@ -179,23 +194,6 @@ impl crate::NamespaceQuery for SemanticNs {
 
     fn query(client: &QuantaIndex) -> SemanticQueryBuilder<'_> {
         SemanticQueryBuilder::new(client)
-    }
-}
-
-fn map_embedding(mutation: &EmbeddingMutation) -> SemanticEmbeddingMutation {
-    match mutation {
-        EmbeddingMutation::Upsert {
-            embedding_id,
-            record,
-        } => SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
-            embedding_id: embedding_id.clone(),
-            record: record.clone(),
-        }),
-        EmbeddingMutation::Delete { embedding_id } => {
-            SemanticEmbeddingMutation::Delete(SemanticEmbeddingDelete {
-                embedding_id: embedding_id.clone(),
-            })
-        }
     }
 }
 

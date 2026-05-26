@@ -8,9 +8,11 @@
 use quanta_index_contract::{
     ChannelSeq, ChunkId, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef, DeleteSymbol,
     DeleteTag, EmbeddingId, EvictDirty, LexicalChannelOp, LexicalFullBundle, LexicalSeal,
-    ManifestGeneration, RepoId, RevisionId, SemanticChannelOp, SemanticFullBundle, SemanticSeal,
-    SymbolId, UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding,
-    UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
+    ManifestGeneration, ReplaceLexicalScope, ReplaceSemanticScope, ReplaceStructuralScope, RepoId,
+    RevisionId, SemanticChannelOp, SemanticFullBundle, SemanticSeal, SymbolId,
+    TombstoneLexicalScope, TombstoneSemanticScope, TombstoneStructuralScope, UpsertChunk,
+    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef,
+    UpsertSymbol, UpsertTag,
 };
 
 use crate::api::error::ChannelError;
@@ -107,6 +109,26 @@ impl OpCodec for LexicalCodec {
                 write_common(out, repo_id, revision_id, *generation)?;
                 write_str(out, symbol_id.as_str())?;
                 Ok(LexicalOpTag::DeleteSymbol.to_byte())
+            }
+            LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::ReplaceLexicalScope.to_byte())
+            }
+            LexicalChannelOp::TombstoneLexicalScope(TombstoneLexicalScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::TombstoneLexicalScope.to_byte())
             }
             LexicalChannelOp::Seal(LexicalSeal {
                 repo_id,
@@ -216,6 +238,26 @@ impl OpCodec for LexicalCodec {
                 write_str(out, chunk_id.as_str())?;
                 Ok(LexicalOpTag::DeleteParseTree.to_byte())
             }
+            LexicalChannelOp::ReplaceStructuralScope(ReplaceStructuralScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::ReplaceStructuralScope.to_byte())
+            }
+            LexicalChannelOp::TombstoneStructuralScope(TombstoneStructuralScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(LexicalOpTag::TombstoneStructuralScope.to_byte())
+            }
             LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
                 repo_id,
                 revision_id,
@@ -293,6 +335,28 @@ impl OpCodec for LexicalCodec {
                     generation,
                     symbol_id,
                 }))
+            }
+            LexicalOpTag::ReplaceLexicalScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    payload,
+                }))
+            }
+            LexicalOpTag::TombstoneLexicalScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::TombstoneLexicalScope(
+                    TombstoneLexicalScope {
+                        repo_id,
+                        revision_id,
+                        generation,
+                        payload,
+                    },
+                ))
             }
             LexicalOpTag::Seal => {
                 reader.finish()?;
@@ -411,6 +475,30 @@ impl OpCodec for LexicalCodec {
                     chunk_id,
                 }))
             }
+            LexicalOpTag::ReplaceStructuralScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::ReplaceStructuralScope(
+                    ReplaceStructuralScope {
+                        repo_id,
+                        revision_id,
+                        generation,
+                        payload,
+                    },
+                ))
+            }
+            LexicalOpTag::TombstoneStructuralScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(LexicalChannelOp::TombstoneStructuralScope(
+                    TombstoneStructuralScope {
+                        repo_id,
+                        revision_id,
+                        generation,
+                        payload,
+                    },
+                ))
+            }
             LexicalOpTag::UpsertDiffHunk => {
                 let commit_sha: [u8; 20] = reader
                     .advance(20)?
@@ -489,6 +577,26 @@ impl OpCodec for SemanticCodec {
                 write_str(out, embedding_id.as_str())?;
                 Ok(SemanticOpTag::DeleteEmbedding.to_byte())
             }
+            SemanticChannelOp::ReplaceSemanticScope(ReplaceSemanticScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(SemanticOpTag::ReplaceSemanticScope.to_byte())
+            }
+            SemanticChannelOp::TombstoneSemanticScope(TombstoneSemanticScope {
+                repo_id,
+                revision_id,
+                generation,
+                payload,
+            }) => {
+                write_common(out, repo_id, revision_id, *generation)?;
+                write_bytes(out, payload)?;
+                Ok(SemanticOpTag::TombstoneSemanticScope.to_byte())
+            }
             SemanticChannelOp::Seal(SemanticSeal {
                 repo_id,
                 revision_id,
@@ -539,6 +647,30 @@ impl OpCodec for SemanticCodec {
                     embedding_id,
                 }))
             }
+            SemanticOpTag::ReplaceSemanticScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(SemanticChannelOp::ReplaceSemanticScope(
+                    ReplaceSemanticScope {
+                        repo_id,
+                        revision_id,
+                        generation,
+                        payload,
+                    },
+                ))
+            }
+            SemanticOpTag::TombstoneSemanticScope => {
+                let payload = reader.read_bytes()?;
+                reader.finish()?;
+                Ok(SemanticChannelOp::TombstoneSemanticScope(
+                    TombstoneSemanticScope {
+                        repo_id,
+                        revision_id,
+                        generation,
+                        payload,
+                    },
+                ))
+            }
             SemanticOpTag::Seal => {
                 reader.finish()?;
                 Ok(SemanticChannelOp::Seal(SemanticSeal {
@@ -586,6 +718,10 @@ enum LexicalOpTag {
     UpsertParseTree = 14,
     DeleteParseTree = 15,
     UpsertDiffHunk = 16,
+    ReplaceLexicalScope = 17,
+    TombstoneLexicalScope = 18,
+    ReplaceStructuralScope = 19,
+    TombstoneStructuralScope = 20,
 }
 
 impl LexicalOpTag {
@@ -607,6 +743,10 @@ impl LexicalOpTag {
             Self::UpsertParseTree => 14,
             Self::DeleteParseTree => 15,
             Self::UpsertDiffHunk => 16,
+            Self::ReplaceLexicalScope => 17,
+            Self::TombstoneLexicalScope => 18,
+            Self::ReplaceStructuralScope => 19,
+            Self::TombstoneStructuralScope => 20,
         }
     }
 
@@ -628,6 +768,10 @@ impl LexicalOpTag {
             14 => Self::UpsertParseTree,
             15 => Self::DeleteParseTree,
             16 => Self::UpsertDiffHunk,
+            17 => Self::ReplaceLexicalScope,
+            18 => Self::TombstoneLexicalScope,
+            19 => Self::ReplaceStructuralScope,
+            20 => Self::TombstoneStructuralScope,
             _ => return None,
         })
     }
@@ -639,6 +783,8 @@ enum SemanticOpTag {
     FullBundle = 11,
     UpsertEmbedding = 12,
     DeleteEmbedding = 13,
+    ReplaceSemanticScope = 14,
+    TombstoneSemanticScope = 15,
     Seal = 16,
 }
 
@@ -648,6 +794,8 @@ impl SemanticOpTag {
             Self::FullBundle => 11,
             Self::UpsertEmbedding => 12,
             Self::DeleteEmbedding => 13,
+            Self::ReplaceSemanticScope => 14,
+            Self::TombstoneSemanticScope => 15,
             Self::Seal => 16,
         }
     }
@@ -657,6 +805,8 @@ impl SemanticOpTag {
             11 => Self::FullBundle,
             12 => Self::UpsertEmbedding,
             13 => Self::DeleteEmbedding,
+            14 => Self::ReplaceSemanticScope,
+            15 => Self::TombstoneSemanticScope,
             16 => Self::Seal,
             _ => return None,
         })

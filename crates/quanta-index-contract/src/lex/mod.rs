@@ -35,6 +35,6 @@ pub use diff::DiffHunkRecord;
 pub use dirty::DirtyRecord;
 pub use error_code::LexicalErrorCode;
 pub use history::{CommitRecord, CommitSha, CommitShaParseError};
-pub use lang::LangId;
+pub use lang::LanguageCode;
 pub use parse_tree::{ParseNode, ParseRoleTag, ParseTreeRecord};
-pub use symbol::{SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan};
+pub use symbol::{SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan};

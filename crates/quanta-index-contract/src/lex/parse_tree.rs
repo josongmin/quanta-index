@@ -25,7 +25,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use super::lang::LangId;
+use super::lang::LanguageCode;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParseRoleTag {
@@ -214,7 +214,7 @@ impl<'de> Deserialize<'de> for ParseNode {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParseTreeRecord {
     pub wire_version: u32,
-    pub lang: LangId,
+    pub lang: LanguageCode,
     pub root: ParseNode,
     pub source_hash: [u8; 32],
     pub role_tag_schema_version: u32,
@@ -260,7 +260,7 @@ impl<'de> Visitor<'de> for ParseTreeRecordVisitor {
         A: MapAccess<'de>,
     {
         let mut wire_version: Option<u32> = None;
-        let mut lang: Option<LangId> = None;
+        let mut lang: Option<LanguageCode> = None;
         let mut root: Option<ParseNode> = None;
         let mut source_hash: Option<[u8; 32]> = None;
         let mut role_tag_schema_version: Option<u32> = None;

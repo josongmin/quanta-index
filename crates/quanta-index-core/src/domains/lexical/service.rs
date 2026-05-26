@@ -72,8 +72,12 @@ fn filters_contain_structural(filters: &[LqFilter]) -> bool {
         | LqFilter::File { .. }
         | LqFilter::Lang { .. }
         | LqFilter::Rev { .. }
+        | LqFilter::Author { .. }
+        | LqFilter::Committer { .. }
+        | LqFilter::Message { .. }
         | LqFilter::Type { .. }
         | LqFilter::Select { .. }
+        | LqFilter::Dirty { .. }
         | LqFilter::Fork { .. }
         | LqFilter::Archived { .. }
         | LqFilter::Visibility { .. }
@@ -115,6 +119,30 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
                     ));
                 }
             },
+            LqFilter::Author { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: author filter is not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+            LqFilter::Committer { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: committer filter is not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+            LqFilter::Message { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: message filter is not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+            LqFilter::Dirty { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: dirty filter is not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
             LqFilter::Repo { .. }
             | LqFilter::File { .. }
             | LqFilter::Lang { .. }

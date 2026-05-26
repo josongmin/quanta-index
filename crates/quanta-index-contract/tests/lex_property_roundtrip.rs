@@ -11,12 +11,12 @@
 
 use proptest::collection::vec as prop_vec;
 use proptest::prelude::*;
-use quanta_index_contract::ChunkId;
 use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, DirtyRecord, EarlyStopReason, EngineTouched, ExplanationRow, LangId,
-    LexicalErrorCode, ParseNode, ParseTreeRecord, PlannerStage, PlannerTraceEntry,
-    SearchExplanation, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    CommitRecord, CommitSha, DirtyRecord, EarlyStopReason, EngineTouched, ExplanationRow,
+    LanguageCode, LexicalErrorCode, ParseNode, ParseTreeRecord, PlannerStage, PlannerTraceEntry,
+    SearchExplanation, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
+use quanta_index_contract::{ChunkId, RepoRelativePath, SymbolId};
 
 fn cbor_roundtrip<T>(value: &T) -> Result<T, String>
 where
@@ -29,31 +29,38 @@ where
 
 // ---- strategies ----------------------------------------------------------
 
-fn prop_lang_id() -> impl Strategy<Value = LangId> {
+fn prop_language_code() -> impl Strategy<Value = LanguageCode> {
     prop_oneof![
-        Just(LangId::Rust),
-        Just(LangId::Python),
-        Just(LangId::TypeScript),
-        Just(LangId::JavaScript),
-        Just(LangId::Go),
+        Just("rust"),
+        Just("python"),
+        Just("typescript"),
+        Just("javascript"),
+        Just("go"),
+        Just("cpp"),
     ]
+    .prop_filter_map("valid canonical language code", |code| {
+        LanguageCode::new(code).into_iter().next()
+    })
 }
 
-fn prop_symbol_kind() -> impl Strategy<Value = SymbolKind> {
+fn prop_symbol_kind_code() -> impl Strategy<Value = SymbolKindCode> {
     prop_oneof![
-        Just(SymbolKind::Function),
-        Just(SymbolKind::Method),
-        Just(SymbolKind::Class),
-        Just(SymbolKind::Struct),
-        Just(SymbolKind::Enum),
-        Just(SymbolKind::Trait),
-        Just(SymbolKind::Interface),
-        Just(SymbolKind::Variable),
-        Just(SymbolKind::Constant),
-        Just(SymbolKind::Module),
-        Just(SymbolKind::Macro),
-        Just(SymbolKind::TypeAlias),
+        Just("function"),
+        Just("method"),
+        Just("class"),
+        Just("struct"),
+        Just("enum"),
+        Just("trait"),
+        Just("interface"),
+        Just("variable"),
+        Just("constant"),
+        Just("module"),
+        Just("macro"),
+        Just("type_alias"),
     ]
+    .prop_filter_map("valid canonical symbol kind code", |code| {
+        SymbolKindCode::new(code).into_iter().next()
+    })
 }
 
 fn prop_symbol_relationship() -> impl Strategy<Value = SymbolRelationship> {
@@ -95,25 +102,44 @@ fn prop_symbol_span() -> impl Strategy<Value = SymbolSpan> {
 
 fn prop_symbol_record() -> impl Strategy<Value = SymbolRecord> {
     (
-        any::<u32>(),
+        ".{0,16}",
         ".{0,32}",
-        prop_symbol_kind(),
+        ".{0,32}",
+        prop_symbol_kind_code(),
         prop_symbol_span(),
-        prop_lang_id(),
+        prop_language_code(),
+        proptest::option::of(".{0,32}"),
         proptest::option::of(".{0,32}"),
         proptest::option::of(".{0,32}"),
         prop_symbol_relationship(),
     )
         .prop_map(
-            |(wire_version, name, kind, span, lang, parent, container_name, relationship)| {
+            |(
+                symbol_id,
+                path,
+                local_name,
+                symbol_kind,
+                definition_span,
+                language,
+                signature,
+                qualified_container_name,
+                qualified_name,
+                relationship,
+            )| {
                 SymbolRecord {
-                    wire_version,
-                    name: name.into_boxed_str(),
-                    kind,
-                    span,
-                    lang,
-                    parent: parent.map(String::into_boxed_str),
-                    container_name: container_name.map(String::into_boxed_str),
+                    symbol_id: SymbolId::new(symbol_id),
+                    repo_relative_path: RepoRelativePath::new(path),
+                    language,
+                    symbol_kind,
+                    symbol_kind_family: None,
+                    local_name: local_name.into_boxed_str(),
+                    qualified_name: qualified_name
+                        .unwrap_or_else(|| "sym".to_string())
+                        .into_boxed_str(),
+                    signature: signature.map(String::into_boxed_str),
+                    visibility: None,
+                    definition_span,
+                    container_qualified_name: qualified_container_name.map(String::into_boxed_str),
                     relationship,
                 }
             },
@@ -202,7 +228,7 @@ fn prop_parse_node() -> impl Strategy<Value = ParseNode> {
 fn prop_parse_tree_record() -> impl Strategy<Value = ParseTreeRecord> {
     (
         any::<u32>(),
-        prop_lang_id(),
+        prop_language_code(),
         prop_parse_node(),
         any::<[u8; 32]>(),
     )
@@ -313,13 +339,13 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 256, .. ProptestConfig::default() })]
 
     #[test]
-    fn lang_id_cbor_roundtrip_property(lang in prop_lang_id()) {
+    fn language_code_cbor_roundtrip_property(lang in prop_language_code()) {
         let decoded = cbor_roundtrip(&lang).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, lang);
     }
 
     #[test]
-    fn symbol_kind_cbor_roundtrip_property(kind in prop_symbol_kind()) {
+    fn symbol_kind_code_cbor_roundtrip_property(kind in prop_symbol_kind_code()) {
         let decoded = cbor_roundtrip(&kind).map_err(TestCaseError::fail)?;
         prop_assert_eq!(decoded, kind);
     }

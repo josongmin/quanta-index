@@ -376,6 +376,10 @@ pub fn resolve_result_surface(filters: &[LqFilter]) -> Result<ResultSurface, Sym
             | LqFilter::File { .. }
             | LqFilter::Lang { .. }
             | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Dirty { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Visibility { .. }

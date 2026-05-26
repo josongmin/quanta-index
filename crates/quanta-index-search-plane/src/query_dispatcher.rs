@@ -1,23 +1,26 @@
 //! Search-plane query orchestration using the in-memory readiness ledger as the
 //! source of truth.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::lex::LexicalErrorCode;
+use crate::{
+    ActivationCatalog, Ledger, lower_lexical_text_query,
+    readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
+};
+use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, ChunkId, CommitCandidate, DiffCandidate, EngineTouched,
+    BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate, EngineTouched,
     GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, LqStructuralBlock, LqStructuralNode, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    HybridQueryResponse, LQ_VERSION_TAG, LqCase, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery,
+    LqSpan, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
+    RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, StructuralBinding, StructuralCandidate,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryRequest,
+    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind,
+    SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef, StructuralBinding,
     StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
 };
@@ -33,10 +36,6 @@ use quanta_index_core::{
 use quanta_index_lq_bridge::{
     BridgeErrorCode, SUPPORTED_SG_VERSION, SourcegraphVersionTag, export_bridge_candidate_packet,
 };
-use sha2::{Digest, Sha256};
-
-use crate::readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState};
-use crate::{ActivationCatalog, Ledger, lower_lexical_text_query};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -92,7 +91,7 @@ impl SearchPlaneDispatcher {
             SearchPlaneTrackKind::Lexical,
             "lexical",
         )?;
-        let materialized = self.snapshot_lex_seal()?;
+        let materialized = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.lex_opener
@@ -124,7 +123,7 @@ impl SearchPlaneDispatcher {
         };
         let lowered = lower_lexical_text_query(&lexical_request)?;
         LexicalPolicy::validate_query(&lowered)?;
-        let materialized = self.snapshot_lex_seal()?;
+        let materialized = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.lex_opener
@@ -175,12 +174,12 @@ impl SearchPlaneDispatcher {
     fn semantic(&self, request: &SemanticQueryRequest) -> Result<SemanticQueryResponse, CoreError> {
         SemanticPolicy::validate_top_k(request.top_k)?;
         let pin = resolve_semantic_request_pin(self.activation_catalog.as_ref(), request)?;
-        let materialized = self.snapshot_sem_seal()?;
+        let materialized = self.snapshot_sem_seal(&pin.repo_id, &pin.revision_id)?;
         SemanticPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let scope_candidate_ids = if let Some(scope) = request.lexical_scope.as_ref() {
             let lowered_scope = lower_lexical_text_query(scope)?;
             LexicalPolicy::validate_query(&lowered_scope)?;
-            let lex_materialized = self.snapshot_lex_seal()?;
+            let lex_materialized = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
             LexicalPolicy::validate_query_against_readiness(
                 pin.manifest_generation,
                 lex_materialized,
@@ -230,8 +229,8 @@ impl SearchPlaneDispatcher {
     fn hybrid(&self, request: &HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let pin = resolve_hybrid_request_pin(self.activation_catalog.as_ref(), request)?;
-        let lex_seal = self.snapshot_lex_seal()?;
-        let sem_seal = self.snapshot_sem_seal()?;
+        let lex_seal = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
+        let sem_seal = self.snapshot_sem_seal(&pin.repo_id, &pin.revision_id)?;
         HybridOrchestratorPolicy::validate_joint_readiness(
             pin.manifest_generation,
             lex_seal,
@@ -282,28 +281,46 @@ impl SearchPlaneDispatcher {
         &self,
         request: &RuntimeMetadataQueryRequest,
     ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, CoreError> {
-        if request.text_query.syntax != TextQuerySyntax::Native {
-            return Err(CoreError::InvalidContract(
-                "runtime metadata: only native DSL is supported on the SDK runtime route"
-                    .to_string(),
-            ));
-        }
-        let pin = resolve_lexical_request_pin(
+        let lowered = lower_lexical_text_query(&request.text_query)?;
+        validate_runtime_metadata_query(&lowered)?;
+        let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
-            &request.text_query,
+            request.text_query.generation.clone(),
+            request.text_query.generation_selector.as_ref(),
             SearchPlaneTrackKind::Lexical,
             "runtime metadata",
-        )?;
-        let runtime_state = self.snapshot_runtime_state(&pin)?;
-        let structural_state = self.snapshot_structural_state(&pin)?;
-        let plan = parse_runtime_metadata_query(request.text_query.query_text.as_str())?;
+        )?
+        .ok_or_else(|| {
+            CoreError::InvalidContract("runtime metadata: generation selector required".to_string())
+        })?;
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
+        let runtime_state = guard
+            .runtime_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "runtime metadata: generation {} is not materialized",
+                    pin.manifest_generation.get()
+                ))
+            })?;
+        let structural_state = guard
+            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "runtime metadata: lexical chunk authority for generation {} is not materialized",
+                    pin.manifest_generation.get()
+                ))
+            })?;
         let results = execute_runtime_metadata_query(
             &pin,
-            &runtime_state,
-            &structural_state,
-            &plan,
+            &lowered,
+            runtime_state,
+            structural_state,
             request.text_query.top_k,
         )?;
+        drop(guard);
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
             generation: pin,
             results,
@@ -312,31 +329,35 @@ impl SearchPlaneDispatcher {
 
     fn history(
         &self,
-        request: HistoryQueryRequest,
+        request: &HistoryQueryRequest,
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
-        if request.text_query.syntax != TextQuerySyntax::Native {
-            return Err(CoreError::InvalidContract(
-                "history: only native DSL is supported on the SDK history route".to_string(),
-            ));
-        }
-        let pin = resolve_lexical_request_pin(
+        let lowered = lower_lexical_text_query(&request.text_query)?;
+        validate_history_query(&lowered)?;
+        let pin = resolve_optional_selection(
             self.activation_catalog.as_ref(),
-            &request.text_query,
+            request.text_query.generation.clone(),
+            request.text_query.generation_selector.as_ref(),
             SearchPlaneTrackKind::Lexical,
             "history",
-        )?;
-        let state = self.snapshot_history_state(&pin)?;
-        if state.commits().is_empty() && state.diff_hunks().is_empty() {
-            return Err(CoreError::Typed {
-                code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
-                message: format!(
-                    "history: no local commit/diff authority materialized for generation {}",
+        )?
+        .ok_or_else(|| {
+            CoreError::InvalidContract("history: generation selector required".to_string())
+        })?;
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
+        let history_state = guard
+            .history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "history: generation {} is not materialized",
                     pin.manifest_generation.get()
-                ),
-            });
-        }
-        let plan = parse_history_query(request.text_query.query_text.as_str())?;
-        let (commits, diffs) = execute_history_query(&pin, &state, &plan, request.text_query.top_k)?;
+                ))
+            })?;
+        let (commits, diffs) =
+            execute_history_query(&pin, &lowered, history_state, request.text_query.top_k)?;
+        drop(guard);
         Ok(SearchPlaneHistoryQueryResponse {
             generation: pin,
             commits,
@@ -349,37 +370,16 @@ impl SearchPlaneDispatcher {
     /// The source-authority boundary is still closed: no producer parse-tree
     /// materialization is wired on this route. The dispatcher therefore
     /// fail-closes with the stable structural availability code rather than
-    /// fabricating a pattern or consulting the producer heuristically.
+    /// fabricating a pattern or consulting the producer heuristically. The
+    /// fail-close fires before pin resolution so producer-unavailable remains
+    /// the dominant public failure until the structural live path lands.
     fn structural(
         &self,
-        request: &StructuralQueryRequest,
+        _request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
-        if request.text_query.syntax != TextQuerySyntax::Native {
-            return Err(CoreError::InvalidContract(
-                "structural: only native DSL is supported on the SDK structural route".to_string(),
-            ));
-        }
-        let pin = resolve_lexical_request_pin(
-            self.activation_catalog.as_ref(),
-            &request.text_query,
-            SearchPlaneTrackKind::Lexical,
-            "structural",
-        )?;
-        let state = self.snapshot_structural_state(&pin)?;
-        if state.parse_trees().is_empty() {
-            return Err(CoreError::Typed {
-                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
-                message: format!(
-                    "structural: no parse-tree authority materialized for generation {}",
-                    pin.manifest_generation.get()
-                ),
-            });
-        }
-        let plan = parse_structural_query(request.text_query.query_text.as_str())?;
-        let results = execute_structural_query(&pin, &state, &plan, request.text_query.top_k)?;
-        Ok(SearchPlaneStructuralQueryResponse {
-            generation: pin,
-            results,
+        Err(CoreError::Typed {
+            code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+            message: "structural: fail-closed because parse-tree producer is not wired on the search-plane".to_string(),
         })
     }
 
@@ -393,7 +393,7 @@ impl SearchPlaneDispatcher {
             SearchPlaneTrackKind::Lexical,
             "bridge",
         )?;
-        let materialized = self.snapshot_lex_seal()?;
+        let materialized = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         LexicalPolicy::validate_query(&lowered)?;
@@ -433,7 +433,7 @@ impl SearchPlaneDispatcher {
                 "explain: candidate (repo, revision) does not match pin".to_string(),
             ));
         }
-        let materialized = self.snapshot_lex_seal()?;
+        let materialized = self.snapshot_lex_seal(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.lex_opener
@@ -504,13 +504,15 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
-            SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(req),
+            SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
             SearchPlaneQueryIpcRequest::Bridge(req) => self.dispatch_bridge(&req),
             SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
             SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req),
             SearchPlaneQueryIpcRequest::Sourcegraph(req) => self.dispatch_sourcegraph(&req),
-            SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => self.dispatch_runtime_metadata(req),
+            SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
+                self.dispatch_runtime_metadata(&req)
+            }
         }
     }
 
@@ -542,7 +544,7 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_history(&self, request: HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
+    fn dispatch_history(&self, request: &HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
         match self.history(request) {
             Ok(resp) => SearchPlaneQueryIpcResponse::History(resp),
             Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
@@ -591,78 +593,40 @@ impl SearchPlaneDispatcher {
     }
 
     // QI-RT-02 (in-flight): runtime-metadata query path is defined in the
-    // contract but the dispatcher implementation is not yet wired.
-    // Fail-closed with NOT_IMPLEMENTED per CLAUDE.md.
+    // contract but the producer-backed implementation is not wired yet.
+    // Fail-closed with a dedicated typed-unavailable code.
     fn dispatch_runtime_metadata(
         &self,
-        request: RuntimeMetadataQueryRequest,
+        request: &RuntimeMetadataQueryRequest,
     ) -> SearchPlaneQueryIpcResponse {
-        match self.runtime_metadata(&request) {
+        match self.runtime_metadata(request) {
             Ok(resp) => SearchPlaneQueryIpcResponse::RuntimeMetadata(resp),
             Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
         }
     }
 
-    fn snapshot_lex_seal(&self) -> Result<Option<ManifestGeneration>, CoreError> {
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        Ok(guard.lexical_sealed())
-    }
-
-    fn snapshot_sem_seal(&self) -> Result<Option<ManifestGeneration>, CoreError> {
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        Ok(guard.semantic_sealed())
-    }
-
-    fn snapshot_history_state(
+    fn snapshot_lex_seal(
         &self,
-        pin: &GenerationPin,
-    ) -> Result<HistoryAuthorityState, CoreError> {
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Option<ManifestGeneration>, CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        guard
-            .history_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .cloned()
-            .ok_or_else(|| CoreError::NotReady("history: local authority state missing".to_string()))
+        Ok(guard.track_sealed(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
-    fn snapshot_runtime_state(
+    fn snapshot_sem_seal(
         &self,
-        pin: &GenerationPin,
-    ) -> Result<RuntimeMetadataState, CoreError> {
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Option<ManifestGeneration>, CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        guard
-            .runtime_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .cloned()
-            .ok_or_else(|| {
-                CoreError::NotReady("runtime metadata: local authority state missing".to_string())
-            })
-    }
-
-    fn snapshot_structural_state(
-        &self,
-        pin: &GenerationPin,
-    ) -> Result<StructuralAuthorityState, CoreError> {
-        let guard = self
-            .ledger
-            .read()
-            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        guard
-            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
-            .cloned()
-            .ok_or_else(|| {
-                CoreError::NotReady("structural: local authority state missing".to_string())
-            })
+        Ok(guard.track_sealed(repo_id, revision_id, SearchPlaneTrackKind::Semantic))
     }
 }
 
@@ -734,6 +698,526 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 
 const fn default_top_k() -> u32 {
     50
+}
+
+fn validate_history_query(query: &LqQuery) -> Result<(), CoreError> {
+    for filter in &query.filters {
+        match filter {
+            LqFilter::Type { kind } => match kind {
+                LqType::Commit | LqType::Diff => {}
+                LqType::File | LqType::Path | LqType::Symbol | LqType::Repo => {
+                    return Err(CoreError::NotImplemented(format!(
+                        "history: type filter `{}` is not executable on the current adapter set",
+                        kind.as_str()
+                    )));
+                }
+            },
+            LqFilter::File { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Content { .. } => {}
+            LqFilter::Repo { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "history: one or more filters are not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    validate_executable_text_surface(&query.expr, "history")?;
+    for filter in &query.filters {
+        if let LqFilter::Content { leaf } = filter {
+            validate_leaf_surface(leaf, "history")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {
+    let mut saw_dirty = false;
+    for filter in &query.filters {
+        match filter {
+            LqFilter::Dirty { mode } => {
+                saw_dirty = true;
+                if matches!(mode, LqYesNoOnly::No) {
+                    return Err(CoreError::NotImplemented(
+                        "runtime metadata: dirty:no is not executable without a clean-document universe"
+                            .to_string(),
+                    ));
+                }
+            }
+            LqFilter::File { .. } | LqFilter::Lang { .. } | LqFilter::Content { .. } => {}
+            LqFilter::Repo { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "runtime metadata: one or more filters are not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    if !saw_dirty {
+        return Err(CoreError::InvalidContract(
+            "runtime metadata: dirty:{yes|only} filter is required".to_string(),
+        ));
+    }
+    validate_executable_text_surface(&query.expr, "runtime metadata")?;
+    for filter in &query.filters {
+        if let LqFilter::Content { leaf } = filter {
+            validate_leaf_surface(leaf, "runtime metadata")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_executable_text_surface(expr: &LqExpr, plane: &str) -> Result<(), CoreError> {
+    match expr {
+        LqExpr::Empty => Ok(()),
+        LqExpr::Leaf(leaf) => validate_leaf_surface(leaf, plane),
+        LqExpr::Not(inner) => validate_executable_text_surface(inner, plane),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            for child in children {
+                validate_executable_text_surface(child, plane)?;
+            }
+            Ok(())
+        }
+        LqExpr::SemanticVector { .. } => Err(CoreError::NotImplemented(format!(
+            "{plane}: semantic-vector leaves are not executable on this route"
+        ))),
+    }
+}
+
+fn validate_leaf_surface(leaf: &LqLeaf, plane: &str) -> Result<(), CoreError> {
+    match leaf {
+        LqLeaf::Keyword(_) | LqLeaf::Phrase(_) | LqLeaf::RawString(_) => Ok(()),
+        LqLeaf::Regex(_) => Err(CoreError::NotImplemented(format!(
+            "{plane}: regex leaves are not executable on the current adapter set"
+        ))),
+        LqLeaf::StructuralBlock(_) => Err(CoreError::NotImplemented(format!(
+            "{plane}: structural leaves are not executable on this route"
+        ))),
+        LqLeaf::Predicate { .. } => Err(CoreError::NotImplemented(format!(
+            "{plane}: predicate leaves are not executable on this route"
+        ))),
+    }
+}
+
+fn execute_history_query(
+    _pin: &GenerationPin,
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    top_k: u32,
+) -> Result<(Vec<CommitCandidate>, Vec<DiffCandidate>), CoreError> {
+    let include_commits = !matches!(history_query_type(query), Some(LqType::Diff));
+    let include_diffs = !matches!(history_query_type(query), Some(LqType::Commit));
+    let limit = top_k_limit(top_k);
+    let mut commits = Vec::new();
+    let mut diffs = Vec::new();
+
+    if include_commits {
+        for record in state.commits().values() {
+            if history_commit_matches(query, state, record)? {
+                commits.push(commit_candidate_from_record(record));
+                if commits.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+
+    if include_diffs {
+        for (key, record) in state.diff_hunks() {
+            let Some(commit) = state.commits().get(&key.commit_sha()) else {
+                continue;
+            };
+            if history_diff_matches(query, state, key, record, commit)? {
+                diffs.push(diff_candidate_from_record(key, record));
+                if diffs.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    Ok((commits, diffs))
+}
+
+fn execute_runtime_metadata_query(
+    pin: &GenerationPin,
+    query: &LqQuery,
+    runtime_state: &RuntimeMetadataState,
+    structural_state: &StructuralAuthorityState,
+    top_k: u32,
+) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
+    let limit = top_k_limit(top_k);
+    let mut out = Vec::new();
+    for chunk_id in runtime_state.dirty_docs().keys() {
+        let Some(chunk) = structural_state.chunks().get(chunk_id) else {
+            continue;
+        };
+        if runtime_candidate_matches(query, chunk)? {
+            out.push(lexical_candidate_from_chunk(pin, chunk));
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn history_query_type(query: &LqQuery) -> Option<LqType> {
+    for filter in &query.filters {
+        if let LqFilter::Type { kind } = filter {
+            return Some(*kind);
+        }
+    }
+    None
+}
+
+fn history_commit_matches(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    record: &quanta_index_contract::lex::CommitRecord,
+) -> Result<bool, CoreError> {
+    for filter in &query.filters {
+        match filter {
+            LqFilter::Type { kind } => {
+                if !matches!(kind, LqType::Commit) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::File { .. } => return Ok(false),
+            LqFilter::Rev { spec } => {
+                if !history_rev_matches(state, spec, &record.sha) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Author { pattern } => {
+                if !matches_text(pattern, record.author.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Committer { pattern } => {
+                if !matches_text(pattern, record.committer.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Message { pattern } => {
+                if !matches_text(pattern, record.message.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Content { leaf } => {
+                if !leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Repo { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => {}
+        }
+    }
+    expr_matches(&query.expr, &mut |leaf| {
+        leaf_matches_text("history", leaf, record.message.as_ref(), &query.options)
+    })
+}
+
+fn history_diff_matches(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    key: &crate::readiness::HistoryDiffKey,
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+    commit: &quanta_index_contract::lex::CommitRecord,
+) -> Result<bool, CoreError> {
+    for filter in &query.filters {
+        match filter {
+            LqFilter::Type { kind } => {
+                if !matches!(kind, LqType::Diff) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::File { pattern, .. } => {
+                if !matches_text(pattern, key.file_path(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Rev { spec } => {
+                if !history_rev_matches(state, spec, &commit.sha) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Author { pattern } => {
+                if !matches_text(pattern, commit.author.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Committer { pattern } => {
+                if !matches_text(pattern, commit.committer.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Message { pattern } => {
+                if !matches_text(pattern, commit.message.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Content { leaf } => {
+                if !leaf_matches_text(
+                    "history",
+                    leaf,
+                    &history_diff_search_text(key, record),
+                    &query.options,
+                )? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Repo { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => {}
+        }
+    }
+    let diff_text = history_diff_search_text(key, record);
+    expr_matches(&query.expr, &mut |leaf| {
+        leaf_matches_text("history", leaf, &diff_text, &query.options)
+    })
+}
+
+fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<bool, CoreError> {
+    for filter in &query.filters {
+        match filter {
+            LqFilter::Dirty { mode } => {
+                if matches!(mode, LqYesNoOnly::No) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::File { pattern, .. } => {
+                if !matches_text(pattern, chunk.repo_relative_path.as_str(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Lang { id } => {
+                if !matches_text(id, chunk.language.as_str(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Content { leaf } => {
+                if !leaf_matches_text(
+                    "runtime metadata",
+                    leaf,
+                    chunk.indexed_text.as_ref(),
+                    &query.options,
+                )? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Repo { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => {}
+        }
+    }
+    expr_matches(&query.expr, &mut |leaf| {
+        leaf_matches_text(
+            "runtime metadata",
+            leaf,
+            chunk.indexed_text.as_ref(),
+            &query.options,
+        )
+    })
+}
+
+fn expr_matches<F>(expr: &LqExpr, leaf_matches: &mut F) -> Result<bool, CoreError>
+where
+    F: FnMut(&LqLeaf) -> Result<bool, CoreError>,
+{
+    match expr {
+        LqExpr::Empty => Ok(true),
+        LqExpr::Leaf(leaf) => leaf_matches(leaf),
+        LqExpr::Not(inner) => Ok(!expr_matches(inner, leaf_matches)?),
+        LqExpr::All(children) => {
+            for child in children {
+                if !expr_matches(child, leaf_matches)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        LqExpr::Any(children) => {
+            for child in children {
+                if expr_matches(child, leaf_matches)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        LqExpr::SemanticVector { .. } => Err(CoreError::NotImplemented(
+            "semantic-vector leaves are not executable on this route".to_string(),
+        )),
+    }
+}
+
+fn leaf_matches_text(
+    plane: &str,
+    leaf: &LqLeaf,
+    text: &str,
+    options: &LqOptions,
+) -> Result<bool, CoreError> {
+    match leaf {
+        LqLeaf::Keyword(value) | LqLeaf::Phrase(value) | LqLeaf::RawString(value) => {
+            Ok(matches_text(value, text, options))
+        }
+        LqLeaf::Regex(_) => Err(CoreError::NotImplemented(format!(
+            "{plane}: regex leaves are not executable on the current adapter set"
+        ))),
+        LqLeaf::StructuralBlock(_) => Err(CoreError::NotImplemented(format!(
+            "{plane}: structural leaves are not executable on this route"
+        ))),
+        LqLeaf::Predicate { .. } => Err(CoreError::NotImplemented(format!(
+            "{plane}: predicate leaves are not executable on this route"
+        ))),
+    }
+}
+
+fn matches_text(needle: &str, haystack: &str, options: &LqOptions) -> bool {
+    if matches!(options.case, Some(LqCase::Insensitive)) {
+        haystack
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase())
+    } else {
+        haystack.contains(needle)
+    }
+}
+
+fn history_rev_matches(state: &HistoryAuthorityState, spec: &str, sha: &CommitSha) -> bool {
+    if sha.to_string() == spec {
+        return true;
+    }
+    if state
+        .refs()
+        .get(spec)
+        .is_some_and(|resolved| resolved == sha)
+    {
+        return true;
+    }
+    state
+        .tags()
+        .get(spec)
+        .is_some_and(|resolved| resolved == sha)
+}
+
+fn commit_candidate_from_record(
+    record: &quanta_index_contract::lex::CommitRecord,
+) -> CommitCandidate {
+    CommitCandidate {
+        sha: record.sha,
+        parent_ids: record.parents.clone(),
+        committed_at_unix_s: unix_seconds_from_ms(record.committer_time_ms),
+        author: record.author.to_string(),
+        committer: record.committer.to_string(),
+        message: record.message.to_string(),
+        is_merge: record.is_merge,
+        tags: record.tags.iter().map(ToString::to_string).collect(),
+    }
+}
+
+fn diff_candidate_from_record(
+    key: &crate::readiness::HistoryDiffKey,
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+) -> DiffCandidate {
+    DiffCandidate {
+        repo_relative_path: key.file_path().to_string(),
+        hunk_header: record.hunk_header.to_string(),
+        side: record.side,
+        line_start: record.byte_start,
+        line_end: record.byte_end,
+        snippet: history_diff_snippet(record),
+    }
+}
+
+fn history_diff_search_text(
+    key: &crate::readiness::HistoryDiffKey,
+    record: &quanta_index_contract::lex::DiffHunkRecord,
+) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        key.file_path(),
+        record.hunk_header,
+        record.added_text,
+        record.removed_text,
+        record.touched_text
+    )
+}
+
+fn history_diff_snippet(record: &quanta_index_contract::lex::DiffHunkRecord) -> String {
+    if !record.touched_text.is_empty() {
+        return record.touched_text.to_string();
+    }
+    if !record.added_text.is_empty() {
+        return record.added_text.to_string();
+    }
+    if !record.removed_text.is_empty() {
+        return record.removed_text.to_string();
+    }
+    record.hunk_header.to_string()
+}
+
+fn lexical_candidate_from_chunk(
+    pin: &GenerationPin,
+    chunk: &ChunkRecord,
+) -> quanta_index_contract::LexicalCandidate {
+    quanta_index_contract::LexicalCandidate {
+        candidate_id: chunk.chunk_id.as_str().to_string(),
+        repo_id: pin.repo_id.clone(),
+        revision_id: pin.revision_id.clone(),
+        manifest_generation: pin.manifest_generation,
+        repo_relative_path: chunk.repo_relative_path.clone(),
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        score: 1.0,
+        snippet: chunk.snippet.to_string(),
+    }
+}
+
+fn top_k_limit(top_k: u32) -> usize {
+    usize::try_from(top_k).map_or(usize::MAX, core::convert::identity)
+}
+
+fn unix_seconds_from_ms(ms: u64) -> i64 {
+    i64::try_from(ms.div_euclid(1_000)).map_or(i64::MAX, core::convert::identity)
 }
 
 fn resolve_generation_selector_pin(
@@ -1047,10 +1531,12 @@ mod tests {
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::{
         BridgeQueryRequest, GenerationPin, HybridQueryRequest, LexicalCandidate,
-        ManifestGeneration, RepoId, RepoMapEntryDto, RepoMapQueryRequest, RepoMapQueryResponse,
-        RepoMapSnapshotMeta, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-        SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest,
-        SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
+        ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary,
+        RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryRequest,
+        RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath,
+        RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+        SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest, SemanticVectorRef,
+        TextQueryRequest, TextQuerySyntax,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -1103,13 +1589,13 @@ mod tests {
                     snapshot_id: "dispatch-snapshot".to_string(),
                     projection_version: 1,
                     authority_digest: "dispatch-digest".to_string(),
-                    item_index_availability: "available".to_string(),
-                    graph_coverage_class: "full".to_string(),
-                    exactness_summary: "exact".to_string(),
+                    item_index_availability: RepoMapItemIndexAvailability::Available,
+                    graph_coverage_class: RepoMapGraphCoverageClass::Full,
+                    exactness_summary: RepoMapExactnessSummary::Exact,
                 },
                 entries: vec![RepoMapEntryDto {
                     subject_identity: "src/lib.rs::Owner".to_string(),
-                    subject_doc_type: "Symbol".to_string(),
+                    subject_doc_type: RepoMapDocType::Symbol,
                     subject_kind: "symbol".to_string(),
                     owner_path: "src/lib.rs".to_string(),
                     score: 1.0,
@@ -1126,7 +1612,7 @@ mod tests {
                     projection_authority_artifact_id: "repo-map:dispatch:1".to_string(),
                     projection_authority_digest: "d".repeat(64),
                     projection_status: "Complete".to_string(),
-                    redaction_state: "Unredacted".to_string(),
+                    redaction_state: RepoMapRedactionState::Unredacted,
                 }],
                 dropped_entries_count: 0,
                 drop_reason_codes: Vec::new(),
@@ -1145,7 +1631,7 @@ mod tests {
             token_budget: 256,
             focus_subjects: vec![quanta_index_contract::RepoMapFocusSubjectDto {
                 subject_identity: "src/lib.rs::Owner".to_string(),
-                subject_doc_type: "Symbol".to_string(),
+                subject_doc_type: RepoMapDocType::Symbol,
             }],
         }
     }
@@ -1178,8 +1664,22 @@ mod tests {
 
     fn ready_ledger() -> Arc<RwLock<Ledger>> {
         let mut ledger = Ledger::default();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
         ledger.lexical_seal(ManifestGeneration::new(9));
         ledger.semantic_seal(ManifestGeneration::new(9));
+        ledger.record_track_seal(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Lexical,
+            ManifestGeneration::new(9),
+        );
+        ledger.record_track_seal(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            ManifestGeneration::new(9),
+        );
         Arc::new(RwLock::new(ledger))
     }
 
@@ -1769,6 +2269,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use quanta_index_contract::SearchPlaneTrackKind;
     use quanta_index_contract::StructuralBinding;
     use quanta_index_core::domains::structural::{
         StructuralError, StructuralProducerPort, StructuralQueryRequest, StructuralReadiness,

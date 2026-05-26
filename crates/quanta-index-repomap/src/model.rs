@@ -2,7 +2,8 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapEntryDto, RepoMapSnapshotMeta, RevisionId,
+    ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapRedactionState,
+    RepoMapSnapshotMeta, RevisionId,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -13,7 +14,7 @@ use serde::{
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoMapEntryV1 {
     pub subject_identity: String,
-    pub subject_doc_type: String,
+    pub subject_doc_type: RepoMapDocType,
     pub subject_kind: String,
     pub owner_path: String,
     pub score: f32,
@@ -30,7 +31,7 @@ pub struct RepoMapEntryV1 {
     pub projection_authority_artifact_id: String,
     pub projection_authority_digest: String,
     pub projection_status: String,
-    pub redaction_state: String,
+    pub redaction_state: RepoMapRedactionState,
     pub search_text: String,
     pub source_symbol_count: u32,
     pub source_chunk_token_total: u32,
@@ -137,7 +138,7 @@ impl<'de> Visitor<'de> for RepoMapEntryV1Visitor {
         A: MapAccess<'de>,
     {
         let mut subject_identity: Option<String> = None;
-        let mut subject_doc_type: Option<String> = None;
+        let mut subject_doc_type: Option<RepoMapDocType> = None;
         let mut subject_kind: Option<String> = None;
         let mut owner_path: Option<String> = None;
         let mut score: Option<f32> = None;
@@ -154,7 +155,7 @@ impl<'de> Visitor<'de> for RepoMapEntryV1Visitor {
         let mut projection_authority_artifact_id: Option<String> = None;
         let mut projection_authority_digest: Option<String> = None;
         let mut projection_status: Option<String> = None;
-        let mut redaction_state: Option<String> = None;
+        let mut redaction_state: Option<RepoMapRedactionState> = None;
         let mut search_text = String::new();
         let mut search_text_seen = false;
         let mut source_symbol_count = 0u32;
@@ -404,7 +405,7 @@ impl RepoMapEntryV1 {
     pub fn to_dto(&self) -> RepoMapEntryDto {
         RepoMapEntryDto {
             subject_identity: self.subject_identity.clone(),
-            subject_doc_type: self.subject_doc_type.clone(),
+            subject_doc_type: self.subject_doc_type,
             subject_kind: self.subject_kind.clone(),
             owner_path: self.owner_path.clone(),
             score: self.score,
@@ -421,7 +422,7 @@ impl RepoMapEntryV1 {
             projection_authority_artifact_id: self.projection_authority_artifact_id.clone(),
             projection_authority_digest: self.projection_authority_digest.clone(),
             projection_status: self.projection_status.clone(),
-            redaction_state: self.redaction_state.clone(),
+            redaction_state: self.redaction_state,
         }
     }
 }
@@ -548,7 +549,7 @@ mod tests {
         assert_eq!(contributing_signals.insert("files".to_string(), 3), None);
         RepoMapEntryV1 {
             subject_identity: "subject://main".to_string(),
-            subject_doc_type: "file".to_string(),
+            subject_doc_type: RepoMapDocType::File,
             subject_kind: "File".to_string(),
             owner_path: "src/main.rs".to_string(),
             score: 0.75,
@@ -565,7 +566,7 @@ mod tests {
             projection_authority_artifact_id: "artifact-1".to_string(),
             projection_authority_digest: "digest-1".to_string(),
             projection_status: "fresh".to_string(),
-            redaction_state: "clear".to_string(),
+            redaction_state: RepoMapRedactionState::Unredacted,
             search_text: "main file".to_string(),
             source_symbol_count: 2,
             source_chunk_token_total: 120,
@@ -585,9 +586,9 @@ mod tests {
                 snapshot_id: "snapshot-1".to_string(),
                 projection_version: 2,
                 authority_digest: "authority-1".to_string(),
-                item_index_availability: "ready".to_string(),
-                graph_coverage_class: "full".to_string(),
-                exactness_summary: "exact".to_string(),
+                item_index_availability: quanta_index_contract::RepoMapItemIndexAvailability::Full,
+                graph_coverage_class: quanta_index_contract::RepoMapGraphCoverageClass::Full,
+                exactness_summary: quanta_index_contract::RepoMapExactnessSummary::Exact,
             },
             entries: vec![fixture_entry()],
         }
@@ -617,7 +618,7 @@ mod tests {
     fn repomap_entry_v1_defaults_missing_search_and_source_fields() {
         let value = json!({
             "subject_identity": "subject://main",
-            "subject_doc_type": "file",
+            "subject_doc_type": "File",
             "subject_kind": "File",
             "owner_path": "src/main.rs",
             "score": 0.75,
@@ -636,7 +637,7 @@ mod tests {
             "projection_authority_artifact_id": "artifact-1",
             "projection_authority_digest": "digest-1",
             "projection_status": "fresh",
-            "redaction_state": "clear"
+            "redaction_state": "Unredacted"
         });
         let decoded: RepoMapEntryV1 = match serde_json::from_value(value) {
             Ok(value) => value,

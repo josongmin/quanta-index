@@ -20,10 +20,139 @@ use serde::{
 
 use quanta_index_contract_base::ids::{ManifestGeneration, RepoId, RevisionId};
 
+macro_rules! repomap_string_enum {
+    (
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $($variant:ident => $code:literal),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            const VARIANTS: &'static [&'static str] = &[$($code),+];
+
+            #[must_use]
+            pub const fn as_code_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $code),+
+                }
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(self.as_code_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct EnumVisitor;
+
+                impl Visitor<'_> for EnumVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str(concat!("a ", stringify!($name), " string"))
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        match value {
+                            $($code => Ok($name::$variant),)+
+                            other => Err(de::Error::unknown_variant(other, $name::VARIANTS)),
+                        }
+                    }
+
+                    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        self.visit_str(value.as_str())
+                    }
+                }
+
+                deserializer.deserialize_str(EnumVisitor)
+            }
+        }
+    };
+}
+
+repomap_string_enum! {
+    pub enum RepoMapDocType {
+        File => "File",
+        Module => "Module",
+        Symbol => "Symbol",
+        Chunk => "Chunk",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapEdgeKind {
+        Call => "Call",
+        Import => "Import",
+        Contains => "Contains",
+        OwnsChunk => "OwnsChunk",
+        DependsOn => "DependsOn",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapChunkExactness {
+        Exact => "Exact",
+        Approximate => "Approximate",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapItemIndexAvailability {
+        Unavailable => "Unavailable",
+        Partial => "Partial",
+        Available => "Available",
+        Full => "Full",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapGraphCoverageClass {
+        Partial => "Partial",
+        Complete => "Complete",
+        Full => "Full",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapExactnessSummary {
+        Approximate => "Approximate",
+        Mixed => "Mixed",
+        Exact => "Exact",
+    }
+}
+
+repomap_string_enum! {
+    pub enum RepoMapRedactionState {
+        Unredacted => "Unredacted",
+        Redacted => "Redacted",
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoMapSymbolRecordDto {
     pub subject_identity: String,
-    pub subject_doc_type: String,
+    pub subject_doc_type: RepoMapDocType,
     pub subject_kind: String,
     pub symbol_name: String,
     pub owner_path: String,
@@ -66,7 +195,7 @@ impl<'de> Visitor<'de> for RepoMapSymbolRecordDtoV1Visitor {
         A: MapAccess<'de>,
     {
         let mut subject_identity: Option<String> = None;
-        let mut subject_doc_type: Option<String> = None;
+        let mut subject_doc_type: Option<RepoMapDocType> = None;
         let mut subject_kind: Option<String> = None;
         let mut symbol_name: Option<String> = None;
         let mut owner_path: Option<String> = None;
@@ -264,7 +393,7 @@ impl<'de> Deserialize<'de> for RepoMapFileIndexRecord {
 pub struct RepoMapGraphEdgeDto {
     pub from_identity: String,
     pub to_identity: String,
-    pub edge_kind: String,
+    pub edge_kind: RepoMapEdgeKind,
 }
 
 const REPOMAP_GRAPH_EDGE_DTO_V1_FIELDS: &[&str] = &["from_identity", "to_identity", "edge_kind"];
@@ -297,7 +426,7 @@ impl<'de> Visitor<'de> for RepoMapGraphEdgeDtoV1Visitor {
     {
         let mut from_identity: Option<String> = None;
         let mut to_identity: Option<String> = None;
-        let mut edge_kind: Option<String> = None;
+        let mut edge_kind: Option<RepoMapEdgeKind> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "from_identity" => {
@@ -357,7 +486,7 @@ pub struct RepoMapChunkRecordDto {
     pub owner_path: String,
     pub token_count: u32,
     pub preview_text: String,
-    pub exactness: String,
+    pub exactness: RepoMapChunkExactness,
 }
 
 const REPOMAP_CHUNK_RECORD_DTO_V1_FIELDS: &[&str] = &[
@@ -400,7 +529,7 @@ impl<'de> Visitor<'de> for RepoMapChunkRecordDtoV1Visitor {
         let mut owner_path: Option<String> = None;
         let mut token_count: Option<u32> = None;
         let mut preview_text: Option<String> = None;
-        let mut exactness: Option<String> = None;
+        let mut exactness: Option<RepoMapChunkExactness> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "subject_identity" => {
@@ -478,10 +607,10 @@ pub struct RepoMapSourceBundle {
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
-    pub item_index_availability: String,
-    pub graph_coverage_class: String,
-    pub exactness_summary: String,
-    pub redaction_state: String,
+    pub item_index_availability: RepoMapItemIndexAvailability,
+    pub graph_coverage_class: RepoMapGraphCoverageClass,
+    pub exactness_summary: RepoMapExactnessSummary,
+    pub redaction_state: RepoMapRedactionState,
     pub file_indices: Vec<RepoMapFileIndexRecord>,
     pub call_edges: Vec<RepoMapGraphEdgeDto>,
     pub import_edges: Vec<RepoMapGraphEdgeDto>,
@@ -548,10 +677,10 @@ impl<'de> Visitor<'de> for RepoMapSourceBundleV1Visitor {
         let mut snapshot_id: Option<String> = None;
         let mut projection_version: Option<u32> = None;
         let mut authority_digest: Option<String> = None;
-        let mut item_index_availability: Option<String> = None;
-        let mut graph_coverage_class: Option<String> = None;
-        let mut exactness_summary: Option<String> = None;
-        let mut redaction_state: Option<String> = None;
+        let mut item_index_availability: Option<RepoMapItemIndexAvailability> = None;
+        let mut graph_coverage_class: Option<RepoMapGraphCoverageClass> = None;
+        let mut exactness_summary: Option<RepoMapExactnessSummary> = None;
+        let mut redaction_state: Option<RepoMapRedactionState> = None;
         let mut file_indices: Option<Vec<RepoMapFileIndexRecord>> = None;
         let mut call_edges: Option<Vec<RepoMapGraphEdgeDto>> = None;
         let mut import_edges: Option<Vec<RepoMapGraphEdgeDto>> = None;
@@ -908,9 +1037,9 @@ pub struct RepoMapSnapshotMeta {
     pub snapshot_id: String,
     pub projection_version: u32,
     pub authority_digest: String,
-    pub item_index_availability: String,
-    pub graph_coverage_class: String,
-    pub exactness_summary: String,
+    pub item_index_availability: RepoMapItemIndexAvailability,
+    pub graph_coverage_class: RepoMapGraphCoverageClass,
+    pub exactness_summary: RepoMapExactnessSummary,
 }
 
 const REPOMAP_SNAPSHOT_META_V1_FIELDS: &[&str] = &[
@@ -954,9 +1083,9 @@ impl<'de> Visitor<'de> for RepoMapSnapshotMetaV1Visitor {
         let mut snapshot_id: Option<String> = None;
         let mut projection_version: Option<u32> = None;
         let mut authority_digest: Option<String> = None;
-        let mut item_index_availability: Option<String> = None;
-        let mut graph_coverage_class: Option<String> = None;
-        let mut exactness_summary: Option<String> = None;
+        let mut item_index_availability: Option<RepoMapItemIndexAvailability> = None;
+        let mut graph_coverage_class: Option<RepoMapGraphCoverageClass> = None;
+        let mut exactness_summary: Option<RepoMapExactnessSummary> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "snapshot_id" => {
@@ -1041,7 +1170,7 @@ impl<'de> Deserialize<'de> for RepoMapSnapshotMeta {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RepoMapFocusSubjectDto {
     pub subject_identity: String,
-    pub subject_doc_type: String,
+    pub subject_doc_type: RepoMapDocType,
 }
 
 const REPOMAP_FOCUS_SUBJECT_DTO_V1_FIELDS: &[&str] = &["subject_identity", "subject_doc_type"];
@@ -1072,7 +1201,7 @@ impl<'de> Visitor<'de> for RepoMapFocusSubjectDtoV1Visitor {
         A: MapAccess<'de>,
     {
         let mut subject_identity: Option<String> = None;
-        let mut subject_doc_type: Option<String> = None;
+        let mut subject_doc_type: Option<RepoMapDocType> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "subject_identity" => {
@@ -1122,7 +1251,7 @@ impl<'de> Deserialize<'de> for RepoMapFocusSubjectDto {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoMapEntryDto {
     pub subject_identity: String,
-    pub subject_doc_type: String,
+    pub subject_doc_type: RepoMapDocType,
     pub subject_kind: String,
     pub owner_path: String,
     pub score: f32,
@@ -1139,7 +1268,7 @@ pub struct RepoMapEntryDto {
     pub projection_authority_artifact_id: String,
     pub projection_authority_digest: String,
     pub projection_status: String,
-    pub redaction_state: String,
+    pub redaction_state: RepoMapRedactionState,
 }
 
 const REPOMAP_ENTRY_DTO_V1_FIELDS: &[&str] = &[
@@ -1213,7 +1342,7 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
         A: MapAccess<'de>,
     {
         let mut subject_identity: Option<String> = None;
-        let mut subject_doc_type: Option<String> = None;
+        let mut subject_doc_type: Option<RepoMapDocType> = None;
         let mut subject_kind: Option<String> = None;
         let mut owner_path: Option<String> = None;
         let mut score: Option<f32> = None;
@@ -1230,7 +1359,7 @@ impl<'de> Visitor<'de> for RepoMapEntryDtoV1Visitor {
         let mut projection_authority_artifact_id: Option<String> = None;
         let mut projection_authority_digest: Option<String> = None;
         let mut projection_status: Option<String> = None;
-        let mut redaction_state: Option<String> = None;
+        let mut redaction_state: Option<RepoMapRedactionState> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "subject_identity" => {
@@ -1737,10 +1866,12 @@ mod tests {
     //! accidental drift from the prior derived impls.
 
     use super::{
-        ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
-        RepoMapEntryDto, RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto,
-        RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSnapshotMeta,
-        RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId,
+        ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+        RepoMapChunkRecordDto, RepoMapDocType, RepoMapEdgeKind, RepoMapEntryDto,
+        RepoMapExactnessSummary, RepoMapFileIndexRecord, RepoMapFocusSubjectDto,
+        RepoMapGraphCoverageClass, RepoMapGraphEdgeDto, RepoMapItemIndexAvailability,
+        RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState,
+        RepoMapSnapshotMeta, RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId,
     };
     use std::collections::BTreeMap;
 
@@ -1776,7 +1907,7 @@ mod tests {
     fn sample_symbol_record() -> RepoMapSymbolRecordDto {
         RepoMapSymbolRecordDto {
             subject_identity: "sym::ident".into(),
-            subject_doc_type: "rust".into(),
+            subject_doc_type: RepoMapDocType::Symbol,
             subject_kind: "function".into(),
             symbol_name: "do_thing".into(),
             owner_path: "src/lib.rs".into(),
@@ -1797,7 +1928,7 @@ mod tests {
         RepoMapGraphEdgeDto {
             from_identity: "from::ident".into(),
             to_identity: "to::ident".into(),
-            edge_kind: "call".into(),
+            edge_kind: RepoMapEdgeKind::Call,
         }
     }
 
@@ -1807,14 +1938,14 @@ mod tests {
             owner_path: "src/lib.rs".into(),
             token_count: 128,
             preview_text: "fn do_thing() {}".into(),
-            exactness: "exact".into(),
+            exactness: RepoMapChunkExactness::Exact,
         }
     }
 
     fn sample_focus_subject() -> RepoMapFocusSubjectDto {
         RepoMapFocusSubjectDto {
             subject_identity: "focus::ident".into(),
-            subject_doc_type: "rust".into(),
+            subject_doc_type: RepoMapDocType::Symbol,
         }
     }
 
@@ -1823,9 +1954,9 @@ mod tests {
             snapshot_id: "snap-1".into(),
             projection_version: 7,
             authority_digest: "blake3:deadbeef".into(),
-            item_index_availability: "full".into(),
-            graph_coverage_class: "complete".into(),
-            exactness_summary: "exact".into(),
+            item_index_availability: RepoMapItemIndexAvailability::Full,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+            exactness_summary: RepoMapExactnessSummary::Exact,
         }
     }
 
@@ -1836,7 +1967,7 @@ mod tests {
         ]);
         RepoMapEntryDto {
             subject_identity: "entry::ident".into(),
-            subject_doc_type: "rust".into(),
+            subject_doc_type: RepoMapDocType::Symbol,
             subject_kind: "function".into(),
             owner_path: "src/lib.rs".into(),
             score: 0.875_f32,
@@ -1853,7 +1984,7 @@ mod tests {
             projection_authority_artifact_id: "art-1".into(),
             projection_authority_digest: "blake3:cafebabe".into(),
             projection_status: "ok".into(),
-            redaction_state: "none".into(),
+            redaction_state: RepoMapRedactionState::Unredacted,
         }
     }
 
@@ -1877,10 +2008,10 @@ mod tests {
             snapshot_id: "snap-1".into(),
             projection_version: 3,
             authority_digest: "blake3:feedface".into(),
-            item_index_availability: "full".into(),
-            graph_coverage_class: "complete".into(),
-            exactness_summary: "exact".into(),
-            redaction_state: "none".into(),
+            item_index_availability: RepoMapItemIndexAvailability::Full,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+            exactness_summary: RepoMapExactnessSummary::Exact,
+            redaction_state: RepoMapRedactionState::Unredacted,
             file_indices: vec![sample_file_index_record()],
             call_edges: vec![sample_graph_edge()],
             import_edges: vec![sample_graph_edge()],

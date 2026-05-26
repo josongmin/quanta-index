@@ -13,13 +13,12 @@ use std::sync::Arc;
 
 use quanta_index_channel::BundleChannelPublisher;
 use quanta_index_contract::{
-    BatchIngestMode, BatchPublishReceipt, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef,
-    DeleteSymbol, DeleteTag, DirtyIngestBatch, EvictDirty, HistoryIngestBatch, LexicalChannelOp,
-    LexicalChunkMutation, LexicalFullBundle, LexicalIngestBatch, LexicalSymbolMutation,
-    RepoMapMutationAck, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneIpcError, SemanticChannelOp, SemanticEmbeddingMutation, SemanticFullBundle,
-    SemanticIngestBatch, StructuralIngestBatch, UpsertChunk, UpsertCommit, UpsertDiffHunk,
-    UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
+    BatchPublishReceipt, DeleteRef, DeleteTag, DirtyIngestBatch, EvictDirty, HistoryIngestBatch,
+    LexicalChannelOp, LexicalIngestBatch, ReplaceLexicalScope, ReplaceSemanticScope,
+    ReplaceStructuralScope, RepoMapMutationAck, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneIpcError, SemanticChannelOp, SemanticIngestBatch,
+    StructuralIngestBatch, TombstoneLexicalScope, TombstoneSemanticScope, TombstoneStructuralScope,
+    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertRef, UpsertTag,
 };
 use quanta_index_core::{
     CoreError, LexicalIngestPort, RepoMapBundleIngestPort, SemanticIngestPort,
@@ -70,83 +69,48 @@ impl ChannelLexicalIngestAdapter {
 
 impl LexicalIngestPort for ChannelLexicalIngestAdapter {
     fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::default();
-        if matches!(batch.mode, BatchIngestMode::ReplaceGeneration) {
-            let seq = self
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for scope in &batch.replace_scopes {
+            let payload = encode_cbor(&(batch.mode, batch.base_generation, scope.clone()))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "lexical ingest: encode replace scope payload: {err}"
+                    ))
+                })?;
+            let _published_seq = self
                 .publisher
-                .publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+                .publish(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
                     repo_id: batch.repo_id.clone(),
                     revision_id: batch.revision_id.clone(),
                     generation: batch.generation,
-                    payload: batch.manifest_payload.clone(),
+                    payload,
                 }))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_replace_scope();
         }
-        for chunk in &batch.chunks {
-            let op = match chunk {
-                LexicalChunkMutation::Upsert(payload) => {
-                    let encoded = encode_cbor(&payload.record).map_err(|err| {
-                        CoreError::InvalidContract(format!(
-                            "lexical ingest: encode chunk record: {err}"
-                        ))
-                    })?;
-                    LexicalChannelOp::UpsertChunk(UpsertChunk {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: payload.chunk_id.clone(),
-                        payload: encoded,
-                    })
-                }
-                LexicalChunkMutation::Delete(payload) => {
-                    LexicalChannelOp::DeleteChunk(DeleteChunk {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: payload.chunk_id.clone(),
-                    })
-                }
-            };
-            let seq = self
+        for scope in &batch.tombstone_scopes {
+            let payload = encode_cbor(&(batch.mode, batch.base_generation, scope.clone()))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "lexical ingest: encode tombstone scope payload: {err}"
+                    ))
+                })?;
+            let _published_seq = self
                 .publisher
-                .publish(op)
-                .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
-        }
-        for symbol in &batch.symbols {
-            let op = match symbol {
-                LexicalSymbolMutation::Upsert(payload) => {
-                    let encoded = encode_cbor(&payload.record).map_err(|err| {
-                        CoreError::InvalidContract(format!(
-                            "lexical ingest: encode symbol record: {err}"
-                        ))
-                    })?;
-                    LexicalChannelOp::UpsertSymbol(UpsertSymbol {
+                .publish(LexicalChannelOp::TombstoneLexicalScope(
+                    TombstoneLexicalScope {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
-                        symbol_id: payload.symbol_id.clone(),
-                        payload: encoded,
-                    })
-                }
-                LexicalSymbolMutation::Delete(payload) => {
-                    LexicalChannelOp::DeleteSymbol(DeleteSymbol {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        symbol_id: payload.symbol_id.clone(),
-                    })
-                }
-            };
-            let seq = self
-                .publisher
-                .publish(op)
+                        payload,
+                    },
+                ))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_tombstone_scope();
         }
         if batch.seal {
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .seal(
                     batch.repo_id.clone(),
@@ -154,7 +118,6 @@ impl LexicalIngestPort for ChannelLexicalIngestAdapter {
                     batch.generation,
                 )
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
             receipt.mark_sealed();
         }
         self.publisher
@@ -181,52 +144,60 @@ impl ChannelSemanticIngestAdapter {
 
 impl SemanticIngestPort for ChannelSemanticIngestAdapter {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::default();
-        if matches!(batch.mode, BatchIngestMode::ReplaceGeneration) {
-            let seq = self
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for scope in &batch.replace_scopes {
+            let payload = encode_cbor(&(
+                batch.mode,
+                batch.base_generation,
+                batch.model_contract.clone(),
+                scope.clone(),
+            ))
+            .map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "semantic ingest: encode replace scope payload: {err}"
+                ))
+            })?;
+            let _published_seq = self
                 .publisher
-                .publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-                    repo_id: batch.repo_id.clone(),
-                    revision_id: batch.revision_id.clone(),
-                    generation: batch.generation,
-                    payload: batch.manifest_payload.clone(),
-                }))
+                .publish(SemanticChannelOp::ReplaceSemanticScope(
+                    ReplaceSemanticScope {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        payload,
+                    },
+                ))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_replace_scope();
         }
-        for embedding in &batch.embeddings {
-            let op = match embedding {
-                SemanticEmbeddingMutation::Upsert(payload) => {
-                    let encoded = encode_cbor(&payload.record).map_err(|err| {
-                        CoreError::InvalidContract(format!(
-                            "semantic ingest: encode embedding record: {err}"
-                        ))
-                    })?;
-                    SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        embedding_id: payload.embedding_id.clone(),
-                        payload: encoded,
-                    })
-                }
-                SemanticEmbeddingMutation::Delete(payload) => {
-                    SemanticChannelOp::DeleteEmbedding(DeleteEmbedding {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        embedding_id: payload.embedding_id.clone(),
-                    })
-                }
-            };
-            let seq = self
+        for scope in &batch.tombstone_scopes {
+            let payload = encode_cbor(&(
+                batch.mode,
+                batch.base_generation,
+                batch.model_contract.clone(),
+                scope.clone(),
+            ))
+            .map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "semantic ingest: encode tombstone scope payload: {err}"
+                ))
+            })?;
+            let _published_seq = self
                 .publisher
-                .publish(op)
+                .publish(SemanticChannelOp::TombstoneSemanticScope(
+                    TombstoneSemanticScope {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        payload,
+                    },
+                ))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_tombstone_scope();
         }
         if batch.seal {
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .seal(
                     batch.repo_id.clone(),
@@ -234,7 +205,6 @@ impl SemanticIngestPort for ChannelSemanticIngestAdapter {
                     batch.generation,
                 )
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
             receipt.mark_sealed();
         }
         self.publisher
@@ -259,9 +229,9 @@ impl ChannelHistoryIngestAdapter {
 
 impl HistoryIngestPort for ChannelHistoryIngestAdapter {
     fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::default();
+        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
         for record in &batch.commits {
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .publish(LexicalChannelOp::UpsertCommit(UpsertCommit {
                     repo_id: batch.repo_id.clone(),
@@ -274,62 +244,74 @@ impl HistoryIngestPort for ChannelHistoryIngestAdapter {
                     })?,
                 }))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_replace_scope();
         }
         for mutation in &batch.refs {
-            let op = match mutation {
-                quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+            let (op, is_replace_scope) = match mutation {
+                quanta_index_contract::HistoryRefMutation::Upsert(payload) => (
                     LexicalChannelOp::UpsertRef(UpsertRef {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
                         name: payload.name.clone(),
                         sha: *payload.sha.as_bytes(),
-                    })
-                }
-                quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                    }),
+                    true,
+                ),
+                quanta_index_contract::HistoryRefMutation::Delete(payload) => (
                     LexicalChannelOp::DeleteRef(DeleteRef {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
                         name: payload.name.clone(),
-                    })
-                }
+                    }),
+                    false,
+                ),
             };
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .publish(op)
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            if is_replace_scope {
+                receipt.accept_replace_scope();
+            } else {
+                receipt.accept_tombstone_scope();
+            }
         }
         for mutation in &batch.tags {
-            let op = match mutation {
-                quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+            let (op, is_replace_scope) = match mutation {
+                quanta_index_contract::HistoryRefMutation::Upsert(payload) => (
                     LexicalChannelOp::UpsertTag(UpsertTag {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
                         name: payload.name.clone(),
                         sha: *payload.sha.as_bytes(),
-                    })
-                }
-                quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                    }),
+                    true,
+                ),
+                quanta_index_contract::HistoryRefMutation::Delete(payload) => (
                     LexicalChannelOp::DeleteTag(DeleteTag {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
                         name: payload.name.clone(),
-                    })
-                }
+                    }),
+                    false,
+                ),
             };
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .publish(op)
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            if is_replace_scope {
+                receipt.accept_replace_scope();
+            } else {
+                receipt.accept_tombstone_scope();
+            }
         }
         for hunk in &batch.diff_hunks {
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .publish(LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
                     repo_id: batch.repo_id.clone(),
@@ -344,7 +326,7 @@ impl HistoryIngestPort for ChannelHistoryIngestAdapter {
                     })?,
                 }))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_replace_scope();
         }
         self.publisher
             .flush()
@@ -353,6 +335,8 @@ impl HistoryIngestPort for ChannelHistoryIngestAdapter {
     }
 }
 
+/// Adapter that implements [`SemanticIngestPort`] on top of a channel
+/// publisher.
 pub struct ChannelRuntimeMetadataIngestAdapter {
     publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
 }
@@ -368,10 +352,10 @@ impl ChannelRuntimeMetadataIngestAdapter {
 
 impl RuntimeMetadataIngestPort for ChannelRuntimeMetadataIngestAdapter {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::default();
+        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
         for entry in &batch.entries {
-            let op = match entry {
-                quanta_index_contract::DirtyMutation::Upsert(record) => {
+            let (op, is_replace_scope) = match entry {
+                quanta_index_contract::DirtyMutation::Upsert(record) => (
                     LexicalChannelOp::UpsertDirty(UpsertDirty {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
@@ -379,22 +363,28 @@ impl RuntimeMetadataIngestPort for ChannelRuntimeMetadataIngestAdapter {
                         doc_id: record.doc_id.clone(),
                         applied_at_ms: record.applied_at_ms,
                         payload_hash: record.payload_hash,
-                    })
-                }
-                quanta_index_contract::DirtyMutation::Delete(payload) => {
+                    }),
+                    true,
+                ),
+                quanta_index_contract::DirtyMutation::Delete(payload) => (
                     LexicalChannelOp::EvictDirty(EvictDirty {
                         repo_id: batch.repo_id.clone(),
                         revision_id: batch.revision_id.clone(),
                         generation: batch.generation,
                         doc_id: payload.doc_id.clone(),
-                    })
-                }
+                    }),
+                    false,
+                ),
             };
-            let seq = self
+            let _published_seq = self
                 .publisher
                 .publish(op)
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            if is_replace_scope {
+                receipt.accept_replace_scope();
+            } else {
+                receipt.accept_tombstone_scope();
+            }
         }
         self.publisher
             .flush()
@@ -421,36 +411,58 @@ impl StructuralIngestPort for ChannelStructuralIngestAdapter {
         &self,
         batch: &StructuralIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
-        let mut receipt = BatchPublishReceipt::default();
-        for tree in &batch.trees {
-            let op = match tree {
-                quanta_index_contract::ParseTreeMutation::Upsert(payload) => {
-                    LexicalChannelOp::UpsertParseTree(UpsertParseTree {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: payload.chunk_id.clone(),
-                        payload: encode_cbor(&payload.record).map_err(|err| {
-                            CoreError::InvalidContract(format!(
-                                "structural ingest: encode parse tree record: {err}"
-                            ))
-                        })?,
-                    })
-                }
-                quanta_index_contract::ParseTreeMutation::Delete(payload) => {
-                    LexicalChannelOp::DeleteParseTree(DeleteParseTree {
-                        repo_id: batch.repo_id.clone(),
-                        revision_id: batch.revision_id.clone(),
-                        generation: batch.generation,
-                        chunk_id: payload.chunk_id.clone(),
-                    })
-                }
-            };
-            let seq = self
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for scope in &batch.replace_scopes {
+            let payload = encode_cbor(&(batch.mode, batch.base_generation, scope.clone()))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "structural ingest: encode replace scope payload: {err}"
+                    ))
+                })?;
+            let _published_seq = self
                 .publisher
-                .publish(op)
+                .publish(LexicalChannelOp::ReplaceStructuralScope(
+                    ReplaceStructuralScope {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        payload,
+                    },
+                ))
                 .map_err(|err| channel_error_to_core(&err))?;
-            receipt.record(seq);
+            receipt.accept_replace_scope();
+        }
+        for scope in &batch.tombstone_scopes {
+            let payload = encode_cbor(&(batch.mode, batch.base_generation, scope.clone()))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "structural ingest: encode tombstone scope payload: {err}"
+                    ))
+                })?;
+            let _published_seq = self
+                .publisher
+                .publish(LexicalChannelOp::TombstoneStructuralScope(
+                    TombstoneStructuralScope {
+                        repo_id: batch.repo_id.clone(),
+                        revision_id: batch.revision_id.clone(),
+                        generation: batch.generation,
+                        payload,
+                    },
+                ))
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.accept_tombstone_scope();
+        }
+        if batch.seal {
+            let _published_seq = self
+                .publisher
+                .seal(
+                    batch.repo_id.clone(),
+                    batch.revision_id.clone(),
+                    batch.generation,
+                )
+                .map_err(|err| channel_error_to_core(&err))?;
+            receipt.mark_sealed();
         }
         self.publisher
             .flush()
@@ -587,15 +599,17 @@ mod tests {
     use super::*;
     use quanta_index_channel::ChannelError;
     use quanta_index_contract::lex::{
-        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
-        ParseTreeRecord,
+        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
+        ParseRoleTag, ParseTreeRecord,
     };
     use quanta_index_contract::{
-        ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingId, EmbeddingRecord,
+        BatchIngestMode, ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingDistanceMetric,
+        EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord,
         HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert,
-        LexicalChunkDelete, LexicalChunkUpsert, ManifestGeneration, ParseTreeDelete,
-        ParseTreeMutation, ParseTreeUpsert, RepoId, RepoRelativePath, RevisionId,
-        SemanticEmbeddingDelete, SemanticEmbeddingUpsert, StructuralIngestBatch,
+        LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration,
+        OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
+        SemanticIngestBatch, SemanticReplaceScope, StructuralIngestBatch, StructuralReplaceScope,
+        StructuralTreeRecord,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -744,28 +758,43 @@ mod tests {
         }
     }
 
-    fn fixture_chunk_record() -> ChunkRecord {
-        ChunkRecord {
+    fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        Ok(ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: "rust".to_string().into_boxed_str(),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 12,
             start_line: 1,
-            end_line: 10,
+            end_line: 1,
             snippet: "fn main() {}".to_string().into_boxed_str(),
-        }
+            indexed_text: "fn main() {}".to_string().into_boxed_str(),
+            text_digest: "text:abc".to_string().into_boxed_str(),
+            shape_digest: "shape:def".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+        })
     }
 
-    fn fixture_embedding_record() -> EmbeddingRecord {
-        EmbeddingRecord {
-            owner_kind: "Function".to_string().into_boxed_str(),
+    fn fixture_embedding_record() -> Result<EmbeddingRecord, Box<dyn std::error::Error>> {
+        Ok(EmbeddingRecord {
+            embedding_id: EmbeddingId::new("emb-1"),
+            owner_kind: OwnerDocKind::Chunk,
             owner_id: "main".to_string().into_boxed_str(),
+            source_doc_id: "chunk-1".to_string().into_boxed_str(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: LangId::Rust,
+            language: rust_language()?,
             symbol_kind: None,
+            start_byte: 0,
+            end_byte: 12,
             start_line: 1,
-            end_line: 10,
+            end_line: 1,
             snippet: "fn main() {}".to_string().into_boxed_str(),
+            embedding_input_digest: "input:abc".to_string().into_boxed_str(),
+            vector_digest: "vec:def".to_string().into_boxed_str(),
+            view_kind: "raw_chunk".to_string().into_boxed_str(),
             vector: vec![0.1, 0.2, 0.3],
-        }
+        })
     }
 
     fn fixture_commit_sha() -> CommitSha {
@@ -813,10 +842,10 @@ mod tests {
         }
     }
 
-    fn fixture_parse_tree_record() -> ParseTreeRecord {
-        ParseTreeRecord {
+    fn fixture_parse_tree_record() -> Result<ParseTreeRecord, Box<dyn std::error::Error>> {
+        Ok(ParseTreeRecord {
             wire_version: 1,
-            lang: LangId::Rust,
+            lang: rust_language()?,
             root: ParseNode {
                 kind: "function_item".to_string().into_boxed_str(),
                 byte_start: 0,
@@ -830,6 +859,30 @@ mod tests {
                 byte_start: 0,
                 byte_end: 4,
             }],
+        })
+    }
+
+    fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>> {
+        LanguageCode::new("rust")
+            .map_err(|err| test_failure(format!("invalid hard-coded test language code: {err}")))
+    }
+
+    fn fixture_scope() -> SearchScopeKey {
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        }
+    }
+
+    fn fixture_model_contract() -> EmbeddingModelContract {
+        EmbeddingModelContract {
+            model_id: "test-model".to_string().into_boxed_str(),
+            model_version: None,
+            dimension: 3,
+            normalization: EmbeddingNormalization::None,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            policy_digest: "policy:abc".to_string().into_boxed_str(),
+            view_policy_digest: None,
         }
     }
 
@@ -842,42 +895,42 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
+            base_generation: None,
+            manifest_digest: "manifest:lex".to_string(),
+            batch_digest: "batch:lex".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
-            manifest_payload: vec![0xAA],
-            chunks: vec![
-                LexicalChunkMutation::Upsert(LexicalChunkUpsert {
-                    chunk_id: ChunkId::new("c1"),
-                    record: fixture_chunk_record(),
-                }),
-                LexicalChunkMutation::Delete(LexicalChunkDelete {
-                    chunk_id: ChunkId::new("c2"),
-                }),
-            ],
-            symbols: vec![],
+            replace_scopes: vec![LexicalReplaceScope {
+                scope: fixture_scope(),
+                scope_digest: "scope:lex".to_string(),
+                chunks: vec![fixture_chunk_record()?],
+                symbols: vec![],
+            }],
+            tombstone_scopes: Vec::new(),
             seal: true,
         };
         let receipt = adapter.publish_batch(&batch)?;
-        // FullBundle + UpsertChunk + DeleteChunk + Seal = 4 ops
         let ops = publisher.take()?;
         ensure(
             matches!(
                 ops.as_slice(),
                 [
-                    LexicalChannelOp::FullBundle(_),
-                    LexicalChannelOp::UpsertChunk(_),
-                    LexicalChannelOp::DeleteChunk(_),
+                    LexicalChannelOp::ReplaceLexicalScope(_),
                     LexicalChannelOp::Seal(_),
                 ]
             ),
             "unexpected lexical op sequence for replace-generation batch",
         )?;
         ensure(
-            receipt.first_seq == Some(ChannelSeq::new(0)),
-            "unexpected lexical receipt first_seq",
+            receipt.generation == ManifestGeneration::new(1),
+            "unexpected lexical receipt generation",
         )?;
         ensure(
-            receipt.last_seq == Some(ChannelSeq::new(3)),
-            "unexpected lexical receipt last_seq",
+            receipt.manifest_digest == "manifest:lex",
+            "unexpected lexical receipt manifest_digest",
+        )?;
+        ensure(
+            receipt.accepted_replace_scopes == 1 && receipt.accepted_tombstone_scopes == 0,
+            "unexpected lexical receipt scope counts",
         )?;
         ensure(receipt.sealed, "expected lexical receipt to be sealed")?;
         Ok(())
@@ -892,24 +945,67 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
+            base_generation: Some(ManifestGeneration::new(0)),
+            manifest_digest: "manifest:lex-delta".to_string(),
+            batch_digest: "batch:lex-delta".to_string(),
             mode: BatchIngestMode::Delta,
-            manifest_payload: vec![],
-            chunks: vec![LexicalChunkMutation::Delete(LexicalChunkDelete {
-                chunk_id: ChunkId::new("c1"),
-            })],
-            symbols: vec![],
+            replace_scopes: vec![LexicalReplaceScope {
+                scope: fixture_scope(),
+                scope_digest: "scope:lex-delta".to_string(),
+                chunks: vec![fixture_chunk_record()?],
+                symbols: vec![],
+            }],
+            tombstone_scopes: Vec::new(),
             seal: false,
         };
         let receipt = adapter.publish_batch(&batch)?;
         let ops = publisher.take()?;
-        // Only the DeleteChunk op.
         ensure(
-            matches!(ops.as_slice(), [LexicalChannelOp::DeleteChunk(_)]),
+            matches!(ops.as_slice(), [LexicalChannelOp::ReplaceLexicalScope(_)]),
             "unexpected lexical op sequence for delta batch",
         )?;
         ensure(
             !receipt.sealed,
             "expected lexical receipt to remain unsealed",
+        )?;
+        ensure(
+            receipt.accepted_replace_scopes == 1 && receipt.accepted_tombstone_scopes == 0,
+            "unexpected lexical delta receipt scope counts",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_adapter_rejects_tombstone_scopes_before_publish() -> TestRes {
+        let publisher = Arc::new(FakeLexicalPublisher::new());
+        let adapter = ChannelLexicalIngestAdapter::new(publisher.clone());
+
+        let batch = LexicalIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            base_generation: Some(ManifestGeneration::new(0)),
+            manifest_digest: "manifest:lex-tombstone".to_string(),
+            batch_digest: "batch:lex-tombstone".to_string(),
+            mode: BatchIngestMode::Delta,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![LexicalTombstoneScope {
+                scope: fixture_scope(),
+            }],
+            seal: false,
+        };
+
+        let receipt = adapter.publish_batch(&batch)?;
+        ensure(
+            receipt.accepted_replace_scopes == 0 && receipt.accepted_tombstone_scopes == 1,
+            "unexpected lexical tombstone receipt counts",
+        )?;
+        ensure(
+            matches!(
+                publisher.take()?.as_slice(),
+                [LexicalChannelOp::TombstoneLexicalScope(_)]
+            ),
+            "unexpected lexical tombstone op sequence",
         )?;
         Ok(())
     }
@@ -923,33 +1019,36 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
+            base_generation: None,
+            manifest_digest: "manifest:sem".to_string(),
+            batch_digest: "batch:sem".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
-            manifest_payload: vec![],
-            embeddings: vec![
-                SemanticEmbeddingMutation::Upsert(SemanticEmbeddingUpsert {
-                    embedding_id: EmbeddingId::new("e1"),
-                    record: fixture_embedding_record(),
-                }),
-                SemanticEmbeddingMutation::Delete(SemanticEmbeddingDelete {
-                    embedding_id: EmbeddingId::new("e2"),
-                }),
-            ],
+            model_contract: fixture_model_contract(),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: fixture_scope(),
+                scope_digest: "scope:sem".to_string(),
+                embeddings: vec![fixture_embedding_record()?],
+            }],
+            tombstone_scopes: Vec::new(),
             seal: true,
         };
         let receipt = adapter.publish_batch(&batch)?;
         let ops = publisher.take()?;
-        // FullBundle + UpsertEmbedding + DeleteEmbedding + Seal = 4
         ensure(
             matches!(
                 ops.as_slice(),
                 [
-                    SemanticChannelOp::FullBundle(_),
-                    SemanticChannelOp::UpsertEmbedding(_),
-                    SemanticChannelOp::DeleteEmbedding(_),
+                    SemanticChannelOp::ReplaceSemanticScope(_),
                     SemanticChannelOp::Seal(_),
                 ]
             ),
             "unexpected semantic op sequence for replace-generation batch",
+        )?;
+        ensure(
+            receipt.generation == ManifestGeneration::new(1)
+                && receipt.accepted_replace_scopes == 1
+                && receipt.accepted_tombstone_scopes == 0,
+            "unexpected semantic receipt scope counts",
         )?;
         ensure(receipt.sealed, "expected semantic receipt to be sealed")?;
         Ok(())
@@ -1010,9 +1109,10 @@ mod tests {
             "history diff payload lost hunk header",
         )?;
         ensure(
-            receipt.first_seq == Some(ChannelSeq::new(0))
-                && receipt.last_seq == Some(ChannelSeq::new(3)),
-            "unexpected history receipt sequence range",
+            receipt.generation == ManifestGeneration::new(1)
+                && receipt.accepted_replace_scopes == 4
+                && receipt.accepted_tombstone_scopes == 0,
+            "unexpected history receipt scope counts",
         )?;
         Ok(())
     }
@@ -1055,15 +1155,16 @@ mod tests {
             "dirty upsert op lost inline authority fields",
         )?;
         ensure(
-            receipt.first_seq == Some(ChannelSeq::new(0))
-                && receipt.last_seq == Some(ChannelSeq::new(1)),
-            "unexpected dirty receipt sequence range",
+            receipt.generation == ManifestGeneration::new(1)
+                && receipt.accepted_replace_scopes == 1
+                && receipt.accepted_tombstone_scopes == 1,
+            "unexpected dirty receipt scope counts",
         )?;
         Ok(())
     }
 
     #[test]
-    fn structural_adapter_fans_out_parse_tree_upsert_and_delete_ops() -> TestRes {
+    fn structural_adapter_fans_out_parse_tree_upsert_and_seal_ops() -> TestRes {
         let publisher = Arc::new(FakeLexicalPublisher::new());
         let adapter = ChannelStructuralIngestAdapter::new(publisher.clone());
 
@@ -1071,15 +1172,20 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
-            trees: vec![
-                ParseTreeMutation::Upsert(ParseTreeUpsert {
+            base_generation: None,
+            manifest_digest: "manifest:str".to_string(),
+            batch_digest: "batch:str".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            replace_scopes: vec![StructuralReplaceScope {
+                scope: fixture_scope(),
+                scope_digest: "scope:str".to_string(),
+                trees: vec![StructuralTreeRecord {
                     chunk_id: ChunkId::new("chunk-tree"),
-                    record: fixture_parse_tree_record(),
-                }),
-                ParseTreeMutation::Delete(ParseTreeDelete {
-                    chunk_id: ChunkId::new("chunk-drop"),
-                }),
-            ],
+                    record: fixture_parse_tree_record()?,
+                }],
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
         };
         let receipt = adapter.publish_batch(&batch)?;
         let ops = publisher.take()?;
@@ -1087,16 +1193,25 @@ mod tests {
             matches!(
                 ops.as_slice(),
                 [
-                    LexicalChannelOp::UpsertParseTree(_),
-                    LexicalChannelOp::DeleteParseTree(_),
+                    LexicalChannelOp::ReplaceStructuralScope(_),
+                    LexicalChannelOp::Seal(_),
                 ]
             ),
             "unexpected structural op sequence",
         )?;
-        let Some(LexicalChannelOp::UpsertParseTree(tree)) = ops.first() else {
-            return Err(test_failure("expected UpsertParseTree"));
+        let Some(LexicalChannelOp::ReplaceStructuralScope(scope_op)) = ops.first() else {
+            return Err(test_failure("expected ReplaceStructuralScope"));
         };
-        let decoded_tree: ParseTreeRecord = ciborium::from_reader(tree.payload.as_slice())?;
+        let (_mode, _base_generation, decoded_scope): (
+            BatchIngestMode,
+            Option<ManifestGeneration>,
+            StructuralReplaceScope,
+        ) = ciborium::from_reader(scope_op.payload.as_slice())?;
+        let Some(decoded_tree) = decoded_scope.trees.first().map(|tree| &tree.record) else {
+            return Err(test_failure(
+                "expected one structural tree in replace scope",
+            ));
+        };
         let first_role = decoded_tree
             .role_tags
             .first()
@@ -1106,9 +1221,45 @@ mod tests {
             "structural payload lost role tags",
         )?;
         ensure(
-            receipt.first_seq == Some(ChannelSeq::new(0))
-                && receipt.last_seq == Some(ChannelSeq::new(1)),
-            "unexpected structural receipt sequence range",
+            receipt.generation == ManifestGeneration::new(1)
+                && receipt.accepted_replace_scopes == 1
+                && receipt.accepted_tombstone_scopes == 0,
+            "unexpected structural receipt scope counts",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn structural_adapter_rejects_tombstone_scopes_before_publish() -> TestRes {
+        let publisher = Arc::new(FakeLexicalPublisher::new());
+        let adapter = ChannelStructuralIngestAdapter::new(publisher.clone());
+
+        let batch = StructuralIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(1),
+            base_generation: Some(ManifestGeneration::new(0)),
+            manifest_digest: "manifest:str-tombstone".to_string(),
+            batch_digest: "batch:str-tombstone".to_string(),
+            mode: BatchIngestMode::Delta,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![quanta_index_contract::StructuralTombstoneScope {
+                scope: fixture_scope(),
+            }],
+            seal: false,
+        };
+
+        let receipt = adapter.publish_batch(&batch)?;
+        ensure(
+            receipt.accepted_replace_scopes == 0 && receipt.accepted_tombstone_scopes == 1,
+            "unexpected structural tombstone receipt counts",
+        )?;
+        ensure(
+            matches!(
+                publisher.take()?.as_slice(),
+                [LexicalChannelOp::TombstoneStructuralScope(_)]
+            ),
+            "unexpected structural tombstone op sequence",
         )?;
         Ok(())
     }

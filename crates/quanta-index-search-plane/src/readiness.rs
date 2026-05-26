@@ -3,11 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
 use quanta_index_contract::{
     ChannelSeq, ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
 };
-use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
 use quanta_index_contract::{ChunkRecord, LexicalChannelOp};
 use quanta_index_core::CoreError;
 
@@ -56,6 +56,7 @@ impl TrackLedger {
 pub struct Ledger {
     lexical: TrackLedger,
     semantic: TrackLedger,
+    search_tracks: BTreeMap<TrackAuthorityKey, ManifestGeneration>,
     history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
     runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
     structural: BTreeMap<AuthorityKey, StructuralAuthorityState>,
@@ -98,6 +99,24 @@ impl Ledger {
         self.semantic.record_seal(generation);
     }
 
+    pub fn record_track_seal(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+    ) {
+        let key = TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        let entry = self.search_tracks.entry(key).or_insert(generation);
+        if entry.get() < generation.get() {
+            *entry = generation;
+        }
+    }
+
     #[must_use]
     pub fn lexical_sealed(&self) -> Option<ManifestGeneration> {
         self.lexical.sealed()
@@ -106,6 +125,21 @@ impl Ledger {
     #[must_use]
     pub fn semantic_sealed(&self) -> Option<ManifestGeneration> {
         self.semantic.sealed()
+    }
+
+    #[must_use]
+    pub fn track_sealed(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Option<ManifestGeneration> {
+        let key = TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        self.search_tracks.get(&key).copied()
     }
 
     #[must_use]
@@ -204,22 +238,55 @@ impl Ledger {
     pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
         match op {
             LexicalChannelOp::UpsertChunk(payload) => {
-                self.structural_state_mut(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                )
-                .chunks
-                .insert(payload.chunk_id.clone(), decode_record(&payload.payload, "chunk")?);
+                let _previous = self
+                    .structural_state_mut(
+                        &payload.repo_id,
+                        &payload.revision_id,
+                        payload.generation,
+                    )
+                    .chunks
+                    .insert(
+                        payload.chunk_id.clone(),
+                        decode_record(&payload.payload, "chunk")?,
+                    );
             }
             LexicalChannelOp::DeleteChunk(payload) => {
+                let _removed = self
+                    .structural_state_mut(
+                        &payload.repo_id,
+                        &payload.revision_id,
+                        payload.generation,
+                    )
+                    .chunks
+                    .remove(&payload.chunk_id);
+            }
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_lexical_replace_scope(&payload.payload)?;
+                let state = self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                state.chunks.retain(|_chunk_id, chunk| {
+                    chunk.repo_relative_path != scope.scope.repo_relative_path
+                });
+                for chunk in scope.chunks {
+                    let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk);
+                }
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_lexical_tombstone_scope(&payload.payload)?;
                 self.structural_state_mut(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
                 )
                 .chunks
-                .remove(&payload.chunk_id);
+                .retain(|_chunk_id, chunk| {
+                    chunk.repo_relative_path != scope.scope.repo_relative_path
+                });
             }
             LexicalChannelOp::UpsertCommit(payload) => {
                 let record: CommitRecord = decode_record(&payload.payload, "commit")?;
@@ -239,7 +306,7 @@ impl Ledger {
                         });
                     }
                 }
-                state.commits.insert(record.sha, record);
+                let _previous = state.commits.insert(record.sha, record);
             }
             LexicalChannelOp::UpsertRef(payload) => {
                 let sha = CommitSha::from_bytes(payload.sha);
@@ -257,10 +324,11 @@ impl Ledger {
                         ),
                     });
                 }
-                state.refs.insert(payload.name.clone(), sha);
+                let _previous = state.refs.insert(payload.name.clone(), sha);
             }
             LexicalChannelOp::DeleteRef(payload) => {
-                self.history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                let _removed = self
+                    .history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
                     .refs
                     .remove(payload.name.as_ref());
             }
@@ -280,10 +348,11 @@ impl Ledger {
                         ),
                     });
                 }
-                state.tags.insert(payload.name.clone(), sha);
+                let _previous = state.tags.insert(payload.name.clone(), sha);
             }
             LexicalChannelOp::DeleteTag(payload) => {
-                self.history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                let _removed = self
+                    .history_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
                     .tags
                     .remove(payload.name.as_ref());
             }
@@ -299,12 +368,11 @@ impl Ledger {
                     return Err(CoreError::Typed {
                         code: "HISTORY_REF_NOT_FOUND".to_string(),
                         message: format!(
-                            "history ingest: diff hunk for unknown commit {}",
-                            commit_sha
+                            "history ingest: diff hunk for unknown commit {commit_sha}"
                         ),
                     });
                 }
-                state.diff_hunks.insert(
+                let _previous = state.diff_hunks.insert(
                     HistoryDiffKey {
                         commit_sha,
                         file_path: payload.file_path.clone(),
@@ -313,7 +381,8 @@ impl Ledger {
                 );
             }
             LexicalChannelOp::UpsertDirty(payload) => {
-                self.runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                let _previous = self
+                    .runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
                     .dirty_docs
                     .insert(
                         payload.doc_id.clone(),
@@ -324,28 +393,74 @@ impl Ledger {
                     );
             }
             LexicalChannelOp::EvictDirty(payload) => {
-                self.runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
+                let _removed = self
+                    .runtime_state_mut(&payload.repo_id, &payload.revision_id, payload.generation)
                     .dirty_docs
                     .remove(&payload.doc_id);
             }
             LexicalChannelOp::UpsertParseTree(payload) => {
                 let record: ParseTreeRecord = decode_record(&payload.payload, "parse_tree")?;
-                self.structural_state_mut(
-                    &payload.repo_id,
-                    &payload.revision_id,
-                    payload.generation,
-                )
-                .parse_trees
-                .insert(payload.chunk_id.clone(), record);
+                let _previous = self
+                    .structural_state_mut(
+                        &payload.repo_id,
+                        &payload.revision_id,
+                        payload.generation,
+                    )
+                    .parse_trees
+                    .insert(payload.chunk_id.clone(), record);
             }
             LexicalChannelOp::DeleteParseTree(payload) => {
-                self.structural_state_mut(
+                let _removed = self
+                    .structural_state_mut(
+                        &payload.repo_id,
+                        &payload.revision_id,
+                        payload.generation,
+                    )
+                    .parse_trees
+                    .remove(&payload.chunk_id);
+            }
+            LexicalChannelOp::ReplaceStructuralScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_structural_replace_scope(&payload.payload)?;
+                let state = self.structural_state_mut(
                     &payload.repo_id,
                     &payload.revision_id,
                     payload.generation,
-                )
-                .parse_trees
-                .remove(&payload.chunk_id);
+                );
+                let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
+                    .chunks
+                    .iter()
+                    .filter(|(_chunk_id, chunk)| {
+                        chunk.repo_relative_path == scope.scope.repo_relative_path
+                    })
+                    .map(|(chunk_id, _chunk)| chunk_id.clone())
+                    .collect();
+                state
+                    .parse_trees
+                    .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
+                for tree in scope.trees {
+                    let _previous = state.parse_trees.insert(tree.chunk_id.clone(), tree.record);
+                }
+            }
+            LexicalChannelOp::TombstoneStructuralScope(payload) => {
+                let (_mode, _base_generation, scope) =
+                    decode_structural_tombstone_scope(&payload.payload)?;
+                let state = self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
+                    .chunks
+                    .iter()
+                    .filter(|(_chunk_id, chunk)| {
+                        chunk.repo_relative_path == scope.scope.repo_relative_path
+                    })
+                    .map(|(chunk_id, _chunk)| chunk_id.clone())
+                    .collect();
+                state
+                    .parse_trees
+                    .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
             }
             LexicalChannelOp::FullBundle(_)
             | LexicalChannelOp::UpsertSymbol(_)
@@ -360,9 +475,63 @@ fn decode_record<T>(payload: &[u8], label: &str) -> Result<T, CoreError>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    ciborium::from_reader(payload).map_err(|err| CoreError::InvalidContract(format!(
-        "search-plane authority ledger: decode {label}: {err}"
-    )))
+    ciborium::from_reader(payload).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "search-plane authority ledger: decode {label}: {err}"
+        ))
+    })
+}
+
+fn decode_lexical_replace_scope(
+    payload: &[u8],
+) -> Result<
+    (
+        quanta_index_contract::BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::LexicalReplaceScope,
+    ),
+    CoreError,
+> {
+    decode_record(payload, "lexical_replace_scope")
+}
+
+fn decode_lexical_tombstone_scope(
+    payload: &[u8],
+) -> Result<
+    (
+        quanta_index_contract::BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::LexicalTombstoneScope,
+    ),
+    CoreError,
+> {
+    decode_record(payload, "lexical_tombstone_scope")
+}
+
+fn decode_structural_replace_scope(
+    payload: &[u8],
+) -> Result<
+    (
+        quanta_index_contract::BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::StructuralReplaceScope,
+    ),
+    CoreError,
+> {
+    decode_record(payload, "structural_replace_scope")
+}
+
+fn decode_structural_tombstone_scope(
+    payload: &[u8],
+) -> Result<
+    (
+        quanta_index_contract::BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::StructuralTombstoneScope,
+    ),
+    CoreError,
+> {
+    decode_record(payload, "structural_tombstone_scope")
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -370,6 +539,13 @@ struct AuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct TrackAuthorityKey {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    track: SearchPlaneTrackKind,
 }
 
 #[derive(Clone, Debug, Default)]

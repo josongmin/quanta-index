@@ -162,8 +162,9 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
 
+    use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
-        BatchPublishReceipt, ChannelSeq, ChunkId, ManifestGeneration, RepoId, RevisionId,
+        BatchPublishReceipt, ChunkId, ManifestGeneration, RepoId, RevisionId,
         SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
         SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
         SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope,
@@ -259,8 +260,10 @@ mod tests {
 
     fn fixture_receipt() -> BatchPublishReceipt {
         BatchPublishReceipt {
-            first_seq: Some(ChannelSeq::new(0)),
-            last_seq: Some(ChannelSeq::new(2)),
+            generation: ManifestGeneration::new(1),
+            manifest_digest: "digest-lex".to_string(),
+            accepted_replace_scopes: 1,
+            accepted_tombstone_scopes: 0,
             sealed: true,
         }
     }
@@ -270,16 +273,31 @@ mod tests {
             RepoId::new("repo"),
             RevisionId::new("rev"),
             ManifestGeneration::new(1),
+            "manifest:digest",
+            "batch:digest",
         )
-        .chunk_upsert(
-            ChunkId::new("c1"),
-            quanta_index_contract::ChunkRecord {
+        .replace_scope(
+            quanta_index_contract::SearchScopeKey {
+                doc_surface: quanta_index_contract::SearchScopeSurface::File,
                 repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-                language: "rust".to_string().into_boxed_str(),
+            },
+            "scope:digest",
+            vec![quanta_index_contract::ChunkRecord {
+                chunk_id: ChunkId::new("c1"),
+                repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
+                language: LanguageCode::new("rust").expect("valid language code"),
+                start_byte: 0,
+                end_byte: 12,
                 start_line: 1,
                 end_line: 2,
                 snippet: "fn main() {}".to_string().into_boxed_str(),
-            },
+                indexed_text: "fn main() {}".to_string().into_boxed_str(),
+                text_digest: "text:digest".to_string().into_boxed_str(),
+                shape_digest: "shape:digest".to_string().into_boxed_str(),
+                structural: None,
+                parent_chunk_id: None,
+            }],
+            Vec::new(),
         )
     }
 
@@ -296,7 +314,7 @@ mod tests {
             .ns::<DownstreamLexicalNs>()
             .publish(&fixture_batch())
             .expect("downstream publish must succeed");
-        assert_eq!(receipt.first_seq, Some(ChannelSeq::new(0)));
+        assert_eq!(receipt.generation, ManifestGeneration::new(1));
         let captured = ingest
             .requests
             .lock()

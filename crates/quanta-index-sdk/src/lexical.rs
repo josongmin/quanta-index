@@ -1,44 +1,24 @@
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationSelector, LexicalChunkDelete, LexicalChunkMutation,
-    LexicalChunkUpsert, LexicalIngestBatch, LexicalSymbolDelete, LexicalSymbolMutation,
-    LexicalSymbolUpsert, ManifestGeneration, RepoId, RevisionId, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ChunkRecord, GenerationSelector, LexicalIngestBatch, LexicalReplaceScope,
+    LexicalTombstoneScope, ManifestGeneration, RepoId, RevisionId, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchScopeKey, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ChunkMutation {
-    Upsert {
-        chunk_id: ChunkId,
-        record: ChunkRecord,
-    },
-    Delete {
-        chunk_id: ChunkId,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SymbolMutation {
-    Upsert {
-        symbol_id: SymbolId,
-        record: SymbolRecord,
-    },
-    Delete {
-        symbol_id: SymbolId,
-    },
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub base_generation: Option<ManifestGeneration>,
+    pub manifest_digest: String,
+    pub batch_digest: String,
     pub mode: BatchMode,
-    pub manifest_payload: Vec<u8>,
-    pub chunks: Vec<ChunkMutation>,
-    pub symbols: Vec<SymbolMutation>,
+    pub replace_scopes: Vec<LexicalReplaceScope>,
+    pub tombstone_scopes: Vec<LexicalTombstoneScope>,
     pub seal: bool,
 }
 
@@ -48,61 +28,66 @@ impl LexicalBatch {
         repo_id: RepoId,
         revision_id: RevisionId,
         generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
     ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            base_generation: None,
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
             mode: BatchMode::ReplaceGeneration,
-            manifest_payload: Vec::new(),
-            chunks: Vec::new(),
-            symbols: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
             seal: true,
         }
     }
 
     #[must_use]
-    pub fn delta(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
+    pub fn delta(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        base_generation: ManifestGeneration,
+        manifest_digest: impl Into<String>,
+        batch_digest: impl Into<String>,
+    ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            base_generation: Some(base_generation),
+            manifest_digest: manifest_digest.into(),
+            batch_digest: batch_digest.into(),
             mode: BatchMode::Delta,
-            manifest_payload: Vec::new(),
-            chunks: Vec::new(),
-            symbols: Vec::new(),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
             seal: true,
         }
     }
 
     #[must_use]
-    pub fn manifest_payload(mut self, payload: Vec<u8>) -> Self {
-        self.manifest_payload = payload;
+    pub fn replace_scope(
+        mut self,
+        scope: SearchScopeKey,
+        scope_digest: impl Into<String>,
+        chunks: Vec<ChunkRecord>,
+        symbols: Vec<SymbolRecord>,
+    ) -> Self {
+        self.replace_scopes.push(LexicalReplaceScope {
+            scope,
+            scope_digest: scope_digest.into(),
+            chunks,
+            symbols,
+        });
         self
     }
 
     #[must_use]
-    pub fn chunk_upsert(mut self, chunk_id: ChunkId, record: ChunkRecord) -> Self {
-        self.chunks.push(ChunkMutation::Upsert { chunk_id, record });
-        self
-    }
-
-    #[must_use]
-    pub fn chunk_delete(mut self, chunk_id: ChunkId) -> Self {
-        self.chunks.push(ChunkMutation::Delete { chunk_id });
-        self
-    }
-
-    #[must_use]
-    pub fn symbol_upsert(mut self, symbol_id: SymbolId, record: SymbolRecord) -> Self {
-        self.symbols
-            .push(SymbolMutation::Upsert { symbol_id, record });
-        self
-    }
-
-    #[must_use]
-    pub fn symbol_delete(mut self, symbol_id: SymbolId) -> Self {
-        self.symbols.push(SymbolMutation::Delete { symbol_id });
+    pub fn tombstone_scope(mut self, scope: SearchScopeKey) -> Self {
+        self.tombstone_scopes.push(LexicalTombstoneScope { scope });
         self
     }
 
@@ -150,10 +135,12 @@ impl crate::NamespaceIngest for LexicalNs {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
+            base_generation: batch.base_generation,
+            manifest_digest: batch.manifest_digest.clone(),
+            batch_digest: batch.batch_digest.clone(),
             mode: batch.mode.to_wire(),
-            manifest_payload: batch.manifest_payload.clone(),
-            chunks: batch.chunks.iter().map(map_chunk).collect(),
-            symbols: batch.symbols.iter().map(map_symbol).collect(),
+            replace_scopes: batch.replace_scopes.clone(),
+            tombstone_scopes: batch.tombstone_scopes.clone(),
             seal: batch.seal,
         };
         let response =
@@ -178,36 +165,6 @@ impl crate::NamespaceQuery for LexicalNs {
 
     fn query(client: &QuantaIndex) -> LexicalQueryBuilder<'_> {
         LexicalQueryBuilder::new(client)
-    }
-}
-
-fn map_chunk(mutation: &ChunkMutation) -> LexicalChunkMutation {
-    match mutation {
-        ChunkMutation::Upsert { chunk_id, record } => {
-            LexicalChunkMutation::Upsert(LexicalChunkUpsert {
-                chunk_id: chunk_id.clone(),
-                record: record.clone(),
-            })
-        }
-        ChunkMutation::Delete { chunk_id } => LexicalChunkMutation::Delete(LexicalChunkDelete {
-            chunk_id: chunk_id.clone(),
-        }),
-    }
-}
-
-fn map_symbol(mutation: &SymbolMutation) -> LexicalSymbolMutation {
-    match mutation {
-        SymbolMutation::Upsert { symbol_id, record } => {
-            LexicalSymbolMutation::Upsert(LexicalSymbolUpsert {
-                symbol_id: symbol_id.clone(),
-                record: record.clone(),
-            })
-        }
-        SymbolMutation::Delete { symbol_id } => {
-            LexicalSymbolMutation::Delete(LexicalSymbolDelete {
-                symbol_id: symbol_id.clone(),
-            })
-        }
     }
 }
 

@@ -225,8 +225,12 @@ pub enum LqFilter {
     File { pattern: String, scope: LqFileScope },
     Lang { id: String },
     Rev { spec: String },
+    Author { pattern: String },
+    Committer { pattern: String },
+    Message { pattern: String },
     Type { kind: LqType },
     Select { dim: LqSelect },
+    Dirty { mode: LqYesNoOnly },
     Fork { mode: LqYesNoOnly },
     Archived { mode: LqYesNoOnly },
     Visibility { mode: LqVisibility },
@@ -1480,8 +1484,12 @@ impl serde::Serialize for LqFilter {
             Self::File { .. } => "file",
             Self::Lang { .. } => "lang",
             Self::Rev { .. } => "rev",
+            Self::Author { .. } => "author",
+            Self::Committer { .. } => "committer",
+            Self::Message { .. } => "message",
             Self::Type { .. } => "type",
             Self::Select { .. } => "select",
+            Self::Dirty { .. } => "dirty",
             Self::Fork { .. } => "fork",
             Self::Archived { .. } => "archived",
             Self::Visibility { .. } => "visibility",
@@ -1503,8 +1511,12 @@ impl serde::Serialize for LqFilter {
             }
             Self::Lang { id } => outer.serialize_entry("v", id)?,
             Self::Rev { spec } => outer.serialize_entry("v", spec)?,
+            Self::Author { pattern } => outer.serialize_entry("v", pattern)?,
+            Self::Committer { pattern } => outer.serialize_entry("v", pattern)?,
+            Self::Message { pattern } => outer.serialize_entry("v", pattern)?,
             Self::Type { kind } => outer.serialize_entry("v", kind)?,
             Self::Select { dim } => outer.serialize_entry("v", dim)?,
+            Self::Dirty { mode } => outer.serialize_entry("v", mode)?,
             Self::Fork { mode } => outer.serialize_entry("v", mode)?,
             Self::Archived { mode } => outer.serialize_entry("v", mode)?,
             Self::Visibility { mode } => outer.serialize_entry("v", mode)?,
@@ -1609,6 +1621,21 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                             .deserialized()
                             .map_err(|e| A::Error::custom(format!("rev: {e}")))?,
                     }),
+                    "author" => Ok(LqFilter::Author {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("author: {e}")))?,
+                    }),
+                    "committer" => Ok(LqFilter::Committer {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("committer: {e}")))?,
+                    }),
+                    "message" => Ok(LqFilter::Message {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("message: {e}")))?,
+                    }),
                     "type" => Ok(LqFilter::Type {
                         kind: v
                             .deserialized()
@@ -1618,6 +1645,11 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                         dim: v
                             .deserialized()
                             .map_err(|e| A::Error::custom(format!("select: {e}")))?,
+                    }),
+                    "dirty" => Ok(LqFilter::Dirty {
+                        mode: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("dirty: {e}")))?,
                     }),
                     "fork" => Ok(LqFilter::Fork {
                         mode: v
@@ -1651,8 +1683,12 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                             "file",
                             "lang",
                             "rev",
+                            "author",
+                            "committer",
+                            "message",
                             "type",
                             "select",
+                            "dirty",
                             "fork",
                             "archived",
                             "visibility",

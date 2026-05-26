@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use quanta_index_contract::{RepoMapQueryRequest, RepoMapQueryResponse};
+use quanta_index_contract::{RepoMapDocType, RepoMapQueryRequest, RepoMapQueryResponse};
 use quanta_index_core::{CoreError, RepoMapPolicy};
 
 use crate::model::RepoMapSnapshotV1;
@@ -18,21 +18,13 @@ impl RepoMapQueryEngine {
         let focus_keys = request
             .focus_subjects
             .iter()
-            .map(|focus| {
-                (
-                    focus.subject_identity.clone(),
-                    focus.subject_doc_type.clone(),
-                )
-            })
+            .map(|focus| (focus.subject_identity.clone(), focus.subject_doc_type))
             .collect::<BTreeSet<_>>();
         let mut entries = snapshot.entries.clone();
         let focus_owner_paths = entries
             .iter()
             .filter(|entry| {
-                focus_keys.contains(&(
-                    entry.subject_identity.clone(),
-                    entry.subject_doc_type.clone(),
-                ))
+                focus_keys.contains(&(entry.subject_identity.clone(), entry.subject_doc_type))
             })
             .map(|entry| entry.owner_path.clone())
             .collect::<BTreeSet<_>>();
@@ -43,10 +35,8 @@ impl RepoMapQueryEngine {
         }
         if !focus_owner_paths.is_empty() {
             entries.retain(|entry| {
-                focus_keys.contains(&(
-                    entry.subject_identity.clone(),
-                    entry.subject_doc_type.clone(),
-                )) || focus_owner_paths.contains(&entry.owner_path)
+                focus_keys.contains(&(entry.subject_identity.clone(), entry.subject_doc_type))
+                    || focus_owner_paths.contains(&entry.owner_path)
             });
         }
 
@@ -132,12 +122,9 @@ fn tokenize(query_text: &str) -> Vec<String> {
 
 fn exact_focus(
     entry: &crate::model::RepoMapEntryV1,
-    focus_keys: &BTreeSet<(String, String)>,
+    focus_keys: &BTreeSet<(String, RepoMapDocType)>,
 ) -> bool {
-    focus_keys.contains(&(
-        entry.subject_identity.clone(),
-        entry.subject_doc_type.clone(),
-    ))
+    focus_keys.contains(&(entry.subject_identity.clone(), entry.subject_doc_type))
 }
 
 fn owner_path_focus(

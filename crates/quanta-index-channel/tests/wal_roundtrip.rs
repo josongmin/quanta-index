@@ -103,6 +103,10 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
         | LexicalChannelOp::EvictDirty(_)
         | LexicalChannelOp::UpsertParseTree(_)
         | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::ReplaceLexicalScope(_)
+        | LexicalChannelOp::TombstoneLexicalScope(_)
+        | LexicalChannelOp::ReplaceStructuralScope(_)
+        | LexicalChannelOp::TombstoneStructuralScope(_)
         | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected FullBundle at evt1, got {:?}", evt1.seq).into());
         }
@@ -133,6 +137,10 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
         | LexicalChannelOp::EvictDirty(_)
         | LexicalChannelOp::UpsertParseTree(_)
         | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::ReplaceLexicalScope(_)
+        | LexicalChannelOp::TombstoneLexicalScope(_)
+        | LexicalChannelOp::ReplaceStructuralScope(_)
+        | LexicalChannelOp::TombstoneStructuralScope(_)
         | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected UpsertChunk at evt2, got {:?}", evt2.seq).into());
         }
@@ -162,6 +170,10 @@ fn lexical_publish_then_subscribe_in_order() -> TestRes {
         | LexicalChannelOp::EvictDirty(_)
         | LexicalChannelOp::UpsertParseTree(_)
         | LexicalChannelOp::DeleteParseTree(_)
+        | LexicalChannelOp::ReplaceLexicalScope(_)
+        | LexicalChannelOp::TombstoneLexicalScope(_)
+        | LexicalChannelOp::ReplaceStructuralScope(_)
+        | LexicalChannelOp::TombstoneStructuralScope(_)
         | LexicalChannelOp::UpsertDiffHunk(_) => {
             return Err(format!("expected DeleteChunk at evt3, got {:?}", evt3.seq).into());
         }

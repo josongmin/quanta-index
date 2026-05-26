@@ -28,9 +28,7 @@ pub use generations::GenerationNamespace;
 pub use history::{
     DiffHunkMutation, HistoryBatch, HistoryNamespace, HistoryNs, HistoryQueryBuilder, RefMutation,
 };
-pub use lexical::{
-    ChunkMutation, LexicalBatch, LexicalNamespace, LexicalNs, LexicalQueryBuilder, SymbolMutation,
-};
+pub use lexical::{LexicalBatch, LexicalNamespace, LexicalNs, LexicalQueryBuilder};
 pub use namespace::{NamespaceHandle, NamespaceIngest, NamespaceQuery};
 pub use repomap::{RepoMapNamespace, RepoMapNs};
 pub use runtime::{
@@ -38,14 +36,10 @@ pub use runtime::{
 };
 pub use search::{HybridQueryBuilder, SearchNamespace};
 pub use semantic::{
-    EmbeddingMutation, SemanticBatch, SemanticNamespace, SemanticNs, SemanticQueryBuilder,
-    SemanticVector,
+    SemanticBatch, SemanticNamespace, SemanticNs, SemanticQueryBuilder, SemanticVector,
 };
 pub use sourcegraph::{SourcegraphNamespace, SourcegraphQueryBuilder};
-pub use structural::{
-    StructuralBatch, StructuralBatchMutation, StructuralNamespace, StructuralNs,
-    StructuralQueryBuilder,
-};
+pub use structural::{StructuralBatch, StructuralNamespace, StructuralNs, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
 pub use transport::{
     ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
@@ -53,19 +47,23 @@ pub use transport::{
 };
 
 pub use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
-    ParseTreeRecord, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode, ParseRoleTag,
+    ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship,
+    SymbolSpan,
 };
 pub use quanta_index_contract::{
-    ChannelSeq, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, GenerationPin,
+    ChannelSeq, ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric,
+    EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
-    LexicalCandidate, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
-    RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
-    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivationAck,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    LexicalCandidate, LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind,
+    RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapSourceBundle, RepoRelativePath, RevisionId, SearchExplanation,
+    SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryResponse, SymbolId,
-    SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SemanticQueryResponse, SemanticReplaceScope, SemanticTombstoneScope, StructuralReplaceScope,
+    StructuralTombstoneScope, StructuralTreeRecord, SymbolId, SymbolQueryResponse,
+    TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

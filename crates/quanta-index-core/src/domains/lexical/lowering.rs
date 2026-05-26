@@ -398,6 +398,15 @@ fn apply_bridge_filter(name: &str, value: &str, query: &mut LqQuery) -> Result<(
         "lang" => query.filters.push(LqFilter::Lang {
             id: value.to_string(),
         }),
+        "author" => query.filters.push(LqFilter::Author {
+            pattern: value.to_string(),
+        }),
+        "committer" => query.filters.push(LqFilter::Committer {
+            pattern: value.to_string(),
+        }),
+        "message" => query.filters.push(LqFilter::Message {
+            pattern: value.to_string(),
+        }),
         "type" => {
             let kind = match value {
                 "file" => LqType::File,
@@ -436,6 +445,9 @@ fn apply_bridge_filter(name: &str, value: &str, query: &mut LqQuery) -> Result<(
             };
             query.filters.push(LqFilter::Select { dim });
         }
+        "dirty" => query.filters.push(LqFilter::Dirty {
+            mode: lower_yes_no_only_filter("dirty", value)?,
+        }),
         "case" => {
             query.options.case = Some(match value {
                 "yes" => LqCase::Sensitive,

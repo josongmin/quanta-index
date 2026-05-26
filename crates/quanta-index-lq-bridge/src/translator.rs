@@ -20,8 +20,8 @@
 //!
 //! | Sourcegraph filter | Bucket | LQ lowering |
 //! |---|---|---|
-//! | `repo:` / `file:` / `path:` / `lang:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
-//! | `fork:` / `archived:` / `visibility:` / `context:` | adopted | active LQ filter surface |
+//! | `repo:` / `file:` / `path:` / `lang:` / `author:` / `committer:` / `message:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
+//! | `dirty:` / `fork:` / `archived:` / `visibility:` / `context:` | adopted | active LQ filter surface |
 //! | `content:` | normalized | `Pattern{kind: Literal, body: <value>}` |
 //! | `index:` / `boost:` / `timeout:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
 //! | `file:contains(...)` / `file:has.content(...)` | adopted | active LQ predicate leaf or executable pattern lowering downstream |
@@ -451,6 +451,18 @@ fn lower_filter(f: &SgFilter) -> Result<LowerOutcome, BridgeError> {
             name: Box::<str>::from("lang"),
             value: v.clone(),
         })),
+        SgFilter::Author(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
+            name: Box::<str>::from("author"),
+            value: v.clone(),
+        })),
+        SgFilter::Committer(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
+            name: Box::<str>::from("committer"),
+            value: v.clone(),
+        })),
+        SgFilter::Message(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
+            name: Box::<str>::from("message"),
+            value: v.clone(),
+        })),
         SgFilter::Type(v) => Ok(LowerOutcome::Filter(LqDirective::Filter {
             name: Box::<str>::from("type"),
             value: v.clone(),
@@ -471,6 +483,12 @@ fn lower_filter(f: &SgFilter) -> Result<LowerOutcome, BridgeError> {
             name: Box::<str>::from("patterntype"),
             value: v.clone(),
         })),
+        SgFilter::Dirty(v) => validate_yes_no_only("dirty", v).map(|value| {
+            LowerOutcome::Filter(LqDirective::Filter {
+                name: Box::<str>::from("dirty"),
+                value,
+            })
+        }),
         SgFilter::Fork(v) => validate_yes_no_only("fork", v).map(|value| {
             LowerOutcome::Filter(LqDirective::Filter {
                 name: Box::<str>::from("fork"),

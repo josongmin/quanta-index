@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
 };
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
     GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle,
@@ -68,12 +69,33 @@ fn chunk_payload_with_metadata(
     end_line: u32,
     text: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
+    let repo_relative_path = if repo_relative_path.is_empty() {
+        "src/e2e.txt"
+    } else {
+        repo_relative_path
+    };
+    let language = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
     let record = ChunkRecord {
+        chunk_id: ChunkId::new("payload-chunk"),
         repo_relative_path: RepoRelativePath::new(repo_relative_path),
-        language: language.to_string().into_boxed_str(),
+        language: LanguageCode::new(language)
+            .map_err(|err| -> Box<dyn Error> { format!("invalid language code: {err}").into() })?,
+        start_byte: 0,
+        end_byte: u32::try_from(text.len()).map_err(|err| -> Box<dyn Error> {
+            format!("chunk text length overflow: {err}").into()
+        })?,
         start_line,
         end_line,
         snippet: text.to_string().into_boxed_str(),
+        indexed_text: text.to_string().into_boxed_str(),
+        text_digest: "text:e2e".to_string().into_boxed_str(),
+        shape_digest: "shape:e2e".to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)

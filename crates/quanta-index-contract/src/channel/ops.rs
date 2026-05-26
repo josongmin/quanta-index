@@ -166,6 +166,38 @@ pub struct DeleteParseTree {
     pub chunk_id: ChunkId,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaceLexicalScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TombstoneLexicalScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaceStructuralScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TombstoneStructuralScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
 /// PRE-CONTRACT-EXT additive op: upsert a diff hunk record for a commit.
 ///
 /// `commit_sha` is the 20-byte SHA-1 the hunk belongs to. `file_path` is a
@@ -187,6 +219,8 @@ pub enum LexicalChannelOp {
     DeleteChunk(DeleteChunk),
     UpsertSymbol(UpsertSymbol),
     DeleteSymbol(DeleteSymbol),
+    ReplaceLexicalScope(ReplaceLexicalScope),
+    TombstoneLexicalScope(TombstoneLexicalScope),
     Seal(LexicalSeal),
     // PRE-CONTRACT-EXT additive variants — appended only; existing variants
     // above keep their order and shape for wire compatibility.
@@ -199,6 +233,8 @@ pub enum LexicalChannelOp {
     EvictDirty(EvictDirty),
     UpsertParseTree(UpsertParseTree),
     DeleteParseTree(DeleteParseTree),
+    ReplaceStructuralScope(ReplaceStructuralScope),
+    TombstoneStructuralScope(TombstoneStructuralScope),
     UpsertDiffHunk(UpsertDiffHunk),
 }
 
@@ -211,6 +247,8 @@ impl LexicalChannelOp {
             Self::DeleteChunk(op) => &op.repo_id,
             Self::UpsertSymbol(op) => &op.repo_id,
             Self::DeleteSymbol(op) => &op.repo_id,
+            Self::ReplaceLexicalScope(op) => &op.repo_id,
+            Self::TombstoneLexicalScope(op) => &op.repo_id,
             Self::Seal(op) => &op.repo_id,
             Self::UpsertCommit(op) => &op.repo_id,
             Self::UpsertRef(op) => &op.repo_id,
@@ -221,6 +259,8 @@ impl LexicalChannelOp {
             Self::EvictDirty(op) => &op.repo_id,
             Self::UpsertParseTree(op) => &op.repo_id,
             Self::DeleteParseTree(op) => &op.repo_id,
+            Self::ReplaceStructuralScope(op) => &op.repo_id,
+            Self::TombstoneStructuralScope(op) => &op.repo_id,
             Self::UpsertDiffHunk(op) => &op.repo_id,
         }
     }
@@ -233,6 +273,8 @@ impl LexicalChannelOp {
             Self::DeleteChunk(op) => &op.revision_id,
             Self::UpsertSymbol(op) => &op.revision_id,
             Self::DeleteSymbol(op) => &op.revision_id,
+            Self::ReplaceLexicalScope(op) => &op.revision_id,
+            Self::TombstoneLexicalScope(op) => &op.revision_id,
             Self::Seal(op) => &op.revision_id,
             Self::UpsertCommit(op) => &op.revision_id,
             Self::UpsertRef(op) => &op.revision_id,
@@ -243,6 +285,8 @@ impl LexicalChannelOp {
             Self::EvictDirty(op) => &op.revision_id,
             Self::UpsertParseTree(op) => &op.revision_id,
             Self::DeleteParseTree(op) => &op.revision_id,
+            Self::ReplaceStructuralScope(op) => &op.revision_id,
+            Self::TombstoneStructuralScope(op) => &op.revision_id,
             Self::UpsertDiffHunk(op) => &op.revision_id,
         }
     }
@@ -255,6 +299,8 @@ impl LexicalChannelOp {
             Self::DeleteChunk(op) => op.generation,
             Self::UpsertSymbol(op) => op.generation,
             Self::DeleteSymbol(op) => op.generation,
+            Self::ReplaceLexicalScope(op) => op.generation,
+            Self::TombstoneLexicalScope(op) => op.generation,
             Self::Seal(op) => op.generation,
             Self::UpsertCommit(op) => op.generation,
             Self::UpsertRef(op) => op.generation,
@@ -265,6 +311,8 @@ impl LexicalChannelOp {
             Self::EvictDirty(op) => op.generation,
             Self::UpsertParseTree(op) => op.generation,
             Self::DeleteParseTree(op) => op.generation,
+            Self::ReplaceStructuralScope(op) => op.generation,
+            Self::TombstoneStructuralScope(op) => op.generation,
             Self::UpsertDiffHunk(op) => op.generation,
         }
     }
@@ -312,10 +360,28 @@ pub struct SemanticSeal {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaceSemanticScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TombstoneSemanticScope {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SemanticChannelOp {
     FullBundle(SemanticFullBundle),
     UpsertEmbedding(UpsertEmbedding),
     DeleteEmbedding(DeleteEmbedding),
+    ReplaceSemanticScope(ReplaceSemanticScope),
+    TombstoneSemanticScope(TombstoneSemanticScope),
     Seal(SemanticSeal),
 }
 
@@ -326,6 +392,8 @@ impl SemanticChannelOp {
             Self::FullBundle(op) => &op.repo_id,
             Self::UpsertEmbedding(op) => &op.repo_id,
             Self::DeleteEmbedding(op) => &op.repo_id,
+            Self::ReplaceSemanticScope(op) => &op.repo_id,
+            Self::TombstoneSemanticScope(op) => &op.repo_id,
             Self::Seal(op) => &op.repo_id,
         }
     }
@@ -336,6 +404,8 @@ impl SemanticChannelOp {
             Self::FullBundle(op) => &op.revision_id,
             Self::UpsertEmbedding(op) => &op.revision_id,
             Self::DeleteEmbedding(op) => &op.revision_id,
+            Self::ReplaceSemanticScope(op) => &op.revision_id,
+            Self::TombstoneSemanticScope(op) => &op.revision_id,
             Self::Seal(op) => &op.revision_id,
         }
     }
@@ -346,6 +416,8 @@ impl SemanticChannelOp {
             Self::FullBundle(op) => op.generation,
             Self::UpsertEmbedding(op) => op.generation,
             Self::DeleteEmbedding(op) => op.generation,
+            Self::ReplaceSemanticScope(op) => op.generation,
+            Self::TombstoneSemanticScope(op) => op.generation,
             Self::Seal(op) => op.generation,
         }
     }

@@ -303,7 +303,10 @@ fn hex_char(nibble: u8) -> char {
 mod tests {
     use super::*;
     use crate::model::RepoMapEntryV1;
-    use quanta_index_contract::{ManifestGeneration, RepoMapSnapshotMeta};
+    use quanta_index_contract::{
+        ManifestGeneration, RepoMapDocType, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapRedactionState, RepoMapSnapshotMeta,
+    };
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -318,13 +321,13 @@ mod tests {
                 snapshot_id: "snapshot-1".to_string(),
                 projection_version: 2,
                 authority_digest: "authority-1".to_string(),
-                item_index_availability: "ready".to_string(),
-                graph_coverage_class: "full".to_string(),
-                exactness_summary: "exact".to_string(),
+                item_index_availability: RepoMapItemIndexAvailability::Full,
+                graph_coverage_class: RepoMapGraphCoverageClass::Full,
+                exactness_summary: RepoMapExactnessSummary::Exact,
             },
             entries: vec![RepoMapEntryV1 {
                 subject_identity: "subject://main".to_string(),
-                subject_doc_type: "file".to_string(),
+                subject_doc_type: RepoMapDocType::File,
                 subject_kind: "File".to_string(),
                 owner_path: "src/main.rs".to_string(),
                 score: 0.75,
@@ -341,7 +344,7 @@ mod tests {
                 projection_authority_artifact_id: "artifact-1".to_string(),
                 projection_authority_digest: "digest-1".to_string(),
                 projection_status: "fresh".to_string(),
-                redaction_state: "clear".to_string(),
+                redaction_state: RepoMapRedactionState::Unredacted,
                 search_text: "main file".to_string(),
                 source_symbol_count: 2,
                 source_chunk_token_total: 120,

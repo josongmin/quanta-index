@@ -11,20 +11,24 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LangId, ParseNode, ParseRoleTag,
-    ParseTreeRecord, SymbolKind, SymbolRecord, SymbolRelationship, SymbolSpan,
+    CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode, ParseRoleTag,
+    ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship,
+    SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchPublishReceipt, ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingId,
-    EmbeddingRecord, GenerationSelector, HybridQueryResponse, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, RepoId, RepoMapMutationAck, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
+    BatchPublishReceipt, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingDistanceMetric, EmbeddingId,
+    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationSelector,
+    HybridQueryResponse, ManifestGeneration, OwnerDocKind, PlannerStage, PlannerTraceEntry, RepoId,
+    RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
+    RevisionId, SearchExplanation, SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryResponse, SymbolId, TextQueryResponse,
+    SearchPlaneStructuralQueryResponse, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
+    SymbolId, TextQueryResponse,
 };
 
 use crate::{
@@ -200,20 +204,82 @@ fn sample_explanation() -> SearchExplanation {
 
 fn sample_symbol() -> SymbolRecord {
     SymbolRecord {
-        wire_version: 1,
-        name: "sample".into(),
-        kind: SymbolKind::Function,
-        span: SymbolSpan {
+        symbol_id: SymbolId::new("sym-1"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        language: LanguageCode::new("rust").expect("valid language code"),
+        symbol_kind: SymbolKindCode::new("function").expect("valid symbol kind"),
+        symbol_kind_family: Some(SymbolKindFamily::Callable),
+        local_name: "sample".into(),
+        qualified_name: "crate::sample".into(),
+        signature: Some("fn sample()".into()),
+        visibility: None,
+        definition_span: SymbolSpan {
             path: "src/lib.rs".into(),
             byte_start: 0,
             byte_end: 10,
             line_start: 1,
             line_end: 1,
         },
-        lang: LangId::Rust,
-        parent: None,
-        container_name: None,
+        container_qualified_name: None,
         relationship: SymbolRelationship::Def,
+    }
+}
+
+fn sample_chunk() -> ChunkRecord {
+    ChunkRecord {
+        chunk_id: ChunkId::new("chunk-1"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        language: LanguageCode::new("rust").expect("valid language code"),
+        start_byte: 0,
+        end_byte: 16,
+        start_line: 1,
+        end_line: 4,
+        snippet: "fn sample() {}".into(),
+        indexed_text: "fn sample() {}".into(),
+        text_digest: "text:feed".into(),
+        shape_digest: "shape:feed".into(),
+        structural: None,
+        parent_chunk_id: None,
+    }
+}
+
+fn sample_search_scope() -> SearchScopeKey {
+    SearchScopeKey {
+        doc_surface: SearchScopeSurface::File,
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+    }
+}
+
+fn sample_model_contract() -> EmbeddingModelContract {
+    EmbeddingModelContract {
+        model_id: "text-embed".into(),
+        model_version: Some("1".into()),
+        dimension: 2,
+        normalization: EmbeddingNormalization::L2Unit,
+        distance_metric: EmbeddingDistanceMetric::Cosine,
+        policy_digest: "policy:feed".into(),
+        view_policy_digest: Some("view:feed".into()),
+    }
+}
+
+fn sample_embedding() -> EmbeddingRecord {
+    EmbeddingRecord {
+        embedding_id: EmbeddingId::new("emb-1"),
+        owner_kind: OwnerDocKind::Chunk,
+        owner_id: "chunk-1".into(),
+        source_doc_id: "doc-1".into(),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        language: LanguageCode::new("rust").expect("valid language code"),
+        symbol_kind: None,
+        start_byte: 0,
+        end_byte: 16,
+        start_line: 1,
+        end_line: 4,
+        snippet: "fn sample() {}".into(),
+        embedding_input_digest: "input:feed".into(),
+        vector_digest: "vector:feed".into(),
+        view_kind: "raw_chunk".into(),
+        vector: vec![0.1, 0.2],
     }
 }
 
@@ -265,7 +331,7 @@ fn sample_dirty_record() -> DirtyRecord {
 fn sample_parse_tree_record() -> ParseTreeRecord {
     ParseTreeRecord {
         wire_version: 1,
-        lang: LangId::Rust,
+        lang: LanguageCode::new("rust").expect("valid language code"),
         root: ParseNode {
             kind: "function_item".into(),
             byte_start: 0,
@@ -502,25 +568,31 @@ fn sourcegraph_query_builder_dispatches_dedicated_sourcegraph_request() {
 #[test]
 fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let receipt = BatchPublishReceipt {
-        first_seq: Some(ChannelSeq::new(0)),
-        last_seq: Some(ChannelSeq::new(3)),
+        generation: ManifestGeneration::new(1),
+        manifest_digest: "sha256:feed".to_string(),
+        accepted_replace_scopes: 2,
+        accepted_tombstone_scopes: 0,
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::LexicalReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let chunk = ChunkRecord {
-        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        language: "rust".into(),
-        start_line: 1,
-        end_line: 4,
-        snippet: "fn sample() {}".into(),
-    };
-    let batch =
-        LexicalBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1))
-            .chunk_upsert(ChunkId::new("chunk-1"), chunk.clone())
-            .symbol_upsert(SymbolId::new("sym-1"), sample_symbol());
+    let chunk = sample_chunk();
+    let symbol = sample_symbol();
+    let batch = LexicalBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:feed",
+        "batch:feed",
+    )
+    .replace_scope(
+        sample_search_scope(),
+        "scope:feed",
+        vec![chunk.clone()],
+        vec![symbol.clone()],
+    );
     let observed = ok_or_fail!(client.lexical().publish(&batch));
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
@@ -531,17 +603,18 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
         );
     };
     assert_eq!(wire.repo_id, repo_id());
-    assert_eq!(wire.chunks.len(), 1);
-    assert_eq!(wire.symbols.len(), 1);
+    assert_eq!(wire.manifest_digest, "manifest:feed");
+    assert_eq!(wire.batch_digest, "batch:feed");
+    assert_eq!(wire.replace_scopes.len(), 1);
+    assert_eq!(wire.tombstone_scopes.len(), 0);
     assert!(wire.seal);
-    let first_chunk = wire
-        .chunks
+    let first_scope = wire
+        .replace_scopes
         .first()
-        .expect("expected one lexical chunk mutation");
-    let quanta_index_contract::LexicalChunkMutation::Upsert(upsert) = first_chunk else {
-        panic!("expected upsert mutation, got {first_chunk:?}");
-    };
-    assert_eq!(upsert.record, chunk);
+        .expect("expected one lexical replace scope");
+    assert_eq!(first_scope.scope, sample_search_scope());
+    assert_eq!(first_scope.chunks, vec![chunk]);
+    assert_eq!(first_scope.symbols, vec![symbol]);
 }
 
 #[test]
@@ -550,22 +623,16 @@ fn semantic_publish_routes_through_ingest_transport_and_carries_typed_embeddings
         SearchPlaneIngestIpcResponse::SemanticReceipt(BatchPublishReceipt::default()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch =
-        SemanticBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1))
-            .embedding_upsert(
-                EmbeddingId::new("emb-1"),
-                EmbeddingRecord {
-                    owner_kind: "chunk".into(),
-                    owner_id: "chunk-1".into(),
-                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-                    language: LangId::Rust,
-                    symbol_kind: None,
-                    start_line: 1,
-                    end_line: 4,
-                    snippet: "fn sample() {}".into(),
-                    vector: vec![0.1, 0.2],
-                },
-            );
+    let embedding = sample_embedding();
+    let batch = SemanticBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:feed",
+        "batch:feed",
+        sample_model_contract(),
+    )
+    .replace_scope(sample_search_scope(), "scope:feed", vec![embedding.clone()]);
     let _receipt = ok_or_fail!(client.semantic().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishSemanticBatch(wire) = &captured.payload else {
@@ -574,15 +641,24 @@ fn semantic_publish_routes_through_ingest_transport_and_carries_typed_embeddings
             payload = captured.payload
         );
     };
-    assert_eq!(wire.embeddings.len(), 1);
+    assert_eq!(wire.manifest_digest, "manifest:feed");
+    assert_eq!(wire.batch_digest, "batch:feed");
+    assert_eq!(wire.model_contract, sample_model_contract());
+    assert_eq!(wire.replace_scopes.len(), 1);
+    let Some(first_scope) = wire.replace_scopes.first() else {
+        panic!("replace_scopes length already asserted");
+    };
+    assert_eq!(first_scope.embeddings, vec![embedding]);
     assert!(wire.seal);
 }
 
 #[test]
 fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_records() {
     let receipt = BatchPublishReceipt {
-        first_seq: Some(ChannelSeq::new(2)),
-        last_seq: Some(ChannelSeq::new(7)),
+        generation: ManifestGeneration::new(3),
+        manifest_digest: String::new(),
+        accepted_replace_scopes: 4,
+        accepted_tombstone_scopes: 0,
         sealed: false,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -636,9 +712,26 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
         SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt::default()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = StructuralBatch::new(repo_id(), revision_id(), ManifestGeneration::new(5))
-        .upsert(ChunkId::new("chunk-tree"), sample_parse_tree_record())
-        .delete(ChunkId::new("chunk-drop"));
+    let batch = StructuralBatch::delta(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(5),
+        ManifestGeneration::new(4),
+        "manifest:structural",
+        "batch:structural",
+    )
+    .replace_scope(
+        sample_search_scope(),
+        "scope:structural",
+        vec![quanta_index_contract::StructuralTreeRecord {
+            chunk_id: ChunkId::new("chunk-tree"),
+            record: sample_parse_tree_record(),
+        }],
+    )
+    .tombstone_scope(SearchScopeKey {
+        doc_surface: SearchScopeSurface::Chunk,
+        repo_relative_path: RepoRelativePath::new("src/old.rs"),
+    });
     let _receipt = ok_or_fail!(client.structural().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     let SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire) = &captured.payload else {
@@ -647,7 +740,12 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
             captured.payload
         );
     };
-    assert_eq!(wire.trees.len(), 2);
+    assert_eq!(wire.replace_scopes.len(), 1);
+    assert_eq!(wire.tombstone_scopes.len(), 1);
+    let Some(first_scope) = wire.replace_scopes.first() else {
+        panic!("replace_scopes length already asserted");
+    };
+    assert_eq!(first_scope.trees.len(), 1);
 }
 
 #[test]
@@ -668,14 +766,20 @@ fn repomap_publish_routes_through_ingest_transport() {
         snapshot_id: "snap".to_string(),
         projection_version: 1,
         authority_digest: "digest".to_string(),
-        item_index_availability: "available".to_string(),
-        graph_coverage_class: "full".to_string(),
-        exactness_summary: "exact".to_string(),
-        redaction_state: "Unredacted".to_string(),
+        item_index_availability: RepoMapItemIndexAvailability::Available,
+        graph_coverage_class: RepoMapGraphCoverageClass::Full,
+        exactness_summary: RepoMapExactnessSummary::Exact,
+        redaction_state: RepoMapRedactionState::Unredacted,
         file_indices: vec![],
         call_edges: vec![],
         import_edges: vec![],
-        chunk_records: vec![],
+        chunk_records: vec![quanta_index_contract::RepoMapChunkRecordDto {
+            subject_identity: "subject://repomap".to_string(),
+            owner_path: "src/lib.rs".to_string(),
+            token_count: 16,
+            preview_text: "repomap preview".to_string(),
+            exactness: RepoMapChunkExactness::Exact,
+        }],
     };
     let observed = ok_or_fail!(client.repomap().publish(&bundle));
     assert_eq!(observed.manifest_generation, ack.manifest_generation);
@@ -782,8 +886,13 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         }),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest);
-    let batch =
-        LexicalBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(1));
+    let batch = LexicalBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:feed",
+        "batch:feed",
+    );
     let err = client.lexical().publish(&batch).err();
     let Some(crate::SdkError::Remote { code, message }) = err else {
         panic!("expected Remote error, got {err:?}");

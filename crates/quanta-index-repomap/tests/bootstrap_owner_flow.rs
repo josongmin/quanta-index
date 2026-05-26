@@ -1,9 +1,11 @@
 use std::fs;
 
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkRecordDto,
-    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphEdgeDto, RepoMapQueryRequest,
-    RepoMapSourceBundle, RepoMapSymbolRecordDto, RevisionId,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    RepoMapChunkRecordDto, RepoMapDocType, RepoMapEdgeKind, RepoMapExactnessSummary,
+    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass, RepoMapGraphEdgeDto,
+    RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoMapSymbolRecordDto, RevisionId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -16,10 +18,10 @@ fn sample_bundle() -> RepoMapSourceBundle {
         snapshot_id: "snap-7".to_string(),
         projection_version: 1,
         authority_digest: "digest-7".to_string(),
-        item_index_availability: "available".to_string(),
-        graph_coverage_class: "complete".to_string(),
-        exactness_summary: "exact-owner-bundle".to_string(),
-        redaction_state: "Unredacted".to_string(),
+        item_index_availability: RepoMapItemIndexAvailability::Available,
+        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        exactness_summary: RepoMapExactnessSummary::Exact,
+        redaction_state: RepoMapRedactionState::Unredacted,
         file_indices: vec![
             RepoMapFileIndexRecord {
                 file_identity: "src/lib.rs".to_string(),
@@ -29,14 +31,14 @@ fn sample_bundle() -> RepoMapSourceBundle {
                 symbol_records: vec![
                     RepoMapSymbolRecordDto {
                         subject_identity: "src/lib.rs::OwnerAlpha".to_string(),
-                        subject_doc_type: "Symbol".to_string(),
+                        subject_doc_type: RepoMapDocType::Symbol,
                         subject_kind: "service".to_string(),
                         symbol_name: "OwnerAlpha".to_string(),
                         owner_path: "src/lib.rs".to_string(),
                     },
                     RepoMapSymbolRecordDto {
                         subject_identity: "src/lib.rs::OwnerBeta".to_string(),
-                        subject_doc_type: "Symbol".to_string(),
+                        subject_doc_type: RepoMapDocType::Symbol,
                         subject_kind: "struct".to_string(),
                         symbol_name: "OwnerBeta".to_string(),
                         owner_path: "src/lib.rs".to_string(),
@@ -62,24 +64,24 @@ fn sample_bundle() -> RepoMapSourceBundle {
             RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs::OwnerAlpha".to_string(),
                 to_identity: "src/lib.rs::OwnerBeta".to_string(),
-                edge_kind: "call".to_string(),
+                edge_kind: RepoMapEdgeKind::Call,
             },
             RepoMapGraphEdgeDto {
                 from_identity: "src/lib.rs::OwnerAlpha".to_string(),
                 to_identity: "src/runtime/mod.rs".to_string(),
-                edge_kind: "call".to_string(),
+                edge_kind: RepoMapEdgeKind::Call,
             },
         ],
         import_edges: vec![
             RepoMapGraphEdgeDto {
                 from_identity: "src/runtime/mod.rs".to_string(),
                 to_identity: "src/lib.rs".to_string(),
-                edge_kind: "import".to_string(),
+                edge_kind: RepoMapEdgeKind::Import,
             },
             RepoMapGraphEdgeDto {
                 from_identity: "tests/repomap.rs".to_string(),
                 to_identity: "src/runtime/mod.rs".to_string(),
-                edge_kind: "import".to_string(),
+                edge_kind: RepoMapEdgeKind::Import,
             },
         ],
         chunk_records: vec![
@@ -88,21 +90,21 @@ fn sample_bundle() -> RepoMapSourceBundle {
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 80,
                 preview_text: "OwnerAlpha coordinates repo map ownership".to_string(),
-                exactness: "Exact".to_string(),
+                exactness: RepoMapChunkExactness::Exact,
             },
             RepoMapChunkRecordDto {
                 subject_identity: "src/lib.rs::OwnerBeta".to_string(),
                 owner_path: "src/lib.rs".to_string(),
                 token_count: 56,
                 preview_text: "OwnerBeta carries owner surface metadata".to_string(),
-                exactness: "Exact".to_string(),
+                exactness: RepoMapChunkExactness::Exact,
             },
             RepoMapChunkRecordDto {
                 subject_identity: "src/runtime/mod.rs".to_string(),
                 owner_path: "src/runtime/mod.rs".to_string(),
                 token_count: 40,
                 preview_text: "runtime module activation path".to_string(),
-                exactness: "Approximate".to_string(),
+                exactness: RepoMapChunkExactness::Approximate,
             },
         ],
     }
@@ -281,7 +283,7 @@ fn query_honors_focus_subjects() {
         token_budget: 512,
         focus_subjects: vec![RepoMapFocusSubjectDto {
             subject_identity: "src/runtime/mod.rs".to_string(),
-            subject_doc_type: "File".to_string(),
+            subject_doc_type: RepoMapDocType::File,
         }],
     });
     assert!(
@@ -304,7 +306,7 @@ fn query_honors_focus_subjects() {
         response
             .entries
             .first()
-            .map(|entry| entry.subject_doc_type.as_str()),
+            .map(|entry| entry.subject_doc_type.as_code_str()),
         Some("File")
     );
     assert_eq!(response.entries.first().map(|entry| entry.rank), Some(1));

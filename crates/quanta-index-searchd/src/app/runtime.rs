@@ -113,6 +113,7 @@ impl SearchdRuntime {
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             repo_map_generation_activate_port,
             activation_catalog,
+            Arc::clone(&ledger),
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             lex_ingest_port,

@@ -327,13 +327,14 @@ const SCENARIOS: &[LexicalScenario] = &[
     LexicalScenario {
         id: "raw_substring_token_boundary_crossing",
         // Raw substring `oo_ba` crosses the tokenizer split on `_`. Token
-        // query for "oo_ba" cannot hit; raw substring must.
-        query_text: "raw:\"oo_ba\"",
+        // query for "oo_ba" cannot hit; raw substring must. Native LQ
+        // spells raw substring as a single-quoted raw string leaf.
+        query_text: "'oo_ba'",
         top_k: 10,
         expected: ExpectedOutcome::ExpectedFailing {
             owner_ticket: "LXE-04",
-            reason: "raw substring must route via trigram + exact verify; current public contract still rejects the native raw: surface at parse time",
-            current_observation: CurrentObservation::TypedError("PARSE_FAIL"),
+            reason: "raw substring syntax is accepted on the native surface now, but the live path still returns empty instead of executing trigram + exact verify",
+            current_observation: CurrentObservation::Empty,
         },
     },
     // ──────── symbol / select / type ────────
@@ -547,7 +548,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
 }
 
 #[test]
-#[ignore = "pending LXE-03..06 lexical enhancement audit matrix; run explicitly while closing that ticket pack"]
 fn lexical_full_fidelity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;
