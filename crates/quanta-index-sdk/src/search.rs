@@ -20,6 +20,15 @@ impl<'a> SearchNamespace<'a> {
         HybridQueryBuilder::new(self.client)
     }
 
+    /// Contract-exact hybrid query replay surface. Accepts the shared wire
+    /// DTO unchanged and routes it through the query transport.
+    pub fn hybrid_request(
+        &self,
+        request: HybridQueryRequest,
+    ) -> Result<HybridQueryResponse, SdkError> {
+        dispatch_hybrid_query_request_v1(self.client, request)
+    }
+
     pub fn explain(
         &self,
         generation: GenerationPin,
@@ -44,7 +53,6 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected explain response, got {}",
@@ -140,8 +148,9 @@ impl<'a> HybridQueryBuilder<'a> {
         let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection.clone());
         let (text_generation, text_generation_selector) =
             QuantaIndex::selection_to_fields(selection);
-        let response = self.client.dispatch_query(
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+        dispatch_hybrid_query_request_v1(
+            self.client,
+            HybridQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: self.syntax,
                     query_text,
@@ -155,26 +164,34 @@ impl<'a> HybridQueryBuilder<'a> {
                 generation,
                 generation_selector,
                 top_k,
-            }),
-        )?;
-        match response {
-            quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
-            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                Err(SdkError::Protocol(format!(
-                    "expected hybrid query response, got {}",
-                    QuantaIndex::query_response_kind(&other)
-                )))
-            }
+            },
+        )
+    }
+}
+
+fn dispatch_hybrid_query_request_v1(
+    client: &QuantaIndex,
+    request: HybridQueryRequest,
+) -> Result<HybridQueryResponse, SdkError> {
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request),
+    )?;
+    match response {
+        quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
+        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+            Err(SdkError::Protocol(format!(
+                "expected hybrid query response, got {}",
+                QuantaIndex::query_response_kind(&other)
+            )))
         }
     }
 }

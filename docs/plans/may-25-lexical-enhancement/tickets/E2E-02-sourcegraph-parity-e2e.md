@@ -1,6 +1,6 @@
 # E2E-02 - Sourcegraph Parity E2E
 
-Status: `proposed`
+Status: `executed`
 Priority: `P0`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-03](LXE-03-lexical-filter-execution.md), [LXE-04](LXE-04-regex-trigram-real-execution.md), [LXE-06](LXE-06-symbol-select-type-execution.md)
 
@@ -10,9 +10,17 @@ Prove Sourcegraph-compatible syntax enters through `TextQueryRequest`,
 translates into canonical active query, and returns the same runtime result as
 equivalent LQ where supported.
 
+## Current code-backed status (2026-05-27)
+
+- Owner proof lives in
+  `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`.
+- Current live-source proof is green on both:
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity`
+  - `cargo test -p quanta-index-searchd-runtime`
+
 ## Owner files
 
-- new `crates/quanta-index-searchd-runtime/tests/e2e_sourcegraph_parity.rs`
+- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
 - `crates/quanta-index-lq-bridge/src/translator.rs`
 - `crates/quanta-index-lq-bridge/src/syntax.rs`
 - `crates/quanta-index-search-plane/src/lowering.rs`
@@ -20,8 +28,8 @@ equivalent LQ where supported.
 
 ## File-level work breakdown
 
-- `crates/quanta-index-searchd-runtime/tests/e2e_sourcegraph_parity.rs`: add
-  SG query to LQ query parity rows with exact ordered result checks.
+- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`:
+  own SG query to LQ query parity rows with exact ordered result checks.
 - `crates/quanta-index-lq-bridge/src/{translator.rs,syntax.rs}`: document and
   exercise which SG features are translated versus typed rejected.
 - `crates/quanta-index-search-plane/src/lowering.rs`: ensure SG and LQ both

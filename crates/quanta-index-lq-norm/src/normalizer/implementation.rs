@@ -390,13 +390,79 @@ fn write_structural_block_key(out: &mut String, block: &crate::ast::LqStructural
         None => out.push_str("lang=_"),
     }
     out.push(';');
-    for (i, node) in block.nodes.iter().enumerate() {
+    for (i, expr) in block.exprs.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        write_structural_node_key(out, node);
+        write_structural_expr_key(out, expr);
     }
     out.push(']');
+}
+
+fn write_structural_expr_key(out: &mut String, expr: &crate::ast::LqStructuralExpr) {
+    match expr {
+        crate::ast::LqStructuralExpr::Pattern(nodes) => {
+            out.push_str("PAT(");
+            for (i, node) in nodes.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_structural_node_key(out, node);
+            }
+            out.push(')');
+        }
+        crate::ast::LqStructuralExpr::Where(constraints) => {
+            out.push_str("WHERE(");
+            for (i, constraint) in constraints.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_structural_constraint_key(out, constraint);
+            }
+            out.push(')');
+        }
+        crate::ast::LqStructuralExpr::Inside(block) => {
+            out.push_str("IN(");
+            write_structural_block_key(out, block);
+            out.push(')');
+        }
+        crate::ast::LqStructuralExpr::Outside(block) => {
+            out.push_str("OUT(");
+            write_structural_block_key(out, block);
+            out.push(')');
+        }
+    }
+}
+
+fn write_structural_constraint_key(
+    out: &mut String,
+    constraint: &crate::ast::LqStructuralConstraint,
+) {
+    write_structural_hole_ref_key(out, &constraint.left);
+    out.push_str("==");
+    match &constraint.right {
+        crate::ast::LqStructuralConstraintOperand::Hole(hole) => {
+            write_structural_hole_ref_key(out, hole);
+        }
+        crate::ast::LqStructuralConstraintOperand::Phrase(text) => {
+            out.push('"');
+            out.push_str(text);
+            out.push('"');
+        }
+        crate::ast::LqStructuralConstraintOperand::RawString(text) => {
+            out.push('\'');
+            out.push_str(text);
+            out.push('\'');
+        }
+    }
+}
+
+fn write_structural_hole_ref_key(out: &mut String, hole: &crate::ast::LqStructuralHoleRef) {
+    match hole.multiplicity {
+        crate::ast::LqStructuralHoleMultiplicity::One => out.push('$'),
+        crate::ast::LqStructuralHoleMultiplicity::Many => out.push_str("$..."),
+    }
+    out.push_str(hole.name.as_str());
 }
 
 fn write_structural_node_key(out: &mut String, node: &crate::ast::LqStructuralNode) {
@@ -419,6 +485,17 @@ fn write_structural_node_key(out: &mut String, node: &crate::ast::LqStructuralNo
             }
             out.push(')');
         }
+        crate::ast::LqStructuralNode::Hole { name, multiplicity } => {
+            match multiplicity {
+                crate::ast::LqStructuralHoleMultiplicity::One => out.push_str("H1:"),
+                crate::ast::LqStructuralHoleMultiplicity::Many => out.push_str("HM:"),
+            }
+            match name {
+                Some(name) => out.push_str(name.as_str()),
+                None => out.push('_'),
+            }
+        }
+        crate::ast::LqStructuralNode::WildcardMany => out.push_str("WM"),
     }
 }
 

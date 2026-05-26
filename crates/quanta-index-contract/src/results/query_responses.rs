@@ -8,7 +8,8 @@ use serde::{
 
 use crate::{
     BridgeCandidatePacket, CommitCandidate, DiffCandidate, GenerationPin, LexicalCandidate,
-    StructuralCandidate,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, StructuralCandidate,
+    lex::{SymbolKindCode, SymbolKindFamily},
 };
 
 use super::SearchExplanation;
@@ -19,7 +20,259 @@ pub struct TextQueryResponse {
     pub results: Vec<LexicalCandidate>,
 }
 
-pub type SymbolQueryResponse = TextQueryResponse;
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolCandidate {
+    pub candidate_id: String,
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub manifest_generation: ManifestGeneration,
+    pub repo_relative_path: RepoRelativePath,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub score: f32,
+    pub snippet: String,
+    pub symbol_kind: SymbolKindCode,
+    pub symbol_kind_family: Option<SymbolKindFamily>,
+}
+
+const SYMBOL_CANDIDATE_FIELDS: &[&str] = &[
+    "candidate_id",
+    "repo_id",
+    "revision_id",
+    "manifest_generation",
+    "repo_relative_path",
+    "start_line",
+    "end_line",
+    "score",
+    "snippet",
+    "symbol_kind",
+    "symbol_kind_family",
+];
+
+impl Serialize for SymbolCandidate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolCandidate", 11)?;
+        state.serialize_field("candidate_id", &self.candidate_id)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("start_line", &self.start_line)?;
+        state.serialize_field("end_line", &self.end_line)?;
+        state.serialize_field("score", &self.score)?;
+        state.serialize_field("snippet", &self.snippet)?;
+        state.serialize_field("symbol_kind", &self.symbol_kind)?;
+        state.serialize_field("symbol_kind_family", &self.symbol_kind_family)?;
+        state.end()
+    }
+}
+
+struct SymbolCandidateVisitor;
+
+impl<'de> Visitor<'de> for SymbolCandidateVisitor {
+    type Value = SymbolCandidate;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SymbolCandidate map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut candidate_id: Option<String> = None;
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut manifest_generation: Option<ManifestGeneration> = None;
+        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut start_line: Option<u32> = None;
+        let mut end_line: Option<u32> = None;
+        let mut score: Option<f32> = None;
+        let mut snippet: Option<String> = None;
+        let mut symbol_kind: Option<SymbolKindCode> = None;
+        let mut symbol_kind_family: Option<Option<SymbolKindFamily>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "candidate_id" => {
+                    if candidate_id.is_some() {
+                        return Err(de::Error::duplicate_field("candidate_id"));
+                    }
+                    candidate_id = Some(map.next_value()?);
+                }
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "manifest_generation" => {
+                    if manifest_generation.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_generation"));
+                    }
+                    manifest_generation = Some(map.next_value()?);
+                }
+                "repo_relative_path" => {
+                    if repo_relative_path.is_some() {
+                        return Err(de::Error::duplicate_field("repo_relative_path"));
+                    }
+                    repo_relative_path = Some(map.next_value()?);
+                }
+                "start_line" => {
+                    if start_line.is_some() {
+                        return Err(de::Error::duplicate_field("start_line"));
+                    }
+                    start_line = Some(map.next_value()?);
+                }
+                "end_line" => {
+                    if end_line.is_some() {
+                        return Err(de::Error::duplicate_field("end_line"));
+                    }
+                    end_line = Some(map.next_value()?);
+                }
+                "score" => {
+                    if score.is_some() {
+                        return Err(de::Error::duplicate_field("score"));
+                    }
+                    score = Some(map.next_value()?);
+                }
+                "snippet" => {
+                    if snippet.is_some() {
+                        return Err(de::Error::duplicate_field("snippet"));
+                    }
+                    snippet = Some(map.next_value()?);
+                }
+                "symbol_kind" => {
+                    if symbol_kind.is_some() {
+                        return Err(de::Error::duplicate_field("symbol_kind"));
+                    }
+                    symbol_kind = Some(map.next_value()?);
+                }
+                "symbol_kind_family" => {
+                    if symbol_kind_family.is_some() {
+                        return Err(de::Error::duplicate_field("symbol_kind_family"));
+                    }
+                    symbol_kind_family = Some(map.next_value()?);
+                }
+                other => return Err(de::Error::unknown_field(other, SYMBOL_CANDIDATE_FIELDS)),
+            }
+        }
+        Ok(SymbolCandidate {
+            candidate_id: candidate_id.ok_or_else(|| de::Error::missing_field("candidate_id"))?,
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            manifest_generation: manifest_generation
+                .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
+            repo_relative_path: repo_relative_path
+                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
+            end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
+            score: score.ok_or_else(|| de::Error::missing_field("score"))?,
+            snippet: snippet.ok_or_else(|| de::Error::missing_field("snippet"))?,
+            symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
+            symbol_kind_family: symbol_kind_family
+                .ok_or_else(|| de::Error::missing_field("symbol_kind_family"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolCandidate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SymbolCandidate",
+            SYMBOL_CANDIDATE_FIELDS,
+            SymbolCandidateVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolQueryResponse {
+    pub generation: GenerationPin,
+    pub results: Vec<SymbolCandidate>,
+}
+
+const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
+
+impl Serialize for SymbolQueryResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolQueryResponse", 2)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("results", &self.results)?;
+        state.end()
+    }
+}
+
+struct SymbolQueryResponseVisitor;
+
+impl<'de> Visitor<'de> for SymbolQueryResponseVisitor {
+    type Value = SymbolQueryResponse;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SymbolQueryResponse map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut generation: Option<GenerationPin> = None;
+        let mut results: Option<Vec<SymbolCandidate>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "results" => {
+                    if results.is_some() {
+                        return Err(de::Error::duplicate_field("results"));
+                    }
+                    results = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SYMBOL_QUERY_RESPONSE_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SymbolQueryResponse {
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolQueryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SymbolQueryResponse",
+            SYMBOL_QUERY_RESPONSE_FIELDS,
+            SymbolQueryResponseVisitor,
+        )
+    }
+}
 
 const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
 
@@ -272,6 +525,72 @@ pub struct SearchPlaneHistoryQueryResponse {
 
 const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "commits", "diffs"];
 
+macro_rules! impl_generation_results_response_serde {
+    ($ty:ident, $fields:ident, $visitor:ident, $result_ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut state = serializer.serialize_struct(stringify!($ty), 2)?;
+                state.serialize_field("generation", &self.generation)?;
+                state.serialize_field("results", &self.results)?;
+                state.end()
+            }
+        }
+
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = $ty;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!("a ", stringify!($ty), " map"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut generation: Option<GenerationPin> = None;
+                let mut results: Option<Vec<$result_ty>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "generation" => {
+                            if generation.is_some() {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation = Some(map.next_value()?);
+                        }
+                        "results" => {
+                            if results.is_some() {
+                                return Err(de::Error::duplicate_field("results"));
+                            }
+                            results = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                Ok($ty {
+                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    results: results.ok_or_else(|| de::Error::missing_field("results"))?,
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
+            }
+        }
+    };
+}
+
 impl Serialize for SearchPlaneHistoryQueryResponse {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -357,76 +676,12 @@ pub struct SearchPlaneRuntimeMetadataQueryResponse {
 }
 
 const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-
-impl Serialize for SearchPlaneRuntimeMetadataQueryResponse {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state =
-            serializer.serialize_struct("SearchPlaneRuntimeMetadataQueryResponse", 2)?;
-        state.serialize_field("generation", &self.generation)?;
-        state.serialize_field("results", &self.results)?;
-        state.end()
-    }
-}
-
-struct SearchPlaneRuntimeMetadataQueryResponseVisitor;
-
-impl<'de> Visitor<'de> for SearchPlaneRuntimeMetadataQueryResponseVisitor {
-    type Value = SearchPlaneRuntimeMetadataQueryResponse;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneRuntimeMetadataQueryResponse map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut generation: Option<GenerationPin> = None;
-        let mut results: Option<Vec<LexicalCandidate>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "generation" => {
-                    if generation.is_some() {
-                        return Err(de::Error::duplicate_field("generation"));
-                    }
-                    generation = Some(map.next_value()?);
-                }
-                "results" => {
-                    if results.is_some() {
-                        return Err(de::Error::duplicate_field("results"));
-                    }
-                    results = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SearchPlaneRuntimeMetadataQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneRuntimeMetadataQueryResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneRuntimeMetadataQueryResponse",
-            SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
-            SearchPlaneRuntimeMetadataQueryResponseVisitor,
-        )
-    }
-}
+impl_generation_results_response_serde!(
+    SearchPlaneRuntimeMetadataQueryResponse,
+    SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
+    SearchPlaneRuntimeMetadataQueryResponseVisitor,
+    LexicalCandidate
+);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneStructuralQueryResponse {
@@ -435,75 +690,12 @@ pub struct SearchPlaneStructuralQueryResponse {
 }
 
 const SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-
-impl Serialize for SearchPlaneStructuralQueryResponse {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SearchPlaneStructuralQueryResponse", 2)?;
-        state.serialize_field("generation", &self.generation)?;
-        state.serialize_field("results", &self.results)?;
-        state.end()
-    }
-}
-
-struct SearchPlaneStructuralQueryResponseVisitor;
-
-impl<'de> Visitor<'de> for SearchPlaneStructuralQueryResponseVisitor {
-    type Value = SearchPlaneStructuralQueryResponse;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneStructuralQueryResponse map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut generation: Option<GenerationPin> = None;
-        let mut results: Option<Vec<StructuralCandidate>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "generation" => {
-                    if generation.is_some() {
-                        return Err(de::Error::duplicate_field("generation"));
-                    }
-                    generation = Some(map.next_value()?);
-                }
-                "results" => {
-                    if results.is_some() {
-                        return Err(de::Error::duplicate_field("results"));
-                    }
-                    results = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SearchPlaneStructuralQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneStructuralQueryResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneStructuralQueryResponse",
-            SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
-            SearchPlaneStructuralQueryResponseVisitor,
-        )
-    }
-}
+impl_generation_results_response_serde!(
+    SearchPlaneStructuralQueryResponse,
+    SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
+    SearchPlaneStructuralQueryResponseVisitor,
+    StructuralCandidate
+);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneBridgeQueryResponse {
@@ -656,155 +848,5 @@ impl<'de> Deserialize<'de> for SearchPlaneExplainQueryResponse {
             SEARCH_PLANE_EXPLAIN_QUERY_RESPONSE_FIELDS,
             SearchPlaneExplainQueryResponseVisitor,
         )
-    }
-}
-
-/// Response paired with [`crate::SearchPlaneSourcegraphQueryRequest`].
-///
-/// PRE-CONTRACT-EXT additive. Carries a `GenerationPin` so callers can
-/// verify the resolved manifest matches their request pin, plus a flat
-/// `Vec<LexicalCandidate>` so downstream code can re-use the existing
-/// lexical candidate plumbing.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SearchPlaneSourcegraphQueryResponse {
-    pub generation: GenerationPin,
-    pub results: Vec<LexicalCandidate>,
-}
-
-const SEARCH_PLANE_SOURCEGRAPH_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results"];
-
-impl Serialize for SearchPlaneSourcegraphQueryResponse {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SearchPlaneSourcegraphQueryResponse", 2)?;
-        state.serialize_field("generation", &self.generation)?;
-        state.serialize_field("results", &self.results)?;
-        state.end()
-    }
-}
-
-struct SearchPlaneSourcegraphQueryResponseVisitor;
-
-impl<'de> Visitor<'de> for SearchPlaneSourcegraphQueryResponseVisitor {
-    type Value = SearchPlaneSourcegraphQueryResponse;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneSourcegraphQueryResponse map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut generation: Option<GenerationPin> = None;
-        let mut results: Option<Vec<LexicalCandidate>> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "generation" => {
-                    if generation.is_some() {
-                        return Err(de::Error::duplicate_field("generation"));
-                    }
-                    generation = Some(map.next_value()?);
-                }
-                "results" => {
-                    if results.is_some() {
-                        return Err(de::Error::duplicate_field("results"));
-                    }
-                    results = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_SOURCEGRAPH_QUERY_RESPONSE_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SearchPlaneSourcegraphQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
-            results: results.ok_or_else(|| de::Error::missing_field("results"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneSourcegraphQueryResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneSourcegraphQueryResponse",
-            SEARCH_PLANE_SOURCEGRAPH_QUERY_RESPONSE_FIELDS,
-            SearchPlaneSourcegraphQueryResponseVisitor,
-        )
-    }
-}
-
-#[cfg(test)]
-mod sourcegraph_response_tests {
-    use super::SearchPlaneSourcegraphQueryResponse;
-    use crate::{GenerationPin, ManifestGeneration, RepoId, RevisionId};
-
-    type TestRes = Result<(), Box<dyn std::error::Error>>;
-
-    fn encode<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut buf: Vec<u8> = Vec::new();
-        ciborium::ser::into_writer(v, &mut buf)?;
-        Ok(buf)
-    }
-
-    fn decode<T>(bytes: &[u8]) -> Result<T, Box<dyn std::error::Error>>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        Ok(ciborium::de::from_reader(bytes)?)
-    }
-
-    fn sample_pin() -> GenerationPin {
-        GenerationPin::new(
-            RepoId::new("repo-x"),
-            RevisionId::new("rev-y"),
-            ManifestGeneration::new(13),
-        )
-    }
-
-    #[test]
-    fn sourcegraph_response_cbor_roundtrip() -> TestRes {
-        let v = SearchPlaneSourcegraphQueryResponse {
-            generation: sample_pin(),
-            results: Vec::new(),
-        };
-        let bytes = encode(&v)?;
-        let back: SearchPlaneSourcegraphQueryResponse = decode(&bytes)?;
-        if back != v {
-            return Err("roundtrip mismatch".into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn sourcegraph_response_unknown_field_rejected() -> TestRes {
-        let v = SearchPlaneSourcegraphQueryResponse {
-            generation: sample_pin(),
-            results: Vec::new(),
-        };
-        let bytes = encode(&v)?;
-        let mut wire: ciborium::Value = decode(&bytes)?;
-        let ciborium::Value::Map(fields) = &mut wire else {
-            return Err("expected map".into());
-        };
-        fields.push((
-            ciborium::Value::Text("__never_field".to_owned()),
-            ciborium::Value::Bool(true),
-        ));
-        let mutated = encode(&wire)?;
-        let decoded: Result<SearchPlaneSourcegraphQueryResponse, _> =
-            ciborium::de::from_reader::<SearchPlaneSourcegraphQueryResponse, _>(mutated.as_slice());
-        if decoded.is_ok() {
-            return Err("unknown field should have been rejected".into());
-        }
-        Ok(())
     }
 }

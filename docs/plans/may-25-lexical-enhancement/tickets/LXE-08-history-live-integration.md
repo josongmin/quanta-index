@@ -1,6 +1,6 @@
 # LXE-08 - History Live Integration
 
-Status: `proposed`
+Status: `partial-implemented`
 Priority: `P1`
 Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md), [LXE-06](LXE-06-symbol-select-type-execution.md)
 
@@ -16,7 +16,8 @@ remaining fail-closed when producer history data is absent.
 - `crates/quanta-index-lq-history/src/**`
 - `crates/quanta-index-search-plane/src/query_dispatcher.rs`
 - `crates/quanta-index-core/src/domains/lexical/**`
-- new `crates/quanta-index-searchd-runtime/tests/e2e_history_structural.rs`
+- `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
+- `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`
 
 ## File-level work breakdown
 
@@ -28,8 +29,10 @@ remaining fail-closed when producer history data is absent.
   and diff shards when producer data exists.
 - `crates/quanta-index-search-plane/src/query_dispatcher.rs`: return typed
   unavailable/not-ready codes when history data or readiness is missing.
-- `crates/quanta-index-searchd-runtime/tests/e2e_history_structural.rs`: prove
-  fail-closed behavior and any real positive path backed by indexed fixtures.
+- `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`: prove the live
+  positive commit/diff path against indexed fixture data.
+- `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`: own any future
+  typed not-ready/shard-unavailable history rows once they exist.
 
 ## Work items
 
@@ -42,34 +45,41 @@ remaining fail-closed when producer history data is absent.
   - `HISTORY_PRODUCER_UNAVAILABLE`
   - `HISTORY_GENERATION_NOT_READY`
   - `HISTORY_SHARD_UNAVAILABLE`
-- If in-repo history fixture ingestion exists, add a minimal live positive path.
-- If producer ops are absent, keep positive runtime path blocked and prove typed
-  unavailable.
+- Keep the active live path truthful: `type:commit` and `type:diff` must query
+  indexed history authority, not lexical fallback.
+- Preserve typed fail-closed behavior when history authority is absent or not
+  ready; do not silently downgrade into content search.
 
 ## Test plan
 
 - contract round-trip tests for commit/diff carriers.
 - unit tests for history planner routing.
 - typed unavailable tests when no history shard exists.
-- if fixture ingestion exists: unit test commit/diff search over fixture data.
+- runtime positive proof in `sdk_frontdoor.rs` for `type:commit` and
+  `type:diff`.
+- any absent-authority history rail must be proven in runtime tests, not only
+  in lexical/planner unit tests.
 
 ## E2E plan
 
 Covered by `E2E-04`:
 
-- `type:commit` returns typed unavailable without history producer data.
-- `type:diff` returns typed unavailable without history producer data.
-- if fixture data is available, commit/diff queries return carrier-specific
-  candidates and explanation lists history engine touched.
+- active `type:commit` returns a `CommitCandidate` on indexed fixture data.
+- active `type:diff` returns a `DiffCandidate` on indexed fixture data.
+- history absent-authority/not-ready runtime rows remain open until proved in
+  `tests/end_to_end.rs` or an equivalent real harness.
 
 ## DoD
 
-- no history request returns empty success when data is absent.
+- active commit/diff queries return carrier-specific results on indexed fixture
+  data.
 - commit/diff carriers are part of active `results::*`.
-- producer absence is a typed runtime status, not a log-only condition.
+- producer absence, when asserted, is a typed runtime status, not a log-only
+  condition.
 
 ## Failure modes
 
 - treating history as lexical content search over commit text.
-- marking history done because the contract type exists.
+- marking history done because only the active positive path exists while the
+  absent-authority runtime matrix is still unproven.
 - returning generic internal error instead of typed not-ready/unavailable.

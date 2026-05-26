@@ -49,6 +49,7 @@ pub enum SgFilter {
     File(Box<str>),
     Path(Box<str>),
     Lang(Box<str>),
+    Rev(Box<str>),
     Author(Box<str>),
     Committer(Box<str>),
     Message(Box<str>),
@@ -77,6 +78,7 @@ impl SgFilter {
             Self::File(_) => "file",
             Self::Path(_) => "path",
             Self::Lang(_) => "lang",
+            Self::Rev(_) => "rev",
             Self::Author(_) => "author",
             Self::Committer(_) => "committer",
             Self::Message(_) => "message",
@@ -105,6 +107,7 @@ impl SgFilter {
             | Self::File(v)
             | Self::Path(v)
             | Self::Lang(v)
+            | Self::Rev(v)
             | Self::Author(v)
             | Self::Committer(v)
             | Self::Message(v)
@@ -136,6 +139,7 @@ impl SgFilter {
             "file" => Self::File(v),
             "path" => Self::Path(v),
             "lang" => Self::Lang(v),
+            "rev" => Self::Rev(v),
             "author" => Self::Author(v),
             "committer" => Self::Committer(v),
             "message" => Self::Message(v),

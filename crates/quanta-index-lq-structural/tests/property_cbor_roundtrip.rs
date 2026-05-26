@@ -1,11 +1,11 @@
 //! Property tests — CBOR roundtrip determinism for [`StructuralBinding`]
-//! and [`StructuralCandidate`].
+//! and [`StructuralAuthorityCandidate`].
 //!
-//! Per STR-01 §6.4: random `StructuralBinding` / `StructuralCandidate`
-//! shapes must serialize -> deserialize byte-identically, and two encodes
-//! of the same value must produce byte-identical output. The `BTreeMap`
-//! canonical ordering invariant for metavar keys is exercised across
-//! ≥ 256 cases.
+//! Per STR-01 §6.4: random `StructuralBinding` /
+//! [`StructuralAuthorityCandidate`] shapes must serialize -> deserialize
+//! byte-identically, and two encodes of the same value must produce
+//! byte-identical output. The `BTreeMap` canonical ordering invariant for
+//! metavar keys is exercised across ≥ 256 cases.
 
 #![expect(
     clippy::option_if_let_else,
@@ -18,7 +18,7 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 
 use quanta_index_lq_structural::{
-    ByteSpan, DocId, MetaVar, StructuralBinding, StructuralCandidate,
+    ByteSpan, MetaVar, StructuralAuthorityCandidate, StructuralBinding,
 };
 
 // Generate a valid MetaVar identifier name. First char is alpha/_,
@@ -75,9 +75,8 @@ fn arb_binding() -> impl Strategy<Value = StructuralBinding> {
     })
 }
 
-fn arb_candidate() -> impl Strategy<Value = StructuralCandidate> {
-    (0u64..=10_000u64, arb_span(), arb_binding())
-        .prop_map(|(doc, span, b)| StructuralCandidate::new(DocId(doc), span, b))
+fn arb_candidate() -> impl Strategy<Value = StructuralAuthorityCandidate> {
+    (arb_span(), arb_binding()).prop_map(|(span, b)| StructuralAuthorityCandidate::new(span, b))
 }
 
 proptest! {
@@ -117,7 +116,7 @@ proptest! {
         if let Err(e) = ciborium::ser::into_writer(&c, &mut buf) {
             return Err(TestCaseError::reject(format!("ser: {e}")));
         }
-        let got: Result<StructuralCandidate, _> =
+        let got: Result<StructuralAuthorityCandidate, _> =
             ciborium::de::from_reader(buf.as_slice());
         let got = match got {
             Ok(v) => v,

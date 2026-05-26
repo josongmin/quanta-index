@@ -15,8 +15,8 @@ use quanta_index_contract::{
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
     RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneExplainQueryRequest,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneSourcegraphQueryRequest, SemanticQueryRequest,
-    SemanticVectorRef, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, SemanticVectorRef, TextQueryRequest,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 
@@ -91,7 +91,6 @@ impl OutputMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandKind {
     Lexical,
-    Sourcegraph,
     Semantic,
     Hybrid,
     Explain,
@@ -192,10 +191,6 @@ impl ParsedCommand {
         };
         let (kind, payload) = match subcommand.as_str() {
             "lexical" => (CommandKind::Lexical, parse_lexical(&mut common, &mut rest)?),
-            "sourcegraph" => (
-                CommandKind::Sourcegraph,
-                parse_sourcegraph(&mut common, &mut rest)?,
-            ),
             "semantic" => (
                 CommandKind::Semantic,
                 parse_semantic(&mut common, &mut rest)?,
@@ -207,7 +202,7 @@ impl ParsedCommand {
             }
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|sourcegraph|semantic|hybrid|explain|repomap"
+                    "unknown subcommand `{other}`; expected lexical|semantic|hybrid|explain|repomap"
                 )));
             }
         };
@@ -229,13 +224,42 @@ impl ParsedCommand {
     }
 }
 
+#[derive(Default)]
+struct PinnedGenerationArgs {
+    repo_id: Option<String>,
+    revision_id: Option<String>,
+    manifest_generation: Option<u64>,
+}
+
+impl PinnedGenerationArgs {
+    fn parse_flag(&mut self, current: &str, rest: &mut VecDeque<String>) -> CliResult<bool> {
+        match current {
+            "--repo-id" => {
+                self.repo_id = Some(take_value(rest, "--repo-id")?);
+                Ok(true)
+            }
+            "--revision-id" => {
+                self.revision_id = Some(take_value(rest, "--revision-id")?);
+                Ok(true)
+            }
+            "--manifest-generation" => {
+                self.manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn into_generation_pin(self) -> CliResult<GenerationPin> {
+        parse_generation_pin(self.repo_id, self.revision_id, self.manifest_generation)
+    }
+}
+
 fn parse_lexical(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
+    let mut generation_args = PinnedGenerationArgs::default();
     let mut syntax: Option<TextQuerySyntax> = None;
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
@@ -243,19 +267,17 @@ fn parse_lexical(
         if common.parse_flag(&current, rest)? {
             continue;
         }
+        if generation_args.parse_flag(&current, rest)? {
+            continue;
+        }
         match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
             "--syntax" => syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?),
             "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
             "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
             other => return Err(CliError::usage(format!("unknown lexical flag `{other}`"))),
         }
     }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let generation = generation_args.into_generation_pin()?;
     let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
@@ -273,9 +295,7 @@ fn parse_semantic(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
+    let mut generation_args = PinnedGenerationArgs::default();
     let mut query_text: Option<String> = None;
     let mut query_vector: Option<Vec<f32>> = None;
     let mut query_vector_handle: Option<String> = None;
@@ -287,12 +307,10 @@ fn parse_semantic(
         if common.parse_flag(&current, rest)? {
             continue;
         }
+        if generation_args.parse_flag(&current, rest)? {
+            continue;
+        }
         match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
             "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
             "--query-vector" => query_vector = Some(parse_f32_vector_flag(rest, "--query-vector")?),
             "--query-vector-handle" => {
@@ -307,7 +325,7 @@ fn parse_semantic(
             other => return Err(CliError::usage(format!("unknown semantic flag `{other}`"))),
         }
     }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let generation = generation_args.into_generation_pin()?;
     let lexical_scope = match (scope_query_text, scope_syntax) {
         (None, None) => {
             if scope_top_k.is_some() {
@@ -361,58 +379,11 @@ fn parse_semantic(
     }))
 }
 
-fn parse_sourcegraph(
-    common: &mut CommonOptions,
-    rest: &mut VecDeque<String>,
-) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
-    let mut source_syntax: Option<String> = None;
-    let mut sg_version: Option<String> = None;
-    let mut top_k: Option<u32> = None;
-    while let Some(current) = rest.pop_front() {
-        if common.parse_flag(&current, rest)? {
-            continue;
-        }
-        match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
-            "--query-text" => source_syntax = Some(take_value(rest, "--query-text")?),
-            "--sg-version" => sg_version = Some(take_value(rest, "--sg-version")?),
-            "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
-            other => {
-                return Err(CliError::usage(format!(
-                    "unknown sourcegraph flag `{other}`"
-                )));
-            }
-        }
-    }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
-    Ok(SearchPlaneQueryIpcRequest::Sourcegraph(
-        SearchPlaneSourcegraphQueryRequest {
-            source_syntax: source_syntax
-                .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?
-                .into_boxed_str(),
-            sg_version: sg_version
-                .ok_or_else(|| CliError::usage("missing --sg-version".to_string()))?
-                .into_boxed_str(),
-            generation: Some(generation),
-            top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
-        },
-    ))
-}
-
 fn parse_hybrid(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
+    let mut generation_args = PinnedGenerationArgs::default();
     let mut lexical_query_text: Option<String> = None;
     let mut lexical_syntax: Option<TextQuerySyntax> = None;
     let mut semantic_query_text: Option<String> = None;
@@ -423,12 +394,10 @@ fn parse_hybrid(
         if common.parse_flag(&current, rest)? {
             continue;
         }
+        if generation_args.parse_flag(&current, rest)? {
+            continue;
+        }
         match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
             "--lexical-query" => lexical_query_text = Some(take_value(rest, "--lexical-query")?),
             "--lexical-syntax" => {
                 lexical_syntax = Some(parse_syntax(&take_value(rest, "--lexical-syntax")?)?);
@@ -444,7 +413,7 @@ fn parse_hybrid(
             other => return Err(CliError::usage(format!("unknown hybrid flag `{other}`"))),
         }
     }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let generation = generation_args.into_generation_pin()?;
     let text_query_top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
     let text_query = TextQueryRequest {
         syntax: lexical_syntax
@@ -478,25 +447,21 @@ fn parse_explain(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
+    let mut generation_args = PinnedGenerationArgs::default();
     let mut candidate_json: Option<String> = None;
     while let Some(current) = rest.pop_front() {
         if common.parse_flag(&current, rest)? {
             continue;
         }
+        if generation_args.parse_flag(&current, rest)? {
+            continue;
+        }
         match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
             "--candidate-json" => candidate_json = Some(take_value(rest, "--candidate-json")?),
             other => return Err(CliError::usage(format!("unknown explain flag `{other}`"))),
         }
     }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let generation = generation_args.into_generation_pin()?;
     let candidate_path =
         candidate_json.ok_or_else(|| CliError::usage("missing --candidate-json".to_string()))?;
     Ok(SearchPlaneQueryIpcRequest::Explain(
@@ -511,9 +476,7 @@ fn parse_repomap(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
 ) -> CliResult<SearchPlaneQueryIpcRequest> {
-    let mut repo_id: Option<String> = None;
-    let mut revision_id: Option<String> = None;
-    let mut manifest_generation: Option<u64> = None;
+    let mut generation_args = PinnedGenerationArgs::default();
     let mut query_text: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut token_budget: Option<u32> = None;
@@ -522,12 +485,10 @@ fn parse_repomap(
         if common.parse_flag(&current, rest)? {
             continue;
         }
+        if generation_args.parse_flag(&current, rest)? {
+            continue;
+        }
         match current.as_str() {
-            "--repo-id" => repo_id = Some(take_value(rest, "--repo-id")?),
-            "--revision-id" => revision_id = Some(take_value(rest, "--revision-id")?),
-            "--manifest-generation" => {
-                manifest_generation = Some(parse_u64_flag(rest, "--manifest-generation")?);
-            }
             "--query-text" => query_text = Some(take_value(rest, "--query-text")?),
             "--top-k" => top_k = Some(parse_u32_flag(rest, "--top-k")?),
             "--token-budget" => token_budget = Some(parse_u32_flag(rest, "--token-budget")?),
@@ -537,7 +498,7 @@ fn parse_repomap(
             other => return Err(CliError::usage(format!("unknown repomap flag `{other}`"))),
         }
     }
-    let generation = parse_generation_pin(repo_id, revision_id, manifest_generation)?;
+    let generation = generation_args.into_generation_pin()?;
     Ok(SearchPlaneQueryIpcRequest::RepoMapQuery(
         RepoMapQueryRequest {
             repo_id: generation.repo_id,
@@ -767,7 +728,6 @@ fn validate_response_kind(
             error.code, error.message
         ))),
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
-        | (CommandKind::Sourcegraph, SearchPlaneQueryIpcResponse::Sourcegraph(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
@@ -815,15 +775,6 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Text(payload) => {
             render_lexical_payload("lexical", payload, None, rendered)
         }
-        SearchPlaneQueryIpcResponse::Sourcegraph(payload) => render_lexical_payload(
-            "sourcegraph",
-            &TextQueryResponse {
-                generation: payload.generation.clone(),
-                results: payload.results.clone(),
-            },
-            None,
-            rendered,
-        ),
         SearchPlaneQueryIpcResponse::Symbol(_payload) => Err(CliError::protocol(
             "unsupported pretty renderer for response kind `Symbol`".to_string(),
         )),
@@ -1029,7 +980,6 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery",
         SearchPlaneQueryIpcResponse::Explain(_) => "Explain",
         SearchPlaneQueryIpcResponse::Error(_) => "Error",
-        SearchPlaneQueryIpcResponse::Sourcegraph(_) => "Sourcegraph",
         SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
     }
 }
@@ -1037,7 +987,6 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
 fn command_kind_name(kind: CommandKind) -> &'static str {
     match kind {
         CommandKind::Lexical => "lexical",
-        CommandKind::Sourcegraph => "sourcegraph",
         CommandKind::Semantic => "semantic",
         CommandKind::Hybrid => "hybrid",
         CommandKind::Explain => "explain",
@@ -1105,7 +1054,6 @@ Global flags:
 
 Read-only subcommands:
   lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
-  sourcegraph --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --sg-version SG-X.Y.Z --top-k N
   semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
   explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
@@ -1366,19 +1314,19 @@ mod tests {
         clippy::panic,
         reason = "test asserts payload variant shape; panic isolates failure to this single test"
     )]
-    fn parses_sourcegraph_query_request() {
+    fn parses_lexical_sourcegraph_query_request() {
         let parsed = ParsedCommand::parse([
-            "sourcegraph",
+            "lexical",
             "--repo-id",
             "repo",
             "--revision-id",
             "rev",
             "--manifest-generation",
             "7",
+            "--syntax",
+            "sourcegraph",
             "--query-text",
             "repo:repo lang:rust needle",
-            "--sg-version",
-            "sg-5.5.0",
             "--top-k",
             "11",
         ]);
@@ -1386,11 +1334,11 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let SearchPlaneQueryIpcRequest::Sourcegraph(request) = parsed.request.payload else {
-            panic!("expected sourcegraph payload");
+        let SearchPlaneQueryIpcRequest::Text(request) = parsed.request.payload else {
+            panic!("expected lexical text payload");
         };
-        assert_eq!(request.source_syntax.as_ref(), "repo:repo lang:rust needle");
-        assert_eq!(request.sg_version.as_ref(), "sg-5.5.0");
+        assert_eq!(request.syntax, TextQuerySyntax::Sourcegraph);
+        assert_eq!(request.query_text.as_str(), "repo:repo lang:rust needle");
         assert_eq!(request.top_k, 11);
         assert_eq!(
             request.generation.map(|pin| pin.manifest_generation.get()),
@@ -1399,31 +1347,27 @@ mod tests {
     }
 
     #[test]
-    fn pretty_renderer_supports_sourcegraph_response() {
+    fn pretty_renderer_supports_sourcegraph_text_response() {
         let response = SearchPlaneQueryIpcResponseEnvelope {
             request_id: 1,
-            payload: SearchPlaneQueryIpcResponse::Sourcegraph(
-                quanta_index_contract::SearchPlaneSourcegraphQueryResponse {
-                    generation: GenerationPin::new(
-                        RepoId::new("repo"),
-                        RevisionId::new("rev"),
-                        ManifestGeneration::new(7),
-                    ),
-                    results: vec![LexicalCandidate {
-                        candidate_id: "cand-1".to_string(),
-                        repo_id: RepoId::new("repo"),
-                        revision_id: RevisionId::new("rev"),
-                        manifest_generation: ManifestGeneration::new(7),
-                        repo_relative_path: quanta_index_contract::RepoRelativePath::new(
-                            "src/lib.rs",
-                        ),
-                        start_line: 1,
-                        end_line: 3,
-                        score: 0.5,
-                        snippet: "fn sample() {}".to_string(),
-                    }],
-                },
-            ),
+            payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                results: vec![LexicalCandidate {
+                    candidate_id: "cand-1".to_string(),
+                    repo_id: RepoId::new("repo"),
+                    revision_id: RevisionId::new("rev"),
+                    manifest_generation: ManifestGeneration::new(7),
+                    repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
+                    start_line: 1,
+                    end_line: 3,
+                    score: 0.5,
+                    snippet: "fn sample() {}".to_string(),
+                }],
+            }),
         };
         let mut stdout = Vec::new();
         let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
@@ -1431,7 +1375,7 @@ mod tests {
         let text = String::from_utf8(stdout);
         assert!(text.is_ok());
         if let Ok(text) = text {
-            assert!(text.contains("kind: sourcegraph"));
+            assert!(text.contains("kind: lexical"));
             assert!(text.contains("results: 1"));
         }
     }

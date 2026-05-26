@@ -499,60 +499,67 @@ pub struct HistoryQueryRequest {
 
 const HISTORY_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
 
-impl Serialize for HistoryQueryRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("HistoryQueryRequest", 1)?;
-        state.serialize_field("text_query", &self.text_query)?;
-        state.end()
-    }
-}
-
-struct HistoryQueryRequestVisitor;
-
-impl<'de> Visitor<'de> for HistoryQueryRequestVisitor {
-    type Value = HistoryQueryRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a HistoryQueryRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut text_query: Option<TextQueryRequest> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "text_query" => text_query = Some(map.next_value()?),
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        HISTORY_QUERY_REQUEST_FIELDS,
-                    ));
-                }
+macro_rules! impl_text_query_wrapper_serde {
+    ($ty:ident, $fields:ident, $visitor:ident) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut state = serializer.serialize_struct(stringify!($ty), 1)?;
+                state.serialize_field("text_query", &self.text_query)?;
+                state.end()
             }
         }
-        Ok(HistoryQueryRequest {
-            text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
-        })
-    }
-}
 
-impl<'de> Deserialize<'de> for HistoryQueryRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "HistoryQueryRequest",
-            HISTORY_QUERY_REQUEST_FIELDS,
-            HistoryQueryRequestVisitor,
-        )
-    }
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = $ty;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!("a ", stringify!($ty), " map"))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut text_query: Option<TextQueryRequest> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "text_query" => {
+                            if text_query.is_some() {
+                                return Err(de::Error::duplicate_field("text_query"));
+                            }
+                            text_query = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                Ok($ty {
+                    text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct(stringify!($ty), $fields, $visitor)
+            }
+        }
+    };
 }
+impl_text_query_wrapper_serde!(
+    HistoryQueryRequest,
+    HISTORY_QUERY_REQUEST_FIELDS,
+    HistoryQueryRequestVisitor
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeMetadataQueryRequest {
@@ -560,61 +567,11 @@ pub struct RuntimeMetadataQueryRequest {
 }
 
 const RUNTIME_METADATA_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
-
-impl Serialize for RuntimeMetadataQueryRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("RuntimeMetadataQueryRequest", 1)?;
-        state.serialize_field("text_query", &self.text_query)?;
-        state.end()
-    }
-}
-
-struct RuntimeMetadataQueryRequestVisitor;
-
-impl<'de> Visitor<'de> for RuntimeMetadataQueryRequestVisitor {
-    type Value = RuntimeMetadataQueryRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RuntimeMetadataQueryRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut text_query: Option<TextQueryRequest> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "text_query" => text_query = Some(map.next_value()?),
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(RuntimeMetadataQueryRequest {
-            text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for RuntimeMetadataQueryRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "RuntimeMetadataQueryRequest",
-            RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
-            RuntimeMetadataQueryRequestVisitor,
-        )
-    }
-}
+impl_text_query_wrapper_serde!(
+    RuntimeMetadataQueryRequest,
+    RUNTIME_METADATA_QUERY_REQUEST_FIELDS,
+    RuntimeMetadataQueryRequestVisitor
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralQueryRequest {
@@ -622,61 +579,11 @@ pub struct StructuralQueryRequest {
 }
 
 const STRUCTURAL_QUERY_REQUEST_FIELDS: &[&str] = &["text_query"];
-
-impl Serialize for StructuralQueryRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("StructuralQueryRequest", 1)?;
-        state.serialize_field("text_query", &self.text_query)?;
-        state.end()
-    }
-}
-
-struct StructuralQueryRequestVisitor;
-
-impl<'de> Visitor<'de> for StructuralQueryRequestVisitor {
-    type Value = StructuralQueryRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a StructuralQueryRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut text_query: Option<TextQueryRequest> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "text_query" => text_query = Some(map.next_value()?),
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        STRUCTURAL_QUERY_REQUEST_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(StructuralQueryRequest {
-            text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for StructuralQueryRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "StructuralQueryRequest",
-            STRUCTURAL_QUERY_REQUEST_FIELDS,
-            StructuralQueryRequestVisitor,
-        )
-    }
-}
+impl_text_query_wrapper_serde!(
+    StructuralQueryRequest,
+    STRUCTURAL_QUERY_REQUEST_FIELDS,
+    StructuralQueryRequestVisitor
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BridgeQueryRequest {
@@ -818,210 +725,5 @@ impl<'de> Deserialize<'de> for SearchPlaneExplainQueryRequest {
             SEARCH_PLANE_EXPLAIN_QUERY_REQUEST_FIELDS,
             SearchPlaneExplainQueryRequestVisitor,
         )
-    }
-}
-
-/// Sourcegraph-syntax query request.
-///
-/// PRE-CONTRACT-EXT additive: payload is a raw Sourcegraph-syntax string.
-/// The search-plane is responsible for parsing `source_syntax` against the
-/// Sourcegraph DSL pinned to `sg_version`; producers may carry a
-/// `GenerationPin` to fence the query against a specific manifest
-/// generation. Wire-compat is preserved by appending to the split
-/// query-plane IPC request enum.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchPlaneSourcegraphQueryRequest {
-    pub source_syntax: Box<str>,
-    pub sg_version: Box<str>,
-    pub generation: Option<GenerationPin>,
-    pub top_k: u32,
-}
-
-const SEARCH_PLANE_SOURCEGRAPH_QUERY_REQUEST_FIELDS: &[&str] =
-    &["source_syntax", "sg_version", "generation", "top_k"];
-
-impl Serialize for SearchPlaneSourcegraphQueryRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut field_count: usize = 3;
-        if self.generation.is_some() {
-            field_count = field_count.saturating_add(1);
-        }
-        let mut state =
-            serializer.serialize_struct("SearchPlaneSourcegraphQueryRequest", field_count)?;
-        state.serialize_field("source_syntax", self.source_syntax.as_ref())?;
-        state.serialize_field("sg_version", self.sg_version.as_ref())?;
-        if let Some(generation) = &self.generation {
-            state.serialize_field("generation", generation)?;
-        }
-        state.serialize_field("top_k", &self.top_k)?;
-        state.end()
-    }
-}
-
-struct SearchPlaneSourcegraphQueryRequestVisitor;
-
-impl<'de> Visitor<'de> for SearchPlaneSourcegraphQueryRequestVisitor {
-    type Value = SearchPlaneSourcegraphQueryRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneSourcegraphQueryRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut source_syntax: Option<Box<str>> = None;
-        let mut sg_version: Option<Box<str>> = None;
-        let mut generation: Option<GenerationPin> = None;
-        let mut generation_seen = false;
-        let mut top_k: Option<u32> = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "source_syntax" => {
-                    if source_syntax.is_some() {
-                        return Err(de::Error::duplicate_field("source_syntax"));
-                    }
-                    let raw: String = map.next_value()?;
-                    source_syntax = Some(raw.into_boxed_str());
-                }
-                "sg_version" => {
-                    if sg_version.is_some() {
-                        return Err(de::Error::duplicate_field("sg_version"));
-                    }
-                    let raw: String = map.next_value()?;
-                    sg_version = Some(raw.into_boxed_str());
-                }
-                "generation" => {
-                    if generation_seen {
-                        return Err(de::Error::duplicate_field("generation"));
-                    }
-                    generation_seen = true;
-                    generation = Some(map.next_value()?);
-                }
-                "top_k" => {
-                    if top_k.is_some() {
-                        return Err(de::Error::duplicate_field("top_k"));
-                    }
-                    top_k = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_SOURCEGRAPH_QUERY_REQUEST_FIELDS,
-                    ));
-                }
-            }
-        }
-        Ok(SearchPlaneSourcegraphQueryRequest {
-            source_syntax: source_syntax
-                .ok_or_else(|| de::Error::missing_field("source_syntax"))?,
-            sg_version: sg_version.ok_or_else(|| de::Error::missing_field("sg_version"))?,
-            generation,
-            top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for SearchPlaneSourcegraphQueryRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneSourcegraphQueryRequest",
-            SEARCH_PLANE_SOURCEGRAPH_QUERY_REQUEST_FIELDS,
-            SearchPlaneSourcegraphQueryRequestVisitor,
-        )
-    }
-}
-
-#[cfg(test)]
-mod sourcegraph_tests {
-    use super::SearchPlaneSourcegraphQueryRequest;
-    use crate::{GenerationPin, ManifestGeneration, RepoId, RevisionId};
-
-    type TestRes = Result<(), Box<dyn std::error::Error>>;
-
-    fn encode<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut buf: Vec<u8> = Vec::new();
-        ciborium::ser::into_writer(v, &mut buf)?;
-        Ok(buf)
-    }
-
-    fn decode<T>(bytes: &[u8]) -> Result<T, Box<dyn std::error::Error>>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        Ok(ciborium::de::from_reader(bytes)?)
-    }
-
-    fn sample_pin() -> GenerationPin {
-        GenerationPin::new(
-            RepoId::new("repo-x"),
-            RevisionId::new("rev-y"),
-            ManifestGeneration::new(13),
-        )
-    }
-
-    #[test]
-    fn sourcegraph_request_cbor_roundtrip() -> TestRes {
-        let v = SearchPlaneSourcegraphQueryRequest {
-            source_syntax: "repo:^example file:foo \"bar\"".into(),
-            sg_version: "5.4.0".into(),
-            generation: Some(sample_pin()),
-            top_k: 25,
-        };
-        let bytes = encode(&v)?;
-        let back: SearchPlaneSourcegraphQueryRequest = decode(&bytes)?;
-        if back != v {
-            return Err("roundtrip mismatch".into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn sourcegraph_request_cbor_roundtrip_no_generation() -> TestRes {
-        let v = SearchPlaneSourcegraphQueryRequest {
-            source_syntax: "test".into(),
-            sg_version: "5.4.0".into(),
-            generation: None,
-            top_k: 10,
-        };
-        let bytes = encode(&v)?;
-        let back: SearchPlaneSourcegraphQueryRequest = decode(&bytes)?;
-        if back != v {
-            return Err("roundtrip mismatch".into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn sourcegraph_request_unknown_field_rejected() -> TestRes {
-        let v = SearchPlaneSourcegraphQueryRequest {
-            source_syntax: "test".into(),
-            sg_version: "5.4.0".into(),
-            generation: None,
-            top_k: 5,
-        };
-        let bytes = encode(&v)?;
-        let mut wire: ciborium::Value = decode(&bytes)?;
-        let ciborium::Value::Map(fields) = &mut wire else {
-            return Err("expected map".into());
-        };
-        fields.push((
-            ciborium::Value::Text("__never_field".to_owned()),
-            ciborium::Value::Bool(true),
-        ));
-        let mutated = encode(&wire)?;
-        let decoded: Result<SearchPlaneSourcegraphQueryRequest, _> =
-            ciborium::de::from_reader::<SearchPlaneSourcegraphQueryRequest, _>(mutated.as_slice());
-        if decoded.is_ok() {
-            return Err("unknown field should have been rejected".into());
-        }
-        Ok(())
     }
 }

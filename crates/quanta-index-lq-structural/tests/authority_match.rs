@@ -1,0 +1,712 @@
+use quanta_index_contract::lex::{
+    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+};
+use quanta_index_contract::{
+    LqMetaVar, LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand,
+    LqStructuralExpr, LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
+};
+use quanta_index_lq_structural::{
+    ByteSpan, MetaVar, StructuralAuthorityMatcher, StructuralAuthorityPatternRef,
+    StructuralAuthorityView, StructuralErrorCode, StructuralPattern,
+    TruthfulSubsetAuthorityMatcher, compile_authoritative_pattern,
+};
+
+fn fatal(msg: &str) -> ! {
+    assert!(false, "{msg}");
+    std::process::abort();
+}
+
+fn span(a: u32, b: u32) -> ByteSpan {
+    match ByteSpan::new(a, b) {
+        Ok(s) => s,
+        Err(e) => fatal(&format!("{e}")),
+    }
+}
+
+fn mv(name: &str) -> MetaVar {
+    match MetaVar::new(name) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    }
+}
+
+fn literal(text: &str) -> LqStructuralNode {
+    LqStructuralNode::Literal(text.to_string().into_boxed_str())
+}
+
+fn metavar(name: &str) -> LqStructuralNode {
+    LqStructuralNode::Hole {
+        name: Some(LqMetaVar::new(name.to_string())),
+        multiplicity: LqStructuralHoleMultiplicity::One,
+    }
+}
+
+fn hole_many(name: &str) -> LqStructuralNode {
+    LqStructuralNode::Hole {
+        name: Some(LqMetaVar::new(name.to_string())),
+        multiplicity: LqStructuralHoleMultiplicity::Many,
+    }
+}
+
+fn wildcard_many() -> LqStructuralNode {
+    LqStructuralNode::WildcardMany
+}
+
+fn group(children: Vec<LqStructuralNode>) -> LqStructuralNode {
+    LqStructuralNode::Group(children)
+}
+
+fn structural_block(nodes: Vec<LqStructuralNode>) -> LqStructuralBlock {
+    let pattern_nodes = nodes.clone();
+    LqStructuralBlock {
+        lang: None,
+        nodes,
+        exprs: vec![LqStructuralExpr::Pattern(pattern_nodes)],
+    }
+}
+
+fn compile_exprs(exprs: Vec<LqStructuralExpr>, lang: &str) -> StructuralPattern {
+    let nodes = match exprs.first() {
+        Some(LqStructuralExpr::Pattern(nodes)) => nodes.clone(),
+        Some(_) => fatal("first structural expr must be pattern"),
+        None => fatal("structural expr list must not be empty"),
+    };
+    match compile_authoritative_pattern(
+        &LqStructuralBlock {
+            lang: None,
+            nodes,
+            exprs,
+        },
+        lang,
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    }
+}
+
+fn compile_block(nodes: Vec<LqStructuralNode>, lang: &str) -> StructuralPattern {
+    let block = structural_block(nodes);
+    compile_exprs(block.exprs, lang)
+}
+
+fn hole_ref(name: &str, multiplicity: LqStructuralHoleMultiplicity) -> LqStructuralHoleRef {
+    LqStructuralHoleRef {
+        name: LqMetaVar::new(name.to_string()),
+        multiplicity,
+    }
+}
+
+fn tree_with_children(
+    lang: &str,
+    kind: &str,
+    start: u32,
+    end: u32,
+    source: &str,
+    children: Vec<ParseNode>,
+) -> ParseTreeRecord {
+    let Ok(lang) = LanguageCode::new(lang) else {
+        fatal("language");
+    };
+    ParseTreeRecord {
+        wire_version: 1,
+        lang,
+        root: ParseNode {
+            kind: kind.to_string().into_boxed_str(),
+            byte_start: start,
+            byte_end: end,
+            children,
+        },
+        source_hash: compute_parse_tree_source_hash(source),
+        role_tag_schema_version: 1,
+        role_tags: Vec::new(),
+    }
+}
+
+fn tree(lang: &str, kind: &str, start: u32, end: u32, source: &str) -> ParseTreeRecord {
+    tree_with_children(lang, kind, start, end, source, Vec::new())
+}
+
+fn lower(pattern: &StructuralPattern) -> StructuralAuthorityPatternRef<'_> {
+    match StructuralAuthorityPatternRef::try_from(pattern) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    }
+}
+
+#[test]
+fn authority_root_kind_exact_match_returns_one_candidate() {
+    let source = "fn main() {}";
+    let tree = tree("rust", "function_item", 0, 12, source);
+    let pattern = compile_block(vec![literal(" function_item ")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 12));
+    assert!(got[0].binding.is_empty());
+}
+
+#[test]
+fn compile_authoritative_pattern_trims_single_root_literal() {
+    let pattern = compile_block(vec![literal("  function_item  ")], "rust");
+    let lowered = lower(&pattern);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::RootKind("function_item")
+    );
+}
+
+#[test]
+fn authority_root_kind_exact_miss_returns_empty() {
+    let source = "fn main() {}";
+    let tree = tree("rust", "function_item", 0, 12, source);
+    let pattern = compile_block(vec![literal("identifier")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert!(got.is_empty());
+}
+
+#[test]
+fn authority_group_wrapped_root_capture_binds_root_span() {
+    let source = "fn main() {}";
+    let tree = tree("rust", "function_item", 0, 12, source);
+    let pattern = compile_block(
+        vec![group(vec![literal(" "), metavar("node"), literal(" ")])],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 12));
+    assert_eq!(got[0].binding.get(&mv("node")), Some(span(0, 12)));
+}
+
+#[test]
+fn authority_root_kind_plus_capture_binds_root_span() {
+    let source = "fn main() {}";
+    let tree = tree("rust", "function_item", 0, 12, source);
+    let pattern = compile_block(vec![literal("function_item"), metavar("node")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 12));
+    assert_eq!(got[0].binding.get(&mv("node")), Some(span(0, 12)));
+}
+
+#[test]
+fn authority_tree_walk_binds_direct_child_capture() {
+    let source = "fn main() {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        10,
+        source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "block".to_string().into_boxed_str(),
+                byte_start: 8,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![group(vec![literal("identifier"), metavar("name")])]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 10));
+    assert_eq!(got[0].binding.get(&mv("name")), Some(span(3, 7)));
+}
+
+#[test]
+fn authority_tree_walk_variadic_tail_capture_binds_remaining_siblings() {
+    let source = "fn main() {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        10,
+        source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "block".to_string().into_boxed_str(),
+                byte_start: 8,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![literal("identifier"), metavar("name")]),
+            hole_many("tail"),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 10));
+    assert_eq!(got[0].binding.get(&mv("name")), Some(span(3, 7)));
+    assert_eq!(got[0].binding.get(&mv("tail")), Some(span(8, 10)));
+}
+
+#[test]
+fn authority_where_constraint_filters_by_bound_source_text() {
+    let equal_source = "aa";
+    let unequal_source = "ab";
+    let equal_tree = tree_with_children(
+        "rust",
+        "pair",
+        0,
+        2,
+        equal_source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 1,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 1,
+                byte_end: 2,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let unequal_tree = tree_with_children(
+        "rust",
+        "pair",
+        0,
+        2,
+        unequal_source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 1,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 1,
+                byte_end: 2,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let pattern = compile_exprs(
+        vec![
+            LqStructuralExpr::Pattern(vec![
+                literal("pair"),
+                group(vec![literal("identifier"), metavar("lhs")]),
+                group(vec![literal("identifier"), metavar("rhs")]),
+            ]),
+            LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                left: hole_ref("lhs", LqStructuralHoleMultiplicity::One),
+                right: LqStructuralConstraintOperand::Hole(hole_ref(
+                    "rhs",
+                    LqStructuralHoleMultiplicity::One,
+                )),
+            }]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let equal = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(equal_source, &equal_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    let unequal = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(unequal_source, &unequal_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(equal.len(), 1);
+    assert!(unequal.is_empty());
+}
+
+#[test]
+fn authority_inside_and_outside_constraints_follow_ancestor_chain() {
+    let nested_source = "impl x";
+    let nested_tree = tree_with_children(
+        "rust",
+        "impl_item",
+        0,
+        6,
+        nested_source,
+        vec![ParseNode {
+            kind: "function_item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 6,
+            children: Vec::new(),
+        }],
+    );
+    let standalone_source = "fn x";
+    let standalone_tree = tree("rust", "function_item", 0, 4, standalone_source);
+    let trait_source = "trait x";
+    let trait_tree = tree_with_children(
+        "rust",
+        "trait_item",
+        0,
+        7,
+        trait_source,
+        vec![ParseNode {
+            kind: "function_item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 7,
+            children: Vec::new(),
+        }],
+    );
+    let pattern = compile_exprs(
+        vec![
+            LqStructuralExpr::Pattern(vec![literal("function_item")]),
+            LqStructuralExpr::Inside(Box::new(structural_block(vec![literal("impl_item")]))),
+            LqStructuralExpr::Outside(Box::new(structural_block(vec![literal("trait_item")]))),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let nested = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(nested_source, &nested_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    let standalone = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(standalone_source, &standalone_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    let trait_nested = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(trait_source, &trait_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(nested.len(), 1);
+    assert!(standalone.is_empty());
+    assert!(trait_nested.is_empty());
+}
+
+#[test]
+fn authority_pattern_lowering_rejects_still_unsupported_composite_shape() {
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            metavar("node"),
+            literal("identifier"),
+        ],
+        "rust",
+    );
+    let lowered = lower(&pattern);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree
+    );
+}
+
+#[test]
+fn authority_pattern_lowering_rejects_ambiguous_child_sequence_shape() {
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![group(vec![
+                literal("identifier"),
+                metavar("name"),
+                literal("block"),
+            ])]),
+        ],
+        "rust",
+    );
+    let lowered = lower(&pattern);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::Tree
+    );
+}
+
+#[test]
+fn compile_authoritative_pattern_lowers_root_kind_plus_capture() {
+    let pattern = compile_block(vec![literal(" function_item "), metavar("node")], "rust");
+    let lowered = lower(&pattern);
+    assert_eq!(
+        lowered.kind(),
+        quanta_index_lq_structural::StructuralAuthorityPatternKind::RootKindCapture(
+            "function_item",
+            &mv("node"),
+        )
+    );
+}
+
+#[test]
+fn authority_match_rejects_unsupported_tree_lang() {
+    let source = "class C {}";
+    let tree = tree("java", "class_declaration", 0, 10, source);
+    let pattern = compile_block(vec![literal("class_declaration")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    match matcher.match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree)) {
+        Ok(_) => fatal("must fail closed"),
+        Err(err) => assert_eq!(err.code, StructuralErrorCode::StrLangNotSupported),
+    }
+}
+
+#[test]
+fn authority_match_rejects_source_hash_mismatch() {
+    let source = "fn main() {}";
+    let mut tree = tree("rust", "function_item", 0, 12, source);
+    tree.source_hash = compute_parse_tree_source_hash("fn other() {}");
+    let pattern = compile_block(vec![literal("function_item")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    match matcher.match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree)) {
+        Ok(_) => fatal("must fail closed"),
+        Err(err) => assert_eq!(err.code, StructuralErrorCode::StrParseFail),
+    }
+}
+
+#[test]
+fn authority_match_rejects_root_span_out_of_bounds() {
+    let source = "abc";
+    let tree = tree("rust", "identifier", 0, 10, source);
+    let pattern = compile_block(vec![literal("identifier")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    match matcher.match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree)) {
+        Ok(_) => fatal("must fail closed"),
+        Err(err) => assert_eq!(err.code, StructuralErrorCode::StrParseFail),
+    }
+}
+
+#[test]
+fn authority_root_fast_path_does_not_descend_to_children() {
+    let source = "fn main() {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        12,
+        source,
+        vec![ParseNode {
+            kind: "identifier".to_string().into_boxed_str(),
+            byte_start: 3,
+            byte_end: 7,
+            children: Vec::new(),
+        }],
+    );
+    let pattern = compile_block(vec![literal("identifier")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert!(got.is_empty());
+}
+
+#[test]
+fn authority_tree_walk_binds_variadic_contiguous_span() {
+    let source = "fn main(arg1, arg2) {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        22,
+        source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "parameters".to_string().into_boxed_str(),
+                byte_start: 7,
+                byte_end: 19,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "block".to_string().into_boxed_str(),
+                byte_start: 20,
+                byte_end: 22,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![hole_many("prefix"), literal("block")]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].binding.get(&mv("prefix")), Some(span(3, 19)));
+}
+
+#[test]
+fn authority_tree_walk_applies_where_inside_and_outside() {
+    let source = "fn main() {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        12,
+        source,
+        vec![ParseNode {
+            kind: "identifier".to_string().into_boxed_str(),
+            byte_start: 3,
+            byte_end: 7,
+            children: Vec::new(),
+        }],
+    );
+    let pattern = match compile_authoritative_pattern(
+        &LqStructuralBlock {
+            lang: None,
+            nodes: Vec::new(),
+            exprs: vec![
+                LqStructuralExpr::Pattern(vec![literal("identifier"), metavar("name")]),
+                LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                    left: LqStructuralHoleRef {
+                        name: LqMetaVar::new("name".to_string()),
+                        multiplicity: LqStructuralHoleMultiplicity::One,
+                    },
+                    right: LqStructuralConstraintOperand::Phrase("main".to_string()),
+                }]),
+                LqStructuralExpr::Inside(Box::new(LqStructuralBlock {
+                    lang: None,
+                    nodes: Vec::new(),
+                    exprs: vec![LqStructuralExpr::Pattern(vec![literal("function_item")])],
+                })),
+                LqStructuralExpr::Outside(Box::new(LqStructuralBlock {
+                    lang: None,
+                    nodes: Vec::new(),
+                    exprs: vec![LqStructuralExpr::Pattern(vec![literal("trait_item")])],
+                })),
+            ],
+        },
+        "rust",
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(3, 7));
+    assert_eq!(got[0].binding.get(&mv("name")), Some(span(3, 7)));
+}
+
+#[test]
+fn authority_wildcard_many_can_skip_to_anchor() {
+    let source = "fn main() {}";
+    let tree = tree_with_children(
+        "rust",
+        "function_item",
+        0,
+        12,
+        source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "block".to_string().into_boxed_str(),
+                byte_start: 10,
+                byte_end: 12,
+                children: Vec::new(),
+            },
+        ],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![wildcard_many(), literal("block")]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].pattern_span, span(0, 12));
+}

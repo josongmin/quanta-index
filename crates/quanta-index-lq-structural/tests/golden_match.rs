@@ -1,16 +1,20 @@
-//! Golden match corpus — pinned `StructuralCandidate` rows.
+//! Golden authority-match corpus — pinned [`StructuralAuthorityCandidate`]
+//! rows and CBOR bytes.
 //!
-//! A small mock-backed pattern + corpus exercises the registry +
-//! mock-matcher path end-to-end. The expected rows are pinned; any
-//! change to the [`StructuralCandidate`] wire shape, the
-//! [`StructuralBinding`] iteration order, or the registry promotion
-//! rule will break the golden and force a deliberate update.
+//! The expected rows are pinned; any change to the authoritative match
+//! envelope or [`StructuralBinding`] iteration order will break the golden
+//! and force a deliberate update.
 
 use std::collections::BTreeMap;
 
+use quanta_index_contract::lex::{
+    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+};
+use quanta_index_contract::{LqMetaVar, LqStructuralBlock, LqStructuralExpr, LqStructuralNode};
 use quanta_index_lq_structural::{
-    ByteSpan, DocId, LangId, MatcherRegistry, MetaVar, MockStructuralMatcher, StructuralBinding,
-    StructuralCandidate, StructuralErrorCode, parse_pattern,
+    ByteSpan, MetaVar, StructuralAuthorityCandidate, StructuralAuthorityMatcher,
+    StructuralAuthorityView, StructuralBinding, TruthfulSubsetAuthorityMatcher,
+    compile_authoritative_pattern,
 };
 
 fn fatal(msg: &str) -> ! {
@@ -32,62 +36,83 @@ fn mv(s: &str) -> MetaVar {
     }
 }
 
-fn golden_candidates() -> Vec<StructuralCandidate> {
-    // Two candidates across two docs, with one binding each.
+fn literal(text: &str) -> LqStructuralNode {
+    LqStructuralNode::Literal(text.to_string().into_boxed_str())
+}
+
+fn metavar(name: &str) -> LqStructuralNode {
+    LqStructuralNode::MetaVar(LqMetaVar::new(name.to_string()))
+}
+
+fn group(children: Vec<LqStructuralNode>) -> LqStructuralNode {
+    LqStructuralNode::Group(children)
+}
+
+fn compile_block(
+    nodes: Vec<LqStructuralNode>,
+    lang: &str,
+) -> quanta_index_lq_structural::StructuralPattern {
+    let pattern_nodes = nodes.clone();
+    match compile_authoritative_pattern(
+        &LqStructuralBlock {
+            lang: None,
+            nodes,
+            exprs: vec![LqStructuralExpr::Pattern(pattern_nodes)],
+        },
+        lang,
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    }
+}
+
+fn tree(lang: &str, kind: &str, start: u32, end: u32, source: &str) -> ParseTreeRecord {
+    let Ok(lang) = LanguageCode::new(lang) else {
+        fatal("language");
+    };
+    ParseTreeRecord {
+        wire_version: 1,
+        lang,
+        root: ParseNode {
+            kind: kind.to_string().into_boxed_str(),
+            byte_start: start,
+            byte_end: end,
+            children: Vec::new(),
+        },
+        source_hash: compute_parse_tree_source_hash(source),
+        role_tag_schema_version: 1,
+        role_tags: Vec::new(),
+    }
+}
+
+fn golden_candidates() -> Vec<StructuralAuthorityCandidate> {
     let mut b1: BTreeMap<MetaVar, ByteSpan> = BTreeMap::new();
-    let _prior1: Option<ByteSpan> = b1.insert(mv("name"), span(3, 6));
-    let c1 = StructuralCandidate::new(DocId(100), span(0, 20), StructuralBinding::from_map(b1));
+    let _prior1: Option<ByteSpan> = b1.insert(mv("node"), span(0, 12));
+    let c1 = StructuralAuthorityCandidate::new(span(0, 12), StructuralBinding::from_map(b1));
 
     let mut b2: BTreeMap<MetaVar, ByteSpan> = BTreeMap::new();
-    let _prior2: Option<ByteSpan> = b2.insert(mv("name"), span(8, 11));
-    let c2 = StructuralCandidate::new(DocId(101), span(5, 30), StructuralBinding::from_map(b2));
+    let _prior2: Option<ByteSpan> = b2.insert(mv("node"), span(5, 17));
+    let c2 = StructuralAuthorityCandidate::new(span(5, 17), StructuralBinding::from_map(b2));
     vec![c1, c2]
 }
 
 #[test]
-fn golden_mock_matcher_returns_pinned_rows() {
-    let mut reg = MatcherRegistry::new();
-    let _displaced: bool = reg.register(
-        LangId::Rust,
-        Box::new(MockStructuralMatcher::new(golden_candidates())),
+fn golden_authority_match_returns_pinned_row() {
+    let source = "fn main() {}";
+    let tree = tree("rust", "function_item", 0, 12, source);
+    let pattern = compile_block(
+        vec![group(vec![literal(" "), metavar("node"), literal(" ")])],
+        "rust",
     );
-    let Ok(pat) = parse_pattern("fn $name() { body }", LangId::Rust) else {
-        fatal("parse");
-    };
-    let got = match reg.match_pattern(&pat, b"fn foo() { body }") {
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher.match_authority(
+        (&pattern).try_into().unwrap_or_else(|_| fatal("lower")),
+        StructuralAuthorityView::new(source, &tree),
+    ) {
         Ok(v) => v,
         Err(e) => fatal(&format!("{e}")),
     };
-    assert_eq!(got, golden_candidates());
-}
-
-#[test]
-fn golden_unsupported_lang_emits_typed_error() {
-    let reg = MatcherRegistry::new();
-    let Ok(pat) = parse_pattern("hi", LangId::Go) else {
-        fatal("parse");
-    };
-    let Err(err) = reg.match_pattern(&pat, b"") else {
-        fatal("must fail closed");
-    };
-    assert_eq!(err.code, StructuralErrorCode::StrLangNotSupported);
-    assert!(err.detail.contains("GO"));
-}
-
-#[test]
-fn golden_empty_for_metavar_pattern_promotes() {
-    let mut reg = MatcherRegistry::new();
-    let _displaced: bool = reg.register(
-        LangId::Python,
-        Box::new(MockStructuralMatcher::new(Vec::new())),
-    );
-    let Ok(pat) = parse_pattern("$x", LangId::Python) else {
-        fatal("parse");
-    };
-    let Err(err) = reg.match_pattern(&pat, b"") else {
-        fatal("must promote");
-    };
-    assert_eq!(err.code, StructuralErrorCode::StrLangResolutionEmpty);
+    assert_eq!(got, vec![golden_candidates()[0].clone()]);
 }
 
 #[test]
@@ -97,7 +122,8 @@ fn golden_serde_roundtrip_per_row() {
         if let Err(e) = ciborium::ser::into_writer(&c, &mut buf) {
             fatal(&format!("{e}"));
         }
-        let got: Result<StructuralCandidate, _> = ciborium::de::from_reader(buf.as_slice());
+        let got: Result<StructuralAuthorityCandidate, _> =
+            ciborium::de::from_reader(buf.as_slice());
         match got {
             Ok(v) => assert_eq!(v, c),
             Err(e) => fatal(&format!("{e}")),
@@ -124,7 +150,7 @@ fn golden_cbor_bytes_pinned_for_first_row() {
     }
     assert_eq!(buf, buf2);
     // Sanity: must contain the metavar name as utf-8 bytes.
-    let name_bytes = b"name";
+    let name_bytes = b"node";
     let found = buf.windows(name_bytes.len()).any(|w| w == name_bytes);
-    assert!(found, "expected metavar name 'name' in CBOR bytes");
+    assert!(found, "expected metavar name 'node' in CBOR bytes");
 }

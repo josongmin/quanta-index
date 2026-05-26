@@ -1,11 +1,8 @@
 use quanta_index_contract::{
-    LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
-    TextQueryRequest, TextQuerySyntax,
+    LqExpr, LqLeaf, LqPatternType, LqQuery, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
-    BridgeError, BridgeErrorCode, LqDirective as BridgeDirective, SourcegraphVersionTag,
-    parse_sourcegraph, translate,
+    BridgeError, BridgeErrorCode, SourcegraphVersionTag, parse_sourcegraph, translate_query,
 };
 use quanta_index_lq_norm::{
     LqParseError, LqParseErrorCode, normalizer::normalize, parser::parse, tokenizer::tokenize,
@@ -21,10 +18,35 @@ pub fn lower_lexical_text_query(request: &TextQueryRequest) -> Result<LqQuery, C
 }
 
 pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
+    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Lexical)
+}
+
+pub(crate) fn lower_sourcegraph_structural_query_text(
+    query_text: &str,
+) -> Result<LqQuery, CoreError> {
+    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Structural)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourcegraphLoweringRoute {
+    Lexical,
+    Structural,
+}
+
+fn lower_sourcegraph_query_text_for_route(
+    query_text: &str,
+    route: SourcegraphLoweringRoute,
+) -> Result<LqQuery, CoreError> {
     let sourcegraph = parse_sourcegraph(query_text).map_err(|err| map_bridge_error(&err))?;
     let version = SourcegraphVersionTag::supported().map_err(|err| map_bridge_error(&err))?;
-    let lowered = translate(sourcegraph, &version).map_err(|err| map_bridge_error(&err))?;
-    bridge_directive_to_query(lowered, query_text)
+    let query = translate_query(sourcegraph, &version, query_text.len())
+        .map_err(|err| map_bridge_error(&err))?;
+    match route {
+        SourcegraphLoweringRoute::Lexical => reject_sourcegraph_structural_lexical_shape(query),
+        SourcegraphLoweringRoute::Structural => {
+            lower_sourcegraph_structural_shape(query_text, query)
+        }
+    }
 }
 
 fn lower_lq_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
@@ -33,531 +55,85 @@ fn lower_lq_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
     normalize(parsed).map_err(|err| map_lq_error(&err))
 }
 
-fn bridge_directive_to_query(
-    directive: BridgeDirective,
+fn reject_sourcegraph_structural_lexical_shape(query: LqQuery) -> Result<LqQuery, CoreError> {
+    if query.options.pattern_type != LqPatternType::Structural {
+        return Ok(query);
+    }
+    Err(CoreError::Typed {
+        code: BridgeErrorCode::BridgeTranslateFail
+            .as_code_str()
+            .to_string(),
+        message:
+            "bridge: patterntype:structural is not executable on the lexical Sourcegraph route; use the structural route instead"
+                .to_string(),
+    })
+}
+
+fn lower_sourcegraph_structural_shape(
     query_text: &str,
+    mut query: LqQuery,
 ) -> Result<LqQuery, CoreError> {
-    let mut query = LqQuery {
-        lq_version: LQ_VERSION_TAG,
-        expr: LqExpr::Empty,
-        filters: Vec::new(),
-        directives: Vec::new(),
-        options: LqOptions::defaults(),
-        source_span: LqSpan::eof(u32::try_from(query_text.len()).map_or(u32::MAX, |n| n)),
-    };
-    query.expr = lower_bridge_expr(directive, &mut query, true)?;
-    Ok(query)
-}
-
-fn lower_bridge_expr(
-    directive: BridgeDirective,
-    query: &mut LqQuery,
-    allow_scoped_filters: bool,
-) -> Result<LqExpr, CoreError> {
-    match directive {
-        BridgeDirective::Pattern { kind, body } => {
-            lower_bridge_pattern(kind.as_ref(), body.as_ref())
-        }
-        BridgeDirective::Filter { name, value } => {
-            if !allow_scoped_filters {
-                return Err(CoreError::Typed {
-                    code: BridgeErrorCode::BridgeTranslateFail
-                        .as_code_str()
-                        .to_string(),
-                    message: format!(
-                        "bridge: scoped filter `{name}` cannot be lowered into the active LQ contract"
-                    ),
-                });
-            }
-            apply_bridge_filter(name.as_ref(), value.as_ref(), query)?;
-            Ok(LqExpr::Empty)
-        }
-        BridgeDirective::Predicate { name, args_raw } => {
-            lower_bridge_predicate(name.as_ref(), args_raw.as_ref())
-        }
-        BridgeDirective::And(items) => {
-            let mut out: Vec<LqExpr> = Vec::new();
-            for item in items {
-                let lowered = lower_bridge_expr(item, query, allow_scoped_filters)?;
-                if !matches!(lowered, LqExpr::Empty) {
-                    out.push(lowered);
-                }
-            }
-            Ok(collapse_exprs(out, true))
-        }
-        BridgeDirective::Or(items) => {
-            let mut out: Vec<LqExpr> = Vec::new();
-            for item in items {
-                let lowered = lower_bridge_expr(item, query, false)?;
-                if matches!(lowered, LqExpr::Empty) {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeTranslateFail.as_code_str().to_string(),
-                        message: "bridge: OR branch lowered to filters-only query, which the active LQ contract cannot represent".to_string(),
-                    });
-                }
-                out.push(lowered);
-            }
-            Ok(collapse_exprs(out, false))
-        }
-        BridgeDirective::Not(inner) => {
-            let lowered = lower_bridge_expr(*inner, query, false)?;
-            if matches!(lowered, LqExpr::Empty) {
-                return Err(CoreError::Typed {
-                    code: BridgeErrorCode::BridgeTranslateFail.as_code_str().to_string(),
-                    message: "bridge: NOT over filters-only subtree cannot be lowered into the active LQ contract".to_string(),
-                });
-            }
-            Ok(LqExpr::Not(Box::new(lowered)))
-        }
-        BridgeDirective::Filtered { filters, body } => {
-            if !allow_scoped_filters {
-                return Err(CoreError::Typed {
-                    code: BridgeErrorCode::BridgeTranslateFail.as_code_str().to_string(),
-                    message: "bridge: scoped filters under OR/NOT are not representable on the active LQ wire".to_string(),
-                });
-            }
-            for filter in filters {
-                let lowered = lower_bridge_expr(filter, query, true)?;
-                if !matches!(lowered, LqExpr::Empty) {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeTranslateFail.as_code_str().to_string(),
-                        message: "bridge: expected filter-only bridge node while lowering filtered subtree".to_string(),
-                    });
-                }
-            }
-            lower_bridge_expr(*body, query, true)
-        }
+    if query.options.pattern_type != LqPatternType::Structural {
+        return Err(CoreError::Typed {
+            code: BridgeErrorCode::BridgeTranslateFail
+                .as_code_str()
+                .to_string(),
+            message: "bridge: Sourcegraph structural route requires `patterntype:structural`"
+                .to_string(),
+        });
     }
-}
-
-fn collapse_exprs(items: Vec<LqExpr>, all: bool) -> LqExpr {
-    match items.len() {
-        0 => LqExpr::Empty,
-        1 => items.into_iter().next().map_or(LqExpr::Empty, |item| item),
-        _ if all => LqExpr::All(items),
-        _ => LqExpr::Any(items),
-    }
-}
-
-fn lower_bridge_pattern(kind: &str, body: &str) -> Result<LqExpr, CoreError> {
-    let leaf = match kind {
-        "literal" | "keyword" => LqLeaf::Keyword(body.to_string()),
-        "phrase" => LqLeaf::Phrase(body.to_string()),
-        "regex" => LqLeaf::Regex(body.to_string()),
-        other => {
+    let structural_body = match &query.expr {
+        LqExpr::Leaf(LqLeaf::Keyword(body)) | LqExpr::Leaf(LqLeaf::Phrase(body)) => body.clone(),
+        LqExpr::Empty => {
             return Err(CoreError::Typed {
                 code: BridgeErrorCode::BridgeTranslateFail
                     .as_code_str()
                     .to_string(),
-                message: format!("bridge: unsupported lowered pattern kind `{other}`"),
+                message:
+                    "bridge: Sourcegraph structural route requires exactly one structural pattern body"
+                        .to_string(),
+            });
+        }
+        LqExpr::Leaf(LqLeaf::Regex(_)) => {
+            return Err(CoreError::Typed {
+                code: BridgeErrorCode::BridgeTranslateFail
+                    .as_code_str()
+                    .to_string(),
+                message:
+                    "bridge: regex pattern bodies are not supported on the Sourcegraph structural route"
+                        .to_string(),
+            });
+        }
+        LqExpr::Leaf(LqLeaf::RawString(_))
+        | LqExpr::Leaf(LqLeaf::StructuralBlock(_))
+        | LqExpr::Leaf(LqLeaf::Predicate { .. })
+        | LqExpr::Not(_)
+        | LqExpr::All(_)
+        | LqExpr::Any(_)
+        | LqExpr::SemanticVector { .. } => {
+            return Err(CoreError::Typed {
+                code: BridgeErrorCode::BridgeTranslateFail
+                    .as_code_str()
+                    .to_string(),
+                message:
+                    "bridge: Sourcegraph structural route accepts exactly one keyword/quoted pattern body plus executable filters"
+                        .to_string(),
             });
         }
     };
-    Ok(LqExpr::Leaf(leaf))
-}
-
-enum BridgePredicateArg {
-    Phrase(String),
-    RawString(String),
-    Bare(String),
-}
-
-fn lower_bridge_predicate(name: &str, args_raw: &str) -> Result<LqExpr, CoreError> {
-    let args = parse_bridge_predicate_args(args_raw)?;
-    if let Some(executable) = lower_executable_bridge_predicate(name, &args) {
-        return Ok(executable);
-    }
-    Ok(LqExpr::Leaf(LqLeaf::Predicate {
-        name: name.to_string(),
-        args: args.into_iter().map(to_lq_predicate_arg).collect(),
-    }))
-}
-
-fn lower_executable_bridge_predicate(name: &str, args: &[BridgePredicateArg]) -> Option<LqExpr> {
-    match name {
-        "file.contains" | "file.has.content" if args.len() == 1 => {
-            args.first().and_then(lower_file_content_predicate_arg)
-        }
-        _ => None,
-    }
-}
-
-fn lower_file_content_predicate_arg(arg: &BridgePredicateArg) -> Option<LqExpr> {
-    match arg {
-        BridgePredicateArg::Phrase(text) => Some(LqExpr::Leaf(LqLeaf::Phrase(text.clone()))),
-        BridgePredicateArg::RawString(text) => Some(LqExpr::Leaf(LqLeaf::RawString(text.clone()))),
-        BridgePredicateArg::Bare(text) => {
-            if text.split_once(':').is_some() {
-                return None;
-            }
-            if let Some(regex) = strip_regex_delimiters(text) {
-                return Some(LqExpr::Leaf(LqLeaf::Regex(regex.to_string())));
-            }
-            Some(LqExpr::Leaf(LqLeaf::Keyword(text.clone())))
-        }
-    }
-}
-
-fn strip_regex_delimiters(text: &str) -> Option<&str> {
-    text.strip_prefix('/')
-        .and_then(|trimmed| trimmed.strip_suffix('/'))
-}
-
-fn to_lq_predicate_arg(arg: BridgePredicateArg) -> LqPredicateArg {
-    match arg {
-        BridgePredicateArg::Phrase(value) => LqPredicateArg::Phrase(value),
-        BridgePredicateArg::RawString(value) => LqPredicateArg::RawString(value),
-        BridgePredicateArg::Bare(value) => classify_bare_predicate_arg(value),
-    }
-}
-
-fn classify_bare_predicate_arg(value: String) -> LqPredicateArg {
-    if let Some((name, value)) = value.split_once(':') {
-        return LqPredicateArg::Filter {
-            name: name.to_string(),
-            value: value.to_string(),
-        };
-    }
-    if let Ok(number) = value.parse::<i64>() {
-        return LqPredicateArg::Number(number);
-    }
-    LqPredicateArg::Keyword(value)
-}
-
-fn parse_bridge_predicate_args(raw: &str) -> Result<Vec<BridgePredicateArg>, CoreError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let bytes = raw.as_bytes();
-    let mut pos: usize = 0;
-    let mut out: Vec<BridgePredicateArg> = Vec::new();
-    while pos < bytes.len() {
-        while let Some(&b) = bytes.get(pos) {
-            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
-                pos = pos.saturating_add(1);
-            } else {
-                break;
-            }
-        }
-        if pos >= bytes.len() {
-            break;
-        }
-
-        let arg = match bytes.get(pos).copied() {
-            Some(b'"') => {
-                let (consumed, value) = read_quoted_bridge_arg(bytes, pos, b'"')?;
-                pos = consumed;
-                BridgePredicateArg::Phrase(value)
-            }
-            Some(b'\'') => {
-                let (consumed, value) = read_quoted_bridge_arg(bytes, pos, b'\'')?;
-                pos = consumed;
-                BridgePredicateArg::RawString(value)
-            }
-            Some(_) => {
-                let (consumed, value) = read_bare_bridge_arg(bytes, pos)?;
-                pos = consumed;
-                let value = value.trim();
-                if value.is_empty() {
-                    return Err(predicate_arg_error("bridge: empty predicate argument"));
-                }
-                BridgePredicateArg::Bare(value.to_string())
-            }
-            None => break,
-        };
-        out.push(arg);
-
-        while let Some(&b) = bytes.get(pos) {
-            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
-                pos = pos.saturating_add(1);
-            } else {
-                break;
-            }
-        }
-        if pos >= bytes.len() {
-            break;
-        }
-        match bytes.get(pos).copied() {
-            Some(b',') => {
-                pos = pos.saturating_add(1);
-            }
-            Some(_) => {
-                return Err(predicate_arg_error(
-                    "bridge: unexpected character while parsing predicate arguments",
-                ));
-            }
-            None => break,
-        }
-    }
-
-    Ok(out)
-}
-
-fn read_quoted_bridge_arg(
-    bytes: &[u8],
-    start: usize,
-    terminator: u8,
-) -> Result<(usize, String), CoreError> {
-    let mut pos = start.saturating_add(1);
-    let mut buf = String::new();
-    while let Some(&b) = bytes.get(pos) {
-        if b == terminator {
-            return Ok((pos.saturating_add(1), buf));
-        }
-        if b == b'\\' && terminator == b'"' {
-            let after = pos.saturating_add(1);
-            let Some(&esc) = bytes.get(after) else {
-                return Err(predicate_arg_error(
-                    "bridge: trailing backslash in predicate phrase argument",
-                ));
-            };
-            let mapped = match esc {
-                b'\\' => '\\',
-                b'"' => '"',
-                b'n' => '\n',
-                b'r' => '\r',
-                b't' => '\t',
-                _ => {
-                    return Err(predicate_arg_error(
-                        "bridge: unknown escape in predicate phrase argument",
-                    ));
-                }
-            };
-            buf.push(mapped);
-            pos = after.saturating_add(1);
-            continue;
-        }
-        let rest = bytes.get(pos..).unwrap_or(&[]);
-        let ch = next_utf8_char(rest)?;
-        buf.push(ch);
-        pos = pos.saturating_add(ch.len_utf8());
-    }
-    Err(predicate_arg_error(
-        "bridge: unterminated quoted predicate argument",
-    ))
-}
-
-fn read_bare_bridge_arg(bytes: &[u8], start: usize) -> Result<(usize, String), CoreError> {
-    let mut pos = start;
-    let mut buf = String::new();
-    while let Some(&b) = bytes.get(pos) {
-        if b == b',' {
-            break;
-        }
-        let rest = bytes.get(pos..).unwrap_or(&[]);
-        let ch = next_utf8_char(rest)?;
-        buf.push(ch);
-        pos = pos.saturating_add(ch.len_utf8());
-    }
-    Ok((pos, buf))
-}
-
-fn next_utf8_char(bytes: &[u8]) -> Result<char, CoreError> {
-    let text = core::str::from_utf8(bytes).map_err(|err| CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
-        message: format!("bridge: invalid UTF-8 in predicate argument: {err}"),
-    })?;
-    text.chars()
-        .next()
-        .ok_or_else(|| predicate_arg_error("bridge: invalid UTF-8 in predicate argument"))
-}
-
-fn predicate_arg_error(message: &str) -> CoreError {
-    CoreError::Typed {
-        code: BridgeErrorCode::BridgeTranslateFail
-            .as_code_str()
-            .to_string(),
-        message: message.to_string(),
-    }
-}
-
-fn apply_bridge_filter(name: &str, value: &str, query: &mut LqQuery) -> Result<(), CoreError> {
-    match name {
-        "repo" => query.filters.push(LqFilter::Repo {
-            pattern: value.to_string(),
-            revs: Vec::new(),
-        }),
-        "file" => query.filters.push(LqFilter::File {
-            pattern: value.to_string(),
-            scope: LqFileScope::NameAndPath,
-        }),
-        "path" => query.filters.push(LqFilter::File {
-            pattern: value.to_string(),
-            scope: LqFileScope::PathOnly,
-        }),
-        "lang" => query.filters.push(LqFilter::Lang {
-            id: value.to_string(),
-        }),
-        "author" => query.filters.push(LqFilter::Author {
-            pattern: value.to_string(),
-        }),
-        "committer" => query.filters.push(LqFilter::Committer {
-            pattern: value.to_string(),
-        }),
-        "message" => query.filters.push(LqFilter::Message {
-            pattern: value.to_string(),
-        }),
-        "type" => {
-            let kind = match value {
-                "file" => LqType::File,
-                "path" => LqType::Path,
-                "symbol" => LqType::Symbol,
-                "commit" => LqType::Commit,
-                "diff" => LqType::Diff,
-                "repo" => LqType::Repo,
-                other => {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeUnsupportedFilter
-                            .as_code_str()
-                            .to_string(),
-                        message: format!("bridge: unsupported Sourcegraph type filter `{other}`"),
-                    });
-                }
-            };
-            query.filters.push(LqFilter::Type { kind });
-        }
-        "select" => {
-            let dim = match value {
-                "repo" => LqSelect::Repo,
-                "file" => LqSelect::File,
-                "path" => LqSelect::Path,
-                "symbol" => LqSelect::Symbol,
-                "content" => LqSelect::Content,
-                "content.match" => LqSelect::ContentMatch,
-                other => {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeUnsupportedFilter
-                            .as_code_str()
-                            .to_string(),
-                        message: format!("bridge: unsupported Sourcegraph select filter `{other}`"),
-                    });
-                }
-            };
-            query.filters.push(LqFilter::Select { dim });
-        }
-        "dirty" => query.filters.push(LqFilter::Dirty {
-            mode: lower_yes_no_only_filter("dirty", value)?,
-        }),
-        "case" => {
-            query.options.case = Some(match value {
-                "yes" => LqCase::Sensitive,
-                "no" => LqCase::Insensitive,
-                other => {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeUnsupportedFilter
-                            .as_code_str()
-                            .to_string(),
-                        message: format!("bridge: unsupported Sourcegraph case filter `{other}`"),
-                    });
-                }
-            });
-        }
-        "count" => {
-            query.options.count = Some(if value == "all" {
-                LqCountBound::All
-            } else {
-                let parsed = value.parse::<u32>().map_err(|err| CoreError::Typed {
-                    code: BridgeErrorCode::BridgeUnsupportedFilter
-                        .as_code_str()
-                        .to_string(),
-                    message: format!("bridge: invalid count `{value}`: {err}"),
-                })?;
-                LqCountBound::Bounded(parsed)
-            });
-        }
-        "patterntype" => {
-            query.options.pattern_type = match value {
-                "literal" => LqPatternType::Literal,
-                "keyword" => LqPatternType::Keyword,
-                "standard" => LqPatternType::Standard,
-                "regexp" => LqPatternType::Regexp,
-                "structural" => LqPatternType::Structural,
-                other => {
-                    return Err(CoreError::Typed {
-                        code: BridgeErrorCode::BridgeUnsupportedFilter
-                            .as_code_str()
-                            .to_string(),
-                        message: format!("bridge: unsupported patterntype `{other}`"),
-                    });
-                }
-            };
-        }
-        "fork" => query.filters.push(LqFilter::Fork {
-            mode: lower_yes_no_only_filter("fork", value)?,
-        }),
-        "archived" => query.filters.push(LqFilter::Archived {
-            mode: lower_yes_no_only_filter("archived", value)?,
-        }),
-        "visibility" => query.filters.push(lower_visibility_filter(value)?),
-        "context" => query.filters.push(LqFilter::Context {
-            name: value.to_string(),
-        }),
-        other => {
-            return Err(CoreError::Typed {
-                code: BridgeErrorCode::BridgeUnsupportedFilter
-                    .as_code_str()
-                    .to_string(),
-                message: format!("bridge: unsupported filter `{other}`"),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn lower_yes_no_only_filter(name: &str, value: &str) -> Result<LqYesNoOnly, CoreError> {
-    match value {
-        "yes" => Ok(LqYesNoOnly::Yes),
-        "no" => Ok(LqYesNoOnly::No),
-        "only" => Ok(LqYesNoOnly::Only),
-        other => Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeUnsupportedFilter
+    let native_structural = lower_lq_query_text(&format!("match {{ {structural_body} }}"))?;
+    let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = native_structural.expr else {
+        return Err(CoreError::Typed {
+            code: BridgeErrorCode::BridgeTranslateFail
                 .as_code_str()
                 .to_string(),
-            message: format!("bridge: unsupported Sourcegraph {name} filter `{other}`"),
-        }),
-    }
-}
-
-fn lower_visibility_filter(value: &str) -> Result<LqFilter, CoreError> {
-    match value {
-        "public" => Ok(LqFilter::Visibility {
-            mode: LqVisibility::Public,
-        }),
-        "private" => Ok(LqFilter::Visibility {
-            mode: LqVisibility::Private,
-        }),
-        "any" => Ok(LqFilter::Visibility {
-            mode: LqVisibility::Any,
-        }),
-        "include_forks" => Ok(LqFilter::Fork {
-            mode: LqYesNoOnly::Yes,
-        }),
-        "exclude_forks" => Ok(LqFilter::Fork {
-            mode: LqYesNoOnly::No,
-        }),
-        "only_forks" => Ok(LqFilter::Fork {
-            mode: LqYesNoOnly::Only,
-        }),
-        "include_archived" => Ok(LqFilter::Archived {
-            mode: LqYesNoOnly::Yes,
-        }),
-        "exclude_archived" => Ok(LqFilter::Archived {
-            mode: LqYesNoOnly::No,
-        }),
-        "only_archived" => Ok(LqFilter::Archived {
-            mode: LqYesNoOnly::Only,
-        }),
-        other => Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeUnsupportedFilter
-                .as_code_str()
-                .to_string(),
-            message: format!("bridge: unsupported Sourcegraph visibility filter `{other}`"),
-        }),
-    }
+            message: format!(
+                "bridge: internal lowering failure while rewriting Sourcegraph structural query `{query_text}`"
+            ),
+        });
+    };
+    query.expr = LqExpr::Leaf(LqLeaf::StructuralBlock(block));
+    Ok(query)
 }
 
 fn map_lq_error(err: &LqParseError) -> CoreError {
@@ -587,42 +163,23 @@ fn map_lq_error(err: &LqParseError) -> CoreError {
 fn map_bridge_error(err: &BridgeError) -> CoreError {
     CoreError::Typed {
         code: err.code.as_code_str().to_string(),
-        message: err.to_string(),
+        message: err.detail.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bridge_directive_to_query, lower_lq_query_text, lower_sourcegraph_query_text};
+    use super::{
+        lower_lq_query_text, lower_sourcegraph_query_text, lower_sourcegraph_structural_query_text,
+    };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
-        LqPredicateArg, LqSelect, LqSpan, LqVisibility, LqYesNoOnly,
+        LqPredicateArg, LqSelect, LqSpan, LqStructuralExpr, LqType, LqVisibility, LqYesNoOnly,
     };
     use quanta_index_core::CoreError;
-    use quanta_index_lq_bridge::{BridgeErrorCode, LqDirective as BridgeDirective};
+    use quanta_index_lq_bridge::BridgeErrorCode;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    fn pattern(kind: &str, body: &str) -> BridgeDirective {
-        BridgeDirective::Pattern {
-            kind: kind.into(),
-            body: body.into(),
-        }
-    }
-
-    fn filter(name: &str, value: &str) -> BridgeDirective {
-        BridgeDirective::Filter {
-            name: name.into(),
-            value: value.into(),
-        }
-    }
-
-    fn predicate(name: &str, args_raw: &str) -> BridgeDirective {
-        BridgeDirective::Predicate {
-            name: name.into(),
-            args_raw: args_raw.into(),
-        }
-    }
 
     fn typed_error(err: CoreError) -> Result<(String, String), Box<dyn std::error::Error>> {
         match err {
@@ -641,20 +198,11 @@ mod tests {
         reason = "test asserts lowered structure via assert!/assert_eq! macros"
     )]
     fn nested_boolean_lowering_preserves_executable_pattern_structure() -> TestResult {
-        let lowered = bridge_directive_to_query(
-            BridgeDirective::And(vec![
-                pattern("literal", "alpha"),
-                BridgeDirective::Or(vec![
-                    pattern("phrase", "beta gamma"),
-                    BridgeDirective::Not(Box::new(pattern("regex", "c.*d"))),
-                ]),
-                pattern("keyword", "omega"),
-            ]),
-            "alpha OR beta gamma OR c.*d",
-        )
-        .map_err(|err| -> Box<dyn std::error::Error> {
-            format!("nested boolean lowering must succeed: {err:?}").into()
-        })?;
+        let lowered =
+            lower_sourcegraph_query_text(r#"alpha AND ("beta gamma" OR NOT /c.*d/) AND omega"#)
+                .map_err(|err| -> Box<dyn std::error::Error> {
+                    format!("nested boolean lowering must succeed: {err:?}").into()
+                })?;
 
         assert_eq!(lowered.lq_version, LQ_VERSION_TAG);
         assert_eq!(
@@ -718,21 +266,105 @@ mod tests {
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
+        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
+    )]
+    fn sourcegraph_lexical_route_rejects_structural_pattern_type_early() -> TestResult {
+        let err = match lower_sourcegraph_query_text(r#"patterntype:structural "function_item""#) {
+            Ok(query) => {
+                return Err(
+                    format!("expected structural SG lexical rejection, got {query:?}").into(),
+                );
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert_eq!(
+            message,
+            "bridge: patterntype:structural is not executable on the lexical Sourcegraph route; use the structural route instead"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts lowered structure via assert!/assert_eq! macros"
+    )]
+    fn sourcegraph_structural_route_rewrites_single_pattern_body_into_structural_leaf() -> TestResult
+    {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"repo:acme/demo path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("sourcegraph structural lowering must succeed: {err:?}").into()
+        })?;
+
+        assert_eq!(
+            lowered.filters,
+            vec![
+                LqFilter::Repo {
+                    pattern: "acme/demo".to_string(),
+                    revs: Vec::new(),
+                },
+                LqFilter::File {
+                    pattern: "src/lib.rs".to_string(),
+                    scope: LqFileScope::PathOnly,
+                },
+                LqFilter::Lang {
+                    id: "rust".to_string(),
+                },
+            ]
+        );
+        assert_eq!(lowered.options.pattern_type, LqPatternType::Structural);
+        let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = lowered.expr else {
+            return Err("expected structural leaf after SG structural lowering".into());
+        };
+        assert_eq!(block.lang, None);
+        let Some(LqStructuralExpr::Pattern(nodes)) = block.exprs.first() else {
+            return Err("expected one SG structural pattern expr".into());
+        };
+        if nodes.len() < 2 {
+            return Err(
+                format!("expected non-trivial SG structural pattern nodes, got {nodes:?}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
+    )]
+    fn sourcegraph_structural_route_rejects_boolean_pattern_composition() -> TestResult {
+        let err = match lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "function_item" OR "identifier""#,
+        ) {
+            Ok(query) => {
+                return Err(
+                    format!("expected SG structural boolean rejection, got {query:?}").into(),
+                );
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert_eq!(
+            message,
+            "bridge: scoped filters under OR/NOT are not representable on the active LQ wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
         reason = "test asserts lowered structure via assert!/assert_eq! macros"
     )]
     fn richer_bridge_filters_lower_into_active_lq_contract() -> TestResult {
-        let lowered = bridge_directive_to_query(
-            BridgeDirective::Filtered {
-                filters: vec![
-                    filter("path", "src/lib.rs"),
-                    filter("fork", "only"),
-                    filter("archived", "no"),
-                    filter("visibility", "private"),
-                    filter("context", "team-search"),
-                ],
-                body: Box::new(pattern("literal", "needle")),
-            },
-            "path:src/lib.rs needle",
+        let lowered = lower_sourcegraph_query_text(
+            "path:src/lib.rs rev:refs/heads/main fork:only archived:no visibility:private context:team-search needle",
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             format!("richer bridge filter lowering must succeed: {err:?}").into()
@@ -748,6 +380,9 @@ mod tests {
                 LqFilter::File {
                     pattern: "src/lib.rs".to_string(),
                     scope: LqFileScope::PathOnly,
+                },
+                LqFilter::Rev {
+                    spec: "refs/heads/main".to_string(),
                 },
                 LqFilter::Fork {
                     mode: LqYesNoOnly::Only,
@@ -771,16 +406,39 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "test asserts lowered structure via assert!/assert_eq! macros"
     )]
-    fn normalized_visibility_bridge_payloads_map_to_fork_and_archived_filters() -> TestResult {
-        let lowered = bridge_directive_to_query(
-            BridgeDirective::Filtered {
-                filters: vec![
-                    filter("visibility", "include_forks"),
-                    filter("visibility", "only_archived"),
-                ],
-                body: Box::new(pattern("literal", "needle")),
+    fn sourcegraph_rev_filter_lowers_into_typed_rev_filter() -> TestResult {
+        let lowered = lower_sourcegraph_query_text("type:commit rev:refs/heads/main fix").map_err(
+            |err| -> Box<dyn std::error::Error> {
+                format!("sourcegraph rev lowering must succeed: {err:?}").into()
             },
-            "fork:yes archived:only needle",
+        )?;
+
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Keyword("fix".to_string()))
+        );
+        assert_eq!(
+            lowered.filters,
+            vec![
+                LqFilter::Type {
+                    kind: LqType::Commit,
+                },
+                LqFilter::Rev {
+                    spec: "refs/heads/main".to_string(),
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts lowered structure via assert!/assert_eq! macros"
+    )]
+    fn normalized_visibility_bridge_payloads_map_to_fork_and_archived_filters() -> TestResult {
+        let lowered = lower_sourcegraph_query_text(
+            "visibility:include_forks visibility:only_archived needle",
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             format!("normalized visibility lowering must succeed: {err:?}").into()
@@ -806,13 +464,11 @@ mod tests {
         reason = "test asserts active predicate leaf lowering via assert!/assert_eq! macros"
     )]
     fn repo_predicates_lower_to_active_predicate_leaves() -> TestResult {
-        let lowered = bridge_directive_to_query(
-            predicate("repo.has.file", r#"path:src/lib.rs, name:"Cargo.toml""#),
-            "repo:has.file(path:src/lib.rs, name:\"Cargo.toml\")",
-        )
-        .map_err(|err| -> Box<dyn std::error::Error> {
-            format!("repo predicate lowering must succeed: {err:?}").into()
-        })?;
+        let lowered =
+            lower_sourcegraph_query_text(r#"repo:has.file(path:src/lib.rs, name:"Cargo.toml")"#)
+                .map_err(|err| -> Box<dyn std::error::Error> {
+                    format!("repo predicate lowering must succeed: {err:?}").into()
+                })?;
 
         assert_eq!(
             lowered.expr,
@@ -883,17 +539,13 @@ mod tests {
         reason = "test asserts typed error code+message via assert!/assert_eq! macros"
     )]
     fn scoped_filters_under_or_and_not_fail_closed_with_typed_translate_errors() -> TestResult {
-        let scoped = BridgeDirective::Filtered {
-            filters: vec![filter("repo", "acme/demo")],
-            body: Box::new(pattern("literal", "needle")),
-        };
         let cases = vec![
-            BridgeDirective::Or(vec![scoped.clone(), pattern("literal", "fallback")]),
-            BridgeDirective::Not(Box::new(scoped)),
+            "repo:acme/demo needle OR fallback",
+            "NOT repo:acme/demo needle",
         ];
 
-        for directive in cases {
-            let err = match bridge_directive_to_query(directive, "repo:acme/demo needle") {
+        for raw in cases {
+            let err = match lower_sourcegraph_query_text(raw) {
                 Ok(query) => {
                     return Err(format!("expected fail-closed lowering, got {query:?}").into());
                 }
@@ -915,57 +567,57 @@ mod tests {
         reason = "test asserts typed error code+message via assert!/assert_eq! macros"
     )]
     fn unsupported_filter_values_and_invalid_count_map_to_typed_errors() -> TestResult {
-        for (name, value, expected_message) in [
+        for (raw, expected_code, expected_message) in [
             (
-                "type",
-                "workspace",
+                "type:workspace invalid",
+                BridgeErrorCode::BridgeUnsupportedFilter,
                 "bridge: unsupported Sourcegraph type filter `workspace`",
             ),
             (
-                "select",
-                "line",
+                "select:line invalid",
+                BridgeErrorCode::BridgeUnsupportedFilter,
                 "bridge: unsupported Sourcegraph select filter `line`",
             ),
             (
-                "case",
-                "auto",
+                "case:auto invalid",
+                BridgeErrorCode::BridgeUnsupportedFilter,
                 "bridge: unsupported Sourcegraph case filter `auto`",
             ),
             (
-                "patterntype",
-                "fuzzy",
+                "patterntype:fuzzy invalid",
+                BridgeErrorCode::BridgeUnsupportedFilter,
                 "bridge: unsupported patterntype `fuzzy`",
             ),
             (
-                "fork",
-                "maybe",
-                "bridge: unsupported Sourcegraph fork filter `maybe`",
+                "fork:maybe invalid",
+                BridgeErrorCode::BridgeUnsupportedDirective,
+                "Sourcegraph `fork:` value must be one of yes|no|only",
             ),
             (
-                "visibility",
-                "internal",
-                "bridge: unsupported Sourcegraph visibility filter `internal`",
+                "visibility:internal invalid",
+                BridgeErrorCode::BridgeUnsupportedDirective,
+                "Sourcegraph `visibility:` value must be one of public|private|any|include_forks|exclude_forks|only_forks|include_archived|exclude_archived|only_archived",
             ),
         ] {
-            let err = match bridge_directive_to_query(filter(name, value), "invalid") {
+            let err = match lower_sourcegraph_query_text(raw) {
                 Ok(query) => {
                     return Err(format!("expected lowering failure, got {query:?}").into());
                 }
                 Err(err) => err,
             };
             let (code, message) = typed_error(err)?;
-            assert_eq!(code, BridgeErrorCode::BridgeUnsupportedFilter.as_code_str());
+            assert_eq!(code, expected_code.as_code_str());
             assert_eq!(message, expected_message);
         }
 
-        let err = match bridge_directive_to_query(filter("count", "nan"), "invalid") {
+        let err = match lower_sourcegraph_query_text("count:nan invalid") {
             Ok(query) => {
                 return Err(format!("expected invalid count failure, got {query:?}").into());
             }
             Err(err) => err,
         };
         let (code, message) = typed_error(err)?;
-        assert_eq!(code, BridgeErrorCode::BridgeUnsupportedFilter.as_code_str());
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
         assert!(message.starts_with("bridge: invalid count `nan`:"));
         Ok(())
     }

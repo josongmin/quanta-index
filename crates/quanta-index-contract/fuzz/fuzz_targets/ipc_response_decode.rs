@@ -20,8 +20,8 @@ use quanta_index_contract::{
     SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SemanticQueryResponse,
-    SymbolQueryResponse, TextQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryResponse, SymbolQueryResponse,
+    TextQueryResponse,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -35,7 +35,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<SearchPlaneBridgeQueryResponse, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapQueryResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryResponse, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneSourcegraphQueryResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneRuntimeMetadataQueryResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcResponseEnvelope, _>(data);

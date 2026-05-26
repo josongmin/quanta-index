@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use quanta_index_contract::lex::{CommitSha, ExplanationRow};
+use quanta_index_contract::lex::{CommitSha, ExplanationRow, SymbolKindCode, SymbolKindFamily};
 use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
@@ -9,8 +9,8 @@ use quanta_index_contract::{
     DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneSourcegraphQueryResponse, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
+    StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -172,6 +172,25 @@ fn lexical_candidate() -> LexicalCandidate {
     }
 }
 
+fn symbol_candidate() -> SymbolCandidate {
+    SymbolCandidate {
+        candidate_id: "sym-1".to_owned(),
+        repo_id: RepoId::new("repo-1"),
+        revision_id: RevisionId::new("rev-1"),
+        manifest_generation: ManifestGeneration::new(7),
+        repo_relative_path: RepoRelativePath::new("src/search.rs"),
+        start_line: 10,
+        end_line: 18,
+        score: 0.875,
+        snippet: "search_plane crate".to_owned(),
+        symbol_kind: match SymbolKindCode::new("function") {
+            Ok(symbol_kind) => symbol_kind,
+            Err(err) => panic!("canonical symbol kind: {err}"),
+        },
+        symbol_kind_family: Some(SymbolKindFamily::Callable),
+    }
+}
+
 fn semantic_request() -> SemanticQueryRequest {
     SemanticQueryRequest {
         query_text: Some("1.0 0.0".to_owned()),
@@ -220,12 +239,26 @@ fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> HybridQueryR
     }
 }
 
-fn sourcegraph_request() -> quanta_index_contract::SearchPlaneSourcegraphQueryRequest {
-    quanta_index_contract::SearchPlaneSourcegraphQueryRequest {
-        source_syntax: "repo:quanta-index lang:rust SearchPlane".into(),
-        sg_version: "sg-5.5.0".into(),
+fn sourcegraph_text_request() -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:quanta-index lang:rust SearchPlane".to_owned(),
         generation: Some(generation_pin()),
+        generation_selector: None,
         top_k: 25,
+    }
+}
+
+fn sourcegraph_structural_request() -> StructuralQueryRequest {
+    StructuralQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: r#"repo:quanta-index lang:rust patterntype:structural "function_item""#
+                .to_owned(),
+            generation: Some(generation_pin()),
+            generation_selector: None,
+            top_k: 25,
+        },
     }
 }
 
@@ -420,31 +453,68 @@ fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
 }
 
 #[test]
-fn search_plane_ipc_request_v2_sourcegraph_roundtrips_dedicated_variant() -> TestRes {
-    let request = SearchPlaneQueryIpcRequest::Sourcegraph(sourcegraph_request());
+fn search_plane_ipc_request_v2_sourcegraph_roundtrips_text_variant() -> TestRes {
+    let request = SearchPlaneQueryIpcRequest::Text(sourcegraph_text_request());
 
     roundtrip_eq(&request)?;
 
     let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
-    if let SearchPlaneQueryIpcRequest::Sourcegraph(inner) = decoded {
-        if inner.source_syntax.as_ref() != "repo:quanta-index lang:rust SearchPlane" {
-            return Err(format!(
-                "unexpected sourcegraph source_syntax: {:?}",
-                inner.source_syntax
-            )
-            .into());
+    if let SearchPlaneQueryIpcRequest::Text(inner) = decoded {
+        if inner.syntax != TextQuerySyntax::Sourcegraph {
+            return Err(format!("unexpected sourcegraph syntax: {:?}", inner.syntax).into());
         }
-        if inner.sg_version.as_ref() != "sg-5.5.0" {
+        if inner.query_text.as_str() != "repo:quanta-index lang:rust SearchPlane" {
             return Err(
-                format!("unexpected sourcegraph sg_version: {:?}", inner.sg_version).into(),
+                format!("unexpected sourcegraph query_text: {:?}", inner.query_text).into(),
             );
+        }
+        if inner.generation != Some(generation_pin()) || inner.generation_selector.is_some() {
+            return Err(format!("unexpected sourcegraph pin: {inner:?}").into());
         }
         if inner.top_k != 25 {
             return Err(format!("expected top_k=25, got {}", inner.top_k).into());
         }
         Ok(())
     } else {
-        Err(format!("expected Sourcegraph request, got {decoded:?}").into())
+        Err(format!("expected Text request, got {decoded:?}").into())
+    }
+}
+
+#[test]
+fn search_plane_ipc_request_v2_sourcegraph_roundtrips_structural_variant() -> TestRes {
+    let request = SearchPlaneQueryIpcRequest::Structural(sourcegraph_structural_request());
+
+    roundtrip_eq(&request)?;
+
+    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
+    if let SearchPlaneQueryIpcRequest::Structural(inner) = decoded {
+        if inner.text_query.syntax != TextQuerySyntax::Sourcegraph {
+            return Err(format!(
+                "unexpected structural sourcegraph syntax: {:?}",
+                inner.text_query.syntax
+            )
+            .into());
+        }
+        if inner.text_query.query_text.as_str()
+            != r#"repo:quanta-index lang:rust patterntype:structural "function_item""#
+        {
+            return Err(format!(
+                "unexpected structural sourcegraph query_text: {:?}",
+                inner.text_query.query_text
+            )
+            .into());
+        }
+        if inner.text_query.generation != Some(generation_pin())
+            || inner.text_query.generation_selector.is_some()
+        {
+            return Err(format!("unexpected structural sourcegraph pin: {inner:?}").into());
+        }
+        if inner.text_query.top_k != 25 {
+            return Err(format!("expected top_k=25, got {}", inner.text_query.top_k).into());
+        }
+        Ok(())
+    } else {
+        Err(format!("expected Structural request, got {decoded:?}").into())
     }
 }
 
@@ -623,8 +693,40 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
 }
 
 #[test]
-fn search_plane_ipc_response_v2_sourcegraph_roundtrips_candidates() -> TestRes {
-    let response = SearchPlaneQueryIpcResponse::Sourcegraph(SearchPlaneSourcegraphQueryResponse {
+fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
+    let response =
+        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            generation: generation_pin(),
+            results: vec![symbol_candidate()],
+        });
+
+    roundtrip_eq(&response)?;
+
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    if let SearchPlaneQueryIpcResponse::Symbol(inner) = decoded {
+        if inner.results.len() != 1 {
+            return Err(
+                format!("expected one symbol candidate, got {}", inner.results.len()).into(),
+            );
+        }
+        let first = inner
+            .results
+            .first()
+            .ok_or_else(|| "missing symbol candidate".to_string())?;
+        if first.symbol_kind.as_str() != "function"
+            || first.symbol_kind_family != Some(SymbolKindFamily::Callable)
+        {
+            return Err(format!("unexpected symbol candidate: {first:?}").into());
+        }
+        Ok(())
+    } else {
+        Err(format!("expected Symbol response, got {decoded:?}").into())
+    }
+}
+
+#[test]
+fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> TestRes {
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
     });
@@ -632,7 +734,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_candidates() -> TestRes {
     roundtrip_eq(&response)?;
 
     let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
-    if let SearchPlaneQueryIpcResponse::Sourcegraph(inner) = decoded {
+    if let SearchPlaneQueryIpcResponse::Text(inner) = decoded {
         if inner.generation != generation_pin() {
             return Err(
                 format!("unexpected sourcegraph generation: {:?}", inner.generation).into(),
@@ -647,7 +749,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_candidates() -> TestRes {
         }
         Ok(())
     } else {
-        Err(format!("expected Sourcegraph response, got {decoded:?}").into())
+        Err(format!("expected Text response, got {decoded:?}").into())
     }
 }
 
@@ -717,6 +819,42 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     })?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "results")
+}
+
+#[test]
+fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRes {
+    let response =
+        SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            generation: generation_pin(),
+            results: vec![symbol_candidate()],
+        });
+    let bytes = mutate_ipc_response_wire(&response, |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let results = field_value_mut(payload_fields, "results")?;
+        let array = match results {
+            ciborium::Value::Array(values) => values,
+            other @ ciborium::Value::Integer(_)
+            | other @ ciborium::Value::Bytes(_)
+            | other @ ciborium::Value::Float(_)
+            | other @ ciborium::Value::Text(_)
+            | other @ ciborium::Value::Bool(_)
+            | other @ ciborium::Value::Null
+            | other @ ciborium::Value::Tag(_, _)
+            | other @ ciborium::Value::Map(_) => {
+                return Err(format!("expected results array, got {other:?}").into());
+            }
+        };
+        let first = array
+            .first_mut()
+            .ok_or_else(|| "expected first symbol result".to_string())?;
+        let symbol_fields = map_fields_mut(first)?;
+        duplicate_text_field(symbol_fields, "symbol_kind")?;
+        Ok(())
+    })?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "symbol_kind")
 }
 
 #[test]

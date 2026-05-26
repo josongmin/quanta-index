@@ -71,7 +71,7 @@ Anything short of all five surfaces as `blocked` per [CLAUDE.md § Verification]
 > | LEX-05 | `quanta-index-lq-symbol` | 51 | shipped (architecture-corrected; tree-sitter dropped — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
 > | LEX-06 | `quanta-index-lq-ranker` | 65 | shipped (6-comp tiebreak tuple) |
 > | LEX-07 | `quanta-index-lq-history` | 76 | crate-local shipped; active runtime still returns `HISTORY_PRODUCER_UNAVAILABLE` until producer ops land |
-> | STR-01 | `quanta-index-lq-structural` | 71 | crate-local shipped; active runtime still returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer ops land |
+> | STR-01 | `quanta-index-lq-structural` | 71 | crate-local shipped; initial runtime ship was root-only, later expanded in the may-26 residue pack over producer parse trees |
 > | RT-01 | `quanta-index-lq-runtime` | 32 | shipped (architecture-corrected; `UpsertDirty`/`EvictDirty` input — see [tickets/INDEX.md §3.6](tickets/INDEX.md)) |
 > | SEM-01 | `quanta-index-lq-semantic` | 112 | shipped (HNSW + RFC3339) |
 > | BRIDGE-01 | `quanta-index-lq-bridge` | 70 | shipped |
@@ -181,7 +181,7 @@ The live query path no longer matches the original "all absent" planning baselin
 - `bridge`: active on the repo-first runtime path.
 - `runtime metadata`: crate-local work exists, but producer-side dirty/runtime cutover residue remains.
 - `history`: the active dispatcher in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `HISTORY_PRODUCER_UNAVAILABLE` until producer commit/diff ops are wired.
-- `structural`: the active dispatcher in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer parse-tree ops are wired.
+- `structural`: the active dispatcher in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) routes the current shipped authority subset over producer-authored parse trees; the initial root-only ship was later expanded in may-26, while broader composition semantics remain deferred.
 
 ### 2.8 Test rails
 
@@ -481,9 +481,12 @@ graph LR
 
 ---
 
-### 4.6 Wave 5 — `STR-01`, `RT-01` — ✓ shipped (architecture-corrected; STR-01 Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+### 4.6 Wave 5 — `STR-01`, `RT-01` — ✓ shipped (architecture-corrected; original structural ship was the truthful root-only subset, later expanded by may-26; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
-**Wave goal.** Land the structural engine (STR-01) and runtime-aware metadata filters (RT-01). At wave end, `match { ... }` and `changed:` / `stale:` / `meta.owner:` are functional against the 5 ship-grammar set.
+**Wave goal.** Land the structural engine (STR-01) and runtime-aware metadata
+filters (RT-01). At wave end, the active runtime carries a truthful structural
+subset over producer parse trees plus the runtime metadata filter surface; full
+STR-01 semantics remain a later expansion wave.
 
 **Tickets.**
 
@@ -495,12 +498,15 @@ graph LR
 **Entry gate.**
 
 - Wave-4 exit gate green;
-- AMB-PROD-11 (Option A vs B for STR-01) decided by integrator (see ADR-024);
+- AMB-PROD-11 resolved for the active runtime subset; producer parse-tree
+  wiring is live and broader semantics move to follow-on tickets (see ADR-024);
 - producer-handoff sign-off per [producer-handoff.md §8](../../ssot/producer-handoff.md) for `UpsertParseTree`, `UpsertDirty`, `EvictDirty` ops complete.
 
 **Exit gate.**
 
-- UC-STR-01..07 green driven by producer fixture stream of `UpsertParseTree` ops (Option A) OR `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` surfaces (Option B);
+- current structural proof rows green against producer fixture stream of
+  `UpsertParseTree` ops for the original root-only ship surface; later
+  breadth expansion landed in the follow-on may-26 residue pack;
 - UC-RT-01..08 green (UC-RT-08 `dirty:` now `ok` via `UpsertDirty` ops);
 - AC-07 (unbounded structural recursion) returns `PLAN_LIMIT_EXCEEDED` per [dsl.md §13](dsl.md);
 - structural match-only p99 < 50 ms (criterion `str_01_match_bench` — no parse step on search side);
@@ -512,7 +518,9 @@ graph LR
 
 - Producer `UpsertParseTree` shape drift mid-wave. Mitigation: `wire_version` pin per [producer-handoff.md §5](../../ssot/producer-handoff.md); search side rejects out-of-range with typed code.
 - Pattern explosion on adversarial input. Mitigation: 256-node + 16-depth pattern caps per [rfc.md § Non-Negotiable Invariants §10](rfc.md); fuzz harness on `match_pattern(pattern, parsed_tree)`.
-- Producer agreement for `UpsertParseTree` slips beyond wave-5 entry. Mitigation: Option B fallback — `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` until producer ships.
+- Broader structural tree-walk semantics slip beyond the root-only live subset.
+  Mitigation: keep the current subset explicit and carry the may-26 residue
+  pack instead of widening claims.
 
 ---
 
@@ -859,9 +867,9 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **Size**: XL.
 - **Open questions**: AMB-PROD-4 (Option Y vs X for diff hunks) — CLOSED via ADR-025 (Option Y shipped); `since:` disambiguation — DEFERRED to RFC LEX-07 scope amendment; `parent:` / `merge:` / `tag:` / `revisions:` scope — DEFERRED to RFC LEX-07 scope amendment.
 
-### 5.12 STR-01 — structural pattern engine — crate-local shipped, runtime producer-gated (71 tests in `quanta-index-lq-structural`; architecture-corrected; Option A/B pending integrator decision; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
+### 5.12 STR-01 — structural pattern engine — crate-local shipped, runtime truthful subset live (71 tests in `quanta-index-lq-structural`; architecture-corrected; broader semantics deferred to the may-26 residue pack; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
-> **Live runtime note:** this section records crate-local structural-engine proof plus parse-tree wire scaffolding. The active query handler in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) currently returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`; that fail-closed path remains the live behaviour until producer parse-tree ops arrive.
+> **Live runtime note:** this section records crate-local structural-engine proof plus parse-tree wire scaffolding. The active query handler in [`crates/quanta-index-search-plane/src/query_dispatcher.rs`](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs) now executes the current producer parse-tree/chunk authority subset; the original root-only ship was later expanded in may-26, while broader composition semantics remain deferred.
 
 - **Title**: Structural matcher over producer-supplied parse trees; no source parsing on the search side.
 - **Owner crate(s)**: [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) (shipped on disk); `quanta-index-core` (channel dispatcher), `quanta-index-contract` (`StructuralCandidate` via PRE-CONTRACT-EXT GAP-03; `UpsertParseTree` / `DeleteParseTree` channel ops under Option A).
@@ -870,20 +878,27 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New error codes**: `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`, `PARSE_INVALID_FILTER_VALUE{filter=hole.type}` per [producer-handoff.md §6.3](../../ssot/producer-handoff.md).
 - **New invariants**: search plane never invokes tree-sitter, never reads source bytes ([producer-handoff.md §2.1 anti-pattern register](../../ssot/producer-handoff.md)); `ParseTreeRecord` is producer-authored; `source_hash` integrity check on apply ([producer-handoff.md §3.3.1](../../ssot/producer-handoff.md)); 256-node + 16-depth pattern caps honored. **Architecture correction**: search-side tree-sitter parsing removed; input is producer-authored `UpsertParseTree` per [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Test rails**: unit (per UC-STR-* row), integration (producer fixture stream → structural index round-trip), property (random metavariable binding round-trip on synthetic `ParseTreeRecord` inputs), criterion (`str_01_match_bench` — match-only; no parse step on search side).
-- **Conformance rows**: UC-STR-01..07, AC-07 — driven by producer-emitted `UpsertParseTree` fixtures under Option A.
+- **Conformance rows**: the original live proof covered the truthful root-only
+  subset plus `AC-07`; later may-26 work expanded the current runtime beyond
+  that baseline, while broader UC-STR rows remain follow-on work.
 - **Test count (shipped)**: 71 tests in `quanta-index-lq-structural`.
 - **DoD checklist**:
   1. ✓ channel-subscriber callbacks for `UpsertParseTree` / `DeleteParseTree` wired (Option A) per [channel-architecture.md §5.3](../../ssot/channel-architecture.md);
   2. ✓ `ParseTreeRecord` decoder (hand-rolled serde per D18) lands per [producer-handoff.md §3.3.1](../../ssot/producer-handoff.md) wire shape;
   3. ✓ Rust + Python + TypeScript + JavaScript + Go covered via `LangId` v1 set per [producer-handoff.md §4.1](../../ssot/producer-handoff.md);
-  4. ✓ metavariable / variadic / `inside` / `outside` / `where` all functional against decoded `ParsedTree`;
+  4. partial-live — root-kind exact + single root capture are live; broader
+     matcher primitives remain deferred from the active runtime;
   5. ✓ `:[X]` → `$X` normalization done at lexer stage;
-  6. ✓ `:[hole.type1]` returns typed `NotImplemented` per [feature-scope.md §1.3.3](feature-scope.md);
-  7. 🔜 under Option B (deferral): `match_pattern` returns `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` — deferred to: integrator decision at wave-5-entry (ADR-024); both branches scaffolded;
+  6. deferred from live runtime — typed-hole and broader non-root semantics stay
+     outside the active executable subset per [feature-scope.md §1.3.3](feature-scope.md);
+  7. ✓ active runtime no longer uses `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` on
+     the supported happy path; missing structural authority now fails through
+     readiness/shard error paths;
   8. ✓ RFC § Claim-Discipline §4 provable;
   9. search-side tree-sitter parsing `(superseded by channel-arch correction)` — see [tickets/INDEX.md §3.6](tickets/INDEX.md).
 - **Size**: L (downgraded from XL — no tree-sitter integration burden).
-- **Open questions**: AMB-PROD-11 (Option A vs Option B) — OPEN — gated on integrator decision; both code paths shipped (Option A active, Option B fallback).
+- **Open questions**: AMB-PROD-11 is resolved for the active runtime subset;
+  remaining work is broader structural semantics, not Option A/B selection.
 
 ### 5.13 RT-01 — runtime-aware metadata filters — ✓ shipped (32 tests in `quanta-index-lq-runtime`; architecture-corrected — `UpsertDirty`/`EvictDirty` input; see [tickets/INDEX.md §3.6](tickets/INDEX.md))
 
@@ -1164,7 +1179,7 @@ ADRs we expect to need. Each row pre-seeds a slot; status = `Pending` until the 
 | ADR-018 | Symbol extraction vendor (ctags-binary / scip / tree-sitter) | **Withdrawn** | — | Producer authors `SymbolRecord`; search plane is decode-only. Superseded by ADR-022. |
 | ADR-022 | **Proposed**: `SymbolRecord` wire-shape ownership | Proposed | Wave 0 → handshake | PRE-CONTRACT-EXT + producer-handoff §8 cutover. Locks `wire_version: u32` per record, `[min,max]` accepted range pin, breaking-first cutover per [producer-handoff.md §3.4.4 + §5](../../ssot/producer-handoff.md). |
 | ADR-023 | **Proposed**: `CommitRecord` wire-shape ownership | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Locks `{sha, parents, applied_at_ms, author, committer, message, is_merge, tags}` per [producer-handoff.md §3.1.1](../../ssot/producer-handoff.md); no `DeleteCommit` (force-push = fresh generation). |
-| ADR-024 | **Proposed**: `ParseTreeRecord` wire-shape ownership + Option A/B gating | Proposed | Wave 5 → handshake | STR-01 + producer-handoff §8 cutover. Option A = v1 ship with `UpsertParseTree`; Option B = v2 deferral with `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` typed failure. Integrator picks at wave-5 entry per [producer-handoff.md §3.3 + AMB-PROD-11](../../ssot/producer-handoff.md). |
+| ADR-024 | **Proposed**: `ParseTreeRecord` wire-shape ownership + structural cutover gating | Proposed | Wave 5 → handshake | STR-01 + producer-handoff §8 cutover. The original live runtime ship used producer-authored `UpsertParseTree` on the truthful root-only subset; remaining work is breadth expansion, not Option A/B selection. |
 | ADR-025 | **Proposed**: Diff hunk authorship — Option Y (separate `UpsertDiffHunk` op) | Proposed | Wave 4 → handshake | LEX-07 + producer-handoff §8 cutover. Recommendation: Option Y (separate per-hunk op) over Option X (inline `CommitRecord.hunks`) for streaming hygiene per [producer-handoff.md §3.1.4](../../ssot/producer-handoff.md). |
 | ADR-026 | **Proposed**: Server-side semantic-vector handle storage (`SemanticVectorRef::Handle`) | Proposed | Wave 7 → Round 7a | Round 6b shipped `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::{Inline(Vec<f32>) \| Handle(Box<str>)}, top_k }`; the `Handle` variant's server-side storage model is not yet pinned. Three candidate options: **Option A** — handle = `BLAKE3(vector_bytes \|\| generation_id)` hex string; search-side maintains a `BTreeMap<Box<str>, Vec<f32>>` keyed by handle for the active generation; entries expire on generation seal (next gen has its own map). **Option B** — handle = `embedding_id` from `UpsertEmbedding.embedding_id`; no separate handle storage; resolution = lookup against the active HNSW index's embedding store. **Option C** — handle = client-supplied opaque token; client+server contract is the client must register the vector via a new IPC op `RegisterSemanticVector { vector, ttl_ms }` before querying. Recommendation: **Option B** — least new infrastructure; reuses existing `embedding_id` contract per [producer-handoff.md §3.5.1](../../ssot/producer-handoff.md); handles inherit the generation pin of the query. Pending: producer-handoff §6 ADR ratification + `SEM_HANDLE_NOT_FOUND` typed error wire per [producer-handoff.md §6](../../ssot/producer-handoff.md). |
 

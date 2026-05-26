@@ -4,9 +4,10 @@ use quanta_index_contract::{
     HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
     HistoryTagMutation, ManifestGeneration, RepoId, RevisionId, SearchPlaneHistoryQueryResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, TextQuerySyntax,
 };
 
+use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +28,8 @@ pub struct HistoryBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub manifest_digest: Option<String>,
+    pub batch_digest: String,
     pub commits: Vec<CommitRecord>,
     pub refs: Vec<RefMutation>,
     pub tags: Vec<RefMutation>,
@@ -35,16 +38,29 @@ pub struct HistoryBatch {
 
 impl HistoryBatch {
     #[must_use]
-    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            manifest_digest: None,
+            batch_digest: batch_digest.into(),
             commits: Vec::new(),
             refs: Vec::new(),
             tags: Vec::new(),
             diff_hunks: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn manifest_digest(mut self, manifest_digest: impl Into<String>) -> Self {
+        self.manifest_digest = Some(manifest_digest.into());
+        self
     }
 
     #[must_use]
@@ -129,6 +145,8 @@ impl crate::NamespaceIngest for HistoryNs {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+            batch_digest: batch.batch_digest.clone(),
             commits: batch.commits.clone(),
             refs: batch.refs.iter().map(map_ref_mutation).collect(),
             tags: batch.tags.iter().map(map_tag_mutation).collect(),
@@ -185,46 +203,40 @@ fn map_tag_mutation(mutation: &RefMutation) -> HistoryTagMutation {
 
 pub struct HistoryQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: Option<String>,
-    selection: Option<GenerationSelector>,
-    top_k: Option<u32>,
+    state: TextQueryBuilderState,
 }
 
 impl<'a> HistoryQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            syntax: TextQuerySyntax::Native,
-            query_text: None,
-            selection: None,
-            top_k: None,
+            state: TextQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Native;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Native;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Sourcegraph;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Sourcegraph;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -233,31 +245,16 @@ impl<'a> HistoryQueryBuilder<'a> {
 
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
     pub fn execute(self) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
-        let query_text = self
-            .query_text
-            .ok_or_else(|| SdkError::Usage("history query text is required".to_string()))?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("history generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("history top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
+        let text_query = self.state.build_request("history")?;
         let response = self
             .client
             .dispatch_query(SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: self.syntax,
-                    query_text,
-                    generation,
-                    generation_selector,
-                    top_k,
-                },
+                text_query,
             }))?;
         match response {
             SearchPlaneQueryIpcResponse::History(results) => Ok(results),
@@ -270,8 +267,7 @@ impl<'a> HistoryQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "history response",
                 QuantaIndex::query_response_kind(&other),
             )),

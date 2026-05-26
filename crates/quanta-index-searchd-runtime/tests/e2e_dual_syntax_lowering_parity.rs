@@ -15,11 +15,11 @@
 //! 2. The shape matches the row's `ExpectedOutcome` against the *current*
 //!    behavior:
 //!    - `Candidates` rows assert the exact corpus-id set.
-//!    - `TypedError` rows assert the exact stable error code.
 //!    - `ExpectedFailing` rows stay GREEN while their
 //!      `current_observation` continues to hold; when the owner ticket
 //!      lands and behavior diverges, the row flips RED and must be
-//!      promoted.
+//!      promoted. The current live matrix happens to have no such rows,
+//!      but the closed-loop variant stays in place for regressions.
 //!
 //! Any divergence between the two syntaxes for a given row is a parity
 //! violation regardless of the wiring state of the underlying feature.
@@ -35,6 +35,12 @@ use std::fmt::Write as _;
 
 use crate::e2e_harness::{E2eQueryResult, E2eRuntime};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueryRoute {
+    Text,
+    Structural,
+}
+
 /// Per-row expected outcome.
 ///
 /// Variants are added only as live rows exist for them (CLAUDE.md "dead
@@ -46,14 +52,16 @@ enum ExpectedOutcome {
     Candidates {
         ids: &'static [&'static str],
     },
-    /// Both syntaxes must reject with this typed error code.
     TypedError {
         code: &'static str,
     },
-    /// Wiring pending. Both syntaxes must currently exhibit
-    /// `current_observation`. When the owner ticket lands, parity may still
-    /// hold but the behavior changes — the assertion goes red and the row
-    /// must be updated.
+    /// Closed-loop regression variant. If a future row is intentionally
+    /// behind implementation, both syntaxes must exhibit
+    /// `current_observation` until the owner ticket lands.
+    #[expect(
+        dead_code,
+        reason = "all current dual-syntax rows are green or typed-error; keep closed-loop variant for future regressions"
+    )]
     ExpectedFailing {
         owner_ticket: &'static str,
         reason: &'static str,
@@ -61,13 +69,17 @@ enum ExpectedOutcome {
     },
 }
 
+#[expect(
+    dead_code,
+    reason = "all current dual-syntax rows are green or typed-error; retained for future expected-failing rows"
+)]
 #[derive(Clone, Debug)]
 enum CurrentObservation {
     Empty,
-    OverbroadIncludes(&'static [&'static str]),
 }
 
 struct ParityScenario {
+    route: QueryRoute,
     id: &'static str,
     sg_query: &'static str,
     lq_query: &'static str,
@@ -79,6 +91,8 @@ struct CorpusRow {
     id: &'static str,
     path: &'static str,
     content: &'static str,
+    symbol_name: Option<&'static str>,
+    structural_identifier: Option<&'static str>,
 }
 
 const CORPUS: &[CorpusRow] = &[
@@ -86,41 +100,56 @@ const CORPUS: &[CorpusRow] = &[
         id: "alpha_rust",
         path: "src/lib.rs",
         content: "fn parity_needle_alpha() {}",
+        symbol_name: None,
+        structural_identifier: Some("parity_needle_alpha"),
     },
     CorpusRow {
         id: "beta_py",
         path: "scripts/helper.py",
         content: "def parity_needle_alpha(): pass",
+        symbol_name: None,
+        structural_identifier: None,
     },
     CorpusRow {
         id: "gamma_md",
         path: "docs/intro.md",
         content: "parity documentation lives here",
+        symbol_name: None,
+        structural_identifier: None,
     },
     CorpusRow {
         id: "delta_other_path",
         path: "src/other.rs",
         content: "fn parity_needle_alpha() {}",
+        symbol_name: None,
+        structural_identifier: None,
     },
     CorpusRow {
         id: "epsilon_regex",
         path: "src/version.rs",
         content: "const VERSION: &str = \"v9.8.7\";",
+        symbol_name: None,
+        structural_identifier: None,
     },
     CorpusRow {
         id: "zeta_raw",
         path: "src/raw.rs",
         content: "let parity_foo_bar_baz = 1;",
+        symbol_name: None,
+        structural_identifier: None,
     },
     CorpusRow {
         id: "theta_symbol",
         path: "src/sym.rs",
         content: "pub fn ParityTypeSymbol(arg: i32) -> i32 { arg }",
+        symbol_name: Some("ParityTypeSymbol"),
+        structural_identifier: None,
     },
 ];
 
 const SCENARIOS: &[ParityScenario] = &[
     ParityScenario {
+        route: QueryRoute::Text,
         id: "repo_filter_parity",
         sg_query: "repo:repo-other parity_needle_alpha",
         lq_query: "repo:repo-other parity_needle_alpha",
@@ -128,6 +157,7 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "file_filter_parity",
         sg_query: "file:src/lib.rs parity_needle_alpha",
         lq_query: "file:src/lib.rs parity_needle_alpha",
@@ -137,6 +167,7 @@ const SCENARIOS: &[ParityScenario] = &[
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "lang_filter_parity",
         sg_query: "lang:rust parity_needle_alpha",
         lq_query: "lang:rust parity_needle_alpha",
@@ -146,103 +177,95 @@ const SCENARIOS: &[ParityScenario] = &[
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "case_filter_parity",
         sg_query: "case:yes PARITY_NEEDLE_ALPHA",
         lq_query: "case:yes PARITY_NEEDLE_ALPHA",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "case:yes must drop the case-folded matches; today neither syntax honors case",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "count_parity",
         sg_query: "count:1 parity_needle_alpha",
         lq_query: "count:1 parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "count:1 must cap to 1 deterministic top-N result for both syntaxes",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
+        id: "fork_typed_unavailable_parity",
+        sg_query: "fork:no parity_needle_alpha",
+        lq_query: "fork:no parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_FILTER_FORK_UNAVAILABLE",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "visibility_typed_unavailable_parity",
+        sg_query: "visibility:public parity_needle_alpha",
+        lq_query: "visibility:public parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_FILTER_VISIBILITY_UNAVAILABLE",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "type_file_parity",
         sg_query: "type:file parity_needle_alpha",
         lq_query: "type:file parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "type:file must route to file engine for both syntaxes; today filter is ignored",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "type_symbol_parity",
         sg_query: "type:symbol ParityTypeSymbol",
         lq_query: "type:symbol ParityTypeSymbol",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "type:symbol must route to symbol engine for both syntaxes",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["theta_symbol"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "select_file_parity",
         sg_query: "select:file parity_needle_alpha",
         lq_query: "select:file parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "select:file must collapse to per-file aggregation for both syntaxes",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "select_content_parity",
         sg_query: "select:content parity_needle_alpha",
         lq_query: "select:content parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "select:content must return content carrier for both syntaxes",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "select_symbol_parity",
         sg_query: "select:symbol ParityTypeSymbol",
         lq_query: "select:symbol ParityTypeSymbol",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "select:symbol must narrow to symbol carrier for both syntaxes",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["theta_symbol"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "file_contains_raw_substring_parity",
         // The shared executable raw-substring surface today is
         // `file:contains('...')` on the SG side and a single-quoted raw
@@ -250,24 +273,20 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "file:contains('oo_ba')",
         lq_query: "'oo_ba'",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-04",
-            reason: "raw substring must route via trigram + exact verify for both syntaxes; current live path still returns empty on the shared executable surface",
-            current_observation: CurrentObservation::Empty,
-        },
+        expected: ExpectedOutcome::Candidates { ids: &["zeta_raw"] },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "patterntype_regexp_parity",
         sg_query: "patterntype:regexp v\\d+\\.\\d+\\.\\d+",
         lq_query: "/v\\d+\\.\\d+\\.\\d+/",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-04",
-            reason: "regex must route through lq-trigram + lq-regex verify for both syntaxes; today the escape path at lexical/src/lib.rs:1151 differs",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["epsilon_regex"],
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "boolean_or_parity",
         sg_query: "parity_needle_alpha OR documentation",
         lq_query: "parity_needle_alpha OR documentation",
@@ -277,6 +296,7 @@ const SCENARIOS: &[ParityScenario] = &[
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "negation_parity",
         sg_query: "parity_needle_alpha NOT helper",
         lq_query: "parity_needle_alpha NOT helper",
@@ -286,6 +306,7 @@ const SCENARIOS: &[ParityScenario] = &[
         },
     },
     ParityScenario {
+        route: QueryRoute::Text,
         id: "repo_has_file_predicate_parity",
         // Dual-syntax parity only compares live equivalent surfaces.
         // The SG-only `repohasfile:` alias remains covered by bridge
@@ -294,23 +315,66 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
         lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03-predicate-extensions",
-            reason: "repo.has.file currently parses and lowers on both syntaxes, but the live text route still returns the overbroad content hit set instead of enforcing the predicate constraint",
-            current_observation: CurrentObservation::OverbroadIncludes(&[
-                "alpha_rust",
-                "beta_py",
-                "delta_other_path",
-            ]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
         },
     },
     ParityScenario {
-        id: "select_repo_typed_error_parity",
+        route: QueryRoute::Text,
+        id: "repo_has_file_predicate_under_or_parity",
+        sg_query: "repo:has.file(path:src/lib.rs) OR documentation",
+        lq_query: "repo:has.file(path:src/lib.rs) OR documentation",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_rust",
+                "beta_py",
+                "delta_other_path",
+                "epsilon_regex",
+                "gamma_md",
+                "theta_symbol",
+                "zeta_raw",
+            ],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_predicate_under_not_parity",
+        sg_query: "parity_needle_alpha NOT repo:has.file(path:src/missing.rs)",
+        lq_query: "parity_needle_alpha NOT repo:has.file(path:src/missing.rs)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "beta_py", "delta_other_path"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "select_repo_projection_parity",
         sg_query: "select:repo parity_needle_alpha",
         lq_query: "select:repo parity_needle_alpha",
         top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_happy_path_parity",
+        sg_query: r#"repo:repo-e2e path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#,
+        lq_query: "repo:repo-e2e file:src/lib.rs lang:rust match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_select_rejection_parity",
+        sg_query: r#"select:repo patterntype:structural "function_item""#,
+        lq_query: "select:repo match { function_item }",
+        top_k: 10,
         expected: ExpectedOutcome::TypedError {
-            code: "NOT_IMPLEMENTED",
+            code: "STR_INVALID_REQUEST",
         },
     },
 ];
@@ -318,11 +382,20 @@ const SCENARIOS: &[ParityScenario] = &[
 fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
     for row in CORPUS {
         rt.ingest_text("repo-e2e", row.path, row.content)?;
+        if let Some(identifier) = row.structural_identifier {
+            rt.ingest_structural_function_tree(row.path, row.content, identifier)?;
+        }
+        if let Some(symbol_name) = row.symbol_name {
+            rt.ingest_symbol("repo-e2e", row.path, row.id, symbol_name)?;
+        }
     }
     Ok(())
 }
 
 fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
+    if let Some(row) = CORPUS.iter().find(|row| row.id == candidate_id) {
+        return Some(row.id);
+    }
     let rest = candidate_id.strip_prefix("e2e-")?;
     let (_, path) = rest.split_once('-')?;
     CORPUS.iter().find(|row| row.path == path).map(|row| row.id)
@@ -330,9 +403,9 @@ fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
 
 fn observed_corpus_ids(result: &E2eQueryResult) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = result
-        .candidates
+        .candidate_ids
         .iter()
-        .filter_map(|c| corpus_id_for_candidate_id(&c.candidate_id))
+        .filter_map(|candidate_id| corpus_id_for_candidate_id(candidate_id))
         .collect();
     out.sort_unstable();
     out.dedup();
@@ -340,11 +413,7 @@ fn observed_corpus_ids(result: &E2eQueryResult) -> Vec<&'static str> {
 }
 
 fn raw_candidate_ids(result: &E2eQueryResult) -> Vec<String> {
-    result
-        .candidates
-        .iter()
-        .map(|c| c.candidate_id.clone())
-        .collect()
+    result.candidate_ids.clone()
 }
 
 #[derive(Debug)]
@@ -428,8 +497,8 @@ fn assess(
             None => RowReport {
                 id: scenario.id,
                 failure: Some(format!(
-                    "expected typed error code={code}, both syntaxes returned candidates ids={:?}",
-                    sg.corpus_ids
+                    "expected typed error code={code}, got ids={corpus_ids:?}",
+                    corpus_ids = sg.corpus_ids
                 )),
             },
         },
@@ -458,24 +527,6 @@ fn assess(
                     }
                 }
             }
-            CurrentObservation::OverbroadIncludes(must_include) => {
-                let all_included = must_include.iter().all(|id| sg.corpus_ids.contains(id));
-                if all_included {
-                    // Predicted overbroad shape observed — stay GREEN.
-                    RowReport {
-                        id: scenario.id,
-                        failure: None,
-                    }
-                } else {
-                    RowReport {
-                        id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted overbroad shape includes={must_include:?} but observed={:?}; {owner_ticket} may have landed (filter narrowed) — promote this row. reason={reason}",
-                            sg.corpus_ids
-                        )),
-                    }
-                }
-            }
         },
     }
 }
@@ -495,12 +546,26 @@ fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
         if matches!(scenario.expected, ExpectedOutcome::ExpectedFailing { .. }) {
             expected_failing_count = expected_failing_count.saturating_add(1);
         }
-        let sg_result = rt.query_text(
-            TextQuerySyntax::Sourcegraph,
-            scenario.sg_query,
-            scenario.top_k,
-        );
-        let lq_result = rt.query_text(TextQuerySyntax::Native, scenario.lq_query, scenario.top_k);
+        let sg_result = match scenario.route {
+            QueryRoute::Text => rt.query_text(
+                TextQuerySyntax::Sourcegraph,
+                scenario.sg_query,
+                scenario.top_k,
+            ),
+            QueryRoute::Structural => rt.query_structural(
+                TextQuerySyntax::Sourcegraph,
+                scenario.sg_query,
+                scenario.top_k,
+            ),
+        };
+        let lq_result = match scenario.route {
+            QueryRoute::Text => {
+                rt.query_text(TextQuerySyntax::Native, scenario.lq_query, scenario.top_k)
+            }
+            QueryRoute::Structural => {
+                rt.query_structural(TextQuerySyntax::Native, scenario.lq_query, scenario.top_k)
+            }
+        };
         let report = assess(scenario, &sg_result, &lq_result);
         if report.failure.is_some() {
             failures.push(report);

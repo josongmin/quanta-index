@@ -14,15 +14,23 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LexicalFullBundle,
-    LexicalRepoMetadataRecord, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
-    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LexicalFullBundle, LqCase,
+    LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
+    LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[derive(Clone, Debug)]
+struct RepoMetadataPayload {
+    fork: bool,
+    archived: bool,
+    visibility: LqVisibility,
+    contexts: Vec<String>,
+}
 
 fn repo() -> RepoId {
     RepoId::new("smoke-repo")
@@ -54,6 +62,26 @@ fn encode_chunk_payload_with_metadata(
     end_line: u32,
     text: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
+    encode_chunk_payload_with_texts(
+        chunk_id,
+        repo_relative_path,
+        language,
+        start_line,
+        end_line,
+        text,
+        text,
+    )
+}
+
+fn encode_chunk_payload_with_texts(
+    chunk_id: &str,
+    repo_relative_path: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+    snippet: &str,
+    indexed_text: &str,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let repo_relative_path = if repo_relative_path.is_empty() {
         "src/smoke.txt"
     } else {
@@ -69,13 +97,13 @@ fn encode_chunk_payload_with_metadata(
         repo_relative_path: RepoRelativePath::new(repo_relative_path),
         language: language_code(language)?,
         start_byte: 0,
-        end_byte: u32::try_from(text.len()).map_err(|err| -> Box<dyn Error> {
+        end_byte: u32::try_from(indexed_text.len()).map_err(|err| -> Box<dyn Error> {
             format!("chunk text length overflow: {err}").into()
         })?,
         start_line,
         end_line,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
+        snippet: snippet.to_string().into_boxed_str(),
+        indexed_text: indexed_text.to_string().into_boxed_str(),
         text_digest: format!("text:{chunk_id}").into_boxed_str(),
         shape_digest: format!("shape:{chunk_id}").into_boxed_str(),
         structural: None,
@@ -93,14 +121,47 @@ fn encode_repo_metadata_payload(
     visibility: LqVisibility,
     contexts: &[&str],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let record = LexicalRepoMetadataRecord {
+    let record = RepoMetadataPayload {
         fork,
         archived,
         visibility,
         contexts: contexts.iter().map(ToString::to_string).collect(),
     };
     let mut payload = Vec::new();
-    ciborium::into_writer(&record, &mut payload)
+    let mut visibility_payload = Vec::new();
+    ciborium::into_writer(&record.visibility, &mut visibility_payload).map_err(
+        |err| -> Box<dyn Error> { format!("encode repo metadata visibility: {err}").into() },
+    )?;
+    let visibility_wire: ciborium::Value = ciborium::from_reader(visibility_payload.as_slice())
+        .map_err(|err| -> Box<dyn Error> {
+            format!("decode repo metadata visibility wire: {err}").into()
+        })?;
+    let wire = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Text("fork".to_string()),
+            ciborium::Value::Bool(record.fork),
+        ),
+        (
+            ciborium::Value::Text("archived".to_string()),
+            ciborium::Value::Bool(record.archived),
+        ),
+        (
+            ciborium::Value::Text("visibility".to_string()),
+            visibility_wire,
+        ),
+        (
+            ciborium::Value::Text("contexts".to_string()),
+            ciborium::Value::Array(
+                record
+                    .contexts
+                    .iter()
+                    .cloned()
+                    .map(ciborium::Value::Text)
+                    .collect(),
+            ),
+        ),
+    ]);
+    ciborium::into_writer(&wire, &mut payload)
         .map_err(|err| -> Box<dyn Error> { format!("encode repo metadata: {err}").into() })?;
     Ok(payload)
 }
@@ -165,6 +226,32 @@ fn upsert_with_metadata(
             start_line,
             end_line,
             text,
+        )?,
+    }))
+}
+
+fn upsert_with_texts(
+    chunk_id: &str,
+    repo_relative_path: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+    snippet: &str,
+    indexed_text: &str,
+) -> Result<LexicalChannelOp, Box<dyn Error>> {
+    Ok(LexicalChannelOp::UpsertChunk(UpsertChunk {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: generation(),
+        chunk_id: ChunkId::new(chunk_id),
+        payload: encode_chunk_payload_with_texts(
+            chunk_id,
+            repo_relative_path,
+            language,
+            start_line,
+            end_line,
+            snippet,
+            indexed_text,
         )?,
     }))
 }
@@ -317,6 +404,28 @@ fn tantivy_index_round_trip() -> TestResult {
         .into());
     }
 
+    let raw_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::RawString("x ju".to_string()))),
+        10,
+    )?;
+    if raw_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 candidate for raw substring `x ju`, got {}",
+            raw_hits.len()
+        )
+        .into());
+    }
+    let first_raw = raw_hits
+        .first()
+        .ok_or("raw hits empty after length check")?;
+    if first_raw.candidate_id != "c1" {
+        return Err(format!(
+            "expected id c1 for raw substring `x ju`, got {}",
+            first_raw.candidate_id
+        )
+        .into());
+    }
+
     Ok(())
 }
 
@@ -413,12 +522,292 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
 }
 
 #[test]
+fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert("alpha", "the lemon yellow banana ripens")?,
+        upsert("beta", "banana near lemon but not adjacent")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let exact_phrase_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Phrase(
+            "lemon yellow banana".to_string(),
+        ))),
+        10,
+    )?;
+    if exact_phrase_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 exact phrase hit, got {}",
+            exact_phrase_hits.len()
+        )
+        .into());
+    }
+    let exact_phrase = exact_phrase_hits
+        .first()
+        .ok_or("exact phrase hits empty after length check")?;
+    if exact_phrase.candidate_id != "alpha" {
+        return Err(format!(
+            "expected alpha for exact phrase, got {}",
+            exact_phrase.candidate_id
+        )
+        .into());
+    }
+
+    let reversed_phrase_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Phrase("banana lemon".to_string()))),
+        10,
+    )?;
+    if !reversed_phrase_hits.is_empty() {
+        return Err(format!(
+            "expected 0 hits for reversed phrase, got {:?}",
+            reversed_phrase_hits
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_texts(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            4,
+            8,
+            "preview only",
+            "Lemon Yellow Banana",
+        )?,
+        upsert_with_texts(
+            "beta",
+            "src/lib.rs",
+            "rust",
+            10,
+            12,
+            "preview only",
+            "banana near lemon but not adjacent",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let exact_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Phrase(
+            "lemon yellow banana".to_string(),
+        ))),
+        10,
+    )?;
+    if exact_hits.len() != 1 || exact_hits[0].candidate_id != "alpha" {
+        return Err(
+            format!("expected indexed_text-backed phrase hit [alpha], got {exact_hits:?}").into(),
+        );
+    }
+    if exact_hits[0].snippet != "preview only" {
+        return Err(format!(
+            "expected returned snippet to stay preview text, got {:?}",
+            exact_hits[0].snippet
+        )
+        .into());
+    }
+
+    let mut sensitive_miss = make_query(LqExpr::Leaf(LqLeaf::Phrase(
+        "lemon yellow banana".to_string(),
+    )));
+    sensitive_miss.options.case = Some(LqCase::Sensitive);
+    let sensitive_miss_hits = searcher.search(&sensitive_miss, 10)?;
+    if !sensitive_miss_hits.is_empty() {
+        return Err(format!(
+            "expected case:yes lowercase phrase to miss mixed-case indexed_text, got {sensitive_miss_hits:?}"
+        )
+        .into());
+    }
+
+    let mut sensitive_hit = make_query(LqExpr::Leaf(LqLeaf::Phrase(
+        "Lemon Yellow Banana".to_string(),
+    )));
+    sensitive_hit.options.case = Some(LqCase::Sensitive);
+    let sensitive_hit_hits = searcher.search(&sensitive_hit, 10)?;
+    if sensitive_hit_hits.len() != 1 || sensitive_hit_hits[0].candidate_id != "alpha" {
+        return Err(format!(
+            "expected case:yes exact-case phrase hit [alpha], got {sensitive_hit_hits:?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert("alpha", "const VERSION: &str = \"v1.2.3-rc.4\";")?,
+        upsert("beta", "let needle_xx = 1;")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let regex_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Regex(
+            "v\\d+\\.\\d+\\.\\d+".to_string(),
+        ))),
+        10,
+    )?;
+    if regex_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 whole-document regex hit, got {}",
+            regex_hits.len()
+        )
+        .into());
+    }
+    let regex_hit = regex_hits
+        .first()
+        .ok_or("regex hits empty after length check")?;
+    if regex_hit.candidate_id != "alpha" {
+        return Err(format!(
+            "expected alpha for whole-document regex, got {}",
+            regex_hit.candidate_id
+        )
+        .into());
+    }
+
+    let mut regexp_option_query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
+        "v\\d+\\.\\d+\\.\\d+".to_string(),
+    )));
+    regexp_option_query.options.pattern_type = LqPatternType::Regexp;
+    let regexp_option_hits = searcher.search(&regexp_option_query, 10)?;
+    if regexp_option_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 patterntype:regexp hit, got {}",
+            regexp_option_hits.len()
+        )
+        .into());
+    }
+    let regexp_option_hit = regexp_option_hits
+        .first()
+        .ok_or("regexp option hits empty after length check")?;
+    if regexp_option_hit.candidate_id != "alpha" {
+        return Err(format!(
+            "expected alpha for patterntype:regexp, got {}",
+            regexp_option_hit.candidate_id
+        )
+        .into());
+    }
+
+    let false_positive_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Regex("needle_x[0-9]".to_string()))),
+        10,
+    )?;
+    if !false_positive_hits.is_empty() {
+        return Err(format!(
+            "expected 0 hits for regex false-positive bait, got {:?}",
+            false_positive_hits
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_texts(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            4,
+            8,
+            "preview only",
+            "const VERSION: &str = \"v1.2.3-rc.4\";",
+        )?,
+        upsert_with_texts(
+            "beta",
+            "src/lib.rs",
+            "rust",
+            10,
+            12,
+            "preview only",
+            "let needle_xx = 1;",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let regex_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Regex(
+            "v\\d+\\.\\d+\\.\\d+".to_string(),
+        ))),
+        10,
+    )?;
+    if regex_hits.len() != 1 || regex_hits[0].candidate_id != "alpha" {
+        return Err(format!(
+            "expected authoritative indexed_text regex hit [alpha], got {regex_hits:?}"
+        )
+        .into());
+    }
+    if regex_hits[0].snippet != "preview only" {
+        return Err(format!(
+            "expected returned snippet to stay preview text, got {:?}",
+            regex_hits[0].snippet
+        )
+        .into());
+    }
+
+    let false_positive_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Regex("needle_x[0-9]".to_string()))),
+        10,
+    )?;
+    if !false_positive_hits.is_empty() {
+        return Err(format!(
+            "expected regex exact verify to reject indexed_text false positive bait, got {false_positive_hits:?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
 fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
     let ops = vec![
-        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_with_metadata(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            4,
+            8,
+            "needle alpha projection projection",
+        )?,
+        upsert_with_metadata(
+            "beta",
+            "src/main.rs",
+            "rust",
+            10,
+            12,
+            "needle beta projection",
+        )?,
         upsert_symbol("sym-alpha", "src/lib.rs", "rust", "needle_symbol", 4, 4)?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
@@ -477,7 +866,7 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
 
     let text_hits = searcher.search(
         &make_query_with_filters(
-            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            LqExpr::Leaf(LqLeaf::Keyword("alpha".to_string())),
             vec![LqFilter::Type { kind: LqType::File }],
         ),
         10,
@@ -487,6 +876,323 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
         .ok_or("type:file hits empty after length check")?;
     if text_hits.len() != 1 || first_text_hit.candidate_id != "alpha" {
         return Err(format!("expected alpha for type:file, got {text_hits:?}").into());
+    }
+
+    let select_repo_hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("projection".to_string())),
+            vec![LqFilter::Select {
+                dim: LqSelect::Repo,
+            }],
+        ),
+        10,
+    )?;
+    if select_repo_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 select:repo representative hit, got {}",
+            select_repo_hits.len()
+        )
+        .into());
+    }
+    let first_select_repo = select_repo_hits
+        .first()
+        .ok_or("select:repo hits empty after length check")?;
+    if first_select_repo.candidate_id != "alpha" {
+        return Err(format!(
+            "expected alpha as select:repo representative, got {}",
+            first_select_repo.candidate_id
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_select_repo_uses_canonical_representative_when_scores_tie() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("zeta", "src/zeta.rs", "rust", 10, 12, "repo_tie_needle")?,
+        upsert_with_metadata("alpha", "src/alpha.rs", "rust", 4, 8, "repo_tie_needle")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("repo_tie_needle".to_string())),
+            vec![LqFilter::Select {
+                dim: LqSelect::Repo,
+            }],
+        ),
+        10,
+    )?;
+    if hits.len() != 1 {
+        return Err(format!(
+            "expected 1 select:repo representative under tie, got {}",
+            hits.len()
+        )
+        .into());
+    }
+    let first = hits
+        .first()
+        .ok_or("select:repo tie hits empty after length check")?;
+    if first.candidate_id != "alpha" {
+        return Err(format!(
+            "expected canonical select:repo representative `alpha`, got {}",
+            first.candidate_id
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_simple_path_term_surface_without_boolean_path_leakage() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_with_metadata(
+            "beta",
+            "config/path_only_needle.toml",
+            "toml",
+            1,
+            1,
+            "value = 1",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let path_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword(
+            "path_only_needle".to_string(),
+        ))),
+        10,
+    )?;
+    if path_hits.len() != 1 {
+        return Err(format!("expected 1 simple path-term hit, got {}", path_hits.len()).into());
+    }
+    let first_path = path_hits
+        .first()
+        .ok_or("path hits empty after length check")?;
+    if first_path.candidate_id != "beta" {
+        return Err(format!(
+            "expected beta for simple path-term surface, got {}",
+            first_path.candidate_id
+        )
+        .into());
+    }
+
+    let boolean_hits = searcher.search(
+        &make_query(LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("alpha".to_string())),
+            LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Keyword("lib".to_string())))),
+        ])),
+        10,
+    )?;
+    if boolean_hits.len() != 1 {
+        return Err(format!(
+            "expected boolean NOT to stay content-only, got {} hits",
+            boolean_hits.len()
+        )
+        .into());
+    }
+    let first_boolean = boolean_hits
+        .first()
+        .ok_or("boolean hits empty after length check")?;
+    if first_boolean.candidate_id != "alpha" {
+        return Err(format!(
+            "expected alpha to survive boolean NOT path leakage guard, got {}",
+            first_boolean.candidate_id
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_honors_case_sensitive_keyword_queries() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![upsert_with_metadata(
+        "alpha",
+        "src/lib.rs",
+        "rust",
+        4,
+        8,
+        "fn alpha_content_needle() {}",
+    )?];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let default_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword(
+            "ALPHA_CONTENT_NEEDLE".to_string(),
+        ))),
+        10,
+    )?;
+    if default_hits.len() != 1 {
+        return Err(format!(
+            "expected default case-insensitive query to hit once, got {}",
+            default_hits.len()
+        )
+        .into());
+    }
+
+    let mut sensitive_query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
+        "ALPHA_CONTENT_NEEDLE".to_string(),
+    )));
+    sensitive_query.options.case = Some(LqCase::Sensitive);
+    let sensitive_hits = searcher.search(&sensitive_query, 10)?;
+    if !sensitive_hits.is_empty() {
+        return Err(format!(
+            "expected case:yes uppercase query to miss lowercase content, got {sensitive_hits:?}"
+        )
+        .into());
+    }
+
+    let mut exact_case_query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
+        "alpha_content_needle".to_string(),
+    )));
+    exact_case_query.options.case = Some(LqCase::Sensitive);
+    let exact_case_hits = searcher.search(&exact_case_query, 10)?;
+    if exact_case_hits.len() != 1 {
+        return Err(format!(
+            "expected case:yes exact-case query to hit once, got {}",
+            exact_case_hits.len()
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            1,
+            1,
+            "fn alpha_content_needle() {}",
+        )?,
+        upsert_with_metadata(
+            "beta",
+            "config/path_only_needle.toml",
+            "toml",
+            1,
+            1,
+            "value = 1",
+        )?,
+        upsert_with_metadata(
+            "gamma",
+            "scripts/helper.py",
+            "python",
+            1,
+            1,
+            "def alpha_content_needle(): pass",
+        )?,
+        upsert_with_metadata(
+            "delta",
+            "docs/colors.md",
+            "markdown",
+            1,
+            1,
+            "the lemon yellow banana ripens",
+        )?,
+        upsert_with_metadata(
+            "epsilon",
+            "src/version.rs",
+            "rust",
+            1,
+            1,
+            "const VERSION: &str = \"v1.2.3-rc.4\";",
+        )?,
+        upsert_with_metadata("zeta", "src/raw.rs", "rust", 1, 1, "let foo_bar_baz = 0;")?,
+        upsert_with_metadata("eta", "src/bait.rs", "rust", 1, 1, "let needle_xx = 1;")?,
+        upsert_symbol("theta", "src/sym.rs", "rust", "MyTypeSymbol", 1, 1)?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+    query.options.count = Some(LqCountBound::Bounded(2));
+    let hits = searcher.search(&query, 10)?;
+    let ids = hits
+        .iter()
+        .map(|hit| hit.candidate_id.as_str())
+        .collect::<Vec<_>>();
+    if ids != ["beta", "eta"] {
+        return Err(format!("expected top_k ids [beta, eta], got hits {hits:?}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            4,
+            8,
+            "file_projection_needle",
+        )?,
+        upsert_with_metadata(
+            "beta",
+            "src/lib.rs",
+            "rust",
+            20,
+            24,
+            "file_projection_needle",
+        )?,
+        upsert_with_metadata(
+            "gamma",
+            "src/main.rs",
+            "rust",
+            10,
+            12,
+            "file_projection_needle",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let hits = searcher.search(
+        &make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
+            vec![LqFilter::Select {
+                dim: LqSelect::File,
+            }],
+        ),
+        10,
+    )?;
+    let hit_ids: Vec<&str> = hits.iter().map(|hit| hit.candidate_id.as_str()).collect();
+    if hit_ids != vec!["alpha", "gamma"] {
+        return Err(format!(
+            "expected select:file to collapse to per-path representatives [alpha, gamma], got {hit_ids:?}"
+        )
+        .into());
     }
 
     Ok(())
@@ -621,6 +1327,86 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
     let miss_hits = searcher.search(&miss_query, 10)?;
     if !miss_hits.is_empty() {
         return Err(format!("expected 0 repo-gated hits, got {miss_hits:?}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_with_metadata("beta", "src/main.rs", "rust", 10, 12, "needle beta")?,
+        upsert_with_metadata("gamma", "docs/readme.md", "markdown", 1, 2, "documentation")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let or_query = make_query(LqExpr::Any(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("documentation".to_string())),
+    ]));
+    let mut or_ids: Vec<String> = searcher
+        .search(&or_query, 10)?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    or_ids.sort();
+    if or_ids != vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()] {
+        return Err(
+            format!("expected OR repo-predicate ids [alpha, beta, gamma], got {or_ids:?}").into(),
+        );
+    }
+
+    let not_true_query = make_query(LqExpr::All(vec![
+        LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+        }))),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let not_true_hits = searcher.search(&not_true_query, 10)?;
+    if !not_true_hits.is_empty() {
+        return Err(format!(
+            "expected NOT(true repo predicate) to suppress all needle hits, got {not_true_hits:?}"
+        )
+        .into());
+    }
+
+    let not_false_query = make_query(LqExpr::All(vec![
+        LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "missing.rs".to_string(),
+            }],
+        }))),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let mut not_false_ids: Vec<String> = searcher
+        .search(&not_false_query, 10)?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    not_false_ids.sort();
+    if not_false_ids != vec!["alpha".to_string(), "beta".to_string()] {
+        return Err(format!(
+            "expected NOT(false repo predicate) ids [alpha, beta], got {not_false_ids:?}"
+        )
+        .into());
     }
 
     Ok(())

@@ -18,6 +18,4 @@ pub use ops::{
     UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef,
     UpsertSymbol, UpsertTag,
 };
-pub use records::{
-    ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, LexicalRepoMetadataRecord, OwnerDocKind,
-};
+pub use records::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};

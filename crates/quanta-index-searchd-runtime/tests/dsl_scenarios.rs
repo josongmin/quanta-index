@@ -25,23 +25,45 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
     EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalChannelOp,
-    LexicalFullBundle, LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, PlannerStage,
-    RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp, SemanticFullBundle,
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding,
+    LexicalFullBundle, LqVisibility, ManifestGeneration, PlannerStage, RepoId, RepoRelativePath,
+    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp,
+    SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
+    UpsertEmbedding,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+
+struct RepoMetadataPayload<'a> {
+    fork: bool,
+    archived: bool,
+    visibility: LqVisibility,
+    contexts: &'a [&'a str],
+}
+
+impl Serialize for RepoMetadataPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMetadataPayload", 4)?;
+        state.serialize_field("fork", &self.fork)?;
+        state.serialize_field("archived", &self.archived)?;
+        state.serialize_field("visibility", &self.visibility)?;
+        state.serialize_field("contexts", &self.contexts)?;
+        state.end()
+    }
+}
 
 fn repo() -> RepoId {
     RepoId::new("repo-dsl")
@@ -106,11 +128,11 @@ fn repo_metadata_payload(
     visibility: LqVisibility,
     contexts: &[&str],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let record = LexicalRepoMetadataRecord {
+    let record = RepoMetadataPayload {
         fork,
         archived,
         visibility,
-        contexts: contexts.iter().map(ToString::to_string).collect(),
+        contexts,
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)
@@ -328,7 +350,6 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 shutdown.store(true, Ordering::Release);
                 drop(join.join());
@@ -450,7 +471,6 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 shutdown.store(true, Ordering::Release);
                 drop(join.join());
@@ -538,7 +558,6 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -572,7 +591,6 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -635,7 +653,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
                 | SearchPlaneQueryIpcResponse::Bridge(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
-                | SearchPlaneQueryIpcResponse::Sourcegraph(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
                 SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
             },
@@ -659,7 +676,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -693,7 +709,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -765,7 +780,6 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -795,7 +809,6 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -904,7 +917,6 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -1057,7 +1069,6 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
@@ -1191,7 +1202,6 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
-        | SearchPlaneQueryIpcResponse::Sourcegraph(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());

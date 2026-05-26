@@ -11,7 +11,7 @@
 //!   so a downstream consumer can correlate any refusal with the
 //!   translator version that emitted it (§ 5.4 step 4 — translator
 //!   version stamped on every output).
-//! - `translated`: the lowered [`LqDirective`].
+//! - `translated`: the lowered canonical `LqQuery`.
 //!
 //! Construction is via [`BridgeCandidate::new`], which is the only
 //! supported entry point and which stamps `translator_version`
@@ -21,8 +21,8 @@
 
 use core::fmt;
 
-use crate::translator::LqDirective;
 use crate::version::TRANSLATOR_VERSION;
+use quanta_index_contract::LqQuery;
 
 /// Stable bridge candidate envelope.
 ///
@@ -30,11 +30,11 @@ use crate::version::TRANSLATOR_VERSION;
 /// `quanta-index-contract`) so the translator crate can produce
 /// envelopes without depending on the contract crate; the
 /// integration ticket maps this onto the full packet shape.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BridgeCandidate {
     pub source_syntax: Box<str>,
     pub translator_version: Box<str>,
-    pub translated: LqDirective,
+    pub translated: LqQuery,
 }
 
 impl BridgeCandidate {
@@ -42,7 +42,7 @@ impl BridgeCandidate {
     /// input string + the lowered directive. Stamps
     /// [`TRANSLATOR_VERSION`] from the crate const.
     #[must_use]
-    pub fn new(source_syntax: impl Into<Box<str>>, translated: LqDirective) -> Self {
+    pub fn new(source_syntax: impl Into<Box<str>>, translated: LqQuery) -> Self {
         Self {
             source_syntax: source_syntax.into(),
             translator_version: Box::<str>::from(TRANSLATOR_VERSION),
@@ -58,7 +58,7 @@ impl BridgeCandidate {
     pub fn with_translator_version(
         source_syntax: impl Into<Box<str>>,
         translator_version: impl Into<Box<str>>,
-        translated: LqDirective,
+        translated: LqQuery,
     ) -> Self {
         Self {
             source_syntax: source_syntax.into(),
@@ -99,7 +99,7 @@ impl<'de> serde::Deserialize<'de> for BridgeCandidate {
             ) -> Result<BridgeCandidate, M::Error> {
                 let mut source_syntax: Option<String> = None;
                 let mut translator_version: Option<String> = None;
-                let mut translated: Option<LqDirective> = None;
+                let mut translated: Option<LqQuery> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "source_syntax" => {
@@ -151,38 +151,34 @@ impl<'de> serde::Deserialize<'de> for BridgeCandidate {
 mod tests {
     use super::BridgeCandidate;
     use crate::syntax::parse_sourcegraph;
-    use crate::translator::{LqDirective, translate};
+    use crate::translate_query;
     use crate::version::{SourcegraphVersionTag, TRANSLATOR_VERSION};
+    use quanta_index_contract::{LqExpr, LqLeaf, LqQuery, LqSpan};
 
-    fn translate_for(sg: &str) -> LqDirective {
+    fn empty_query() -> LqQuery {
+        LqQuery::empty(LqSpan::eof(0))
+    }
+
+    fn translate_for(sg: &str) -> LqQuery {
         let q = match parse_sourcegraph(sg) {
             Ok(q) => q,
             Err(e) => {
                 assert!(false, "parse `{sg}`: {e}");
-                return LqDirective::Pattern {
-                    kind: Box::<str>::from("literal"),
-                    body: Box::<str>::from(""),
-                };
+                return empty_query();
             }
         };
         let v = match SourcegraphVersionTag::supported() {
             Ok(t) => t,
             Err(e) => {
                 assert!(false, "supported pin must parse: {e}");
-                return LqDirective::Pattern {
-                    kind: Box::<str>::from("literal"),
-                    body: Box::<str>::from(""),
-                };
+                return empty_query();
             }
         };
-        match translate(q, &v) {
+        match translate_query(q, &v, sg.len()) {
             Ok(d) => d,
             Err(e) => {
                 assert!(false, "translate `{sg}`: {e}");
-                LqDirective::Pattern {
-                    kind: Box::<str>::from("literal"),
-                    body: Box::<str>::from(""),
-                }
+                empty_query()
             }
         }
     }
@@ -200,9 +196,9 @@ mod tests {
         let c = BridgeCandidate::with_translator_version(
             "foo",
             "lq-bridge-v9999",
-            LqDirective::Pattern {
-                kind: Box::<str>::from("literal"),
-                body: Box::<str>::from("foo"),
+            LqQuery {
+                expr: LqExpr::Leaf(LqLeaf::Keyword("foo".to_string())),
+                ..empty_query()
             },
         );
         assert_eq!(c.translator_version.as_ref(), "lq-bridge-v9999");
@@ -211,7 +207,8 @@ mod tests {
     #[test]
     fn serde_roundtrip_via_ciborium() {
         let lq = translate_for("lang:rust foo");
-        let c = BridgeCandidate::new("lang:rust foo", lq);
+        let mut c = BridgeCandidate::new("lang:rust foo", lq);
+        c.translated.source_span = LqSpan::eof(0);
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&c, &mut buf) {
             assert!(false, "{e}");

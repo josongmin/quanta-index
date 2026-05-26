@@ -148,6 +148,15 @@ impl<'a> SemanticNamespace<'a> {
     pub fn publish(&self, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
         <SemanticNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
+
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(
+        &self,
+        request: SemanticQueryRequest,
+    ) -> Result<SemanticQueryResponse, SdkError> {
+        dispatch_semantic_query_request_v1(self.client, request)
+    }
 }
 
 /// QI-NS-01: marker type for the built-in semantic namespace.
@@ -321,8 +330,9 @@ impl<'a> SemanticQueryBuilder<'a> {
             }
             (None, None) => None,
         };
-        let response = self.client.dispatch_query(
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+        dispatch_semantic_query_request_v1(
+            self.client,
+            SemanticQueryRequest {
                 // QI-QRY-01 phase 2: vector path is authoritative; no text
                 // filler. `query_vector_ref` carries the typed handle / inline.
                 query_text: None,
@@ -332,26 +342,34 @@ impl<'a> SemanticQueryBuilder<'a> {
                 generation_selector,
                 lexical_scope,
                 top_k,
-            }),
-        )?;
-        match response {
-            quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(results) => Ok(results),
-            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                Err(SdkError::unexpected_response(
-                    "semantic query response",
-                    QuantaIndex::query_response_kind(&other),
-                ))
-            }
+            },
+        )
+    }
+}
+
+fn dispatch_semantic_query_request_v1(
+    client: &QuantaIndex,
+    request: SemanticQueryRequest,
+) -> Result<SemanticQueryResponse, SdkError> {
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request),
+    )?;
+    match response {
+        quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(results) => Ok(results),
+        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+            Err(SdkError::unexpected_response(
+                "semantic query response",
+                QuantaIndex::query_response_kind(&other),
+            ))
         }
     }
 }

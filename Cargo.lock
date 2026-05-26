@@ -853,6 +853,7 @@ dependencies = [
  "quanta-index-lq-norm",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -887,6 +888,7 @@ dependencies = [
  "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-lq-positions",
  "quanta-index-lq-regex",
  "quanta-index-lq-trigram",
  "tantivy",
@@ -899,6 +901,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "proptest",
+ "quanta-index-contract",
  "quanta-index-contract-base",
  "serde",
 ]
@@ -1007,6 +1010,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "proptest",
+ "quanta-index-contract",
  "serde",
 ]
 
@@ -1089,11 +1093,14 @@ name = "quanta-index-searchd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "memchr",
  "quanta-index-channel",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
+ "quanta-index-lq-structural",
  "quanta-index-search-plane",
+ "regex",
 ]
 
 [[package]]
@@ -1113,6 +1120,7 @@ dependencies = [
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-semantic",
+ "serde",
  "tempfile",
 ]
 

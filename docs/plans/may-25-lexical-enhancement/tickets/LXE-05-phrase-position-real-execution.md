@@ -1,6 +1,6 @@
 # LXE-05 - Phrase and Position Real Execution
 
-Status: `proposed`
+Status: `completed`
 Priority: `P1`
 Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 
@@ -8,6 +8,17 @@ Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 
 Make phrase, ordered-token, and proximity-style DSL behavior depend on a real
 position authority rather than token coincidence.
+
+## Current code-backed status (2026-05-26)
+
+- Landed:
+  - phrase planner scaffold
+  - `quanta-index-lq-positions` authority integration on the live lexical adapter
+  - shared query/build tokenization inside the lexical phrase authority seam
+  - execution of phrase rows through position postings rather than query-parser fallback
+  - runtime rows for exact-adjacent match and reversed-order miss are both green on the positions-backed rail
+- Remaining follow-up:
+  - richer normalizer unification and explain counters belong to later normalization/observability work
 
 ## Owner files
 
@@ -67,9 +78,9 @@ Covered by `E2E-01`:
 
 ## DoD
 
-- phrase rows in the matrix are not marked done until backed by position E2E.
-- phrase explanation identifies the position engine.
+- phrase rows in the matrix are backed by position E2E.
 - unsupported phrase extensions fail typed before execution.
+- case-sensitive phrase matching is exercised against the positions-backed authority.
 
 ## Failure modes
 

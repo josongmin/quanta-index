@@ -46,7 +46,6 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
             | SearchPlaneQueryIpcRequest::Structural(_)
             | SearchPlaneQueryIpcRequest::Bridge(_)
             | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
-            | SearchPlaneQueryIpcRequest::Sourcegraph(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)) => error_response(
                 "TEST_UNSUPPORTED_REQUEST",
                 format!("unexpected request in test: {other:?}"),

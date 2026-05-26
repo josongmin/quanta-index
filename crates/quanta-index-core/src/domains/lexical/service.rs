@@ -31,7 +31,6 @@ impl LexicalPolicy {
             });
         }
         validate_supported_filter_surface(query)?;
-        validate_predicate_composition(&query.expr)?;
         Ok(())
     }
 
@@ -111,13 +110,8 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
                 | LqSelect::Path
                 | LqSelect::Symbol
                 | LqSelect::Content
-                | LqSelect::ContentMatch => {}
-                LqSelect::Repo => {
-                    return Err(CoreError::NotImplemented(
-                        "lexical: select filter `repo` is not executable on the current adapter set"
-                            .to_string(),
-                    ));
-                }
+                | LqSelect::ContentMatch
+                | LqSelect::Repo => {}
             },
             LqFilter::Author { .. } => {
                 return Err(CoreError::NotImplemented(
@@ -154,47 +148,6 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
         }
     }
     Ok(())
-}
-
-fn validate_predicate_composition(expr: &LqExpr) -> Result<(), CoreError> {
-    match expr {
-        LqExpr::Empty | LqExpr::SemanticVector { .. } | LqExpr::Leaf(_) => Ok(()),
-        LqExpr::All(children) => {
-            for child in children {
-                validate_predicate_composition(child)?;
-            }
-            Ok(())
-        }
-        LqExpr::Any(children) => {
-            if children.iter().any(expr_contains_predicate) {
-                return Err(CoreError::NotImplemented(
-                    "lexical: predicate leaves under OR are not executable on the current adapter set"
-                        .to_string(),
-                ));
-            }
-            Ok(())
-        }
-        LqExpr::Not(inner) => {
-            if expr_contains_predicate(inner) {
-                return Err(CoreError::NotImplemented(
-                    "lexical: predicate leaves under NOT are not executable on the current adapter set"
-                        .to_string(),
-                ));
-            }
-            Ok(())
-        }
-    }
-}
-
-fn expr_contains_predicate(expr: &LqExpr) -> bool {
-    match expr {
-        LqExpr::Leaf(LqLeaf::Predicate { .. }) => true,
-        LqExpr::Leaf(_) | LqExpr::Empty | LqExpr::SemanticVector { .. } => false,
-        LqExpr::Not(inner) => expr_contains_predicate(inner),
-        LqExpr::All(children) | LqExpr::Any(children) => {
-            children.iter().any(expr_contains_predicate)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -281,6 +234,7 @@ mod tests {
                 leaf: LqLeaf::StructuralBlock(LqStructuralBlock {
                     lang: None,
                     nodes: Vec::new(),
+                    exprs: Vec::new(),
                 }),
             }],
             LqOptions::defaults(),

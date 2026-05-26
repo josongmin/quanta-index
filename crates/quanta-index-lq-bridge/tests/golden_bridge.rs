@@ -13,9 +13,10 @@
 //! 6. `repo:has.file(path:src/lib.rs)` predicate — **adopted** as active
 //!    LQ predicate placeholder.
 
+use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg};
 use quanta_index_lq_bridge::{
-    BridgeCandidate, BridgeErrorCode, LqDirective, SourcegraphVersionTag, TRANSLATOR_VERSION,
-    parse_sourcegraph, translate,
+    BridgeCandidate, BridgeErrorCode, SourcegraphVersionTag, TRANSLATOR_VERSION, parse_sourcegraph,
+    translate_query,
 };
 
 fn ver() -> SourcegraphVersionTag {
@@ -42,30 +43,22 @@ fn row1_adopted_repo_filter() {
             return;
         }
     };
-    let lq = match translate(q, &ver()) {
+    let raw = "repo:acme/foo bar";
+    let lq = match translate_query(q, &ver(), raw.len()) {
         Ok(d) => d,
         Err(e) => {
             assert!(false, "{e}");
             return;
         }
     };
-    let LqDirective::Filtered { filters, body } = lq else {
-        assert!(false, "expected Filtered");
-        return;
-    };
-    assert_eq!(filters.len(), 1);
-    let Some(LqDirective::Filter { name, value }) = filters.first() else {
-        assert!(false, "expected Filter");
-        return;
-    };
-    assert_eq!(&**name, "repo");
-    assert_eq!(&**value, "acme/foo");
-    let LqDirective::Pattern { kind, body } = *body else {
-        assert!(false, "expected Pattern body");
-        return;
-    };
-    assert_eq!(&*kind, "literal");
-    assert_eq!(&*body, "bar");
+    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Keyword("bar".to_string())));
+    assert_eq!(
+        lq.filters,
+        vec![LqFilter::Repo {
+            pattern: "acme/foo".to_string(),
+            revs: Vec::new(),
+        }]
+    );
 }
 
 #[test]
@@ -77,23 +70,21 @@ fn row2_adopted_fork_no_filter() {
             return;
         }
     };
-    let lq = match translate(q, &ver()) {
+    let raw = "fork:no needle";
+    let lq = match translate_query(q, &ver(), raw.len()) {
         Ok(d) => d,
         Err(e) => {
             assert!(false, "{e}");
             return;
         }
     };
-    let LqDirective::Filtered { filters, .. } = lq else {
-        assert!(false, "expected Filtered");
-        return;
-    };
-    let Some(LqDirective::Filter { name, value }) = filters.first() else {
-        assert!(false, "expected Filter");
-        return;
-    };
-    assert_eq!(&**name, "fork");
-    assert_eq!(&**value, "no");
+    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+    assert_eq!(
+        lq.filters,
+        vec![LqFilter::Fork {
+            mode: quanta_index_contract::LqYesNoOnly::No,
+        }]
+    );
 }
 
 #[test]
@@ -105,19 +96,15 @@ fn row3_normalized_content_to_pattern_leaf() {
             return;
         }
     };
-    let lq = match translate(q, &ver()) {
+    let raw = "content:hello";
+    let lq = match translate_query(q, &ver(), raw.len()) {
         Ok(d) => d,
         Err(e) => {
             assert!(false, "{e}");
             return;
         }
     };
-    let LqDirective::Pattern { kind, body } = lq else {
-        assert!(false, "expected Pattern");
-        return;
-    };
-    assert_eq!(&*kind, "literal");
-    assert_eq!(&*body, "hello");
+    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Keyword("hello".to_string())));
 }
 
 #[test]
@@ -129,7 +116,7 @@ fn row4_refused_index_no_directive() {
             return;
         }
     };
-    match translate(q, &ver()) {
+    match translate_query(q, &ver(), "index:no foo".len()) {
         Ok(_) => assert!(false, "index:no must refuse"),
         Err(e) => {
             assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
@@ -164,7 +151,7 @@ fn candidate_envelope_stamps_translator_version() {
             return;
         }
     };
-    let lq = match translate(q, &ver()) {
+    let lq = match translate_query(q, &ver(), "lang:rust foo".len()) {
         Ok(d) => d,
         Err(e) => {
             assert!(false, "{e}");
@@ -185,17 +172,22 @@ fn row6_repo_predicate_lowers_to_predicate_placeholder() {
             return;
         }
     };
-    let lq = match translate(q, &ver()) {
+    let raw = "repo:has.file(path:src/lib.rs)";
+    let lq = match translate_query(q, &ver(), raw.len()) {
         Ok(d) => d,
         Err(e) => {
             assert!(false, "{e}");
             return;
         }
     };
-    let LqDirective::Predicate { name, args_raw } = lq else {
-        assert!(false, "expected Predicate");
-        return;
-    };
-    assert_eq!(&*name, "repo.has.file");
-    assert_eq!(&*args_raw, "path:src/lib.rs");
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+        })
+    );
 }

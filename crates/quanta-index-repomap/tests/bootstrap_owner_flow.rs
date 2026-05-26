@@ -1,113 +1,161 @@
 use std::fs;
 
+use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
-    RepoMapChunkRecordDto, RepoMapDocType, RepoMapEdgeKind, RepoMapExactnessSummary,
-    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass, RepoMapGraphEdgeDto,
-    RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoMapSymbolRecordDto, RevisionId,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    RepoMapDocType, RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
+    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    SymbolId,
 };
 use quanta_index_core::CoreError;
 use quanta_index_repomap::RepoMapGenerationStore;
 
 fn sample_bundle() -> RepoMapSourceBundle {
-    RepoMapSourceBundle {
-        repo_id: RepoId::new("repo-a"),
-        revision_id: RevisionId::new("rev-a"),
-        manifest_generation: ManifestGeneration::new(7),
-        snapshot_id: "snap-7".to_string(),
-        projection_version: 1,
-        authority_digest: "digest-7".to_string(),
-        item_index_availability: RepoMapItemIndexAvailability::Available,
-        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        exactness_summary: RepoMapExactnessSummary::Exact,
-        redaction_state: RepoMapRedactionState::Unredacted,
-        file_indices: vec![
-            RepoMapFileIndexRecord {
-                file_identity: "src/lib.rs".to_string(),
-                file_path: "src/lib.rs".to_string(),
-                file_kind: "library".to_string(),
-                line_count: 140,
-                symbol_records: vec![
-                    RepoMapSymbolRecordDto {
-                        subject_identity: "src/lib.rs::OwnerAlpha".to_string(),
-                        subject_doc_type: RepoMapDocType::Symbol,
-                        subject_kind: "service".to_string(),
-                        symbol_name: "OwnerAlpha".to_string(),
-                        owner_path: "src/lib.rs".to_string(),
-                    },
-                    RepoMapSymbolRecordDto {
-                        subject_identity: "src/lib.rs::OwnerBeta".to_string(),
-                        subject_doc_type: RepoMapDocType::Symbol,
-                        subject_kind: "struct".to_string(),
-                        symbol_name: "OwnerBeta".to_string(),
-                        owner_path: "src/lib.rs".to_string(),
-                    },
-                ],
-            },
-            RepoMapFileIndexRecord {
-                file_identity: "src/runtime/mod.rs".to_string(),
-                file_path: "src/runtime/mod.rs".to_string(),
-                file_kind: "runtime".to_string(),
-                line_count: 96,
-                symbol_records: Vec::new(),
-            },
-            RepoMapFileIndexRecord {
-                file_identity: "tests/repomap.rs".to_string(),
-                file_path: "tests/repomap.rs".to_string(),
-                file_kind: "test".to_string(),
-                line_count: 64,
-                symbol_records: Vec::new(),
-            },
-        ],
-        call_edges: vec![
-            RepoMapGraphEdgeDto {
-                from_identity: "src/lib.rs::OwnerAlpha".to_string(),
-                to_identity: "src/lib.rs::OwnerBeta".to_string(),
-                edge_kind: RepoMapEdgeKind::Call,
-            },
-            RepoMapGraphEdgeDto {
-                from_identity: "src/lib.rs::OwnerAlpha".to_string(),
-                to_identity: "src/runtime/mod.rs".to_string(),
-                edge_kind: RepoMapEdgeKind::Call,
-            },
-        ],
-        import_edges: vec![
-            RepoMapGraphEdgeDto {
-                from_identity: "src/runtime/mod.rs".to_string(),
-                to_identity: "src/lib.rs".to_string(),
-                edge_kind: RepoMapEdgeKind::Import,
-            },
-            RepoMapGraphEdgeDto {
-                from_identity: "tests/repomap.rs".to_string(),
-                to_identity: "src/runtime/mod.rs".to_string(),
-                edge_kind: RepoMapEdgeKind::Import,
-            },
-        ],
-        chunk_records: vec![
-            RepoMapChunkRecordDto {
-                subject_identity: "src/lib.rs::OwnerAlpha".to_string(),
-                owner_path: "src/lib.rs".to_string(),
-                token_count: 80,
-                preview_text: "OwnerAlpha coordinates repo map ownership".to_string(),
-                exactness: RepoMapChunkExactness::Exact,
-            },
-            RepoMapChunkRecordDto {
-                subject_identity: "src/lib.rs::OwnerBeta".to_string(),
-                owner_path: "src/lib.rs".to_string(),
-                token_count: 56,
-                preview_text: "OwnerBeta carries owner surface metadata".to_string(),
-                exactness: RepoMapChunkExactness::Exact,
-            },
-            RepoMapChunkRecordDto {
-                subject_identity: "src/runtime/mod.rs".to_string(),
-                owner_path: "src/runtime/mod.rs".to_string(),
-                token_count: 40,
-                preview_text: "runtime module activation path".to_string(),
-                exactness: RepoMapChunkExactness::Approximate,
-            },
-        ],
-    }
+    RepoMapSourceBundle::new(
+        RepoId::new("repo-a"),
+        RevisionId::new("rev-a"),
+        ManifestGeneration::new(7),
+        "manifest-digest-7",
+        "snap-7",
+        1,
+        "digest-7",
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("src/lib.rs"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        line_count: 140,
+    }))
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("src/runtime/mod.rs"),
+        repo_relative_path: RepoRelativePath::new("src/runtime/mod.rs"),
+        line_count: 96,
+    }))
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("tests/repomap.rs"),
+        repo_relative_path: RepoRelativePath::new("tests/repomap.rs"),
+        line_count: 64,
+    }))
+    .with_node(RepoMapNode::Symbol(
+        quanta_index_contract::RepoMapSymbolNode {
+            symbol_id: SymbolId::new("src/lib.rs::OwnerAlpha"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            local_name: "OwnerAlpha".to_string(),
+            qualified_name: "src::lib::OwnerAlpha".to_string(),
+            symbol_kind: SymbolKindCode::new("service").expect("valid symbol kind"),
+        },
+    ))
+    .with_node(RepoMapNode::Symbol(
+        quanta_index_contract::RepoMapSymbolNode {
+            symbol_id: SymbolId::new("src/lib.rs::OwnerBeta"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            local_name: "OwnerBeta".to_string(),
+            qualified_name: "src::lib::OwnerBeta".to_string(),
+            symbol_kind: SymbolKindCode::new("struct").expect("valid symbol kind"),
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://alpha"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 0,
+            end_byte: 90,
+            start_line: 1,
+            end_line: 9,
+            token_count: 80,
+            preview_text: "OwnerAlpha coordinates repo map ownership".to_string(),
+            exactness: RepoMapChunkExactness::Exact,
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://beta"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 91,
+            end_byte: 150,
+            start_line: 10,
+            end_line: 16,
+            token_count: 56,
+            preview_text: "OwnerBeta carries owner surface metadata".to_string(),
+            exactness: RepoMapChunkExactness::Exact,
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://runtime"),
+            owner_path: RepoRelativePath::new("src/runtime/mod.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 151,
+            end_byte: 200,
+            start_line: 17,
+            end_line: 22,
+            token_count: 40,
+            preview_text: "runtime module activation path".to_string(),
+            exactness: RepoMapChunkExactness::Approximate,
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
+        quanta_index_contract::RepoMapContainsEdge {
+            container: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
+            contained: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
+        quanta_index_contract::RepoMapContainsEdge {
+            container: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
+            contained: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Call(
+        quanta_index_contract::RepoMapCallEdge {
+            caller: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
+            callee: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Call(
+        quanta_index_contract::RepoMapCallEdge {
+            caller: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
+            callee: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Import(
+        quanta_index_contract::RepoMapImportEdge {
+            importer: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
+            imported: RepoMapNodeRef::File(FileId::new("src/lib.rs")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Import(
+        quanta_index_contract::RepoMapImportEdge {
+            importer: RepoMapNodeRef::File(FileId::new("tests/repomap.rs")),
+            imported: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        quanta_index_contract::RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerAlpha")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://alpha")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        quanta_index_contract::RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::Symbol(SymbolId::new("src/lib.rs::OwnerBeta")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://beta")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        quanta_index_contract::RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::File(FileId::new("src/runtime/mod.rs")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://runtime")),
+        },
+    ))
 }
 
 fn activate(store: &RepoMapGenerationStore, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {

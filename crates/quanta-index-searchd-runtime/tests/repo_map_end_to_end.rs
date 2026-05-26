@@ -26,18 +26,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use quanta_index_contract::lex::{LanguageCode, SymbolKindCode};
 use quanta_index_contract::{
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
-    RepoMapChunkRecordDto, RepoMapDocType, RepoMapEdgeKind, RepoMapExactnessSummary,
-    RepoMapFileIndexRecord, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass, RepoMapGraphEdgeDto,
-    RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoMapSymbolRecordDto, RevisionId, SearchPlaneControlIpcRequest,
+    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    RepoMapContainsEdge, RepoMapDocType, RepoMapExactnessSummary, RepoMapFocusSubjectDto,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
+    RepoMapSourceBundle, RepoRelativePath, RevisionId, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneQueryIpcResponseEnvelope, SymbolId,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SearchdConfig;
@@ -126,93 +127,146 @@ where
 }
 
 fn repo_map_bundle() -> RepoMapSourceBundle {
-    RepoMapSourceBundle {
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: generation(),
-        snapshot_id: "repomap-snapshot-11".to_string(),
-        projection_version: 1,
-        authority_digest: "d".repeat(64),
-        item_index_availability: RepoMapItemIndexAvailability::Available,
-        graph_coverage_class: RepoMapGraphCoverageClass::Complete,
-        exactness_summary: RepoMapExactnessSummary::Exact,
-        redaction_state: RepoMapRedactionState::Unredacted,
-        file_indices: vec![
-            RepoMapFileIndexRecord {
-                file_identity: "src/lib.rs".to_string(),
-                file_path: "src/lib.rs".to_string(),
-                file_kind: "library".to_string(),
-                line_count: 110,
-                symbol_records: vec![RepoMapSymbolRecordDto {
-                    subject_identity: "src/lib.rs::Alpha".to_string(),
-                    subject_doc_type: RepoMapDocType::Symbol,
-                    subject_kind: "struct".to_string(),
-                    symbol_name: "Alpha".to_string(),
-                    owner_path: "src/lib.rs".to_string(),
-                }],
-            },
-            RepoMapFileIndexRecord {
-                file_identity: "src/service/mod.rs".to_string(),
-                file_path: "src/service/mod.rs".to_string(),
-                file_kind: "service_module".to_string(),
-                line_count: 170,
-                symbol_records: vec![RepoMapSymbolRecordDto {
-                    subject_identity: "src/service/mod.rs::Beta".to_string(),
-                    subject_doc_type: RepoMapDocType::Symbol,
-                    subject_kind: "service".to_string(),
-                    symbol_name: "Beta".to_string(),
-                    owner_path: "src/service/mod.rs".to_string(),
-                }],
-            },
-            RepoMapFileIndexRecord {
-                file_identity: "tests/repo_map.rs".to_string(),
-                file_path: "tests/repo_map.rs".to_string(),
-                file_kind: "test".to_string(),
-                line_count: 70,
-                symbol_records: Vec::new(),
-            },
-        ],
-        call_edges: vec![
-            RepoMapGraphEdgeDto {
-                from_identity: "src/service/mod.rs::Beta".to_string(),
-                to_identity: "src/lib.rs::Alpha".to_string(),
-                edge_kind: RepoMapEdgeKind::Call,
-            },
-            RepoMapGraphEdgeDto {
-                from_identity: "src/service/mod.rs::Beta".to_string(),
-                to_identity: "tests/repo_map.rs".to_string(),
-                edge_kind: RepoMapEdgeKind::Call,
-            },
-        ],
-        import_edges: vec![RepoMapGraphEdgeDto {
-            from_identity: "src/service/mod.rs".to_string(),
-            to_identity: "src/lib.rs".to_string(),
-            edge_kind: RepoMapEdgeKind::Import,
-        }],
-        chunk_records: vec![
-            RepoMapChunkRecordDto {
-                subject_identity: "src/lib.rs::Alpha".to_string(),
-                owner_path: "src/lib.rs".to_string(),
-                token_count: 64,
-                preview_text: "Alpha library owner index".to_string(),
-                exactness: RepoMapChunkExactness::Exact,
-            },
-            RepoMapChunkRecordDto {
-                subject_identity: "src/service/mod.rs::Beta".to_string(),
-                owner_path: "src/service/mod.rs".to_string(),
-                token_count: 96,
-                preview_text: "Beta service owner query entrypoint".to_string(),
-                exactness: RepoMapChunkExactness::Exact,
-            },
-            RepoMapChunkRecordDto {
-                subject_identity: "tests/repo_map.rs".to_string(),
-                owner_path: "tests/repo_map.rs".to_string(),
-                token_count: 40,
-                preview_text: "repo map integration test".to_string(),
-                exactness: RepoMapChunkExactness::Approximate,
-            },
-        ],
-    }
+    RepoMapSourceBundle::new(
+        repo(),
+        revision(),
+        generation(),
+        "manifest-digest-11",
+        "repomap-snapshot-11",
+        1,
+        "d".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("file://src/lib.rs"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        line_count: 110,
+    }))
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("file://src/service/mod.rs"),
+        repo_relative_path: RepoRelativePath::new("src/service/mod.rs"),
+        line_count: 170,
+    }))
+    .with_node(RepoMapNode::File(quanta_index_contract::RepoMapFileNode {
+        file_id: FileId::new("file://tests/repo_map.rs"),
+        repo_relative_path: RepoRelativePath::new("tests/repo_map.rs"),
+        line_count: 70,
+    }))
+    .with_node(RepoMapNode::Symbol(
+        quanta_index_contract::RepoMapSymbolNode {
+            symbol_id: SymbolId::new("symbol://alpha"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            local_name: "Alpha".to_string(),
+            qualified_name: "src::lib::Alpha".to_string(),
+            symbol_kind: SymbolKindCode::new("struct").expect("valid symbol kind"),
+        },
+    ))
+    .with_node(RepoMapNode::Symbol(
+        quanta_index_contract::RepoMapSymbolNode {
+            symbol_id: SymbolId::new("symbol://beta"),
+            owner_path: RepoRelativePath::new("src/service/mod.rs"),
+            local_name: "Beta".to_string(),
+            qualified_name: "src::service::Beta".to_string(),
+            symbol_kind: SymbolKindCode::new("service").expect("valid symbol kind"),
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://alpha"),
+            owner_path: RepoRelativePath::new("src/lib.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 0,
+            end_byte: 128,
+            start_line: 1,
+            end_line: 12,
+            token_count: 64,
+            preview_text: "Alpha library owner index".to_string(),
+            exactness: RepoMapChunkExactness::Exact,
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://beta"),
+            owner_path: RepoRelativePath::new("src/service/mod.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 129,
+            end_byte: 256,
+            start_line: 13,
+            end_line: 28,
+            token_count: 96,
+            preview_text: "Beta service owner query entrypoint".to_string(),
+            exactness: RepoMapChunkExactness::Exact,
+        },
+    ))
+    .with_node(RepoMapNode::Chunk(
+        quanta_index_contract::RepoMapChunkNode {
+            chunk_id: quanta_index_contract::ChunkId::new("chunk://repomap-test"),
+            owner_path: RepoRelativePath::new("tests/repo_map.rs"),
+            language: LanguageCode::new("rust").expect("valid language"),
+            start_byte: 257,
+            end_byte: 320,
+            start_line: 29,
+            end_line: 35,
+            token_count: 40,
+            preview_text: "repo map integration test".to_string(),
+            exactness: RepoMapChunkExactness::Approximate,
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
+        RepoMapContainsEdge {
+            container: RepoMapNodeRef::File(FileId::new("file://src/lib.rs")),
+            contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Contains(
+        RepoMapContainsEdge {
+            container: RepoMapNodeRef::File(FileId::new("file://src/service/mod.rs")),
+            contained: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Call(
+        quanta_index_contract::RepoMapCallEdge {
+            caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+            callee: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Call(
+        quanta_index_contract::RepoMapCallEdge {
+            caller: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+            callee: RepoMapNodeRef::File(FileId::new("file://tests/repo_map.rs")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::Import(
+        quanta_index_contract::RepoMapImportEdge {
+            importer: RepoMapNodeRef::File(FileId::new("file://src/service/mod.rs")),
+            imported: RepoMapNodeRef::File(FileId::new("file://src/lib.rs")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://alpha")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://alpha")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::Symbol(SymbolId::new("symbol://beta")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new("chunk://beta")),
+        },
+    ))
+    .with_edge(quanta_index_contract::RepoMapEdge::OwnsChunk(
+        RepoMapOwnsChunkEdge {
+            owner: RepoMapNodeRef::File(FileId::new("file://tests/repo_map.rs")),
+            chunk: RepoMapNodeRef::Chunk(quanta_index_contract::ChunkId::new(
+                "chunk://repomap-test",
+            )),
+        },
+    ))
 }
 
 fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
@@ -226,7 +280,7 @@ fn repo_map_request() -> SearchPlaneQueryIpcRequestEnvelope {
             top_k: 1,
             token_budget: 90,
             focus_subjects: vec![RepoMapFocusSubjectDto {
-                subject_identity: "src/service/mod.rs::Beta".to_string(),
+                subject_identity: "symbol://beta".to_string(),
                 subject_doc_type: RepoMapDocType::Symbol,
             }],
         }),
@@ -284,7 +338,8 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err("ingest socket never appeared".into());
     }
     // QI-INT-01: RepoMap bundle ingest now goes via the ingest socket.
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())?;
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())
+        .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     if !matches!(
         ingest.payload,
         SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
@@ -293,7 +348,8 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         drop(join.join());
         return Err("repo-map ingest did not ack".into());
     }
-    let activate = send_control_request(&control_socket, &repo_map_activate_request())?;
+    let activate = send_control_request(&control_socket, &repo_map_activate_request())
+        .map_err(|err| format!("repo-map activate request failed: {err}"))?;
     if !matches!(
         activate.payload,
         SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
@@ -317,7 +373,8 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
         return Err("repo-map query path never became ready".into());
     }
 
-    let response = send_query_request(&query_socket, &repo_map_request())?;
+    let response = send_query_request(&query_socket, &repo_map_request())
+        .map_err(|err| format!("repo-map query request failed: {err}"))?;
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
         other => {
@@ -330,10 +387,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     assert_eq!(repo_map.revision_id, revision());
     assert_eq!(repo_map.manifest_generation, generation());
     assert_eq!(repo_map.snapshot_meta.snapshot_id, "repomap-snapshot-11");
-    assert_eq!(
-        repo_map.entries[0].subject_identity,
-        "src/service/mod.rs::Beta"
-    );
+    assert_eq!(repo_map.entries[0].subject_identity, "symbol://beta");
     assert_eq!(repo_map.entries[0].owner_path, "src/service/mod.rs");
     assert_eq!(repo_map.entries[0].subject_doc_type, RepoMapDocType::Symbol);
     assert_eq!(
@@ -394,7 +448,8 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         drop(join.join());
         return Err("ingest socket never appeared".into());
     }
-    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())?;
+    let ingest = send_ingest_request(&ingest_socket, &repo_map_ingest_envelope())
+        .map_err(|err| format!("repo-map ingest request failed: {err}"))?;
     if !matches!(
         ingest.payload,
         SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
@@ -403,7 +458,8 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         drop(join.join());
         return Err("repo-map ingest did not ack".into());
     }
-    let activate = send_control_request(&control_socket, &repo_map_activate_request())?;
+    let activate = send_control_request(&control_socket, &repo_map_activate_request())
+        .map_err(|err| format!("repo-map activate request failed: {err}"))?;
     if !matches!(
         activate.payload,
         SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
@@ -449,7 +505,8 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
         return Err("repo-map persisted query path never became ready".into());
     }
 
-    let response = send_query_request(&query_socket, &repo_map_request())?;
+    let response = send_query_request(&query_socket, &repo_map_request())
+        .map_err(|err| format!("repo-map query request after restart failed: {err}"))?;
     let repo_map = match response.payload {
         SearchPlaneQueryIpcResponse::RepoMapQuery(repo_map) => repo_map,
         other => {
@@ -464,10 +521,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     assert_eq!(repo_map.revision_id, revision());
     assert_eq!(repo_map.manifest_generation, generation());
     assert_eq!(repo_map.snapshot_meta.snapshot_id, "repomap-snapshot-11");
-    assert_eq!(
-        repo_map.entries[0].subject_identity,
-        "src/service/mod.rs::Beta"
-    );
+    assert_eq!(repo_map.entries[0].subject_identity, "symbol://beta");
 
     shutdown.store(true, Ordering::Release);
     match join.join() {
@@ -495,7 +549,8 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
         return Err("socket never appeared".into());
     }
 
-    let response = send_query_request(&query_socket, &repo_map_request())?;
+    let response = send_query_request(&query_socket, &repo_map_request())
+        .map_err(|err| format!("repo-map missing-snapshot query failed: {err}"))?;
     let err = match response.payload {
         SearchPlaneQueryIpcResponse::Error(err) => err,
         other => {

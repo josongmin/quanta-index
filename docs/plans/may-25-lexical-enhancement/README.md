@@ -1,7 +1,7 @@
 # May 25 Lexical Enhancement Closeout
 
-Status: `proposed`
-Date: `2026-05-25`
+Status: `partial-execution-live`
+Date: `2026-05-26`
 Scope: breaking-first closeout for lexical search, LQ DSL, Sourcegraph syntax,
 real-engine execution, and hard E2E proof.
 
@@ -21,29 +21,64 @@ This is not a docs-only cleanup. The program is complete only when:
   query-string escape path
 - semantic and hybrid search consume materialized lexical scope rather than a
   best-effort lexical side channel
-- history and structural surfaces are wired fail-closed until producer data
-  exists
+- history surfaces stay typed fail-closed until producer data exists
+- structural surfaces execute only against materialized parse-tree/chunk
+  authority already present in the readiness ledger
 - E2E tests persist real index data, reopen it, query it, and assert results
+
+## 1.5 Verification refresh (2026-05-27)
+
+- Current live-source closeout rerun stayed green on:
+  - `cargo check -p quanta-index-contract`
+  - `cargo check -p quanta-index-sdk`
+  - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`
+  - `cargo test -p quanta-index-sdk --lib`
+  - `cargo test -p quanta-index-searchd-runtime`
+- That rerun covers the active lexical/Sourcegraph/structural daemon rails now
+  living under `searchd-runtime`, including `e2e_lexical_full_fidelity`,
+  `e2e_dual_syntax_lowering_parity`, `sdk_frontdoor`, and `repo_map_end_to_end`.
+- The narrower `may-26-indexing-residue-tasks` structural/bridge pack is
+  separately closed on the same current tree. The remaining status here is the
+  broader whole-program queue, not a May-26 residue-pack reopen.
+- Program status remains `partial-execution-live`: `E2E-03`, `E2E-05`,
+  `E2E-06`, `E2E-07`, plus residual `LXE-08`/`LXE-10` scope are not closed by
+  this rerun.
+- This is a current live-source proof refresh, not a frozen-tree release claim.
 
 ## 2. Current truth to freeze first
 
-The implementation must be re-frozen by `LXE-00` before code work starts.
+`LXE-00` produced the current executable matrix; any remaining ticket work must
+still be re-frozen against live source before new completion claims are made.
 Known risk areas from the latest local review:
 
 - `crates/quanta-index-lexical/src/lib.rs` has filters that are ignored or
   returned as `NotImplemented`.
-- the regex leaf path still has a risk of going through an escaped query
-  string instead of the trigram plus regex verification path.
+- regex no longer escapes through a generic query string; the remaining regex
+  risk is observability and large-corpus proof, not route correctness.
 - `crates/quanta-index-search-plane/src/lowering.rs` accepts a wider syntax
   surface than the executor can currently prove.
-- `crates/quanta-index-search-plane/src/query_dispatcher.rs` correctly
-  fail-closes history and structural paths, but the response/runtime proof must
-  be made executable.
+- `crates/quanta-index-search-plane/src/query_dispatcher.rs` now lowers one
+  top-level structural leaf plus the executable `repo:` / `file:` / `lang:`
+  filter subset into the live structural domain path instead of hard-closing
+  the happy path.
+- `crates/quanta-index-lq-structural/src/matcher.rs` and
+  `crates/quanta-index-searchd/src/app/runtime.rs` expose a truthful structural
+  subset over materialized parse-tree/chunk authority: root-kind exact,
+  root capture, root-kind plus capture, ordered direct-child tree-walk,
+  variadic sibling capture / wildcard skip, and `where` / `inside` /
+  `outside` constraints.
+- structural execution inside `quanta-index-core` / `searchd` now uses
+  internal `StructuralMatchBinding` / `StructuralMatchCandidate` carriers;
+  public `StructuralBinding` / `StructuralCandidate` projection happens only at
+  the search-plane response boundary.
+- structural shapes outside that subset, and structural queries with filters
+  outside `repo:` / `file:` / `lang:`, remain typed `STR_INVALID_REQUEST`.
 - existing hard-case tests are useful but are not sufficient if they do not
   write records into the real storage/index path and query the reopened index.
 
-Facts above are starting points, not completion claims. `LXE-00` must produce a
-line-backed matrix before any ticket can be marked implemented.
+Facts above are current guardrails, not blanket completion claims. Remaining
+tickets still need line-backed source and runtime proof before they can be
+marked implemented.
 
 ## 3. Execution waves
 
@@ -56,8 +91,10 @@ line-backed matrix before any ticket can be marked implemented.
 | 4 | `E2E-00`..`E2E-07` | prove real storage/query/restart/perf behavior |
 
 Within a wave, tickets may run in parallel only when their owner files do not
-overlap. E2E harness work can start after `LXE-00`, but individual scenario rows
-must stay expected-failing until the owning implementation ticket lands.
+overlap. E2E harness work can start after `LXE-00`; when a new surface is
+intentionally behind implementation, its scenario row must stay
+expected-failing until the owning ticket lands. The current live lexical
+matrices no longer rely on expected-failing rows.
 
 ## 4. Non-negotiable rules
 
@@ -67,7 +104,10 @@ must stay expected-failing until the owning implementation ticket lands.
   lowering.
 - Planner owns engine selection. `search-plane` may dispatch but must not own
   lexical engine semantics.
-- Structural live success is forbidden until parse-tree producer data exists.
+- Structural live success is allowed only against materialized parse-tree/chunk
+  authority already present in the readiness ledger.
+- No structural text/regex fallback. Unsupported structural shapes stay typed
+  `STR_INVALID_REQUEST`.
 - External producer gaps are explicit blockers, not green implementation claims.
 - E2E proof must exercise persisted/indexed data, not parser-only fixtures.
 
@@ -87,8 +127,11 @@ The program is complete only when all are true:
 8. Sourcegraph tests prove translated queries match equivalent LQ behavior.
 9. semantic tests prove lexical scope materialization affects the candidate set.
 10. hybrid tests prove lexical universe first, then semantic fusion.
-11. history and structural endpoints return typed not-ready/unavailable when
-    producer data is absent.
+11. history endpoints return typed not-ready/unavailable when producer data is
+    absent, and structural endpoints either execute against materialized
+    parse-tree/chunk authority or return typed fail-closed codes
+    (`STR_LANG_NOT_SUPPORTED`, `STR_GENERATION_NOT_READY`,
+    `STR_SHARD_UNAVAILABLE`, `STR_INVALID_REQUEST`).
 12. `SearchExplanation` carries planner trace, engines touched, early stop
     reason, and summary for real executed queries.
 13. restart/replay E2E returns deterministic result IDs and ordering.

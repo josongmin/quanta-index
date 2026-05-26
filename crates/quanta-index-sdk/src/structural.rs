@@ -4,9 +4,10 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
     StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
+    StructuralTombstoneScope, StructuralTreeRecord, TextQuerySyntax,
 };
 
+use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,46 +180,33 @@ impl crate::NamespaceQuery for StructuralNs {
 
 pub struct StructuralQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: Option<String>,
-    selection: Option<GenerationSelector>,
-    top_k: Option<u32>,
+    state: TextQueryBuilderState,
 }
 
 impl<'a> StructuralQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            syntax: TextQuerySyntax::Native,
-            query_text: None,
-            selection: None,
-            top_k: None,
+            state: TextQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Native;
-        self.query_text = Some(query_text.into());
-        self
-    }
-
-    #[must_use]
-    pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Sourcegraph;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Native;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -227,33 +215,16 @@ impl<'a> StructuralQueryBuilder<'a> {
 
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
     pub fn execute(self) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
-        let query_text = self
-            .query_text
-            .ok_or_else(|| SdkError::Usage("structural query text is required".to_string()))?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("structural generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("structural top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
+        let text_query = self.state.build_request("structural")?;
         let response = self
             .client
             .dispatch_query(SearchPlaneQueryIpcRequest::Structural(
-                StructuralQueryRequest {
-                    text_query: TextQueryRequest {
-                        syntax: self.syntax,
-                        query_text,
-                        generation,
-                        generation_selector,
-                        top_k,
-                    },
-                },
+                StructuralQueryRequest { text_query },
             ))?;
         match response {
             SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
@@ -266,8 +237,7 @@ impl<'a> StructuralQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "structural response",
                 QuantaIndex::query_response_kind(&other),
             )),

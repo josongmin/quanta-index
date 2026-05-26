@@ -31,7 +31,6 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap query response",
@@ -75,8 +74,8 @@ impl<'a> RepoMapNamespace<'a> {
 /// QI-NS-01: marker type for the built-in repo-map namespace.
 ///
 /// `Batch` is the existing [`RepoMapSourceBundle`] — there is no separate
-/// SDK-side builder type because the bundle is already a flat DTO
-/// constructed by the producer materializer. `Receipt` is
+/// SDK-side builder type because the contract bundle itself is already the
+/// typed graph snapshot handed off by the producer. `Receipt` is
 /// [`RepoMapMutationAck`] rather than `BatchPublishReceipt` because the
 /// repo-map publish is a one-shot bundle ingest, not a streamed batch
 /// with a channel sequence range.

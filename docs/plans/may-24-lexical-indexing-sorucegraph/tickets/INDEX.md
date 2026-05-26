@@ -130,7 +130,7 @@ Cross-cut work that is now covered, but is **not** an RFC roll-up, lives in:
 | RFC-GAP-LEX-07-CODES | LEX-07 | Add `HISTORY_REF_NOT_FOUND`, `HISTORY_RANGE_OVERRUN`, `HISTORY_MERGE_CYCLE`, `HISTORY_TRACE_INCOMPLETE`, `HISTORY_UNINDEXED` to error taxonomy. |
 | RFC-GAP-LEX-07-REVMAX | LEX-07 | `HISTORY_REVISIONS_MAX = 10,000` conflicts with feature-scope.md `count:all = 100,000`. Reconcile RFC § Capacity. |
 | RFC-GAP-LEX-04-FORBIDDEN | LEX-04 | Add `PARSE_FORBIDDEN_SYNTAX` to taxonomy for lookbehind/lookahead/backref/possessive parse-rejections. |
-| RFC-GAP-STR-01-CODES | STR-01 | Add `STR_PARSE_FAIL`, `STR_INVALID_METAVAR`, `STR_LANG_NOT_SUPPORTED`, `STR_LANG_RESOLUTION_EMPTY`, `STR_TYPED_HOLE_NOT_IMPLEMENTED`. |
+| RFC-GAP-STR-01-CODES | STR-01 | Add `STR_PARSE_FAIL`, `STR_INVALID_METAVAR`, `STR_LANG_NOT_SUPPORTED`, `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`. |
 | RFC-GAP-RT-01-CODES | RT-01 | Add `DIRTY_STALE_GEN`, `DIRTY_BUFFER_FULL`, `DIRTY_TTL_EXPIRED`, `DIRTY_BAD_IDENTITY` + `STATE_NOT_READY` extensions. |
 | RFC-GAP-SEM-01-CODES | SEM-01 | Add `SEM_DIM_MISMATCH`, `SEM_NOT_READY`, `SEM_INVALID_VECTOR`, `SEM_METRIC_UNSUPPORTED`, `SEM_ANN_NONDETERMINISTIC`. |
 | RFC-GAP-SEM-02-CODES | SEM-02 | Add `HYB_INVALID_WEIGHTS`, `HYB_GEN_MISMATCH`, `HYB_PUSHDOWN_INCOMPLETE`, `HYB_TOP_K_INVALID`, `HYB_STRATEGY_UNSUPPORTED`, `HYB_SUBQUERY_INVALID`. |
@@ -197,7 +197,7 @@ Working-tree state diverges from `736ddea` snapshot: `quanta-index-control/` del
 | Ticket | Mistake | Correction |
 |---|---|---|
 | [LEX-05.md](LEX-05.md) | tree-sitter parse on search side | `SymbolRecordDecoder` trait — decodes `UpsertSymbol.symbol` (producer-extracted `SymbolRecord`). No tree-sitter dep. |
-| [STR-01.md](STR-01.md) | tree-sitter parse on search side | `UpsertParseTree { tree: ParseTreeRecord }` op (proposed). Search plane traverses producer-supplied trees. **Option A** = v1 ship with producer agreement; **Option B** = v2 deferral. |
+| [STR-01.md](STR-01.md) | tree-sitter parse on search side | `UpsertParseTree { tree: ParseTreeRecord }` op. Search plane traverses producer-supplied trees. The original live ship was the truthful root-only subset; later may-26 work expanded the current runtime, while broader semantics remain follow-on work. |
 | [LEX-07.md](LEX-07.md) | search-plane git access / commit graph self-author | `UpsertCommit { commit: CommitRecord }` + `UpsertRef` + `UpsertTag` ops (proposed). `CommitGraph.add_commit` is a channel-subscriber callback. |
 | [RT-01.md](RT-01.md) | separate `apply_changes` IPC (violates §11 rule 6) | `UpsertDirty` + `EvictDirty` ops (proposed). `DirtyBuffer.apply` / `.evict` are channel-subscriber callbacks. Drops ADR-017 (advisory lock) — channel monotonic seq replaces it. |
 
@@ -228,7 +228,7 @@ Filed by the 4 correction agents. Need resolution before integration:
 | AMB-PROD-8 | `EvictDirty` vs `UpsertDirty` ordering at same doc_id — channel seq monotonicity is authority but producer contract should guarantee it | producer-handoff doc |
 | AMB-PROD-9 | Channel WAL retention horizon vs RT-01 TTL (300s default) — crash-recovery completeness | channel-arch SSOT §4.3 amendment |
 | AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing (sync at apply vs async eventually-consistent) | RT-01 §8 amendment |
-| AMB-PROD-11 | Q-STR-01-OPTION — A (v1 with `UpsertParseTree`) or B (v2 deferral)? | integrator wave-entry |
+| AMB-PROD-11 | STR-01 breadth beyond the current live parse-tree cutover | integrator follow-on ticket pack |
 | AMB-PROD-13 | `DeleteChunk` cascade silent on semantic shard — Q-RFC-SEM-02-3 surfaced the gap in [producer-handoff.md §3.5.2](../../../ssot/producer-handoff.md) | **RESOLVED** via §3.5.2 amendment (this round) + Round 7a HNSW delta API landing (`SemanticIndexBuilder::remove_embedding(doc_id)`); embedding wire identity is `chunk_id` per §3.5.1 |
 | AMB-PROD-14 | `SemanticVectorRef::Handle` server-side storage model — Round 6b shipped `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::{Inline \| Handle}, top_k }` but the handle resolution surface is unpinned | **DEFERRED** to [ADR-026](../implementation-plan.md) (recommendation: Option B = handle == `embedding_id`); typed error `SEM_HANDLE_NOT_FOUND` wired in [producer-handoff.md §6.5](../../../ssot/producer-handoff.md) |
 

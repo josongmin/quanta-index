@@ -29,4 +29,5 @@ ciborium = { workspace = true }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
+serde = { workspace = true }
 tempfile.workspace = true

@@ -28,6 +28,7 @@
     reason = "harness API surface is consumed across E2E-00..07; only the inventory smoke exercises a slice today"
 )]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,12 +38,16 @@ use std::time::{Duration, Instant};
 use anyhow::Result as AnyResult;
 use ciborium::into_writer;
 use quanta_index_channel::{BundleChannelPublisher, LexicalWalPublisher, open_lexical_publisher};
-use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::lex::{
+    LanguageCode, ParseNode, ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+    SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
+};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
     RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, UpsertChunk,
+    SearchPlaneQueryIpcResponseEnvelope, StructuralQueryRequest, SymbolId, TextQueryRequest,
+    TextQuerySyntax, UpsertChunk, UpsertParseTree, UpsertSymbol,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SearchdConfig;
@@ -68,6 +73,7 @@ pub(super) struct E2eRuntime {
     /// is started so the runtime can reacquire the WAL lock.
     publisher: Option<LexicalWalPublisher>,
     driver: Option<DriverState>,
+    chunk_ids_by_path: BTreeMap<String, ChunkId>,
     request_id_counter: AtomicU64,
     generation_counter: u64,
 }
@@ -90,6 +96,7 @@ struct DriverState {
 )]
 pub(super) struct E2eQueryResult {
     pub(super) candidates: Vec<LexicalCandidate>,
+    pub(super) candidate_ids: Vec<String>,
     pub(super) engines_touched: Vec<String>,
     pub(super) typed_error: Option<E2eTypedError>,
 }
@@ -116,6 +123,7 @@ impl E2eRuntime {
             state_root,
             publisher: Some(publisher),
             driver: None,
+            chunk_ids_by_path: BTreeMap::new(),
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
         })
@@ -227,6 +235,133 @@ impl E2eRuntime {
             chunk_id,
             payload: buf,
         }))?;
+        let _old = self
+            .chunk_ids_by_path
+            .insert(path.to_string(), record.chunk_id);
+        Ok(())
+    }
+
+    pub(super) fn ingest_structural_function_tree(
+        &mut self,
+        path: &str,
+        content: &str,
+        identifier: &str,
+    ) -> AnyResult<()> {
+        if self.driver.is_some() {
+            self.stop_driver();
+        }
+        if self.publisher.is_none() {
+            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
+        }
+        let publisher = self
+            .publisher
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
+        })?;
+        let identifier_start = content.find(identifier).ok_or_else(|| {
+            anyhow::anyhow!(
+                "e2e-harness: identifier `{identifier}` not present in structural content"
+            )
+        })?;
+        let identifier_end = identifier_start.saturating_add(identifier.len());
+        let byte_end = u32::try_from(content.len())
+            .map_err(|err| anyhow::anyhow!("e2e harness structural content overflow: {err}"))?;
+        let identifier_start = u32::try_from(identifier_start)
+            .map_err(|err| anyhow::anyhow!("e2e harness identifier start overflow: {err}"))?;
+        let identifier_end = u32::try_from(identifier_end)
+            .map_err(|err| anyhow::anyhow!("e2e harness identifier end overflow: {err}"))?;
+        let tree = ParseTreeRecord {
+            wire_version: 1,
+            lang: LanguageCode::new(language_from_path(path)).map_err(|err| {
+                anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+            })?,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end,
+                children: vec![
+                    ParseNode {
+                        kind: "identifier".to_string().into_boxed_str(),
+                        byte_start: identifier_start,
+                        byte_end: identifier_end,
+                        children: Vec::new(),
+                    },
+                    ParseNode {
+                        kind: "block".to_string().into_boxed_str(),
+                        byte_start: byte_end.saturating_sub(2),
+                        byte_end,
+                        children: Vec::new(),
+                    },
+                ],
+            },
+            source_hash: compute_parse_tree_source_hash(content),
+            role_tag_schema_version: 1,
+            role_tags: Vec::new(),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        into_writer(&tree, &mut buf)?;
+        let _seq = publisher.publish(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation: self.current_generation(),
+            chunk_id,
+            payload: buf,
+        }))?;
+        Ok(())
+    }
+
+    pub(super) fn ingest_symbol(
+        &mut self,
+        _repo: &str,
+        path: &str,
+        symbol_id: &str,
+        symbol_name: &str,
+    ) -> AnyResult<()> {
+        if self.driver.is_some() {
+            self.stop_driver();
+        }
+        if self.publisher.is_none() {
+            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
+        }
+        let publisher = self
+            .publisher
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
+        let record = SymbolRecord {
+            symbol_id: SymbolId::new(symbol_id),
+            repo_relative_path: RepoRelativePath::new(path),
+            language: LanguageCode::new(language_from_path(path)).map_err(|err| {
+                anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+            })?,
+            symbol_kind: SymbolKindCode::new("function")
+                .map_err(|err| anyhow::anyhow!("invalid test symbol kind: {err}"))?,
+            symbol_kind_family: Some(SymbolKindFamily::Callable),
+            local_name: symbol_name.to_string().into_boxed_str(),
+            qualified_name: format!("crate::{symbol_name}").into_boxed_str(),
+            signature: None,
+            visibility: None,
+            definition_span: SymbolSpan {
+                path: path.to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: u32::try_from(symbol_name.len())
+                    .map_err(|err| anyhow::anyhow!("e2e harness symbol length overflow: {err}"))?,
+                line_start: 1,
+                line_end: 1,
+            },
+            container_qualified_name: Some("crate".to_string().into_boxed_str()),
+            relationship: SymbolRelationship::Def,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        into_writer(&record, &mut buf)?;
+        let _seq = publisher.publish(LexicalChannelOp::UpsertSymbol(UpsertSymbol {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation: self.current_generation(),
+            symbol_id: SymbolId::new(symbol_id),
+            payload: buf,
+        }))?;
         Ok(())
     }
 
@@ -265,6 +400,16 @@ impl E2eRuntime {
         self.query_text_with_pin(syntax, query_text, top_k, pin)
     }
 
+    pub(super) fn query_structural(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+    ) -> E2eQueryResult {
+        let pin = self.last_sealed_pin();
+        self.query_structural_with_pin(syntax, query_text, top_k, pin)
+    }
+
     /// Variant that lets a self-test exercise the "no generation pin"
     /// invalid-contract path explicitly.
     pub(super) fn query_text_with_pin(
@@ -290,6 +435,7 @@ impl E2eRuntime {
             Err(err) => {
                 return E2eQueryResult {
                     candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
                     engines_touched: Vec::new(),
                     typed_error: Some(E2eTypedError {
                         code: "HARNESS_START".to_string(),
@@ -316,7 +462,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
-                    | SearchPlaneQueryIpcResponse::Sourcegraph(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                         true
                     }
@@ -334,6 +479,7 @@ impl E2eRuntime {
                 };
                 return E2eQueryResult {
                     candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
                     engines_touched: Vec::new(),
                     typed_error: Some(E2eTypedError {
                         code: "IPC_TRANSPORT".to_string(),
@@ -344,12 +490,18 @@ impl E2eRuntime {
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Text(text) => E2eQueryResult {
+                candidate_ids: text
+                    .results
+                    .iter()
+                    .map(|c| c.candidate_id.clone())
+                    .collect(),
                 candidates: text.results,
                 engines_touched: Vec::new(),
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
+                candidate_ids: Vec::new(),
                 engines_touched: Vec::new(),
                 typed_error: Some(E2eTypedError {
                     code: err.code,
@@ -364,7 +516,113 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
-            SearchPlaneQueryIpcResponse::Sourcegraph(_) => unexpected_response("Sourcegraph"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_response("RuntimeMetadata")
+            }
+        }
+    }
+
+    pub(super) fn query_structural_with_pin(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        pin: Option<GenerationPin>,
+    ) -> E2eQueryResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    generation: pin,
+                    generation_selector: None,
+                    top_k,
+                },
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eQueryResult {
+                    candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
+                    engines_touched: Vec::new(),
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => {
+                let message = if readiness_reached {
+                    err.to_string()
+                } else {
+                    format!("readiness timeout before IPC response: {err}")
+                };
+                return E2eQueryResult {
+                    candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
+                    engines_touched: Vec::new(),
+                    typed_error: Some(E2eTypedError {
+                        code: "IPC_TRANSPORT".to_string(),
+                        message,
+                    }),
+                };
+            }
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Structural(structural) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: structural
+                    .results
+                    .into_iter()
+                    .map(|candidate| candidate.candidate_id)
+                    .collect(),
+                engines_touched: Vec::new(),
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: Vec::new(),
+                engines_touched: Vec::new(),
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
@@ -423,6 +681,7 @@ fn build_config(state_root: &Path) -> SearchdConfig {
 fn unexpected_response(kind: &str) -> E2eQueryResult {
     E2eQueryResult {
         candidates: Vec::new(),
+        candidate_ids: Vec::new(),
         engines_touched: Vec::new(),
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),

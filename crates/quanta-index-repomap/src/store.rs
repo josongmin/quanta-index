@@ -89,14 +89,19 @@ impl RepoMapGenerationStore {
     }
 
     pub fn ingest_bundle(&self, bundle: &RepoMapSourceBundle) -> Result<(), CoreError> {
+        if bundle.manifest_digest.trim().is_empty() {
+            return Err(CoreError::InvalidContract(
+                "repomap ingest: manifest_digest must not be empty".to_string(),
+            ));
+        }
         if bundle.authority_digest.trim().is_empty() {
             return Err(CoreError::InvalidContract(
                 "repomap ingest: authority_digest must not be empty".to_string(),
             ));
         }
-        if bundle.file_indices.is_empty() {
+        if bundle.nodes.is_empty() {
             return Err(CoreError::InvalidContract(
-                "repomap ingest: file_indices must not be empty".to_string(),
+                "repomap ingest: nodes must not be empty".to_string(),
             ));
         }
         let snapshot = RepoMapMaterializer::materialize(bundle);

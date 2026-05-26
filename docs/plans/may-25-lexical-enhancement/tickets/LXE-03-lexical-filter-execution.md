@@ -1,6 +1,6 @@
 # LXE-03 - Lexical Filter Execution
 
-Status: `proposed`
+Status: `partial`
 Priority: `P0`
 Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 
@@ -8,6 +8,24 @@ Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 
 Make every accepted lexical filter either executable or typed rejected before
 query execution. No filter may be silently ignored.
+
+## Current code-backed status (2026-05-26)
+
+- Executed on the live lexical rail:
+  - `repo`, `file`, `lang`
+  - `case:yes/no` for keyword/path-term execution
+  - `count:` with deterministic tie ordering after full recall
+  - `select:repo`, `select:file`, `select:content`
+  - producer-dependent typed-unavailable truth for `fork`, `visibility`
+- Still not closed here:
+  - `rev` remains typed unavailable on the lexical rail
+  - regex/phrase-specific case semantics belong to `LXE-04` / `LXE-05`
+  - history/structural result surfaces remain outside this ticket
+- Code-backed proof:
+  - `cargo test -p quanta-index-lexical --test tantivy_smoke`
+  - `cargo test -p quanta-index-core --test lexical_policy`
+  - `cargo test -p quanta-index-search-plane`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --test e2e_dual_syntax_lowering_parity -- --nocapture`
 
 ## Owner files
 

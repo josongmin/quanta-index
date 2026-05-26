@@ -1,17 +1,15 @@
-//! LXE-05 — phrase planner + position-engine binding scaffold.
+//! LXE-05 — phrase planner + positions-engine binding.
 //!
 //! Owns the plan-time shape produced for `LqLeaf::Phrase`: tokenization,
 //! field routing (content / path / symbol), case-sensitivity carryover from
 //! [`LqOptions`], and typed rejection of phrase extensions the position
 //! engine does not yet model (slop, symbol-field phrase).
 //!
-//! Execution against the live position index is wired through the local
-//! [`PhrasePositionLookup`] port so the planner stays adapter-agnostic; the
-//! Tantivy / `quanta-index-lq-positions` integration happens in a follow-up
-//! coordination pass (planner.rs / lib.rs touch by sibling agents). The
-//! tokenization called here is a deliberate whitespace split — see the
-//! `TODO[LXE-05-integration]` marker for the position-engine analyzer that
-//! must replace it once both sides land in the same PR.
+//! Execution against the live position index is now wired through
+//! `quanta-index-lq-positions` sidecars from the lexical adapter. The
+//! tokenization called here remains a deliberate whitespace split so query
+//! planning and sidecar construction share one analyzer until the wider
+//! normalizer wave lands.
 //!
 //! Display / `std::error::Error` impls are hand-rolled per the workspace
 //! no-proc-macro-derive build-hygiene rule (`thiserror` may not be added
@@ -210,14 +208,11 @@ pub struct PhrasePlan {
 
 /// Tokenize the phrase text for the position-engine lookup.
 ///
-/// TODO[LXE-05-integration]: replace whitespace tokenization with the
-/// `quanta-index-lq-text-norm::tokenize_text` + `fold_case` pipeline that
-/// the position index ingests on the write side. The whitespace path here
-/// is a deliberately narrow placeholder so this file can land without
-/// adding a new workspace dependency in the same PR as the planner
-/// scaffold; the coordination pass that wires `planner.rs` to this module
-/// will route through the real analyzer.
-fn tokenize_phrase(text: &str, case_sensitive: bool) -> Vec<String> {
+/// TODO[LXE-05-normalizer]: replace whitespace tokenization with the shared
+/// text normalizer pipeline once the lexical crate is allowed to depend on
+/// it directly. Until then, both sidecar build and query planning call this
+/// helper so the live phrase authority stays self-consistent.
+pub(crate) fn tokenize_phrase_terms(text: &str, case_sensitive: bool) -> Vec<String> {
     text.split_whitespace()
         .map(|t| {
             if case_sensitive {
@@ -236,7 +231,7 @@ fn tokenize_phrase(text: &str, case_sensitive: bool) -> Vec<String> {
 /// 1. Slop request validated against policy (DSL has no slop today, so
 ///    only slop = 0 passes when `allow_slop` is false).
 /// 2. Field validated: `Symbol` rejected, `Content` / `Path` accepted.
-/// 3. Tokenize using the position-engine analyzer (placeholder today).
+/// 3. Tokenize using the shared sidecar/query analyzer.
 /// 4. Empty → `EmptyPhrase`; below `min_tokens` → `TooFewTokens`.
 pub fn plan_phrase(
     text: &str,
@@ -270,7 +265,7 @@ pub fn plan_phrase(
     }
 
     let case_sensitive = matches!(options.case, Some(LqCase::Sensitive));
-    let tokens = tokenize_phrase(text, case_sensitive);
+    let tokens = tokenize_phrase_terms(text, case_sensitive);
 
     if tokens.is_empty() {
         return Err(PhrasePlannerError::EmptyPhrase);

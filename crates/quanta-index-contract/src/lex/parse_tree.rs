@@ -24,6 +24,7 @@ use serde::{
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
 };
+use sha2::{Digest, Sha256};
 
 use super::lang::LanguageCode;
 
@@ -209,8 +210,9 @@ impl<'de> Deserialize<'de> for ParseNode {
 /// `source_hash` is the producer's content hash of the chunk source; mismatch
 /// between the tree and the chunk text surfaces as
 /// `STR_PARSE_TREE_DECODE_FAIL{reason=source_hash_mismatch}` at the decode
-/// site (per producer-handoff §3.3.1). This scaffold carries the field
-/// verbatim; consumers enforce the integrity check.
+/// site (per producer-handoff §3.3.1). The canonical in-repo contract rule is
+/// SHA-256 over the chunk's post-normalize `indexed_text` bytes; consumers
+/// enforce that integrity check.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParseTreeRecord {
     pub wire_version: u32,
@@ -332,5 +334,40 @@ impl<'de> Deserialize<'de> for ParseTreeRecord {
             PARSE_TREE_RECORD_FIELDS,
             ParseTreeRecordVisitor,
         )
+    }
+}
+
+/// Canonical producer/search-plane integrity hash for one structural chunk.
+///
+/// Structural parse-tree byte offsets are defined against the chunk's
+/// post-normalize text, so the hash authority is the exact `indexed_text`
+/// byte sequence carried by the sibling [`crate::ChunkRecord`]. This helper is
+/// infallible by construction: SHA-256 over an in-memory byte slice has no
+/// data-dependent failure mode.
+#[must_use]
+pub fn compute_parse_tree_source_hash(indexed_text: &str) -> [u8; 32] {
+    Sha256::digest(indexed_text.as_bytes()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_parse_tree_source_hash;
+
+    #[test]
+    fn parse_tree_source_hash_is_sha256_of_indexed_text_bytes() {
+        let got = compute_parse_tree_source_hash("fn main() {}\n");
+        let expected = [
+            0x53, 0x6e, 0x50, 0x6b, 0xb9, 0x09, 0x14, 0xc2, 0x43, 0xa1, 0x2b, 0x39, 0x7b, 0x9a,
+            0x99, 0x8f, 0x85, 0xae, 0x2c, 0xbd, 0x9b, 0xa0, 0x2d, 0xfd, 0x03, 0xa9, 0xe1, 0x55,
+            0xca, 0x5c, 0xa0, 0xf4,
+        ];
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parse_tree_source_hash_changes_when_indexed_text_changes() {
+        let a = compute_parse_tree_source_hash("fn main() {}");
+        let b = compute_parse_tree_source_hash("fn main(){ }");
+        assert_ne!(a, b);
     }
 }

@@ -10,7 +10,9 @@
 use crate::ast::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf,
     LqMetaVar, LqNormalizedQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect,
-    LqStructuralBlock, LqStructuralNode, LqType, LqVisibility, LqYesNoOnly,
+    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode, LqType, LqVisibility,
+    LqYesNoOnly,
 };
 use crate::errors::{LqParseError, LqParseErrorCode, LqSpan};
 use crate::limits::{MAX_AST_DEPTH, MAX_FANOUT_PER_NODE};
@@ -947,7 +949,7 @@ fn classify_bare_arg(s: &str) -> LqPredicateArg {
 /// - `LimitExceededStructural` on > `MAX_STRUCTURAL_NODES` total nodes
 fn parse_structural_body(raw: &str, span: LqSpan) -> Result<LqStructuralBlock, LqParseError> {
     let mut parser = StructuralParser::new(raw, span);
-    let nodes = parser.parse_group_body(0)?;
+    let block = parser.parse_body(0, false)?;
     if parser.pos < parser.bytes.len() {
         return Err(LqParseError::new(
             LqParseErrorCode::SyntaxError,
@@ -955,11 +957,43 @@ fn parse_structural_body(raw: &str, span: LqSpan) -> Result<LqStructuralBlock, L
             "trailing input after structural body",
         ));
     }
+    count_structural_block(&block, span)?;
+    Ok(block)
+}
+
+fn count_structural_block(block: &LqStructuralBlock, span: LqSpan) -> Result<(), LqParseError> {
     let mut node_count: u32 = 0;
-    for n in &nodes {
-        count_structural_nodes(n, &mut node_count, span)?;
+    count_structural_block_with_acc(block, &mut node_count, span)
+}
+
+fn count_structural_block_with_acc(
+    block: &LqStructuralBlock,
+    acc: &mut u32,
+    span: LqSpan,
+) -> Result<(), LqParseError> {
+    for expr in &block.exprs {
+        count_structural_expr(expr, acc, span)?;
     }
-    Ok(LqStructuralBlock { lang: None, nodes })
+    Ok(())
+}
+
+fn count_structural_expr(
+    expr: &LqStructuralExpr,
+    acc: &mut u32,
+    span: LqSpan,
+) -> Result<(), LqParseError> {
+    match expr {
+        LqStructuralExpr::Pattern(nodes) => {
+            for node in nodes {
+                count_structural_nodes(node, acc, span)?;
+            }
+            Ok(())
+        }
+        LqStructuralExpr::Where(_) => Ok(()),
+        LqStructuralExpr::Inside(block) | LqStructuralExpr::Outside(block) => {
+            count_structural_block_with_acc(block, acc, span)
+        }
+    }
 }
 
 fn count_structural_nodes(
@@ -983,7 +1017,10 @@ fn count_structural_nodes(
         ));
     }
     match node {
-        LqStructuralNode::Literal(_) | LqStructuralNode::MetaVar(_) => Ok(()),
+        LqStructuralNode::Literal(_)
+        | LqStructuralNode::MetaVar(_)
+        | LqStructuralNode::Hole { .. }
+        | LqStructuralNode::WildcardMany => Ok(()),
         LqStructuralNode::Group(children) => {
             for c in children {
                 count_structural_nodes(c, acc, span)?;
@@ -1019,7 +1056,102 @@ impl<'a> StructuralParser<'a> {
         Ok(())
     }
 
-    fn parse_group_body(&mut self, depth: u32) -> Result<Vec<LqStructuralNode>, LqParseError> {
+    fn parse_body(
+        &mut self,
+        depth: u32,
+        stop_on_closing_brace: bool,
+    ) -> Result<LqStructuralBlock, LqParseError> {
+        let mut exprs: Vec<LqStructuralExpr> = Vec::new();
+        let mut saw_pattern = false;
+        let mut saw_non_pattern = false;
+        loop {
+            self.skip_ascii_whitespace()?;
+            match self.bytes.get(self.pos) {
+                None => break,
+                Some(b'}') if stop_on_closing_brace => break,
+                Some(_) => {}
+            }
+            if self.peek_keyword_where() {
+                if !saw_pattern {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "`where` requires a preceding structural pattern",
+                    ));
+                }
+                exprs.push(LqStructuralExpr::Where(self.parse_where_clause()?));
+                saw_non_pattern = true;
+                continue;
+            }
+            if self.peek_keyword_context("inside") {
+                if !saw_pattern {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "`inside` requires a preceding structural pattern",
+                    ));
+                }
+                exprs.push(LqStructuralExpr::Inside(Box::new(
+                    self.parse_context_block(depth, "inside")?,
+                )));
+                saw_non_pattern = true;
+                continue;
+            }
+            if self.peek_keyword_context("outside") {
+                if !saw_pattern {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "`outside` requires a preceding structural pattern",
+                    ));
+                }
+                exprs.push(LqStructuralExpr::Outside(Box::new(
+                    self.parse_context_block(depth, "outside")?,
+                )));
+                saw_non_pattern = true;
+                continue;
+            }
+            if saw_non_pattern {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "structural pattern tokens cannot appear after where/inside/outside",
+                ));
+            }
+            let nodes = self.parse_group_body(depth, true)?;
+            if nodes.is_empty() {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "empty structural pattern is not allowed",
+                ));
+            }
+            exprs.push(LqStructuralExpr::Pattern(nodes));
+            saw_pattern = true;
+        }
+        if exprs.is_empty() {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "empty structural body is not allowed",
+            ));
+        }
+        let nodes = match exprs.first() {
+            Some(LqStructuralExpr::Pattern(nodes)) => nodes.clone(),
+            _ => Vec::new(),
+        };
+        Ok(LqStructuralBlock {
+            lang: None,
+            nodes,
+            exprs,
+        })
+    }
+
+    fn parse_group_body(
+        &mut self,
+        depth: u32,
+        stop_on_directive: bool,
+    ) -> Result<Vec<LqStructuralNode>, LqParseError> {
         let max_depth = crate::limits::MAX_AST_DEPTH;
         if depth > max_depth {
             return Err(LqParseError::new(
@@ -1031,6 +1163,16 @@ impl<'a> StructuralParser<'a> {
         let mut out: Vec<LqStructuralNode> = Vec::new();
         let mut literal_buf: Vec<u8> = Vec::new();
         loop {
+            if stop_on_directive && self.starts_expr_directive() {
+                if !literal_buf.is_empty() {
+                    out.push(LqStructuralNode::Literal(bytes_to_box(
+                        &literal_buf,
+                        self.span,
+                    )?));
+                    literal_buf.clear();
+                }
+                return Ok(out);
+            }
             let Some(&b) = self.bytes.get(self.pos) else {
                 if !literal_buf.is_empty() {
                     out.push(LqStructuralNode::Literal(bytes_to_box(
@@ -1042,6 +1184,19 @@ impl<'a> StructuralParser<'a> {
                 return Ok(out);
             };
             match b {
+                b'.' if self.peek_sequence(b"...") => {
+                    if !literal_buf.is_empty() {
+                        out.push(LqStructuralNode::Literal(bytes_to_box(
+                            &literal_buf,
+                            self.span,
+                        )?));
+                        literal_buf.clear();
+                    }
+                    self.bump()?;
+                    self.bump()?;
+                    self.bump()?;
+                    out.push(LqStructuralNode::WildcardMany);
+                }
                 b'}' => {
                     if !literal_buf.is_empty() {
                         out.push(LqStructuralNode::Literal(bytes_to_box(
@@ -1068,7 +1223,7 @@ impl<'a> StructuralParser<'a> {
                             "structural depth counter overflow",
                         )
                     })?;
-                    let inner = self.parse_group_body(next_depth)?;
+                    let inner = self.parse_group_body(next_depth, false)?;
                     if self.bytes.get(self.pos) != Some(&b'}') {
                         return Err(LqParseError::new(
                             LqParseErrorCode::SyntaxError,
@@ -1087,9 +1242,7 @@ impl<'a> StructuralParser<'a> {
                         )?));
                         literal_buf.clear();
                     }
-                    self.bump()?;
-                    let mv = self.parse_metavar_dollar()?;
-                    out.push(LqStructuralNode::MetaVar(mv));
+                    out.push(self.parse_hole_node_dollar()?);
                 }
                 b':' if self.peek_alias() => {
                     if !literal_buf.is_empty() {
@@ -1099,18 +1252,7 @@ impl<'a> StructuralParser<'a> {
                         )?));
                         literal_buf.clear();
                     }
-                    self.bump()?;
-                    self.bump()?;
-                    let mv = self.parse_metavar_until(b']')?;
-                    if self.bytes.get(self.pos) != Some(&b']') {
-                        return Err(LqParseError::new(
-                            LqParseErrorCode::SyntaxError,
-                            self.span,
-                            "metavariable ':[name]' missing closing ']'",
-                        ));
-                    }
-                    self.bump()?;
-                    out.push(LqStructuralNode::MetaVar(mv));
+                    out.push(self.parse_hole_node_alias()?);
                 }
                 _ => {
                     literal_buf.push(b);
@@ -1127,7 +1269,320 @@ impl<'a> StructuralParser<'a> {
         self.bytes.get(n) == Some(&b'[')
     }
 
-    fn parse_metavar_dollar(&mut self) -> Result<LqMetaVar, LqParseError> {
+    fn peek_sequence(&self, needle: &[u8]) -> bool {
+        self.bytes
+            .get(self.pos..self.pos.saturating_add(needle.len()))
+            == Some(needle)
+    }
+
+    fn skip_ascii_whitespace(&mut self) -> Result<(), LqParseError> {
+        while self
+            .bytes
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.bump()?;
+        }
+        Ok(())
+    }
+
+    fn consume_bytes(&mut self, count: usize) -> Result<(), LqParseError> {
+        for _ in 0..count {
+            self.bump()?;
+        }
+        Ok(())
+    }
+
+    fn starts_expr_directive(&self) -> bool {
+        self.peek_keyword_where()
+            || self.peek_keyword_context("inside")
+            || self.peek_keyword_context("outside")
+    }
+
+    fn peek_keyword_where(&self) -> bool {
+        self.peek_keyword("where", true)
+    }
+
+    fn peek_keyword_context(&self, keyword: &str) -> bool {
+        self.peek_keyword(keyword, false)
+    }
+
+    fn peek_keyword_and(&self) -> bool {
+        self.peek_keyword("AND", true)
+    }
+
+    fn peek_keyword(&self, keyword: &str, whitespace_only: bool) -> bool {
+        let keyword = keyword.as_bytes();
+        let Some(slice) = self
+            .bytes
+            .get(self.pos..self.pos.saturating_add(keyword.len()))
+        else {
+            return false;
+        };
+        if slice != keyword {
+            return false;
+        }
+        match self.bytes.get(self.pos.saturating_add(keyword.len())) {
+            Some(next) if next.is_ascii_whitespace() => true,
+            Some(b'{') if !whitespace_only => true,
+            _ => false,
+        }
+    }
+
+    fn parse_context_block(
+        &mut self,
+        depth: u32,
+        keyword: &str,
+    ) -> Result<LqStructuralBlock, LqParseError> {
+        self.consume_bytes(keyword.len())?;
+        self.skip_ascii_whitespace()?;
+        if self.bytes.get(self.pos) != Some(&b'{') {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                format!("`{keyword}` must be followed by `{{`"),
+            ));
+        }
+        self.bump()?;
+        let next_depth = depth.checked_add(1).ok_or_else(|| {
+            LqParseError::new(
+                LqParseErrorCode::LimitExceededDepth,
+                self.span,
+                "structural context depth counter overflow",
+            )
+        })?;
+        let block = self.parse_body(next_depth, true)?;
+        if self.bytes.get(self.pos) != Some(&b'}') {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                format!("`{keyword}` block missing closing `}}`"),
+            ));
+        }
+        self.bump()?;
+        Ok(block)
+    }
+
+    fn parse_where_clause(&mut self) -> Result<Vec<LqStructuralConstraint>, LqParseError> {
+        self.consume_bytes("where".len())?;
+        self.skip_ascii_whitespace()?;
+        let mut constraints = Vec::new();
+        loop {
+            constraints.push(self.parse_structural_constraint()?);
+            self.skip_ascii_whitespace()?;
+            if !self.peek_keyword_and() {
+                break;
+            }
+            self.consume_bytes("AND".len())?;
+            self.skip_ascii_whitespace()?;
+        }
+        Ok(constraints)
+    }
+
+    fn parse_structural_constraint(&mut self) -> Result<LqStructuralConstraint, LqParseError> {
+        let left = self.parse_hole_ref()?;
+        self.skip_ascii_whitespace()?;
+        if self.bytes.get(self.pos) != Some(&b'=')
+            || self.bytes.get(self.pos.saturating_add(1)) != Some(&b'=')
+        {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "structural constraint requires `==`",
+            ));
+        }
+        self.consume_bytes(2)?;
+        self.skip_ascii_whitespace()?;
+        let right = match self.bytes.get(self.pos) {
+            Some(b'$') => LqStructuralConstraintOperand::Hole(self.parse_hole_ref()?),
+            Some(b'"') => LqStructuralConstraintOperand::Phrase(self.parse_phrase_literal()?),
+            Some(b'\'') => LqStructuralConstraintOperand::RawString(self.parse_raw_literal()?),
+            _ => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "structural constraint RHS must be a hole, phrase, or raw string",
+                ));
+            }
+        };
+        Ok(LqStructuralConstraint { left, right })
+    }
+
+    fn parse_hole_ref(&mut self) -> Result<LqStructuralHoleRef, LqParseError> {
+        let (multiplicity, name) = match self.bytes.get(self.pos) {
+            Some(b'$') => {
+                self.bump()?;
+                self.parse_metavar_dollar()?
+            }
+            Some(b':') if self.peek_alias() => {
+                self.bump()?;
+                self.bump()?;
+                if self
+                    .bytes
+                    .get(self.pos..)
+                    .is_some_and(|tail| tail.starts_with(b"hole.type="))
+                {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "typed structural holes are not supported on the current native route",
+                    ));
+                }
+                let parsed = self.parse_metavar_until(b']')?;
+                if self.bytes.get(self.pos) != Some(&b']') {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "metavariable ':[name]' missing closing ']'",
+                    ));
+                }
+                self.bump()?;
+                parsed
+            }
+            _ => {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "structural hole reference must start with `$` or `:[`",
+                ));
+            }
+        };
+        Ok(LqStructuralHoleRef { name, multiplicity })
+    }
+
+    fn parse_phrase_literal(&mut self) -> Result<String, LqParseError> {
+        self.bump()?;
+        let mut out = String::new();
+        loop {
+            let Some(&b) = self.bytes.get(self.pos) else {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "unterminated phrase literal in structural where",
+                ));
+            };
+            match b {
+                b'"' => {
+                    self.bump()?;
+                    return Ok(out);
+                }
+                b'\\' => {
+                    self.bump()?;
+                    let Some(&escaped) = self.bytes.get(self.pos) else {
+                        return Err(LqParseError::new(
+                            LqParseErrorCode::SyntaxError,
+                            self.span,
+                            "unterminated phrase escape in structural where",
+                        ));
+                    };
+                    let decoded = match escaped {
+                        b'"' => '"',
+                        b'\\' => '\\',
+                        b'n' => '\n',
+                        b'r' => '\r',
+                        b't' => '\t',
+                        _ => {
+                            return Err(LqParseError::new(
+                                LqParseErrorCode::TokenInvalid,
+                                self.span,
+                                "unknown phrase escape in structural where",
+                            ));
+                        }
+                    };
+                    self.bump()?;
+                    out.push(decoded);
+                }
+                _ => {
+                    self.bump()?;
+                    out.push(char::from(b));
+                }
+            }
+        }
+    }
+
+    fn parse_raw_literal(&mut self) -> Result<String, LqParseError> {
+        self.bump()?;
+        let start = self.pos;
+        while let Some(&b) = self.bytes.get(self.pos) {
+            if b == b'\'' {
+                let Some(bytes) = self.bytes.get(start..self.pos) else {
+                    return Err(LqParseError::new(
+                        LqParseErrorCode::SyntaxError,
+                        self.span,
+                        "internal: raw literal slice invalid",
+                    ));
+                };
+                let text = match core::str::from_utf8(bytes) {
+                    Ok(text) => text.to_owned(),
+                    Err(_e) => {
+                        return Err(LqParseError::new(
+                            LqParseErrorCode::TokenInvalid,
+                            self.span,
+                            "invalid UTF-8 in structural raw string",
+                        ));
+                    }
+                };
+                self.bump()?;
+                return Ok(text);
+            }
+            self.bump()?;
+        }
+        Err(LqParseError::new(
+            LqParseErrorCode::SyntaxError,
+            self.span,
+            "unterminated raw string in structural where",
+        ))
+    }
+
+    fn parse_hole_node_dollar(&mut self) -> Result<LqStructuralNode, LqParseError> {
+        self.bump()?;
+        let (multiplicity, mv) = self.parse_metavar_dollar()?;
+        Ok(LqStructuralNode::Hole {
+            name: Some(mv),
+            multiplicity,
+        })
+    }
+
+    fn parse_hole_node_alias(&mut self) -> Result<LqStructuralNode, LqParseError> {
+        self.bump()?;
+        self.bump()?;
+        if self
+            .bytes
+            .get(self.pos..)
+            .is_some_and(|tail| tail.starts_with(b"hole.type="))
+        {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "typed structural holes are not supported on the current native route",
+            ));
+        }
+        let (multiplicity, mv) = self.parse_metavar_until(b']')?;
+        if self.bytes.get(self.pos) != Some(&b']') {
+            return Err(LqParseError::new(
+                LqParseErrorCode::SyntaxError,
+                self.span,
+                "metavariable ':[name]' missing closing ']'",
+            ));
+        }
+        self.bump()?;
+        Ok(LqStructuralNode::Hole {
+            name: Some(mv),
+            multiplicity,
+        })
+    }
+
+    fn parse_metavar_dollar(
+        &mut self,
+    ) -> Result<(LqStructuralHoleMultiplicity, LqMetaVar), LqParseError> {
+        let multiplicity = if self.peek_sequence(b"...") {
+            self.bump()?;
+            self.bump()?;
+            self.bump()?;
+            LqStructuralHoleMultiplicity::Many
+        } else {
+            LqStructuralHoleMultiplicity::One
+        };
         let start = self.pos;
         while let Some(&b) = self.bytes.get(self.pos) {
             let is_first = self.pos == start;
@@ -1165,10 +1620,21 @@ impl<'a> StructuralParser<'a> {
                 ));
             }
         };
-        Ok(LqMetaVar::new(name))
+        Ok((multiplicity, LqMetaVar::new(name)))
     }
 
-    fn parse_metavar_until(&mut self, terminator: u8) -> Result<LqMetaVar, LqParseError> {
+    fn parse_metavar_until(
+        &mut self,
+        terminator: u8,
+    ) -> Result<(LqStructuralHoleMultiplicity, LqMetaVar), LqParseError> {
+        let multiplicity = if self.peek_sequence(b"...") {
+            self.bump()?;
+            self.bump()?;
+            self.bump()?;
+            LqStructuralHoleMultiplicity::Many
+        } else {
+            LqStructuralHoleMultiplicity::One
+        };
         let start = self.pos;
         while let Some(&b) = self.bytes.get(self.pos) {
             if b == terminator {
@@ -1200,7 +1666,7 @@ impl<'a> StructuralParser<'a> {
                 ));
             }
         };
-        Ok(LqMetaVar::new(name))
+        Ok((multiplicity, LqMetaVar::new(name)))
     }
 }
 
@@ -1542,10 +2008,15 @@ mod tests {
         match q.expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
                 assert!(block.lang.is_none());
-                assert_eq!(block.nodes.len(), 1);
-                match block.nodes.first() {
+                assert_eq!(block.exprs.len(), 1);
+                let Some(crate::ast::LqStructuralExpr::Pattern(nodes)) = block.exprs.first() else {
+                    assert!(false, "expected first expr to be structural pattern");
+                    return;
+                };
+                assert_eq!(nodes.len(), 1);
+                match nodes.first() {
                     Some(crate::ast::LqStructuralNode::Literal(s)) => {
-                        assert_eq!(s.as_ref(), " hello ");
+                        assert_eq!(s.as_ref(), "hello ");
                     }
                     other => {
                         assert!(false, "expected Literal, got {other:?}");
@@ -1563,14 +2034,38 @@ mod tests {
         let q = parse_input("match { fn $X() }");
         match q.expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-                // " fn ", $X, "() "
+                let Some(crate::ast::LqStructuralExpr::Pattern(nodes)) = block.exprs.first() else {
+                    assert!(false, "expected first expr to be structural pattern");
+                    return;
+                };
                 let metavars: Vec<&crate::ast::LqStructuralNode> = block
-                    .nodes
+                    .exprs
                     .iter()
-                    .filter(|n| matches!(n, crate::ast::LqStructuralNode::MetaVar(_)))
+                    .flat_map(|expr| match expr {
+                        crate::ast::LqStructuralExpr::Pattern(nodes) => nodes.iter().collect(),
+                        _ => Vec::new(),
+                    })
                     .collect();
-                assert_eq!(metavars.len(), 1);
-                if let Some(crate::ast::LqStructuralNode::MetaVar(m)) = metavars.first().copied() {
+                assert_eq!(nodes.len(), 3);
+                let captures: Vec<&crate::ast::LqStructuralNode> = metavars
+                    .iter()
+                    .copied()
+                    .filter(|n| {
+                        matches!(
+                            n,
+                            crate::ast::LqStructuralNode::Hole {
+                                name: Some(_),
+                                multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                            }
+                        )
+                    })
+                    .collect();
+                assert_eq!(captures.len(), 1);
+                if let Some(crate::ast::LqStructuralNode::Hole {
+                    name: Some(m),
+                    multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                }) = captures.first().copied()
+                {
                     assert_eq!(m.as_str(), "X");
                 } else {
                     assert!(false, "expected $X metavar");
@@ -1587,13 +2082,29 @@ mod tests {
         let q = parse_input("match { fn :[name]() }");
         match q.expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-                let metavars: Vec<&crate::ast::LqStructuralNode> = block
-                    .nodes
+                let captures: Vec<&crate::ast::LqStructuralNode> = block
+                    .exprs
                     .iter()
-                    .filter(|n| matches!(n, crate::ast::LqStructuralNode::MetaVar(_)))
+                    .flat_map(|expr| match expr {
+                        crate::ast::LqStructuralExpr::Pattern(nodes) => nodes.iter().collect(),
+                        _ => Vec::new(),
+                    })
+                    .filter(|n| {
+                        matches!(
+                            n,
+                            crate::ast::LqStructuralNode::Hole {
+                                name: Some(_),
+                                multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                            }
+                        )
+                    })
                     .collect();
-                assert_eq!(metavars.len(), 1);
-                if let Some(crate::ast::LqStructuralNode::MetaVar(m)) = metavars.first().copied() {
+                assert_eq!(captures.len(), 1);
+                if let Some(crate::ast::LqStructuralNode::Hole {
+                    name: Some(m),
+                    multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                }) = captures.first().copied()
+                {
                     assert_eq!(m.as_str(), "name");
                 } else {
                     assert!(false, "expected :[name] metavar");
@@ -1610,9 +2121,11 @@ mod tests {
         let q = parse_input("match { fn $X() { $body } }");
         match q.expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-                // expect at least one Group child for the inner `{ $body }`
-                let has_group = block
-                    .nodes
+                let Some(crate::ast::LqStructuralExpr::Pattern(nodes)) = block.exprs.first() else {
+                    assert!(false, "expected first expr to be structural pattern");
+                    return;
+                };
+                let has_group = nodes
                     .iter()
                     .any(|n| matches!(n, crate::ast::LqStructuralNode::Group(_)));
                 assert!(has_group, "expected at least one nested Group");
@@ -1621,5 +2134,80 @@ mod tests {
                 assert!(false, "expected StructuralBlock leaf, got {other:?}");
             }
         }
+    }
+
+    #[test]
+    fn structural_block_parses_variadic_holes_and_wildcards() {
+        let q = parse_input("match { fn $...args(...) { ... } }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                let Some(crate::ast::LqStructuralExpr::Pattern(nodes)) = block.exprs.first() else {
+                    assert!(false, "expected first expr to be structural pattern");
+                    return;
+                };
+                assert!(nodes.iter().any(|node| matches!(
+                    node,
+                    crate::ast::LqStructuralNode::Hole {
+                        name: Some(name),
+                        multiplicity: crate::ast::LqStructuralHoleMultiplicity::Many,
+                    } if name.as_str() == "args"
+                )));
+                assert!(
+                    nodes
+                        .iter()
+                        .any(|node| matches!(node, crate::ast::LqStructuralNode::WildcardMany))
+                );
+            }
+            other => assert!(false, "expected StructuralBlock leaf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structural_block_parses_where_inside_outside_exprs() {
+        let q = parse_input(
+            "match { fn $X() where $X == \"name\" AND :[X] == 'name' inside { impl $T { ... } } outside { trait $T { ... } } }",
+        );
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                assert_eq!(block.exprs.len(), 4);
+                assert!(matches!(
+                    block.exprs.first(),
+                    Some(crate::ast::LqStructuralExpr::Pattern(_))
+                ));
+                match block.exprs.get(1) {
+                    Some(crate::ast::LqStructuralExpr::Where(constraints)) => {
+                        assert_eq!(constraints.len(), 2);
+                        let Some(first) = constraints.first() else {
+                            assert!(false, "missing first structural constraint");
+                            return;
+                        };
+                        let Some(second) = constraints.get(1) else {
+                            assert!(false, "missing second structural constraint");
+                            return;
+                        };
+                        assert_eq!(first.left.name.as_str(), "X");
+                        assert_eq!(second.left.name.as_str(), "X");
+                    }
+                    other => assert!(false, "expected where expr, got {other:?}"),
+                }
+                assert!(matches!(
+                    block.exprs.get(2),
+                    Some(crate::ast::LqStructuralExpr::Inside(_))
+                ));
+                assert!(matches!(
+                    block.exprs.get(3),
+                    Some(crate::ast::LqStructuralExpr::Outside(_))
+                ));
+            }
+            other => assert!(false, "expected StructuralBlock leaf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structural_block_rejects_typed_hole_alias() {
+        assert_eq!(
+            parse_err("match { fn :[hole.type=ident]() }"),
+            LqParseErrorCode::SyntaxError
+        );
     }
 }

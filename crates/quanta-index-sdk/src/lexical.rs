@@ -6,6 +6,7 @@ use quanta_index_contract::{
     TextQuerySyntax,
 };
 
+use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +118,12 @@ impl<'a> LexicalNamespace<'a> {
     pub fn publish(&self, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
         <LexicalNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
+
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(&self, request: TextQueryRequest) -> Result<TextQueryResponse, SdkError> {
+        dispatch_text_query_request_v1(self.client, request)
+    }
 }
 
 /// QI-NS-01 marker type for the built-in lexical namespace.
@@ -170,46 +177,40 @@ impl crate::NamespaceQuery for LexicalNs {
 
 pub struct LexicalQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: Option<String>,
-    selection: Option<GenerationSelector>,
-    top_k: Option<u32>,
+    state: TextQueryBuilderState,
 }
 
 impl<'a> LexicalQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            syntax: TextQuerySyntax::Native,
-            query_text: None,
-            selection: None,
-            top_k: None,
+            state: TextQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Native;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Native;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Sourcegraph;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Sourcegraph;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: quanta_index_contract::GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -220,50 +221,38 @@ impl<'a> LexicalQueryBuilder<'a> {
     /// dispatch so the contract DTO carries an authoritative value.
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
     pub fn execute(self) -> Result<TextQueryResponse, SdkError> {
-        let query_text = self
-            .query_text
-            .ok_or_else(|| SdkError::Usage("lexical query text is required".to_string()))?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("lexical generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("lexical top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
-        let response =
-            self.client
-                .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(
-                    TextQueryRequest {
-                        syntax: self.syntax,
-                        query_text,
-                        generation,
-                        generation_selector,
-                        top_k,
-                    },
-                ))?;
-        match response {
-            quanta_index_contract::SearchPlaneQueryIpcResponse::Text(results) => Ok(results),
-            other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::Sourcegraph(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                Err(SdkError::unexpected_response(
-                    "text query response",
-                    QuantaIndex::query_response_kind(&other),
-                ))
-            }
+        dispatch_text_query_request_v1(self.client, self.state.build_request("lexical")?)
+    }
+}
+
+fn dispatch_text_query_request_v1(
+    client: &QuantaIndex,
+    request: TextQueryRequest,
+) -> Result<TextQueryResponse, SdkError> {
+    let response = client.dispatch_query(
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request),
+    )?;
+    match response {
+        quanta_index_contract::SearchPlaneQueryIpcResponse::Text(results) => Ok(results),
+        other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+            Err(SdkError::unexpected_response(
+                "text query response",
+                QuantaIndex::query_response_kind(&other),
+            ))
         }
     }
 }

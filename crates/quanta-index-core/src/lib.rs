@@ -28,6 +28,7 @@ pub use domains::semantic::{
     SemanticQueryPort, SemanticReadiness, SemanticSearcher,
 };
 pub use domains::structural::{
-    StructuralError, StructuralPolicy, StructuralProducerPort, StructuralQueryRequest,
-    StructuralQueryResponse, StructuralReadiness, StructuralService,
+    StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,
+    StructuralProducerPort, StructuralQueryRequest, StructuralQueryResponse, StructuralReadiness,
+    StructuralService,
 };

@@ -3,9 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord};
+use quanta_index_contract::lex::{
+    CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord, compute_parse_tree_source_hash,
+};
 use quanta_index_contract::{
-    ChannelSeq, ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
+    ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
 };
 use quanta_index_contract::{ChunkRecord, LexicalChannelOp};
@@ -17,8 +19,9 @@ type SharedActivationCatalog = Arc<ActivationCatalog>;
 /// Per-track readiness state.
 #[derive(Debug, Default)]
 pub struct TrackLedger {
+    materialized: Option<ManifestGeneration>,
     sealed: Option<ManifestGeneration>,
-    last_seen: ChannelSeq,
+    manifest_digest: Option<String>,
 }
 
 impl TrackLedger {
@@ -28,26 +31,86 @@ impl TrackLedger {
     }
 
     #[must_use]
+    pub fn materialized(&self) -> Option<ManifestGeneration> {
+        self.materialized
+    }
+
+    #[must_use]
     pub fn sealed(&self) -> Option<ManifestGeneration> {
         self.sealed
     }
 
     #[must_use]
-    pub fn last_seen(&self) -> ChannelSeq {
-        self.last_seen
+    pub fn manifest_digest(&self) -> Option<&str> {
+        self.manifest_digest.as_deref()
+    }
+
+    /// Monotonic materialization update. Lower generations do not rewind
+    /// readiness truth.
+    pub fn record_materialized(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        let next = match self.materialized {
+            Some(current) if current.get() > generation.get() => current,
+            _ => generation,
+        };
+        self.materialized = Some(next);
+        if self
+            .materialized
+            .is_some_and(|current| current.get() == generation.get())
+            && let Some(digest) = manifest_digest
+        {
+            self.manifest_digest = Some(digest.to_string());
+        }
     }
 
     /// Monotonic seal update. Lower generations do not rewind readiness.
-    pub fn record_seal(&mut self, generation: ManifestGeneration) {
+    pub fn record_seal(&mut self, generation: ManifestGeneration, manifest_digest: Option<&str>) {
+        self.record_materialized(generation, manifest_digest);
         let next = match self.sealed {
             Some(current) if current.get() >= generation.get() => current,
             _ => generation,
         };
         self.sealed = Some(next);
     }
+}
 
-    pub fn set_last_seen(&mut self, seq: ChannelSeq) {
-        self.last_seen = seq;
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TrackAuthorityState {
+    materialized: Option<ManifestGeneration>,
+    sealed: Option<ManifestGeneration>,
+    manifest_digest: Option<String>,
+}
+
+impl TrackAuthorityState {
+    fn record_materialized(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        let next = match self.materialized {
+            Some(current) if current.get() > generation.get() => current,
+            _ => generation,
+        };
+        self.materialized = Some(next);
+        if self
+            .materialized
+            .is_some_and(|current| current.get() == generation.get())
+            && let Some(digest) = manifest_digest
+        {
+            self.manifest_digest = Some(digest.to_string());
+        }
+    }
+
+    fn record_seal(&mut self, generation: ManifestGeneration, manifest_digest: Option<&str>) {
+        self.record_materialized(generation, manifest_digest);
+        let next = match self.sealed {
+            Some(current) if current.get() >= generation.get() => current,
+            _ => generation,
+        };
+        self.sealed = Some(next);
     }
 }
 
@@ -56,7 +119,7 @@ impl TrackLedger {
 pub struct Ledger {
     lexical: TrackLedger,
     semantic: TrackLedger,
-    search_tracks: BTreeMap<TrackAuthorityKey, ManifestGeneration>,
+    search_tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
     history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
     runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
     structural: BTreeMap<AuthorityKey, StructuralAuthorityState>,
@@ -87,16 +150,69 @@ impl Ledger {
         &mut self.lexical
     }
 
+    pub fn lexical_materialize(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        self.lexical
+            .record_materialized(generation, manifest_digest);
+    }
+
     pub fn semantic_mut(&mut self) -> &mut TrackLedger {
         &mut self.semantic
     }
 
+    pub fn semantic_materialize(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        self.semantic
+            .record_materialized(generation, manifest_digest);
+    }
+
     pub fn lexical_seal(&mut self, generation: ManifestGeneration) {
-        self.lexical.record_seal(generation);
+        self.lexical.record_seal(generation, None);
+    }
+
+    pub fn lexical_seal_with_digest(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        self.lexical.record_seal(generation, Some(manifest_digest));
     }
 
     pub fn semantic_seal(&mut self, generation: ManifestGeneration) {
-        self.semantic.record_seal(generation);
+        self.semantic.record_seal(generation, None);
+    }
+
+    pub fn semantic_seal_with_digest(
+        &mut self,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        self.semantic.record_seal(generation, Some(manifest_digest));
+    }
+
+    pub fn record_track_materialized(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        let key = TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        self.search_tracks
+            .entry(key)
+            .or_default()
+            .record_materialized(generation, manifest_digest);
     }
 
     pub fn record_track_seal(
@@ -106,15 +222,51 @@ impl Ledger {
         track: SearchPlaneTrackKind,
         generation: ManifestGeneration,
     ) {
+        self.record_track_seal_inner(repo_id, revision_id, track, generation, None);
+    }
+
+    pub fn record_track_seal_with_digest(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        self.record_track_seal_inner(
+            repo_id,
+            revision_id,
+            track,
+            generation,
+            Some(manifest_digest),
+        );
+    }
+
+    fn record_track_seal_inner(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        if track == SearchPlaneTrackKind::Structural
+            && !self
+                .structural
+                .get(&Self::authority_key(repo_id, revision_id, generation))
+                .is_some_and(StructuralAuthorityState::seal_requested)
+        {
+            return;
+        }
         let key = TrackAuthorityKey {
             repo_id: repo_id.clone(),
             revision_id: revision_id.clone(),
             track,
         };
-        let entry = self.search_tracks.entry(key).or_insert(generation);
-        if entry.get() < generation.get() {
-            *entry = generation;
-        }
+        self.search_tracks
+            .entry(key)
+            .or_default()
+            .record_seal(generation, manifest_digest);
     }
 
     #[must_use]
@@ -139,25 +291,41 @@ impl Ledger {
             revision_id: revision_id.clone(),
             track,
         };
-        self.search_tracks.get(&key).copied()
+        self.search_tracks.get(&key).and_then(|state| state.sealed)
     }
 
     #[must_use]
-    pub fn lexical_last_seen(&self) -> ChannelSeq {
-        self.lexical.last_seen()
+    pub fn track_materialized(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Option<ManifestGeneration> {
+        let key = TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        self.search_tracks
+            .get(&key)
+            .and_then(|state| state.materialized)
     }
 
     #[must_use]
-    pub fn semantic_last_seen(&self) -> ChannelSeq {
-        self.semantic.last_seen()
-    }
-
-    pub fn set_lexical_last_seen(&mut self, seq: ChannelSeq) {
-        self.lexical.set_last_seen(seq);
-    }
-
-    pub fn set_semantic_last_seen(&mut self, seq: ChannelSeq) {
-        self.semantic.set_last_seen(seq);
+    pub fn track_manifest_digest(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+    ) -> Option<&str> {
+        let key = TrackAuthorityKey {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+        };
+        self.search_tracks
+            .get(&key)
+            .and_then(|state| state.manifest_digest.as_deref())
     }
 
     fn authority_key(
@@ -233,6 +401,16 @@ impl Ledger {
     ) -> Option<&StructuralAuthorityState> {
         let key = Self::authority_key(repo_id, revision_id, generation);
         self.structural.get(&key)
+    }
+
+    pub fn request_structural_seal(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) {
+        self.structural_state_mut(repo_id, revision_id, generation)
+            .request_seal();
     }
 
     pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
@@ -400,14 +578,13 @@ impl Ledger {
             }
             LexicalChannelOp::UpsertParseTree(payload) => {
                 let record: ParseTreeRecord = decode_record(&payload.payload, "parse_tree")?;
-                let _previous = self
-                    .structural_state_mut(
-                        &payload.repo_id,
-                        &payload.revision_id,
-                        payload.generation,
-                    )
-                    .parse_trees
-                    .insert(payload.chunk_id.clone(), record);
+                let state = self.structural_state_mut(
+                    &payload.repo_id,
+                    &payload.revision_id,
+                    payload.generation,
+                );
+                verify_parse_tree_against_chunk(state, &payload.chunk_id, &record, None)?;
+                let _previous = state.parse_trees.insert(payload.chunk_id.clone(), record);
             }
             LexicalChannelOp::DeleteParseTree(payload) => {
                 let _removed = self
@@ -435,6 +612,14 @@ impl Ledger {
                     })
                     .map(|(chunk_id, _chunk)| chunk_id.clone())
                     .collect();
+                for tree in &scope.trees {
+                    verify_parse_tree_against_chunk(
+                        state,
+                        &tree.chunk_id,
+                        &tree.record,
+                        Some(scope.scope.repo_relative_path.as_str()),
+                    )?;
+                }
                 state
                     .parse_trees
                     .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
@@ -534,6 +719,45 @@ fn decode_structural_tombstone_scope(
     decode_record(payload, "structural_tombstone_scope")
 }
 
+fn structural_parse_tree_decode_fail(reason: impl Into<String>) -> CoreError {
+    CoreError::Typed {
+        code: "STR_PARSE_TREE_DECODE_FAIL".to_string(),
+        message: reason.into(),
+    }
+}
+
+fn verify_parse_tree_against_chunk(
+    state: &StructuralAuthorityState,
+    chunk_id: &ChunkId,
+    record: &ParseTreeRecord,
+    expected_scope_path: Option<&str>,
+) -> Result<(), CoreError> {
+    let chunk = state.chunks.get(chunk_id).ok_or_else(|| {
+        structural_parse_tree_decode_fail(format!(
+            "STR_PARSE_TREE_DECODE_FAIL{{reason=source_chunk_missing, chunk_id=\"{}\"}}",
+            chunk_id.as_str()
+        ))
+    })?;
+    if let Some(expected_path) = expected_scope_path
+        && chunk.repo_relative_path.as_str() != expected_path
+    {
+        return Err(structural_parse_tree_decode_fail(format!(
+            "STR_PARSE_TREE_DECODE_FAIL{{reason=scope_chunk_path_mismatch, chunk_id=\"{}\", expected_scope=\"{}\", observed_path=\"{}\"}}",
+            chunk_id.as_str(),
+            expected_path,
+            chunk.repo_relative_path.as_str(),
+        )));
+    }
+    let expected_hash = compute_parse_tree_source_hash(chunk.indexed_text.as_ref());
+    if record.source_hash != expected_hash {
+        return Err(structural_parse_tree_decode_fail(format!(
+            "STR_PARSE_TREE_DECODE_FAIL{{reason=source_hash_mismatch, chunk_id=\"{}\"}}",
+            chunk_id.as_str()
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AuthorityKey {
     repo_id: RepoId,
@@ -630,6 +854,7 @@ impl RuntimeMetadataState {
 pub struct StructuralAuthorityState {
     chunks: BTreeMap<ChunkId, ChunkRecord>,
     parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
+    seal_requested: bool,
 }
 
 impl StructuralAuthorityState {
@@ -641,6 +866,15 @@ impl StructuralAuthorityState {
     #[must_use]
     pub fn parse_trees(&self) -> &BTreeMap<ChunkId, ParseTreeRecord> {
         &self.parse_trees
+    }
+
+    #[must_use]
+    pub fn seal_requested(&self) -> bool {
+        self.seal_requested
+    }
+
+    pub fn request_seal(&mut self) {
+        self.seal_requested = true;
     }
 }
 
@@ -907,10 +1141,16 @@ fn hex_char(nibble: u8) -> char {
 mod tests {
     use tempfile::tempdir;
 
-    use quanta_index_contract::{
-        ChannelSeq, ManifestGeneration, RepoId, RevisionId, SearchPlaneActivateGenerationRequest,
-        SearchPlaneTrackKind,
+    use quanta_index_contract::lex::{
+        LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
     };
+    use quanta_index_contract::{
+        BatchIngestMode, ChunkId, ChunkRecord, LexicalChannelOp, LexicalReplaceScope,
+        ManifestGeneration, ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath,
+        RevisionId, SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SearchScopeKey,
+        SearchScopeSurface, StructuralReplaceScope, StructuralTreeRecord, UpsertParseTree,
+    };
+    use quanta_index_core::CoreError;
 
     use super::{ActivationCatalog, Ledger};
 
@@ -926,17 +1166,133 @@ mod tests {
         assert_eq!(ledger.semantic_sealed(), Some(ManifestGeneration::new(5)));
     }
 
-    #[test]
-    fn last_seen_cursors_are_track_local() {
-        let mut ledger = Ledger::default();
-        ledger.set_lexical_last_seen(ChannelSeq::new(11));
-        ledger.set_semantic_last_seen(ChannelSeq::new(19));
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-        assert_eq!(ledger.lexical_last_seen(), ChannelSeq::new(11));
-        assert_eq!(ledger.semantic_last_seen(), ChannelSeq::new(19));
+    fn repo_id() -> RepoId {
+        RepoId::new("repo")
     }
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    fn revision_id() -> RevisionId {
+        RevisionId::new("rev")
+    }
+
+    fn generation() -> ManifestGeneration {
+        ManifestGeneration::new(17)
+    }
+
+    fn rust_language() -> Result<LanguageCode, Box<dyn std::error::Error>> {
+        LanguageCode::new("rust")
+            .map_err(|err| format!("invalid hard-coded language: {err}").into())
+    }
+
+    fn scope(path: &str) -> SearchScopeKey {
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new(path),
+        }
+    }
+
+    fn chunk_record(
+        path: &str,
+        indexed_text: &str,
+    ) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        Ok(ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new(path),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: u32::try_from(indexed_text.len())
+                .map_err(|err| format!("indexed_text len overflow: {err}"))?,
+            start_line: 1,
+            end_line: 1,
+            snippet: indexed_text.to_string().into_boxed_str(),
+            indexed_text: indexed_text.to_string().into_boxed_str(),
+            text_digest: "text:digest".to_string().into_boxed_str(),
+            shape_digest: "shape:digest".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+        })
+    }
+
+    fn parse_tree_record(
+        indexed_text: &str,
+    ) -> Result<ParseTreeRecord, Box<dyn std::error::Error>> {
+        Ok(ParseTreeRecord {
+            wire_version: 1,
+            lang: rust_language()?,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: u32::try_from(indexed_text.len())
+                    .map_err(|err| format!("indexed_text len overflow: {err}"))?,
+                children: Vec::new(),
+            },
+            source_hash: compute_parse_tree_source_hash(indexed_text),
+            role_tag_schema_version: 0,
+            role_tags: Vec::new(),
+        })
+    }
+
+    fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(value, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn install_chunk(ledger: &mut Ledger, path: &str, indexed_text: &str) -> TestResult {
+        let op = LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            payload: encode_cbor(&(
+                BatchIngestMode::ReplaceGeneration,
+                None::<ManifestGeneration>,
+                LexicalReplaceScope {
+                    scope: scope(path),
+                    scope_digest: "scope:lex".to_string(),
+                    chunks: vec![chunk_record(path, indexed_text)?],
+                    symbols: Vec::new(),
+                },
+            ))?,
+        });
+        ledger.apply_lexical_authority_op(&op)?;
+        Ok(())
+    }
+
+    fn install_parse_tree(ledger: &mut Ledger, indexed_text: &str) -> TestResult {
+        let op = LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-1"),
+            payload: encode_cbor(&parse_tree_record(indexed_text)?)?,
+        });
+        ledger.apply_lexical_authority_op(&op)?;
+        Ok(())
+    }
+
+    fn expect_decode_fail(err: CoreError, needle: &str) -> TestResult {
+        match err {
+            CoreError::Typed { code, message } => {
+                if code != "STR_PARSE_TREE_DECODE_FAIL" {
+                    return Err(format!("expected STR_PARSE_TREE_DECODE_FAIL, got {code}").into());
+                }
+                if !message.contains(needle) {
+                    return Err(
+                        format!("expected message to contain `{needle}`, got `{message}`").into(),
+                    );
+                }
+                Ok(())
+            }
+            other @ (CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => {
+                Err(format!("expected typed decode fail, got {other:?}").into())
+            }
+        }
+    }
 
     #[test]
     #[expect(
@@ -972,6 +1328,123 @@ mod tests {
             reopened_pin.manifest_generation,
             ManifestGeneration::new(17)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_upsert_parse_tree_rejects_unknown_chunk() -> TestResult {
+        let mut ledger = Ledger::default();
+        let op = LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-1"),
+            payload: encode_cbor(&parse_tree_record("fn main() {}")?)?,
+        });
+        let err = ledger
+            .apply_lexical_authority_op(&op)
+            .err()
+            .ok_or_else(|| "expected unknown-chunk parse tree apply to fail".to_string())?;
+        expect_decode_fail(err, "reason=source_chunk_missing")
+    }
+
+    #[test]
+    fn structural_upsert_parse_tree_rejects_source_hash_mismatch() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
+        let op = LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-1"),
+            payload: encode_cbor(&parse_tree_record("fn other() {}")?)?,
+        });
+        let err = ledger
+            .apply_lexical_authority_op(&op)
+            .err()
+            .ok_or_else(|| "expected source_hash mismatch to fail".to_string())?;
+        expect_decode_fail(err, "reason=source_hash_mismatch")
+    }
+
+    #[test]
+    fn structural_replace_scope_rejects_chunk_outside_scope_path() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
+        let op = LexicalChannelOp::ReplaceStructuralScope(ReplaceStructuralScope {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            payload: encode_cbor(&(
+                BatchIngestMode::ReplaceGeneration,
+                None::<ManifestGeneration>,
+                StructuralReplaceScope {
+                    scope: scope("src/other.rs"),
+                    scope_digest: "scope:str".to_string(),
+                    trees: vec![StructuralTreeRecord {
+                        chunk_id: ChunkId::new("chunk-1"),
+                        record: parse_tree_record("fn main() {}")?,
+                    }],
+                },
+            ))?,
+        });
+        let err = ledger
+            .apply_lexical_authority_op(&op)
+            .err()
+            .ok_or_else(|| "expected structural scope mismatch to fail".to_string())?;
+        expect_decode_fail(err, "reason=scope_chunk_path_mismatch")
+    }
+
+    #[test]
+    fn structural_replace_scope_failure_preserves_existing_parse_tree_set() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
+        install_parse_tree(&mut ledger, "fn main() {}")?;
+        let prior = ledger
+            .structural_state(&repo_id(), &revision_id(), generation())
+            .ok_or_else(|| "expected structural state after initial tree install".to_string())?
+            .parse_trees()
+            .get(&ChunkId::new("chunk-1"))
+            .cloned()
+            .ok_or_else(|| "expected installed parse tree".to_string())?;
+
+        let op = LexicalChannelOp::ReplaceStructuralScope(ReplaceStructuralScope {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            payload: encode_cbor(&(
+                BatchIngestMode::ReplaceGeneration,
+                None::<ManifestGeneration>,
+                StructuralReplaceScope {
+                    scope: scope("src/lib.rs"),
+                    scope_digest: "scope:str".to_string(),
+                    trees: vec![StructuralTreeRecord {
+                        chunk_id: ChunkId::new("chunk-1"),
+                        record: parse_tree_record("fn other() {}")?,
+                    }],
+                },
+            ))?,
+        });
+        let err = ledger
+            .apply_lexical_authority_op(&op)
+            .err()
+            .ok_or_else(|| "expected structural replace with bad tree to fail".to_string())?;
+        expect_decode_fail(err, "reason=source_hash_mismatch")?;
+
+        let after = ledger
+            .structural_state(&repo_id(), &revision_id(), generation())
+            .ok_or_else(|| "expected structural state after failed replace".to_string())?
+            .parse_trees()
+            .get(&ChunkId::new("chunk-1"))
+            .cloned()
+            .ok_or_else(|| {
+                "expected prior parse tree to remain after failed replace".to_string()
+            })?;
+        if after != prior {
+            return Err(format!(
+                "expected prior parse tree to survive failed replace, got after={after:?} prior={prior:?}"
+            )
+            .into());
+        }
         Ok(())
     }
 }

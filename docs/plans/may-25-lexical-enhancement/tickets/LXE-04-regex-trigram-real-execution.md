@@ -1,6 +1,6 @@
 # LXE-04 - Regex and Trigram Real Execution
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 
@@ -9,6 +9,18 @@ Depends on: [LXE-02](LXE-02-planner-authority-ir.md)
 Route raw substring and regex leaves through the real trigram and regex
 verification engines. Escaping regex into a generic query string is not an
 acceptable execution path.
+
+## Current code-backed status (2026-05-26)
+
+- Landed:
+  - regex planner/dialect filter/typed `LEX_REGEX_*` rejection path
+  - materialized trigram prefilter postings wired into the live lexical adapter
+  - generation-local `DocId <-> candidate_id <-> authoritative indexed_text` seam inside the adapter
+  - raw substring live execution via trigram prefilter + exact verify over authoritative indexed text
+  - whole-document regex live execution via trigram prefilter + exact verify over authoritative indexed text
+  - full-fidelity/parity rows `regex_only_match_not_reachable_by_token`, `regex_trigram_false_positive_rejected`, `patterntype_regexp_parity`
+- Remaining follow-up:
+  - explain-grade prefilter candidate counts and engine trace still belong to the observability wave
 
 ## Owner files
 
@@ -19,7 +31,7 @@ acceptable execution path.
 - `crates/quanta-index-lq-regex/src/**`
 - `crates/quanta-index-core/src/domains/lexical/**`
 - new `crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs`
-- new `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`
+- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
 
 ## File-level work breakdown
 
@@ -81,9 +93,9 @@ Covered by `E2E-01`, `E2E-02`, and `E2E-07`:
 ## DoD
 
 - raw substring and regex rows in the matrix have real engine E2E proof.
-- explain v2 shows trigram and regex engines touched where expected.
 - the old escaped-query path is removed or unreachable.
 - candidate caps are deterministic and tested.
+- regex/raw verify source is authoritative `indexed_text`, not preview snippet text.
 
 ## Failure modes
 

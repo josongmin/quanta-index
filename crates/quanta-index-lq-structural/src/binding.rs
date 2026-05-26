@@ -1,18 +1,19 @@
-//! Metavariable binding carrier and the [`StructuralCandidate`] envelope.
+//! Metavariable binding carrier and the authoritative match envelope.
 //!
 //! Per STR-01 §4.9, [`StructuralBinding`] is the canonical metavariable
 //! carrier on the wire and closes GAP-03. Bindings are a `BTreeMap` so
 //! iteration order is total (`canonical CBOR` per RFC § Migration policy).
 //!
-//! [`StructuralCandidate`] is the per-match result envelope — disjoint
-//! from `LexicalCandidate` per STR-01 §4.6.
+//! [`StructuralAuthorityCandidate`] is the per-match result envelope inside
+//! the structural crate. Downstream adapters own projection into public
+//! query-plane candidate carriers.
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
 
 use core::fmt;
 use std::collections::BTreeMap;
 
-use crate::types::{ByteSpan, DocId, MetaVar};
+use crate::types::{ByteSpan, MetaVar};
 
 /// Metavariable -> span map captured by one structural match.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -108,69 +109,62 @@ impl<'de> serde::Deserialize<'de> for StructuralBinding {
     }
 }
 
-/// Per-match structural result envelope.
+/// Per-match structural result envelope produced from authoritative parse-tree
+/// + chunk-text inputs.
+///
+/// Deliberately omits `doc_id`; live runtime adapters own projection into
+/// their public candidate carriers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StructuralCandidate {
-    /// Document the match was found in.
-    pub doc_id: DocId,
+pub struct StructuralAuthorityCandidate {
     /// Byte span covered by the overall pattern match (root group span).
     pub pattern_span: ByteSpan,
     /// Captured metavariable bindings.
     pub binding: StructuralBinding,
 }
 
-impl StructuralCandidate {
-    /// Construct a [`StructuralCandidate`].
+impl StructuralAuthorityCandidate {
+    /// Construct a [`StructuralAuthorityCandidate`].
     #[must_use]
-    pub const fn new(doc_id: DocId, pattern_span: ByteSpan, binding: StructuralBinding) -> Self {
+    pub const fn new(pattern_span: ByteSpan, binding: StructuralBinding) -> Self {
         Self {
-            doc_id,
             pattern_span,
             binding,
         }
     }
 }
 
-impl serde::Serialize for StructuralCandidate {
+impl serde::Serialize for StructuralAuthorityCandidate {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(3))?;
-        m.serialize_entry("doc_id", &self.doc_id)?;
+        let mut m = ser.serialize_map(Some(2))?;
         m.serialize_entry("pattern_span", &self.pattern_span)?;
         m.serialize_entry("binding", &self.binding)?;
         m.end()
     }
 }
 
-impl<'de> serde::Deserialize<'de> for StructuralCandidate {
+impl<'de> serde::Deserialize<'de> for StructuralAuthorityCandidate {
     fn deserialize<D>(de: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         struct V;
         impl<'d> serde::de::Visitor<'d> for V {
-            type Value = StructuralCandidate;
+            type Value = StructuralAuthorityCandidate;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("StructuralCandidate map (doc_id, pattern_span, binding)")
+                f.write_str("StructuralAuthorityCandidate map (pattern_span, binding)")
             }
             fn visit_map<M: serde::de::MapAccess<'d>>(
                 self,
                 mut map: M,
-            ) -> Result<StructuralCandidate, M::Error> {
-                let mut doc_id: Option<DocId> = None;
+            ) -> Result<StructuralAuthorityCandidate, M::Error> {
                 let mut pattern_span: Option<ByteSpan> = None;
                 let mut binding: Option<StructuralBinding> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "doc_id" => {
-                            if doc_id.is_some() {
-                                return Err(serde::de::Error::duplicate_field("doc_id"));
-                            }
-                            doc_id = Some(map.next_value()?);
-                        }
                         "pattern_span" => {
                             if pattern_span.is_some() {
                                 return Err(serde::de::Error::duplicate_field("pattern_span"));
@@ -186,17 +180,15 @@ impl<'de> serde::Deserialize<'de> for StructuralCandidate {
                         other => {
                             return Err(serde::de::Error::unknown_field(
                                 other,
-                                &["doc_id", "pattern_span", "binding"],
+                                &["pattern_span", "binding"],
                             ));
                         }
                     }
                 }
-                let doc_id = doc_id.ok_or_else(|| serde::de::Error::missing_field("doc_id"))?;
                 let pattern_span =
                     pattern_span.ok_or_else(|| serde::de::Error::missing_field("pattern_span"))?;
                 let binding = binding.ok_or_else(|| serde::de::Error::missing_field("binding"))?;
-                Ok(StructuralCandidate {
-                    doc_id,
+                Ok(StructuralAuthorityCandidate {
                     pattern_span,
                     binding,
                 })
@@ -208,8 +200,8 @@ impl<'de> serde::Deserialize<'de> for StructuralCandidate {
 
 #[cfg(test)]
 mod tests {
-    use super::{StructuralBinding, StructuralCandidate};
-    use crate::types::{ByteSpan, DocId, MetaVar};
+    use super::{StructuralAuthorityCandidate, StructuralBinding};
+    use crate::types::{ByteSpan, MetaVar};
 
     fn mv(s: &str) -> MetaVar {
         match MetaVar::new(s) {
@@ -266,15 +258,16 @@ mod tests {
     }
 
     #[test]
-    fn candidate_serde_roundtrip() {
+    fn authority_candidate_serde_roundtrip() {
         let mut b = StructuralBinding::empty();
         let _prior: Option<ByteSpan> = b.insert(mv("X"), span(0, 3));
-        let c = StructuralCandidate::new(DocId(7), span(0, 10), b);
+        let c = StructuralAuthorityCandidate::new(span(0, 10), b);
         let mut buf: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&c, &mut buf) {
             assert!(false, "{e}");
         }
-        let got: Result<StructuralCandidate, _> = ciborium::de::from_reader(buf.as_slice());
+        let got: Result<StructuralAuthorityCandidate, _> =
+            ciborium::de::from_reader(buf.as_slice());
         match got {
             Ok(v) => assert_eq!(v, c),
             Err(e) => assert!(false, "{e}"),
@@ -282,15 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn candidate_byte_identical_across_builds() {
+    fn authority_candidate_byte_identical_across_builds() {
         let mut b1 = StructuralBinding::empty();
         let _a: Option<ByteSpan> = b1.insert(mv("A"), span(0, 5));
         let _b: Option<ByteSpan> = b1.insert(mv("B"), span(6, 10));
         let mut b2 = StructuralBinding::empty();
         let _b: Option<ByteSpan> = b2.insert(mv("B"), span(6, 10));
         let _a: Option<ByteSpan> = b2.insert(mv("A"), span(0, 5));
-        let c1 = StructuralCandidate::new(DocId(1), span(0, 20), b1);
-        let c2 = StructuralCandidate::new(DocId(1), span(0, 20), b2);
+        let c1 = StructuralAuthorityCandidate::new(span(0, 20), b1);
+        let c2 = StructuralAuthorityCandidate::new(span(0, 20), b2);
         let mut buf1: Vec<u8> = Vec::new();
         let mut buf2: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&c1, &mut buf1) {

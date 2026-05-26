@@ -22,9 +22,8 @@ use quanta_index_contract::{
     RepoMapQueryRequest, RepoMapSourceBundle, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneSourcegraphQueryRequest, SemanticIngestBatch,
-    SemanticQueryRequest, StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest,
-    TextQueryRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SemanticIngestBatch, SemanticQueryRequest,
+    StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -38,7 +37,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<BridgeQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneSourcegraphQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequestEnvelope, _>(data);
 

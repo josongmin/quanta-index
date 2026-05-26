@@ -13,7 +13,8 @@
 
 pub use quanta_index_lq_norm::{
     LQ_VERSION_TAG, LqExpr, LqLeaf, LqMetaVar, LqPredicateArg, LqSpan, LqStructuralBlock,
-    LqStructuralNode, SemanticVectorRef,
+    LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode, SemanticVectorRef,
 };
 
 pub type TextQueryAst = quanta_index_lq_norm::LqNormalizedQuery;

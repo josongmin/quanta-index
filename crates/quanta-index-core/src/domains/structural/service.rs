@@ -65,8 +65,8 @@ impl StructuralService {
                 }
             }
         }
-        let bindings = self.producer.execute(request)?;
-        Ok(StructuralQueryResponse { bindings })
+        let candidates = self.producer.execute(request)?;
+        Ok(StructuralQueryResponse { candidates })
     }
 }
 
@@ -76,27 +76,28 @@ mod tests {
         Arc, StructuralError, StructuralProducerPort, StructuralQueryRequest,
         StructuralQueryResponse, StructuralReadiness, StructuralService,
     };
+    use crate::domains::structural::{StructuralMatchBinding, StructuralMatchCandidate};
     use quanta_index_contract::{
-        GenerationSelector, LqStructuralBlock, RepoId, RevisionId, StructuralBinding,
+        GenerationSelector, LqOptions, LqStructuralBlock, RepoId, RevisionId,
     };
 
     struct FakeProducer {
         readiness: StructuralReadiness,
-        bindings: Vec<StructuralBinding>,
+        candidates: Vec<StructuralMatchCandidate>,
     }
 
     impl FakeProducer {
         fn with_readiness(readiness: StructuralReadiness) -> Self {
             Self {
                 readiness,
-                bindings: Vec::new(),
+                candidates: Vec::new(),
             }
         }
 
-        fn ready_with(bindings: Vec<StructuralBinding>) -> Self {
+        fn ready_with(candidates: Vec<StructuralMatchCandidate>) -> Self {
             Self {
                 readiness: StructuralReadiness::Ready,
-                bindings,
+                candidates,
             }
         }
     }
@@ -109,8 +110,8 @@ mod tests {
         fn execute(
             &self,
             _request: &StructuralQueryRequest,
-        ) -> Result<Vec<StructuralBinding>, StructuralError> {
-            Ok(self.bindings.clone())
+        ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+            Ok(self.candidates.clone())
         }
     }
 
@@ -119,7 +120,11 @@ mod tests {
             pattern: LqStructuralBlock {
                 lang: None,
                 nodes: Vec::new(),
+                exprs: Vec::new(),
             },
+            requested_lang: None,
+            filters: Vec::new(),
+            options: LqOptions::defaults(),
             generation: GenerationSelector::Active {
                 repo_id: RepoId::new("repo".to_string()),
                 revision_id: RevisionId::new("rev".to_string()),
@@ -194,13 +199,16 @@ mod tests {
     }
 
     #[test]
-    fn ready_returns_bindings() {
-        let expected = vec![StructuralBinding {
-            metavariable: "$X".to_string(),
-            start_byte: 0,
-            end_byte: 4,
-            start_line: 1,
-            end_line: 1,
+    fn ready_returns_candidates() {
+        let expected = vec![StructuralMatchCandidate {
+            candidate_id: "chunk-1".to_string(),
+            bindings: vec![StructuralMatchBinding {
+                metavariable: "$X".to_string(),
+                start_byte: 0,
+                end_byte: 4,
+                start_line: 1,
+                end_line: 1,
+            }],
         }];
         let producer = Arc::new(FakeProducer::ready_with(expected.clone()));
         let service = StructuralService::new(producer);
@@ -211,7 +219,33 @@ mod tests {
             "expected ready structural response, got {response:?}"
         );
         if let Ok(response) = response {
-            assert_eq!(response.bindings, expected);
+            assert_eq!(response.candidates, expected);
         }
+    }
+
+    #[test]
+    fn execute_error_is_forwarded_verbatim() {
+        struct ErrorProducer;
+
+        impl StructuralProducerPort for ErrorProducer {
+            fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
+                StructuralReadiness::Ready
+            }
+
+            fn execute(
+                &self,
+                _request: &StructuralQueryRequest,
+            ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+                Err(StructuralError::LangNotSupported("java".to_string()))
+            }
+        }
+
+        let service = StructuralService::new(Arc::new(ErrorProducer));
+        let request = dummy_request();
+        let result = service.query(&request);
+        assert!(matches!(
+            result,
+            Err(StructuralError::LangNotSupported(lang)) if lang == "java"
+        ));
     }
 }

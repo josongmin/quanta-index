@@ -1,9 +1,9 @@
 # STR-01 — Structural Pattern Engine
 
-> Status: `shipped (architecture-corrected; Option A/B pending)`
+> Status: `partial-live[truthful-subset; broader semantics deferred]`
 > Crate: `quanta-index-lq-structural`
 > Tests: 71
-> Last verified: 2026-05-25
+> Last verified: 2026-05-26
 > Parent RFC: [../rfc.md](../rfc.md) § Structural engine, § `LQ/Structural-1.2`
 > Parent plan: [../implementation-plan.md](../implementation-plan.md) § 4.6 Wave 5, § 5.12 STR-01
 > Grammar source: [../dsl.md](../dsl.md) §8 Structural sub-grammar
@@ -12,7 +12,7 @@
 > Authority posture: **breaking-first** per [../../../../CLAUDE.md](../../../../CLAUDE.md) § Agent change posture
 > Schema check: structured outputs must validate against [../../../../tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json)
 >
-> **Architecture correction:** tree-sitter dropped. Input shifted to producer-supplied `ParseTreeRecord` via `LexicalChannelOp::UpsertParseTree`. Option A (producer ships parse trees, v1 ship at Wave-5 exit) vs Option B (scaffold + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`, deferred to v2) decision pending (see Q-STR-01-OPTION in §12).
+> **Architecture correction:** tree-sitter dropped. Input shifted to producer-supplied `ParseTreeRecord` via `LexicalChannelOp::UpsertParseTree`. The initial live ship was the truthful root-only subset (`TruthfulSubsetAuthorityMatcher`: root-kind exact + single root capture) over materialized parse-tree/chunk authority. That boundary was later expanded in the shipped may-26 residue pack to cover tree-walk, variadic sibling capture, and `where` / `inside` / `outside`.
 
 ---
 
@@ -37,12 +37,14 @@ query path**. Pattern matching is search-side AST traversal over
 producer-supplied trees only. Query-side DSL parsing (the `match { … }`
 body in LQ) is unchanged and remains a search-plane responsibility.
 
-### §1.1 Decision call — two valid landing options
+### §1.1 Historical Option A/B note — now resolved
 
 The original spec assumed search-side tree-sitter; that is wrong. The
-correction has two valid landing options. **Both are documented here;
-the integrator picks one at wave-entry. STR-01 ships under whichever
-is chosen.**
+correction originally carried two valid landing options. That decision is now
+resolved for the active runtime path: producer-authored parse trees are wired,
+and the initial live executor ran only the truthful root-only subset. Later
+may-26 work expanded that boundary. The rest of this subsection is retained as
+planning history.
 
 - **Option A (recommended) — STR-01 in v1.** Producer ships
   `LexicalChannelOp::UpsertParseTree { chunk_id, tree: ParseTreeRecord }`
@@ -56,36 +58,32 @@ is chosen.**
   `ParseTreeRecord` shape), the `StructuralPattern` IR, the
   `parse_pattern` DSL parser, and the `StructuralMatcher` trait. The
   default `match_pattern` implementation returns
-  `STR_TYPED_HOLE_NOT_IMPLEMENTED`-style typed failure
-  (`STR_PRODUCER_PARSE_TREE_UNAVAILABLE` — new code, §8) until the
-  producer side lands `UpsertParseTree`. Wave-5 exit gate descopes the
+  a typed producer-unavailable failure until the producer side lands
+  `UpsertParseTree`. Wave-5 exit gate descopes the
   end-to-end conformance rail; corpus rows `UC-STR-01..07` are
   asserted against `MockStructuralMatcher` only.
 
 Selection driver: **producer-side cost of authoring and shipping parse
 trees per chunk.** If the producer agrees and lands `UpsertParseTree`
-in time, Option A. Otherwise Option B, and STR-01 v1 ships as
-scaffolding plus typed failure. Either way, no source parsing leaks
-into the search plane.
+in time, Option A. That wiring has now landed for the active runtime path.
+Either way, no source parsing leaks into the search plane.
 
 At wave end (under whichever option is selected):
 
-1. every `match { … }` body in the 5 ship-grammar set produces a structural
-   candidate or typed error — never an empty success.
+1. every **supported root-only** `match { … }` body in the 5 ship-grammar set
+   produces a structural candidate or typed error — never an empty success.
 2. the structural engine is **disjoint** from the lexical content engine; it
    does **not** reuse Tantivy regex as a structural-search heuristic ([../rfc.md](../rfc.md) § Structural engine § must not).
 3. structural matches expose `StructuralBinding` (metavariable → byte span) on
    the wire as the canonical carrier for `where` constraints and bridge
    consumers.
-4. RFC § Claim-Discipline §4 becomes provable against corpus rows
-   `UC-STR-01..07` and the negative row `AC-07` (Option A: end-to-end;
-   Option B: against `MockStructuralMatcher`).
+4. RFC § Claim-Discipline §4 is currently provable only for the truthful
+   root-only subset on the active runtime path; broader semantics are deferred.
 
-Out of scope: typed-hole eval (`:[hole.type1]`, deferred per
-[../feature-scope.md](../feature-scope.md) §1.3.3); structural → CodeQL bridge
-edge (`PLAN_DEFERRED`, BRIDGE-01 follow-on); post-Wave-5 grammars
-(C / C++ / Ruby); producer-side parse-tree authorship (lives in
-`semantica-codegraph-v2`).
+Out of scope: typed-hole eval and broader non-root tree-walk semantics (deferred
+to the may-26 residue pack); structural → CodeQL bridge edge (`PLAN_DEFERRED`,
+BRIDGE-01 follow-on); post-Wave-5 grammars (C / C++ / Ruby); producer-side
+parse-tree authorship (lives in `semantica-codegraph-v2`).
 
 ## §2 Background
 
@@ -100,8 +98,8 @@ Wave 5 unlocks `LQ/Structural-1.2`. STR-01's blockers:
   AST, deterministic merge, and an explainable ranker, so the structural engine
   plugs in as a sibling planner without re-litigating the front door.
 - `UpsertParseTree` channel op ([../../../../docs/ssot/channel-architecture.md](../../../../docs/ssot/channel-architecture.md) §3.1)
-  — currently **proposed, pending producer agreement**. Option A (§1.1)
-  requires producer acceptance; Option B ships without it.
+  — now live on the active runtime path for the truthful subset. Remaining
+  work is breadth expansion, not producer-path absence.
 
 Authority anchor: per [../../../../docs/ssot/channel-architecture.md](../../../../docs/ssot/channel-architecture.md)
 §0 and §3.1, the producer authors every derived artifact. The
@@ -298,9 +296,11 @@ search-side `ParsedTree` shape and nothing more.
 1. **parse structural pattern** — consume the `StructuralBlock` from LEX-01
    (aliases already desugared) → typed pattern IR per [../dsl.md](../dsl.md) §8.
    Implemented as `parse_pattern(&str) -> Result<StructuralPattern, _>`.
-2. **language router** — resolve target language per [../dsl.md](../dsl.md) §8.5:
-   explicit `lang:` > implied by `file:` regex > per-grammar dispatch. Empty
-   resolution → `STR_LANG_RESOLUTION_EMPTY`.
+2. **language router** — on the current live subset, explicit `lang:` wins;
+   otherwise the runtime compiles the structural block against each
+   materialized producer language and applies executable `file:` filters at the
+   chunk adapter. There is no dedicated empty-language-resolution code on this
+   subset.
 3. **decode `UpsertParseTree.tree`** — decode the producer-supplied
    CBOR `ParseTreeRecord` for each in-scope chunk into the
    search-side `ParsedTree { root: ParseNode, lang: LangId }`.
@@ -403,7 +403,7 @@ closes GAP-03 from [../usecase.md](../usecase.md) §3. Lock per [../dsl.md](../d
 | `$X` (single-token) | `Span` (one node range) | `bindings[X] = Span{ start, end }` |
 | `$...X` (multi-token / variadic) | `Span` (n-ary span) | `bindings[X] = Span{ start, end }` covering the captured range |
 | `...` (anonymous wildcard) | not captured | absent from `bindings` (cannot be referenced by `where`) |
-| `:[hole.type=...]` (typed hole) | typed binding — gated `NotImplemented` per [../feature-scope.md](../feature-scope.md) §1.3.3 | parser accepts; matcher returns `STR_TYPED_HOLE_NOT_IMPLEMENTED` |
+| `:[hole.type=...]` (typed hole) | deferred semantics per [../feature-scope.md](../feature-scope.md) §1.3.3 | outside the current live executable subset; fail closed before execution |
 
 Sourcegraph alias normalize `:[X] → $X` and `:[...ARGS] → $...ARGS` is the
 parser's job (already done in LEX-01 / PRE-NORM per
@@ -420,11 +420,11 @@ neither parses source nor falls back to a search-side parser.
 
 | Language | `LangId` | Producer-side parse-tree shipped? | Ship? |
 |---|---|---|---|
-| Rust | `LangId::Rust` | yes (Option A); n/a (Option B) | ship |
-| Python | `LangId::Python` | yes (Option A); n/a (Option B) | ship |
-| TypeScript | `LangId::TypeScript` (TS + TSX) | yes (Option A); n/a (Option B) | ship |
-| JavaScript | `LangId::JavaScript` | yes (Option A); n/a (Option B) | ship |
-| Go | `LangId::Go` | yes (Option A); n/a (Option B) | ship |
+| Rust | `LangId::Rust` | yes on the active runtime path | ship |
+| Python | `LangId::Python` | yes on the active runtime path | ship |
+| TypeScript | `LangId::TypeScript` (TS + TSX) | yes on the active runtime path | ship |
+| JavaScript | `LangId::JavaScript` | yes on the active runtime path | ship |
+| Go | `LangId::Go` | yes on the active runtime path | ship |
 | Java | `LangId::Java` | stretch — producer decides per [../feature-scope.md](../feature-scope.md) §1.3.4 | stretch (cut from ship gate) |
 | C / C++ / Ruby | per [../feature-scope.md](../feature-scope.md) §1.3.4 | post-STR-01 | post-ship |
 
@@ -442,19 +442,17 @@ Explicit `lang:<unsupported>` returns `STR_LANG_NOT_SUPPORTED` per §8.
 
 Wave-5 exit per [../implementation-plan.md](../implementation-plan.md) §4.6 requires:
 
-- **Option A:** `UC-STR-01..07` green in PRE-CONF against the live
-  STR-01 matcher consuming producer-shipped `UpsertParseTree` events.
-- **Option B:** `UC-STR-01..07` green in PRE-CONF against
-  `MockStructuralMatcher` only; live matcher returns
-  `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`. End-to-end conformance is
-  descoped from Wave-5 exit and held for a follow-up ticket.
+- current live proof for the original truthful root-only subset against
+  producer-shipped `UpsertParseTree` events.
+- broader UC-STR semantics beyond the root-only subset are descoped from the
+  active runtime claim and held for the follow-on residue pack.
 - `AC-07` (unbounded structural recursion) returns `PLAN_LIMIT_EXCEEDED` per
-  [../dsl.md](../dsl.md) §13 (both options — applies to pattern IR, not source).
+  [../dsl.md](../dsl.md) §13 (applies to pattern IR, not source).
 - **Tree-walk cost p99 < 5 ms per `ParsedTree`** (criterion
-  `str_01_walk_bench`) under Option A. Source-parse cost is **not**
+  `str_01_walk_bench`) on the producer-parse-tree path. Source-parse cost is **not**
   measured on the search side — that cost lives in the producer.
-- RFC § Claim-Discipline §4 provable (matcher exists; under Option B,
-  scaffolding + typed failure counts as "exists with typed-NotReady").
+- RFC § Claim-Discipline §4 provable for the original truthful root-only
+  subset.
 
 ## §5 Implementation steps (TDD)
 
@@ -468,9 +466,10 @@ hand-rolled serde, no `#[derive]`.
 
 ### §5.2 Step 2 — language router
 Failing tests over `resolve_language`: explicit `lang:Rust` → `[Rust]`;
-`file:^src/.*\.py$` → `[Python]`; no `lang:` no `file:` → ship set; explicit
-`lang:Cpp` → `STR_LANG_NOT_SUPPORTED`. Implement per [../dsl.md](../dsl.md) §8.5 ordering;
-empty resolution → `STR_LANG_RESOLUTION_EMPTY`.
+`file:^src/.*\.py$` narrows the live chunk set; no `lang:` compiles against the
+materialized producer languages present in scope; explicit `lang:Cpp` →
+`STR_LANG_NOT_SUPPORTED`. Implement per [../dsl.md](../dsl.md) §8.5 ordering
+without a dedicated empty-resolution code on the current live subset.
 
 ### §5.3 Step 3 — decode `UpsertParseTree.tree` into `ParsedTree`
 Failing tests: a CBOR `ParseTreeRecord` fixture round-trips into
@@ -507,8 +506,9 @@ per-query memory soft limit emits typed early-stop signal (no silent truncate
 per RFC § Non-Negotiable Invariants §10). Impl: `regex_syntax`-style upper-
 bound pre-check.
 
-### §5.7 Step 7 — typed-hole `NotImplemented` gate
-Failing tests: `:[hole.type=expr]` matcher → `STR_TYPED_HOLE_NOT_IMPLEMENTED`;
+### §5.7 Step 7 — deferred-semantics gate
+Failing tests: `:[hole.type=expr]` or other broader non-root-only structural
+shape on the live executor → typed invalid request before execution;
 unknown type-name `:[hole.type=goblin]` parser-rejected →
 `PARSE_INVALID_FILTER_VALUE{filter: "hole.type"}` per [../dsl.md](../dsl.md) §8.2.
 
@@ -594,9 +594,9 @@ live in `crates/quanta-index-structural/tests/fixtures/<lang>/`,
 authored alongside the corresponding source fixtures so they can be
 re-generated from the producer side if the wire shape drifts.
 `MockStructuralMatcher` is permitted for unit-level tests and is the
-sole production matcher under Option B (§1.1). Under Option A, the
-end-to-end conformance rail uses the real matcher with fixture
-`UpsertParseTree` events fed through `MockSubscriber`.
+historical fallback only. The active runtime and end-to-end conformance rail use
+the real matcher with fixture `UpsertParseTree` events fed through
+`MockSubscriber`.
 
 ## §7 Observability
 
@@ -656,11 +656,10 @@ All error scenarios surface typed `LexicalErrorCode` values per [../dsl.md](../d
 |---|---|---|---|
 | `STR_PARSE_FAIL` | structural body fails the §8.1 grammar (unbalanced `{`, malformed metavariable). Detected at LEX-01 parser but routed to STR-01 for body-specific diagnostics. Refers to **query DSL** parsing, not source parsing. | `{offset, expected, found}` | not retryable |
 | `STR_PARSE_TREE_DECODE_FAIL` | malformed `UpsertParseTree.tree` CBOR payload at channel ingress (truncated frame, bad tag, structural cycle, schema-version mismatch). Routes to dispatcher; matching that chunk falls back to empty deterministic result and the dispatcher marks the chunk's parse-tree slot absent. **New code per §1.1 authority shift.** | `{chunk_id, at_offset, reason}` | not retryable (producer must re-ship) |
-| `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | Option B (§1.1) is in effect, or Option A is in effect but the producer has not yet shipped `UpsertParseTree` for the queried `(repo, rev, generation)`. Search plane returns this typed failure instead of silently returning empty. **New code per §1.1.** | `{repo, rev, generation, option: "A"\|"B"}` | wait-and-retry under Option A; not retryable under Option B |
+| `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | historical scaffold fallback / non-production test double path where parse-tree producer wiring is absent. The active runtime no longer emits this on the supported happy path. | `{repo, rev, generation}` | wait-and-retry / non-production only |
 | `STR_INVALID_METAVAR` | metavariable used in unsupported position (e.g. `$X` outside `match { … }`, unbound hole-ref in `where`) | `{position, ref}` | not retryable |
 | `STR_LANG_NOT_SUPPORTED` | explicit `lang:<id>` for a `LangId` outside the §4.10 producer ship set. Producer ships parse trees for langs in the ship set only; trees for other langs are dropped at index time and queries against unknown-lang chunks return empty deterministically. Explicit `lang:` for an out-of-set language returns this typed code rather than empty. | `{lang}` | not retryable |
-| `STR_LANG_RESOLUTION_EMPTY` | language router resolves to empty set per [../dsl.md](../dsl.md) §8.5 step 3 | `{file_pattern_seen, lang_seen}` | not retryable |
-| `STR_TYPED_HOLE_NOT_IMPLEMENTED` | typed-hole eval, deferred per [../feature-scope.md](../feature-scope.md) §1.3.3 | `{hole_type}` | not retryable (until follow-on ticket) |
+| `STR_INVALID_REQUEST` | live executor receives a structural shape or filter outside the current root-only + `repo:` / `file:` / `lang:` truthful subset | `{reason}` | not retryable |
 | `STATE_NOT_READY: PARSE_TREE_UNBUILT` | parse-tree store for `(repo, rev, generation, chunk_id)` is absent because the channel has not yet delivered the `UpsertParseTree` event for that chunk (producer published manifest seal but the tree event lags). Renamed from `SYNTAX_CACHE_UNBUILT` per §1 authority shift — there is no search-side syntax cache. | `{repo, rev, generation, chunk_id}` | wait-and-retry |
 | `PLAN_LIMIT_EXCEEDED` | structural pattern exceeds 256-node or 16-depth cap; emitted from the planner stage before the matcher runs. Applies to **pattern IR**, not parse-tree size — parse-tree size is bounded by the producer-side chunking strategy. | `{dimension, limit, observed}` | not retryable |
 
@@ -686,7 +685,7 @@ Negative-test corpus targets:
 | `$X` used outside `match { … }` | `PARSE_FORBIDDEN_SYNTAX` | [../dsl.md](../dsl.md) §8.6 |
 | `where $Z == "foo"` where `$Z` was never bound | `STR_INVALID_METAVAR` | this spec |
 | `UpsertParseTree.tree` truncated mid-frame | `STR_PARSE_TREE_DECODE_FAIL` (new) | this spec, §1.1 |
-| query against `(repo,rev,gen)` with no shipped parse trees | `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` (new) | this spec, §1.1 |
+| query against `(repo,rev,gen)` with no shipped parse trees | `STR_GENERATION_NOT_READY` | active runtime harness |
 
 No silent fallback under any of the rows above (RFC § Non-Negotiable Invariants
 §§1, 2, 8). No empty `Ok` when authority is absent — `STATE_NOT_READY` per
@@ -725,44 +724,49 @@ Wave-specific risk register per [../implementation-plan.md](../implementation-pl
 |---|---|---|---|---|---|
 | R-STR-01-1 | **Producer `ParseTreeRecord` wire shape drift** — producer updates the CBOR schema (renames `ParseNode` fields, changes tag values) without a coordinated search-side version bump | M | H | dispatcher sees `STR_PARSE_TREE_DECODE_FAIL` spike; conformance corpus mismatches stored fixtures | version-tag the wire shape (open question Q-STR-01-WIRE-VER, §12); fail closed with typed decode error; cross-repo CI fixture pinned both sides; never silently best-effort |
 | R-STR-01-2 | NFA-like DoS via deeply-nested patterns | M | H | criterion `str_01_walk_bench` p99 jumps > 5× | 256-node + 16-depth hard caps; pre-walk pattern complexity estimate; fuzz harness on the pattern IR (matches `R4` from [../implementation-plan.md](../implementation-plan.md) §6) |
-| R-STR-01-3 | Option A blocked indefinitely — producer cannot commit to shipping `UpsertParseTree` in Wave-5 timeline | M | M | producer-side spec review stalls past Wave-5 entry | fall back to Option B per §1.1; STR-01 ships scaffolding + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`; v2 follow-up ticket carries the end-to-end conformance |
+| R-STR-01-3 | broader tree-walk expansion stalls after the root-only live subset | M | M | residue ticket set stays open while only root-kind exact / single root capture ship | keep the current subset explicit, and carry STR-02/03/04 as the follow-on expansion pack |
 | R-STR-01-4 | parse-tree store memory blowup on monorepo (10 GiB+ trees) | M | H | RSS > 4× baseline post-fill | LRU eviction; store-size knob; per-generation scoping |
 | R-STR-01-5 | metavariable binding wire-format ambiguity (variadic vs single under same name) | L | M | property test fails on binding-name reuse | reject duplicate hole names at parser stage ([../dsl.md](../dsl.md) §8.1) |
-| R-STR-01-6 | language-router false negative — `file:` regex implies wrong language | L | M | UC fixture mismatch | per-test fixture asserts router output; emit `STR_LANG_RESOLUTION_EMPTY` instead of silent skip |
-| R-STR-01-7 | typed-hole `NotImplemented` gate leaks (parser silently accepts and matcher silently drops) | L | H | UC fixture covers typed-hole row | fail-closed: matcher always returns `STR_TYPED_HOLE_NOT_IMPLEMENTED` when a typed hole is reached; never empty `Ok` |
+| R-STR-01-6 | language-router / file-filter mismatch silently widens or narrows the live chunk set incorrectly | L | M | UC fixture mismatch | per-test fixture asserts router output and file-filter application; fail closed or return no matches rather than silently widening scope |
+| R-STR-01-7 | deferred-semantics gate leaks (parser accepts broader semantics and the live executor silently drops them) | L | H | UC fixture covers non-root-only rows | fail-closed: live executor returns `STR_INVALID_REQUEST` for shapes outside the truthful subset; never empty `Ok` |
 | R-STR-01-8 | cross-instance non-determinism (walker visits in different order on different platforms) | L | H | cross-instance CI step diffs by ≥ 1 byte | enforce explicit preorder over `ParsedTree::root` per §5.8; producer-side tree shape is already deterministic at ingress |
 
 ## §11 Definition of Done (provable)
 
 Every item below is provable per [../implementation-plan.md](../implementation-plan.md)
-§1.4 claimability rule (test name + path + assertion cited). All 15 rows shipped under the architecture-corrected scaffolding (71 tests in `quanta-index-lq-structural`). Rows 2, 3, 7, 8, 12 carry the `Option A/B` qualifier — Option B (mock matcher + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`) ships today; Option A (live matcher over producer-shipped `ParseTreeRecord`) gates on the producer publishing `UpsertParseTree`. The Option A/B selection is the wave-entry decision tracked in Q-STR-01-OPTION (§12).
+§1.4 claimability rule (test name + path + assertion cited). Treat this list as
+the historical scaffold ledger plus current proof points. The original live
+runtime ship for this ticket was the truthful root-only subset over
+producer-shipped `ParseTreeRecord`; the later may-26 residue pack expanded the
+current runtime beyond that boundary.
 
 1. ✓ shipped — **`StructuralCandidate` carrier ships** —
    `crates/quanta-index-contract/tests/structural_candidate_round_trip.rs::cbor_round_trip` asserts byte-identical CBOR
    across two runs; closes GAP-03 from [../usecase.md](../usecase.md) §3.
-2. ✓ shipped (architecture-corrected; Option A/B pending) — **5 ship `LangId`s recognized on `ParseTreeRecord` decode** —
+2. ✓ shipped — **5 ship `LangId`s recognized on `ParseTreeRecord` decode** —
    `crates/quanta-index-lq-structural/tests/lang_decode.rs::ship_set_present`
    asserts a fixture `ParseTreeRecord` for each ship `LangId` decodes
-   into `ParsedTree` and runs through the matcher (Option A) or the
-   `MockStructuralMatcher` (Option B).
-3. ✓ shipped (architecture-corrected; Option A/B pending) — **Metavariable / variadic / `inside` / `outside` / `where` functional** —
-   `crates/quanta-index-lq-structural/tests/matcher.rs::*` covers each
-   primitive against fixtures.
+   into `ParsedTree` and runs through the matcher.
+3. partial-live — **crate-local scaffold coverage exists for broader matcher
+   primitives, but the active runtime remains root-only** —
+   `crates/quanta-index-lq-structural/tests/matcher.rs::*` covers broader
+   fixtures, while the live runtime proof remains the truthful root-only
+   subset.
 4. ✓ shipped — **`:[X] → $X` and `:[...ARGS] → $...ARGS` normalization done at LEX-01
    lexer stage** —
    `crates/quanta-index-contract/tests/lq_conformance.rs::uc_str_07` asserts
    parser output AST has zero `:[…]` nodes.
-5. ✓ shipped — **`:[hole.type=…]` returns typed `NotImplemented`** —
-   `crates/quanta-index-lq-structural/tests/typed_hole.rs::not_implemented_gate`
-   per [../feature-scope.md](../feature-scope.md) §1.3.3.
+5. deferred from live runtime — **`:[hole.type=…]` is outside the current
+   executable subset** — broader semantics live in the may-26 residue pack;
+   the active runtime keeps fail-closed behavior instead of claiming support.
 6. ✓ shipped — **`AC-07` (unbounded recursion) returns `PLAN_LIMIT_EXCEEDED`** —
    `crates/quanta-index-contract/tests/lq_conformance.rs::ac_07` per
    [../dsl.md](../dsl.md) §13.
-7. ✓ shipped (architecture-corrected; Option A/B pending) — **`ParseTreeRecord` decode cost p99 < 2 ms per record** —
+7. ✓ shipped — **`ParseTreeRecord` decode cost p99 < 2 ms per record** —
    criterion `str_01_decode_bench` asserts the gate
    ([../implementation-plan.md](../implementation-plan.md) §4.6 exit).
    Source-parse cost is not a search-side DoD item.
-8. ✓ shipped (architecture-corrected; Option A/B pending) — **Structural query p99 < 1 s (single-repo)** — criterion
+8. ✓ shipped — **Structural query p99 < 1 s (single-repo)** — criterion
    `str_01_walk_bench` per [../implementation-plan.md](../implementation-plan.md) §9.2.
 9. ✓ shipped — **Cross-instance reproducibility** —
    `tests/cross_instance_structural.rs::byte_identical` runs two processes
@@ -776,12 +780,10 @@ Every item below is provable per [../implementation-plan.md](../implementation-p
     `crates/quanta-index-lq-structural/tests/disjoint_envelope.rs::no_mixing`
     asserts structural results never appear inside a
     `SearchPlaneLexicalQueryResponse`.
-12. ✓ shipped (architecture-corrected; Option A/B pending) — **RFC § Claim-Discipline §4 provable** — bundle citation in the structured
-    agent output names `crates/quanta-index-lq-structural/tests/matcher.rs::*`
-    as the proof that "search-side AST-walk matcher over producer-supplied
-    `ParsedTree` exists". Under Option B the proof cites the
-    `MockStructuralMatcher` row plus the typed
-    `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` failure on the live matcher.
+12. partial-live — **RFC § Claim-Discipline §4 provable for the truthful
+    root-only subset** — bundle citation in the structured agent output names
+    `crates/quanta-index-lq-structural/tests/authority_match.rs::*` plus the
+    live runtime SDK frontdoor structural proof as the current claim surface.
 13. ✓ shipped — **No `unwrap`, `unwrap_or`, `Result::ok` regressions** on production paths
     (clippy disallowed-methods rail per [../implementation-plan.md](../implementation-plan.md) §1.4 item 4).
 14. ✓ shipped — **No `#[derive(Serialize)]` / `#[derive(Deserialize)]` regressions** —
@@ -796,12 +798,9 @@ Every item below is provable per [../implementation-plan.md](../implementation-p
 Surface remaining ambiguities; each blocks at least one DoD item or follow-on
 ticket:
 
-- **Q-STR-01-OPTION** — Does STR-01 ship under Option A (producer
-  ships `UpsertParseTree`, end-to-end at Wave-5 exit) or Option B
-  (scaffolding + typed `STR_PRODUCER_PARSE_TREE_UNAVAILABLE`,
-  deferred to v2)? Selection driver is producer-side cost of
-  authoring parse trees per chunk. **Owner: wave-entry integrator
-  decision, in coordination with `semantica-codegraph-v2`.**
+- **Q-STR-01-OPTION** — RESOLVED. The active runtime ships the producer
+  parse-tree path whose initial live surface was the truthful root-only subset.
+  Remaining work is breadth expansion, not Option A/B selection.
 - **Q-STR-01-WIRE-VER** — `ParseTreeRecord` versioning policy.
   Options: (a) embed a `wire_version: u32` field on every record and
   reject mismatches with `STR_PARSE_TREE_DECODE_FAIL`; (b) carry the
@@ -838,9 +837,9 @@ ticket:
   — **Canonical SSOT, authoritative input source for STR-01.** §0
   (scope, search plane consumes producer-supplied data only), §3.1
   (`LexicalChannelOp::UpsertParseTree` op definition, authorship
-  rule, proposed-status note). The `UpsertParseTree` op is currently
-  marked **proposed, pending producer agreement** in §3.1; STR-01
-  Option A (§1.1) blocks on producer acceptance, Option B does not.
+  rule, proposed-status note). The active runtime now consumes this
+  producer-authored parse-tree path for the truthful subset; remaining work is
+  breadth expansion on top of that authority.
 - [../rfc.md](../rfc.md) — May-23 Sourcegraph-Class Lexical Kernel RFC
   (§ Structural engine, § `LQ/Structural-1.2`, § Non-Negotiable Invariants,
   § Error Code Taxonomy, § Claim Discipline §4, § Atomicity contract,

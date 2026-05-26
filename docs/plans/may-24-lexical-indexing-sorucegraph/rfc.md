@@ -644,7 +644,7 @@ The following ticket scopes were corrected post-RFC under the producer-authorshi
 
 - **`LEX-05`** — was authored as "tree-sitter on the search side". Corrected: a `SymbolRecordDecoder` that decodes producer-emitted `UpsertSymbol.symbol` payloads (`SymbolRecord`). No tree-sitter dependency on the search plane.
 - **`LEX-07`** — was authored as "search-plane git walk / self-authored commit graph". Corrected: `UpsertCommit` / `UpsertRef` / `UpsertTag` ops drive a channel-subscriber `CommitGraph`. No request-time git access.
-- **`STR-01`** — was authored as "tree-sitter on the search side". Corrected: structural matcher traverses producer-emitted `ParseTreeRecord` payloads from `UpsertParseTree`. v1 vs v2 ship gating (Option A / Option B) tracked in [tickets/INDEX.md § 3.7 AMB-PROD-11](tickets/INDEX.md).
+- **`STR-01`** — was authored as "tree-sitter on the search side". Corrected: structural matcher traverses producer-emitted `ParseTreeRecord` payloads from `UpsertParseTree`. The original live ship was the truthful root-only subset; breadth expansion later landed in the follow-on may-26 residue pack.
 - **`RT-01`** — was authored with a separate `apply_changes` IPC framing (violates §11 producer-authorship rule). Corrected: `UpsertDirty` / `EvictDirty` ops over the same channel; `DirtyBuffer.apply` / `.evict` are channel-subscriber callbacks. The advisory-lock ADR is dropped — channel monotonic seq replaces it.
 
 ## Canonical Execution Waves
@@ -771,10 +771,15 @@ Closes the STR-01 group per [tickets/INDEX.md § 3.1](tickets/INDEX.md). Scope c
 | `STR_PARSE_FAIL`                    | structural pattern in `match { ... }` body fails the structural-pattern grammar | `{offset, expected}`           | not retryable   |
 | `STR_INVALID_METAVAR`               | metavariable form is malformed (`$`, `$...`, `$X`, `$...X` exhaustive) or used outside a `match` body | `{offset, form}`              | not retryable   |
 | `STR_LANG_NOT_SUPPORTED`            | structural query targets a language outside the v1 ship set (Rust/Python/TypeScript/JavaScript/Go) | `{lang}`                       | not retryable   |
-| `STR_LANG_RESOLUTION_EMPTY`         | structural pattern's language resolution chain returns empty set (no explicit `lang:`, no `file:` match) | `{}`                          | not retryable   |
-| `STR_TYPED_HOLE_NOT_IMPLEMENTED`    | `:[hole.type=...]` typed hole used but matcher does not yet implement that node-kind constraint | `{type_name}`              | not retryable   |
 | `STR_PARSE_TREE_DECODE_FAIL`        | `UpsertParseTree` payload failed contract validation at apply time          | `{op_seq, field, reason}`          | not retryable   |
-| `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | structural query target has no `ParseTreeRecord` from the producer (gated v2 ship; falls under [tickets/INDEX.md § 3.7 AMB-PROD-11](tickets/INDEX.md) Option A vs Option B) | `{repo, file}` | wait-and-retry  |
+| `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | structural query target has no `ParseTreeRecord` from the producer on scaffold / non-production paths; the active runtime no longer uses this on the supported happy path | `{repo, file}` | wait-and-retry  |
+
+Current live runtime truth remains narrower than the full STR-01 design
+surface: the originally shipped root-only subset has since been expanded by the
+may-26 residue pack to cover tree-walk, variadic sibling capture, and
+`where` / `inside` / `outside`, while unsupported structural composition still
+fails closed as `STR_INVALID_REQUEST`. The active runtime no longer uses
+`STR_PRODUCER_PARSE_TREE_UNAVAILABLE` on the supported happy path.
 
 ### `DIRTY_*` — runtime metadata / `dirty:` channel failures (RT-01)
 

@@ -2,7 +2,8 @@
 //!
 //! Table-driven. Every row in `SCENARIOS` ingests through the real publish
 //! path, seals, then issues a `TextQueryRequest` and asserts against the
-//! observed result. Rows fall into two categories today:
+//! observed result. The harness supports two row categories; the current
+//! live matrix happens to use only `Candidates` and `TypedError` rows:
 //!
 //! - `ExpectedOutcome::Candidates` — wiring exists today; row must return
 //!   the exact ordered candidate-id set.
@@ -45,6 +46,13 @@ enum ExpectedOutcome {
     Candidates {
         ids: &'static [&'static str],
     },
+    TypedError {
+        code: &'static str,
+    },
+    #[expect(
+        dead_code,
+        reason = "all current lexical full-fidelity rows are green or typed-error; keep closed-loop variant for future regressions"
+    )]
     ExpectedFailing {
         owner_ticket: &'static str,
         reason: &'static str,
@@ -52,16 +60,14 @@ enum ExpectedOutcome {
     },
 }
 
+#[expect(
+    dead_code,
+    reason = "all current lexical full-fidelity rows are green or typed-error; retained for future expected-failing rows"
+)]
 #[derive(Clone, Debug)]
 enum CurrentObservation {
     /// Today this query returns no candidates (and no typed error).
     Empty,
-    /// Today this query returns at least these candidate ids (best-effort
-    /// match — wiring is overly broad and would NOT survive once the owner
-    /// ticket lands).
-    OverbroadIncludes(&'static [&'static str]),
-    /// Today this query rejects with a stable typed error code.
-    TypedError(&'static str),
 }
 
 struct LexicalScenario {
@@ -85,6 +91,7 @@ struct CorpusRow {
     id: &'static str,
     path: &'static str,
     content: &'static str,
+    symbol_name: Option<&'static str>,
 }
 
 const CORPUS: &[CorpusRow] = &[
@@ -95,19 +102,22 @@ const CORPUS: &[CorpusRow] = &[
         id: "alpha_content",
         path: "src/lib.rs",
         content: "fn alpha_content_needle() {}",
+        symbol_name: None,
     },
     // path-only: the path contains the path-only token, content does not.
     CorpusRow {
         id: "beta_pathonly",
         path: "config/path_only_needle.toml",
         content: "value = 1",
+        symbol_name: None,
     },
     // python file with same token as alpha — used for `lang:` filter
-    // discrimination (currently expected-failing pending LXE-03).
+    // discrimination.
     CorpusRow {
         id: "gamma_py_same",
         path: "scripts/helper.py",
         content: "def alpha_content_needle(): pass",
+        symbol_name: None,
     },
     // phrase row: contains "lemon yellow banana" exact-adjacent. A regex
     // token query for `lemon banana` must NOT match (phrase positions).
@@ -115,6 +125,7 @@ const CORPUS: &[CorpusRow] = &[
         id: "delta_phrase",
         path: "docs/colors.md",
         content: "the lemon yellow banana ripens",
+        symbol_name: None,
     },
     // regex-only row: contains "v1.2.3-rc.4" which a token query cannot
     // hit, but a regex `v\d+\.\d+\.\d+` can.
@@ -122,6 +133,7 @@ const CORPUS: &[CorpusRow] = &[
         id: "epsilon_regex",
         path: "src/version.rs",
         content: "const VERSION: &str = \"v1.2.3-rc.4\";",
+        symbol_name: None,
     },
     // raw substring across token boundary: contains "foo_bar_baz" — a
     // tokenizer splits on `_` so a token query for `foo_bar` may not hit;
@@ -130,6 +142,7 @@ const CORPUS: &[CorpusRow] = &[
         id: "zeta_raw",
         path: "src/raw.rs",
         content: "let foo_bar_baz = 0;",
+        symbol_name: None,
     },
     // trigram false-positive bait: contains "needle_xx" but not "needle_x"
     // exact — a naive trigram match for "needle_x" without verify could
@@ -138,13 +151,15 @@ const CORPUS: &[CorpusRow] = &[
         id: "eta_trigram_bait",
         path: "src/bait.rs",
         content: "let needle_xx = 1;",
+        symbol_name: None,
     },
     // symbol-shaped row: function declaration named `MyTypeSymbol` —
-    // exercised by `type:symbol`/`select:symbol` (expected-failing).
+    // exercised by `type:symbol`/`select:symbol`.
     CorpusRow {
         id: "theta_symbol",
         path: "src/sym.rs",
         content: "pub fn MyTypeSymbol(arg: i32) -> i32 { arg }",
+        symbol_name: Some("MyTypeSymbol"),
     },
 ];
 
@@ -169,9 +184,8 @@ const SCENARIOS: &[LexicalScenario] = &[
         // query must therefore return zero matches for this token (no
         // accidental path indexing into content).
         //
-        // NOTE: today the harness ingests `path` as a separate Tantivy field
-        // and may surface beta_pathonly here once LXE-03 lands; we assert
-        // it does NOT today.
+        // NOTE: the harness ingests `path` as a separate field, but this row
+        // proves the content query surface does not leak path-only matches.
         query_text: "path_only_needle_zzz_not_present_anywhere",
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
@@ -179,15 +193,12 @@ const SCENARIOS: &[LexicalScenario] = &[
     // ──────── path / file ────────
     LexicalScenario {
         id: "path_query_matches_path",
-        // Native LQ path-as-content query — until LXE-03 lands the `path:`
-        // filter, this is a token query against a token that only appears in
-        // a path; today it returns empty.
+        // Native LQ path-as-content query on the live simple-leaf path-term
+        // surface backed by materialized path authority.
         query_text: "path_only_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "path field token query must hit beta_pathonly once path is indexed as a queryable field",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["beta_pathonly"],
         },
     },
     LexicalScenario {
@@ -206,6 +217,36 @@ const SCENARIOS: &[LexicalScenario] = &[
         query_text: "repo:repo-other alpha_content_needle",
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    LexicalScenario {
+        id: "repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
+        // `repo:has.file(path:src/lib.rs)` is true for this single test
+        // repo, so `true OR delta_phrase_token` must widen to all text
+        // candidates on the lexical route.
+        query_text: "repo:has.file(path:src/lib.rs) OR ripens",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_content",
+                "beta_pathonly",
+                "delta_phrase",
+                "epsilon_regex",
+                "eta_trigram_bait",
+                "gamma_py_same",
+                "theta_symbol",
+                "zeta_raw",
+            ],
+        },
+    },
+    LexicalScenario {
+        id: "select_repo_projects_to_first_repo_representative",
+        // The lexical harness is single-repo, so `select:repo` must collapse
+        // matching text hits to one representative row for that repo.
+        query_text: "select:repo alpha_content_needle",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content"],
+        },
     },
     // ──────── lang ────────
     LexicalScenario {
@@ -259,21 +300,17 @@ const SCENARIOS: &[LexicalScenario] = &[
         id: "case_sensitive_changes_result_set",
         query_text: "case:yes ALPHA_CONTENT_NEEDLE",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "case:yes must drop the case-folded match; currently the case filter is not honored",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     // ──────── count ────────
     LexicalScenario {
         id: "count_cap_returns_top_n",
-        // Many rows match "needle" (alpha_content, beta_pathonly path token,
-        // eta_trigram_bait, gamma). top_k=2 must cap to 2.
-        query_text: "needle",
-        top_k: 2,
+        // `count:2` must force full recall, then deterministic
+        // score/path/line/candidate_id stabilization before truncation.
+        query_text: "count:2 needle",
+        top_k: 10,
         expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "eta_trigram_bait"],
+            ids: &["beta_pathonly", "eta_trigram_bait"],
         },
     },
     // ──────── phrase ────────
@@ -288,26 +325,19 @@ const SCENARIOS: &[LexicalScenario] = &[
     LexicalScenario {
         id: "phrase_unordered_tokens_must_not_match",
         // `banana lemon` (reversed) as a phrase must NOT match the
-        // forward-only content. Today phrase routing is not executing —
-        // either way the result is empty, but the *reason* changes when
-        // LXE-05 lands.
+        // forward-only content. This row proves the live phrase path enforces
+        // order and adjacency rather than accidental token coincidence.
         query_text: "\"banana lemon\"",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-05",
-            reason: "reversed phrase tokens must produce zero matches via lq-positions (not via missing wiring)",
-            current_observation: CurrentObservation::Empty,
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     // ──────── regex ────────
     LexicalScenario {
         id: "regex_only_match_not_reachable_by_token",
         query_text: "/v\\d+\\.\\d+\\.\\d+/",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-04",
-            reason: "regex must route through lq-trigram + lq-regex verify; currently the escape path at lexical/src/lib.rs:1151 is still live and may match or miss inconsistently",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["epsilon_regex"],
         },
     },
     LexicalScenario {
@@ -317,11 +347,7 @@ const SCENARIOS: &[LexicalScenario] = &[
         // exact verify must reject it.
         query_text: "/needle_x[0-9]/",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-04",
-            reason: "trigram prefilter must surface eta_trigram_bait but exact verify must reject; current escape path makes this untestable",
-            current_observation: CurrentObservation::Empty,
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     // ──────── raw substring ────────
     LexicalScenario {
@@ -331,41 +357,31 @@ const SCENARIOS: &[LexicalScenario] = &[
         // spells raw substring as a single-quoted raw string leaf.
         query_text: "'oo_ba'",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-04",
-            reason: "raw substring syntax is accepted on the native surface now, but the live path still returns empty instead of executing trigram + exact verify",
-            current_observation: CurrentObservation::Empty,
-        },
+        expected: ExpectedOutcome::Candidates { ids: &["zeta_raw"] },
     },
     // ──────── symbol / select / type ────────
     LexicalScenario {
-        id: "type_symbol_returns_symbol_kind",
+        id: "type_symbol_routes_to_symbol_docs",
         query_text: "type:symbol MyTypeSymbol",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "type:symbol must route to symbol engine and return SymbolCandidate kind",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["theta_symbol"],
         },
     },
     LexicalScenario {
-        id: "select_symbol_narrows_to_symbol_carrier",
+        id: "select_symbol_routes_to_symbol_docs",
         query_text: "select:symbol MyTypeSymbol",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "select:symbol must narrow the result carrier; today the filter is ignored or rejected",
-            current_observation: CurrentObservation::Empty,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["theta_symbol"],
         },
     },
     LexicalScenario {
         id: "select_file_returns_file_only_results",
         query_text: "select:file alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-06",
-            reason: "select:file must collapse per-file aggregation; today the filter is ignored",
-            current_observation: CurrentObservation::OverbroadIncludes(&["alpha_content"]),
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_content", "gamma_py_same"],
         },
     },
     // ──────── producer-dependent typed unavailable ────────
@@ -373,22 +389,16 @@ const SCENARIOS: &[LexicalScenario] = &[
         id: "fork_filter_typed_unavailable",
         query_text: "fork:no alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "fork: must stay fail-closed with a typed unavailable code until producer metadata lands",
-            current_observation: CurrentObservation::TypedError("LEX_FILTER_FORK_UNAVAILABLE"),
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_FILTER_FORK_UNAVAILABLE",
         },
     },
     LexicalScenario {
         id: "visibility_filter_typed_unavailable",
         query_text: "visibility:public alpha_content_needle",
         top_k: 10,
-        expected: ExpectedOutcome::ExpectedFailing {
-            owner_ticket: "LXE-03",
-            reason: "visibility: must stay fail-closed with a typed unavailable code until producer metadata lands",
-            current_observation: CurrentObservation::TypedError(
-                "LEX_FILTER_VISIBILITY_UNAVAILABLE",
-            ),
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_FILTER_VISIBILITY_UNAVAILABLE",
         },
     },
 ];
@@ -396,6 +406,9 @@ const SCENARIOS: &[LexicalScenario] = &[
 fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
     for row in CORPUS {
         rt.ingest_text("repo-e2e", row.path, row.content)?;
+        if let Some(symbol_name) = row.symbol_name {
+            rt.ingest_symbol("repo-e2e", row.path, row.id, symbol_name)?;
+        }
     }
     Ok(())
 }
@@ -417,6 +430,9 @@ fn candidate_ids(result: &E2eQueryResult) -> Vec<String> {
 /// The harness builds `ChunkId::new(format!("e2e-{n}-{path}"))` in
 /// `ingest_text`, so the tail after the second `-` is the row path.
 fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
+    if let Some(row) = CORPUS.iter().find(|row| row.id == candidate_id) {
+        return Some(row.id);
+    }
     // candidate_id shape: `e2e-<n>-<path>`. Split off the leading
     // `e2e-<n>-` to recover the path.
     let rest = candidate_id.strip_prefix("e2e-")?;
@@ -442,6 +458,7 @@ struct RowReport {
 }
 
 fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
+    let observed = observed_corpus_ids(result);
     match &scenario.expected {
         ExpectedOutcome::Candidates { ids } => {
             if let Some(err) = &result.typed_error {
@@ -453,7 +470,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                     )),
                 };
             }
-            let observed = observed_corpus_ids(result);
             let mut expected: Vec<&'static str> = (*ids).to_vec();
             expected.sort_unstable();
             expected.dedup();
@@ -466,12 +482,33 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                 RowReport {
                     id: scenario.id,
                     failure: Some(format!(
-                        "expected ids={expected:?}, observed ids={observed:?}, raw candidate ids={:?}",
-                        candidate_ids(result)
+                        "expected ids={expected:?}, observed ids={observed:?}, raw candidate ids={:?}, raw candidates={:?}",
+                        candidate_ids(result),
+                        result.candidates
                     )),
                 }
             }
         }
+        ExpectedOutcome::TypedError { code } => match &result.typed_error {
+            Some(err) if err.code == *code => RowReport {
+                id: scenario.id,
+                failure: None,
+            },
+            Some(err) => RowReport {
+                id: scenario.id,
+                failure: Some(format!(
+                    "expected typed error code={code}, got code={err_code} message={err_message}",
+                    err_code = err.code,
+                    err_message = err.message
+                )),
+            },
+            None => RowReport {
+                id: scenario.id,
+                failure: Some(format!(
+                    "expected typed error code={code}, got candidates={observed:?}"
+                )),
+            },
+        },
         ExpectedOutcome::ExpectedFailing {
             owner_ticket,
             reason,
@@ -504,44 +541,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                         }
                     }
                 }
-                CurrentObservation::OverbroadIncludes(must_include) => {
-                    let all_included = must_include.iter().all(|id| observed.contains(id));
-                    if all_included {
-                        // Predicted overbroad shape is observed — stay
-                        // GREEN. When the owner ticket lands the filter
-                        // will narrow and at least one of `must_include`
-                        // will drop out, flipping this to red.
-                        RowReport {
-                            id: scenario.id,
-                            failure: None,
-                        }
-                    } else {
-                        RowReport {
-                            id: scenario.id,
-                            failure: Some(format!(
-                                "[ExpectedFailing owner={owner_ticket}] predicted overbroad shape includes={must_include:?} but observed={observed:?}; {owner_ticket} may have landed (filter narrowed) — promote this row. reason={reason}"
-                            )),
-                        }
-                    }
-                }
-                CurrentObservation::TypedError(expected_code) => match observed_error {
-                    Some(code) if code == *expected_code => RowReport {
-                        id: scenario.id,
-                        failure: None,
-                    },
-                    Some(other) => RowReport {
-                        id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got {other}; {owner_ticket} may have changed public fail-closed behavior — promote or tighten this row. reason={reason}"
-                        )),
-                    },
-                    None => RowReport {
-                        id: scenario.id,
-                        failure: Some(format!(
-                            "[ExpectedFailing owner={owner_ticket}] predicted typed error {expected_code}, got candidates={observed:?}; {owner_ticket} may have landed — promote this row. reason={reason}"
-                        )),
-                    },
-                },
             }
         }
     }

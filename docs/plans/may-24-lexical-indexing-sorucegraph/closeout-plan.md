@@ -19,7 +19,9 @@ Current truth:
 - the active query contract is versioned / typed, and the legacy `Custom` escape hatches are removed from the live wire
 - [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) routes lexical / semantic / hybrid requests through the closed repo-first intake path; `searchd` is the transport/runtime shell around that path, and the workspace proof rails are green
 - hard DSL scenario coverage lives in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs)
-- structural / history live success remains producer-gated; current repo behaviour is explicit fail-closed / unavailable until producer commit/diff / parse-tree ops arrive
+- history live success remains producer-gated, while structural now has a live
+  truthful root-only path over producer parse-tree authority; broader
+  structural semantics still remain deferred
 - external producer / caller entry is not yet fully frozen to SDK-only for the remaining history / runtime / structural cutover; follow-on is tracked in [tickets/SDK-ENTRY-01.md](tickets/SDK-ENTRY-01.md)
 - real-engine conformance CI, deployment-side observability, and the bridge downstream sink remain open integration tasks
 
@@ -362,11 +364,13 @@ Goal: close the remaining cross-repo ambiguity that blocks honest end-state clai
 - Write scope:
   - `tickets/STR-01.md`
   - `implementation-plan.md`
-  - runtime code only if Option A is selected
+  - runtime code only if the active subset needs widening beyond the current
+    producer-parse-tree path
 - First PR shape:
-  - choose Option A or Option B explicitly
+  - record the resolved producer-parse-tree cutover explicitly
   - delete dead branch language from the packet
-- Expected compile fallout: low if Option B, moderate if Option A
+- Expected compile fallout: low for docs-only cleanup; moderate only if the
+  live subset is widened in code
 - Gate:
   - STR claim boundary is singular; no dual-status wording remains
 

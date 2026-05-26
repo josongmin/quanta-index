@@ -16,6 +16,18 @@ Phase 1–3 status (lexical path closed; semantic deferred to Phase 3.5):
   `DomainQueryEngine` wired to lexical + semantic + control, SIGINT/SIGTERM
   draining shutdown
 
+Current verification snapshot (2026-05-27):
+
+- green on current live-source rerun:
+  - `cargo check -p quanta-index-contract`
+  - `cargo check -p quanta-index-sdk`
+  - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`
+  - `cargo test -p quanta-index-sdk --lib`
+  - `cargo test -p quanta-index-searchd-runtime`
+- this snapshot re-proves the current closeout rails only; broader
+  semantic/hybrid/full-corpus closure remains tracked in the `may-25`
+  packet docs
+
 Build artifacts:
 
 - use `./scripts/cargow ...` for raw Cargo commands

@@ -62,20 +62,22 @@ Recommended slices:
 Do not merge implementation tickets without at least one owning unit test and
 one E2E row either green or explicitly expected-failing with a linked ticket.
 
-## 5. Final gates
+## 5. Current closeout refresh
 
-Run in order:
+As of `2026-05-27`, the live-source closeout refresh used:
 
 ```bash
-cargo check -p quanta-index-contract -p quanta-index-search-plane -p quanta-index-searchd-runtime -p quanta-index-core -p quanta-index-lexical -p quanta-index-lq-norm -p quanta-index-lq-bridge
-cargo test -p quanta-index-contract -p quanta-index-search-plane -p quanta-index-lexical
-cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity
-cargo test -p quanta-index-searchd-runtime --test e2e_sourcegraph_parity
-cargo test -p quanta-index-searchd-runtime --test e2e_semantic_hybrid
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-just verify-rust
+cargo check -p quanta-index-contract
+cargo check -p quanta-index-sdk
+cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end
+cargo test -p quanta-index-sdk --lib
+cargo test -p quanta-index-searchd-runtime
 ```
+
+This refresh kept the active lexical/Sourcegraph/structural closeout rail
+green, including the current `e2e_dual_syntax_lowering_parity` owner test.
+It does not close `E2E-03` or `E2E-05`..`E2E-07`, and it is not a workspace-wide
+`clippy` / `cargo test --workspace` claim.
 
 ## 6. Ticket quality bar
 

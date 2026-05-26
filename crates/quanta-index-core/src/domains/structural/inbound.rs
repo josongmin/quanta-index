@@ -5,7 +5,9 @@
 //! `quanta-index-lq-norm` (re-exported via `quanta-index-contract`) to avoid
 //! forking a parallel pattern type.
 
-use quanta_index_contract::{GenerationSelector, LqStructuralBlock, StructuralBinding};
+use quanta_index_contract::{GenerationSelector, LqOptions, LqStructuralBlock};
+
+use super::types::{StructuralExecutableFilter, StructuralMatchCandidate};
 
 /// Domain-level structural query.
 ///
@@ -15,14 +17,17 @@ use quanta_index_contract::{GenerationSelector, LqStructuralBlock, StructuralBin
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralQueryRequest {
     pub pattern: LqStructuralBlock,
+    pub requested_lang: Option<String>,
+    pub filters: Vec<StructuralExecutableFilter>,
+    pub options: LqOptions,
     pub generation: GenerationSelector,
 }
 
 /// Domain-level structural query response.
 ///
-/// Carries only the typed bindings; candidate composition (e.g. wrapping into
-/// `StructuralCandidate` rows) is a search-plane concern.
+/// Carries the typed candidate rows returned by the producer-backed
+/// structural executor.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct StructuralQueryResponse {
-    pub bindings: Vec<StructuralBinding>,
+    pub candidates: Vec<StructuralMatchCandidate>,
 }

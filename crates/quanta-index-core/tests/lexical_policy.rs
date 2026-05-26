@@ -20,15 +20,13 @@ fn query_with_filters(filters: Vec<LqFilter>) -> LqQuery {
 }
 
 #[test]
-fn lexical_policy_rejects_repo_select_surface() -> TestResult {
-    match LexicalPolicy::validate_query(&query_with_filters(vec![LqFilter::Select {
+fn lexical_policy_allows_repo_select_surface() -> TestResult {
+    if let Err(err) = LexicalPolicy::validate_query(&query_with_filters(vec![LqFilter::Select {
         dim: LqSelect::Repo,
     }])) {
-        Err(CoreError::NotImplemented(message)) if message.contains("select filter `repo`") => {
-            Ok(())
-        }
-        other => Err(format!("expected select repo rejection, got {other:?}").into()),
+        return Err(format!("expected select repo acceptance, got {err:?}").into());
     }
+    Ok(())
 }
 
 #[test]
@@ -54,7 +52,7 @@ fn lexical_policy_rejects_rev_surface() -> TestResult {
 }
 
 #[test]
-fn lexical_policy_rejects_predicate_under_or_and_not() -> TestResult {
+fn lexical_policy_allows_predicate_under_or_and_not() -> TestResult {
     let predicate = LqExpr::Leaf(LqLeaf::Predicate {
         name: "repo.has.file".to_string(),
         args: vec![LqPredicateArg::Filter {
@@ -73,10 +71,8 @@ fn lexical_policy_rejects_predicate_under_or_and_not() -> TestResult {
         directives: Vec::new(),
         source_span: LqSpan::eof(0),
     };
-    match LexicalPolicy::validate_query(&or_query) {
-        Err(CoreError::NotImplemented(message))
-            if message.contains("predicate leaves under OR") => {}
-        other => return Err(format!("expected OR predicate rejection, got {other:?}").into()),
+    if let Err(err) = LexicalPolicy::validate_query(&or_query) {
+        return Err(format!("expected OR predicate acceptance, got {err:?}").into());
     }
 
     let not_query = LqQuery {
@@ -87,12 +83,8 @@ fn lexical_policy_rejects_predicate_under_or_and_not() -> TestResult {
         directives: Vec::new(),
         source_span: LqSpan::eof(0),
     };
-    match LexicalPolicy::validate_query(&not_query) {
-        Err(CoreError::NotImplemented(message))
-            if message.contains("predicate leaves under NOT") =>
-        {
-            Ok(())
-        }
-        other => Err(format!("expected NOT predicate rejection, got {other:?}").into()),
+    if let Err(err) = LexicalPolicy::validate_query(&not_query) {
+        return Err(format!("expected NOT predicate acceptance, got {err:?}").into());
     }
+    Ok(())
 }

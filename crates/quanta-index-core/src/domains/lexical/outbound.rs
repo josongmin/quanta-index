@@ -1,6 +1,6 @@
 use quanta_index_contract::{
     BatchPublishReceipt, LexicalCandidate, LexicalChannelOp, LexicalIngestBatch, LqQuery,
-    ManifestGeneration, RepoId, RevisionId,
+    ManifestGeneration, RepoId, RevisionId, SymbolCandidate,
 };
 
 use crate::error::CoreError;
@@ -64,7 +64,7 @@ pub trait LexicalSearcher: Send + Sync {
         &self,
         query: &LqQuery,
         top_k: u32,
-    ) -> Result<Vec<LexicalCandidate>, CoreError>;
+    ) -> Result<Vec<SymbolCandidate>, CoreError>;
 
     /// Return every lexical match for the query within the opened generation.
     /// Callers use this for exact scope materialization before downstream

@@ -4,10 +4,10 @@
 //! plus typed readiness and domain error shapes. No vendor tokens
 //! (tree-sitter, etc.) appear here; adapters keep those private.
 
-use quanta_index_contract::StructuralBinding;
 use thiserror::Error;
 
 use super::inbound::StructuralQueryRequest;
+use super::types::StructuralMatchCandidate;
 
 /// Readiness reported by the structural producer for a given generation.
 ///
@@ -42,6 +42,8 @@ pub enum StructuralError {
     GenerationNotReady,
     #[error("structural: shard for requested generation is unavailable")]
     ShardUnavailable,
+    #[error("structural: language `{0}` is not supported on the current adapter set")]
+    LangNotSupported(String),
     #[error("structural: invalid request: {0}")]
     InvalidRequest(String),
     #[error("structural: producer execution failed: {0}")]
@@ -59,6 +61,7 @@ impl StructuralError {
             Self::ParseTreeProducerUnavailable => "STR_PRODUCER_PARSE_TREE_UNAVAILABLE",
             Self::GenerationNotReady => "STR_GENERATION_NOT_READY",
             Self::ShardUnavailable => "STR_SHARD_UNAVAILABLE",
+            Self::LangNotSupported(_) => "STR_LANG_NOT_SUPPORTED",
             Self::InvalidRequest(_) => "STR_INVALID_REQUEST",
             Self::ProducerExecution(_) => "STR_PRODUCER_EXECUTION_FAILED",
         }
@@ -89,5 +92,5 @@ pub trait StructuralProducerPort: Send + Sync {
     fn execute(
         &self,
         request: &StructuralQueryRequest,
-    ) -> Result<Vec<StructuralBinding>, StructuralError>;
+    ) -> Result<Vec<StructuralMatchCandidate>, StructuralError>;
 }

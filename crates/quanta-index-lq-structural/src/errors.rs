@@ -1,7 +1,7 @@
 //! Typed errors for the STR-01 structural pattern engine.
 //!
-//! Every failure path in [`crate::pattern`], [`crate::matcher`], and
-//! [`crate::registry`] maps to exactly one [`StructuralErrorCode`] variant.
+//! Every failure path in [`crate::pattern`] and [`crate::matcher`] maps to
+//! exactly one [`StructuralErrorCode`] variant.
 //! No silent failure, no silent fallback, no panic.
 //!
 //! D18 — every wire shape is hand-rolled serde; no proc-macro derives.
@@ -21,12 +21,6 @@ pub enum StructuralErrorCode {
     StrInvalidMetavar,
     /// Explicit `lang:<id>` outside the §4.10 ship set.
     StrLangNotSupported,
-    /// Language router resolves to empty set per `dsl.md` §8.5 step 3.
-    StrLangResolutionEmpty,
-    /// Typed-hole eval (`:[hole.type=…]`) reached at match time. Deferred
-    /// per `feature-scope.md` §1.3.3 — the matcher returns this code
-    /// rather than synthesizing a result.
-    StrTypedHoleNotImplemented,
     /// Structural pattern exceeds the 256-node, 16-depth, or 32-metavar
     /// cap. Carries the offending [`LimitDimension`] in the error payload.
     PlanLimitExceeded,
@@ -40,8 +34,6 @@ impl StructuralErrorCode {
             Self::StrParseFail => "STR_PARSE_FAIL",
             Self::StrInvalidMetavar => "STR_INVALID_METAVAR",
             Self::StrLangNotSupported => "STR_LANG_NOT_SUPPORTED",
-            Self::StrLangResolutionEmpty => "STR_LANG_RESOLUTION_EMPTY",
-            Self::StrTypedHoleNotImplemented => "STR_TYPED_HOLE_NOT_IMPLEMENTED",
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
         }
     }
@@ -53,8 +45,6 @@ impl StructuralErrorCode {
             "STR_PARSE_FAIL" => Self::StrParseFail,
             "STR_INVALID_METAVAR" => Self::StrInvalidMetavar,
             "STR_LANG_NOT_SUPPORTED" => Self::StrLangNotSupported,
-            "STR_LANG_RESOLUTION_EMPTY" => Self::StrLangResolutionEmpty,
-            "STR_TYPED_HOLE_NOT_IMPLEMENTED" => Self::StrTypedHoleNotImplemented,
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             _ => return None,
         };
@@ -334,8 +324,6 @@ mod tests {
         StructuralErrorCode::StrParseFail,
         StructuralErrorCode::StrInvalidMetavar,
         StructuralErrorCode::StrLangNotSupported,
-        StructuralErrorCode::StrLangResolutionEmpty,
-        StructuralErrorCode::StrTypedHoleNotImplemented,
         StructuralErrorCode::PlanLimitExceeded,
     ];
 

@@ -6,6 +6,10 @@ use serde::{
     ser::SerializeStruct,
 };
 
+/// Public structural query-response binding DTO.
+///
+/// Internal authority/matcher layers should project into this shape only at
+/// the search-plane response boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralBinding {
     pub metavariable: String,
@@ -89,6 +93,10 @@ impl<'de> Deserialize<'de> for StructuralBinding {
     }
 }
 
+/// Public structural query-response candidate DTO.
+///
+/// This wire shape is intentionally separate from the internal authority-side
+/// structural match carriers used inside `quanta-index-core` and `searchd`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralCandidate {
     pub candidate_id: String,

@@ -15,9 +15,9 @@ mod repomap;
 mod runtime;
 mod search;
 pub(crate) mod semantic;
-mod sourcegraph;
 mod structural;
 mod symbol;
+mod text_query_builder;
 mod transport;
 
 pub use batch::{BatchMode, BatchReceipt};
@@ -38,7 +38,6 @@ pub use search::{HybridQueryBuilder, SearchNamespace};
 pub use semantic::{
     SemanticBatch, SemanticNamespace, SemanticNs, SemanticQueryBuilder, SemanticVector,
 };
-pub use sourcegraph::{SourcegraphNamespace, SourcegraphQueryBuilder};
 pub use structural::{StructuralBatch, StructuralNamespace, StructuralNs, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
 pub use transport::{
@@ -56,14 +55,17 @@ pub use quanta_index_contract::{
     EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
     LexicalCandidate, LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind,
-    RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck, RepoMapQueryRequest,
-    RepoMapQueryResponse, RepoMapSourceBundle, RepoRelativePath, RevisionId, SearchExplanation,
+    RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode,
+    RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage,
+    RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode,
+    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse,
+    RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId, SearchExplanation,
     SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-    SemanticQueryResponse, SemanticReplaceScope, SemanticTombstoneScope, StructuralReplaceScope,
-    StructuralTombstoneScope, StructuralTreeRecord, SymbolId, SymbolQueryResponse,
-    TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
+    SemanticReplaceScope, SemanticTombstoneScope, StructuralReplaceScope, StructuralTombstoneScope,
+    StructuralTreeRecord, SymbolCandidate, SymbolId, SymbolQueryResponse, TextQueryResponse,
+    TextQuerySyntax, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

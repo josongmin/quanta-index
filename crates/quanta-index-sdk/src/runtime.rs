@@ -3,10 +3,10 @@ use quanta_index_contract::{
     ChunkId, DirtyDelete, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSelector,
     ManifestGeneration, RepoId, RevisionId, RuntimeMetadataQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse, TextQueryRequest,
-    TextQuerySyntax,
+    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse, TextQuerySyntax,
 };
 
+use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,16 +20,26 @@ pub struct DirtyBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub overlay_epoch_ms: u64,
+    pub batch_digest: String,
     pub entries: Vec<DirtyBatchMutation>,
 }
 
 impl DirtyBatch {
     #[must_use]
-    pub fn new(repo_id: RepoId, revision_id: RevisionId, generation: ManifestGeneration) -> Self {
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        overlay_epoch_ms: u64,
+        batch_digest: impl Into<String>,
+    ) -> Self {
         Self {
             repo_id,
             revision_id,
             generation,
+            overlay_epoch_ms,
+            batch_digest: batch_digest.into(),
             entries: Vec::new(),
         }
     }
@@ -77,6 +87,8 @@ impl crate::NamespaceIngest for RuntimeNs {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
+            overlay_epoch_ms: batch.overlay_epoch_ms,
+            batch_digest: batch.batch_digest.clone(),
             entries: batch
                 .entries
                 .iter()
@@ -115,46 +127,40 @@ impl crate::NamespaceQuery for RuntimeNs {
 
 pub struct RuntimeQueryBuilder<'a> {
     client: &'a QuantaIndex,
-    syntax: TextQuerySyntax,
-    query_text: Option<String>,
-    selection: Option<GenerationSelector>,
-    top_k: Option<u32>,
+    state: TextQueryBuilderState,
 }
 
 impl<'a> RuntimeQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
-            syntax: TextQuerySyntax::Native,
-            query_text: None,
-            selection: None,
-            top_k: None,
+            state: TextQueryBuilderState::new(),
         }
     }
 
     #[must_use]
     pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Native;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Native;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.syntax = TextQuerySyntax::Sourcegraph;
-        self.query_text = Some(query_text.into());
+        self.state.syntax = TextQuerySyntax::Sourcegraph;
+        self.state.query_text = Some(query_text.into());
         self
     }
 
     #[must_use]
     pub fn pinned(mut self, pin: GenerationPin) -> Self {
-        self.selection = Some(GenerationSelector::Pinned(pin));
+        self.state.selection = Some(GenerationSelector::Pinned(pin));
         self
     }
 
     #[must_use]
     pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.selection = Some(GenerationSelector::Active {
+        self.state.selection = Some(GenerationSelector::Active {
             repo_id,
             revision_id,
         });
@@ -163,33 +169,16 @@ impl<'a> RuntimeQueryBuilder<'a> {
 
     #[must_use]
     pub fn top_k(mut self, top_k: u32) -> Self {
-        self.top_k = Some(top_k);
+        self.state.top_k = Some(top_k);
         self
     }
 
     pub fn execute(self) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
-        let query_text = self
-            .query_text
-            .ok_or_else(|| SdkError::Usage("runtime query text is required".to_string()))?;
-        let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("runtime generation selection is required".to_string())
-        })?;
-        let top_k = self
-            .top_k
-            .ok_or_else(|| SdkError::Usage("runtime top_k is required".to_string()))?;
-        let (generation, generation_selector) = QuantaIndex::selection_to_fields(selection);
+        let text_query = self.state.build_request("runtime")?;
         let response = self
             .client
             .dispatch_query(SearchPlaneQueryIpcRequest::RuntimeMetadata(
-                RuntimeMetadataQueryRequest {
-                    text_query: TextQueryRequest {
-                        syntax: self.syntax,
-                        query_text,
-                        generation,
-                        generation_selector,
-                        top_k,
-                    },
-                },
+                RuntimeMetadataQueryRequest { text_query },
             ))?;
         match response {
             SearchPlaneQueryIpcResponse::RuntimeMetadata(results) => Ok(results),
@@ -202,8 +191,7 @@ impl<'a> RuntimeQueryBuilder<'a> {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)) => Err(SdkError::unexpected_response(
+            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "runtime response",
                 QuantaIndex::query_response_kind(&other),
             )),

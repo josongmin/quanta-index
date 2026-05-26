@@ -1,7 +1,7 @@
 //! Property test — translator totality.
 //!
-//! For every parseable `SgQuery` shape we can generate, `translate`
-//! returns either `Ok(LqDirective)` or a typed `BridgeError`. There
+//! For every parseable `SgQuery` shape we can generate, `translate_query`
+//! returns either `Ok(LqQuery)` or a typed `BridgeError`. There
 //! is no panic, no `unwrap`, and no infinite recursion. ≥ 256 cases.
 //!
 //! Per BRIDGE-01 § 8.3 failure-classification invariants: every
@@ -10,9 +10,10 @@
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+use quanta_index_contract::{LqExpr, LqLeaf, LqQuery};
 use quanta_index_lq_bridge::syntax::SgPatternKind;
 use quanta_index_lq_bridge::{
-    BridgeErrorCode, LqDirective, SgFilter, SgQuery, SourcegraphVersionTag, translate,
+    BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, translate_query,
 };
 
 fn ver() -> SourcegraphVersionTag {
@@ -106,26 +107,30 @@ fn allowed_error_code(c: BridgeErrorCode) -> bool {
     )
 }
 
-/// A non-empty trait check: every `LqDirective` returned by `translate`
-/// is at least minimally well-formed (no panic, no infinite tree).
-fn well_formed(d: &LqDirective) -> bool {
-    fn walk(d: &LqDirective, depth: u32) -> bool {
+/// A non-empty trait check: every lowered `LqQuery` is at least minimally
+/// well-formed (no invalid recursion shape, no panic, no empty spans).
+fn well_formed(query: &LqQuery) -> bool {
+    fn walk(expr: &LqExpr, depth: u32) -> bool {
         if depth > 64 {
             return false;
         }
         let next = depth.saturating_add(1);
-        match d {
-            LqDirective::Pattern { .. }
-            | LqDirective::Filter { .. }
-            | LqDirective::Predicate { .. } => true,
-            LqDirective::And(xs) | LqDirective::Or(xs) => xs.iter().all(|x| walk(x, next)),
-            LqDirective::Not(inner) => walk(inner, next),
-            LqDirective::Filtered { filters, body } => {
-                filters.iter().all(|f| walk(f, next)) && walk(body, next)
-            }
+        match expr {
+            LqExpr::Empty => true,
+            LqExpr::Leaf(
+                LqLeaf::Keyword(_)
+                | LqLeaf::Phrase(_)
+                | LqLeaf::RawString(_)
+                | LqLeaf::Regex(_)
+                | LqLeaf::StructuralBlock(_)
+                | LqLeaf::Predicate { .. },
+            ) => true,
+            LqExpr::Not(inner) => walk(inner, next),
+            LqExpr::All(xs) | LqExpr::Any(xs) => xs.iter().all(|x| walk(x, next)),
+            LqExpr::SemanticVector { .. } => true,
         }
     }
-    walk(d, 0)
+    walk(&query.expr, 0)
 }
 
 proptest! {
@@ -134,8 +139,8 @@ proptest! {
     #[test]
     fn translate_is_total_over_arbitrary_sg_query(q in sg_query_strategy()) {
         let v = ver();
-        match translate(q, &v) {
-            Ok(d) => prop_assert!(well_formed(&d)),
+        match translate_query(q, &v, 0) {
+            Ok(query) => prop_assert!(well_formed(&query)),
             Err(e) => prop_assert!(
                 allowed_error_code(e.code),
                 "unexpected error code: {:?}",

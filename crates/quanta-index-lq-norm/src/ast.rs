@@ -145,32 +145,79 @@ impl LqMetaVar {
     }
 }
 
-/// One node inside a `match { ... }` block per dsl.md §8.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum LqStructuralNode {
-    /// Verbatim text segment between metavars / groups.
-    Literal(Box<str>),
-    /// `$name` / `:[name]` metavariable capture.
-    MetaVar(LqMetaVar),
-    /// Brace-delimited nested group; sequence of child nodes in order.
-    Group(Vec<LqStructuralNode>),
+/// Structural-hole multiplicity per dsl.md §8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LqStructuralHoleMultiplicity {
+    /// Single-node capture/reference (`$X` / `:[X]`).
+    One,
+    /// Variadic contiguous sibling span (`$...ARGS` / `:[...ARGS]`).
+    Many,
 }
 
-/// Typed structural block: optional language tag plus a node-tree body.
-///
-/// Mirrors the shape of `quanta-index-lq-structural::pattern::PatternNode`
-/// but is duplicated here on purpose — the contract-layer integration
-/// ticket aligns the two types. Importing it directly would couple
-/// PRE-NORM to the structural plane.
+/// Structural hole reference used by `where`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LqStructuralHoleRef {
+    pub name: LqMetaVar,
+    pub multiplicity: LqStructuralHoleMultiplicity,
+}
+
+/// RHS operand of a structural `where` constraint.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LqStructuralConstraintOperand {
+    Hole(LqStructuralHoleRef),
+    Phrase(String),
+    RawString(String),
+}
+
+/// Conjunction-only structural constraint per dsl.md §8.3.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LqStructuralConstraint {
+    pub left: LqStructuralHoleRef,
+    pub right: LqStructuralConstraintOperand,
+}
+
+/// One node inside a structural pattern sequence per dsl.md §8.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LqStructuralNode {
+    /// Verbatim text segment between holes / groups.
+    Literal(Box<str>),
+    /// Brace-delimited nested group; sequence of child nodes in order.
+    Group(Vec<LqStructuralNode>),
+    /// Back-compat single-capture metavariable used by the current live subset.
+    MetaVar(LqMetaVar),
+    /// Named or anonymous capture hole.
+    Hole {
+        name: Option<LqMetaVar>,
+        multiplicity: LqStructuralHoleMultiplicity,
+    },
+    /// Anonymous variadic wildcard (`...`).
+    WildcardMany,
+}
+
+/// One structural expression inside a `match { ... }` block.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LqStructuralExpr {
+    /// Primary structural pattern sequence.
+    Pattern(Vec<LqStructuralNode>),
+    /// Post-bind conjunction-only structural constraints.
+    Where(Vec<LqStructuralConstraint>),
+    /// Ancestor-chain positive context restriction.
+    Inside(Box<LqStructuralBlock>),
+    /// Ancestor-chain negative context restriction.
+    Outside(Box<LqStructuralBlock>),
+}
+
+/// Typed structural block: optional language tag plus ordered structural
+/// nodes plus the parallel expr view.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LqStructuralBlock {
-    /// Optional `lang:<id>` tag captured from the `match` header (deferred —
-    /// PRE-NORM parses the body only and always emits `None` here for now;
-    /// the field exists so the integration ticket can wire the lang prefix
-    /// without re-shaping the AST).
+    /// Optional `lang:<id>` tag captured from the `match` header.
     pub lang: Option<String>,
-    /// Ordered list of structural nodes parsed from the block body.
+    /// Ordered structural nodes parsed from the block body.
     pub nodes: Vec<LqStructuralNode>,
+    /// Canonical structural expr view. Current v1 surface stores a single
+    /// `Pattern(nodes)` entry; richer expr forms remain fail-closed upstream.
+    pub exprs: Vec<LqStructuralExpr>,
 }
 
 /// One argument to a `<scope>:<head>.<tail>(...)` predicate.
@@ -734,7 +781,95 @@ impl<'de> serde::Deserialize<'de> for LqMetaVar {
     }
 }
 
-impl serde::Serialize for LqStructuralNode {
+impl serde::Serialize for LqStructuralHoleMultiplicity {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ser.serialize_str(match self {
+            Self::One => "one",
+            Self::Many => "many",
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralHoleMultiplicity {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = LqStructuralHoleMultiplicity;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralHoleMultiplicity string")
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> Result<LqStructuralHoleMultiplicity, E> {
+                match v {
+                    "one" => Ok(LqStructuralHoleMultiplicity::One),
+                    "many" => Ok(LqStructuralHoleMultiplicity::Many),
+                    other => Err(E::unknown_variant(other, &["one", "many"])),
+                }
+            }
+        }
+        de.deserialize_str(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralHoleRef {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        m.serialize_entry("name", &self.name)?;
+        m.serialize_entry("multiplicity", &self.multiplicity)?;
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralHoleRef {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralHoleRef;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralHoleRef map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralHoleRef, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut name: Option<LqMetaVar> = None;
+                let mut multiplicity: Option<LqStructuralHoleMultiplicity> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "name" => name = Some(map.next_value()?),
+                        "multiplicity" => multiplicity = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(LqStructuralHoleRef {
+                    name: name.ok_or_else(|| serde::de::Error::missing_field("name"))?,
+                    multiplicity: multiplicity
+                        .ok_or_else(|| serde::de::Error::missing_field("multiplicity"))?,
+                })
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralConstraintOperand {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -742,17 +877,158 @@ impl serde::Serialize for LqStructuralNode {
         use serde::ser::SerializeMap as _;
         let mut m = ser.serialize_map(Some(2))?;
         match self {
+            Self::Hole(hole) => {
+                m.serialize_entry("tag", "hole")?;
+                m.serialize_entry("v", hole)?;
+            }
+            Self::Phrase(text) => {
+                m.serialize_entry("tag", "phrase")?;
+                m.serialize_entry("v", text)?;
+            }
+            Self::RawString(text) => {
+                m.serialize_entry("tag", "raw_string")?;
+                m.serialize_entry("v", text)?;
+            }
+        }
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralConstraintOperand {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralConstraintOperand;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralConstraintOperand map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralConstraintOperand, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let mut tag: Option<String> = None;
+                let mut buffered: Option<ciborium::value::Value> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "tag" => tag = Some(map.next_value()?),
+                        "v" => buffered = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
+                let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
+                match tag.as_str() {
+                    "hole" => {
+                        let hole: LqStructuralHoleRef = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("hole payload: {e}")))?;
+                        Ok(LqStructuralConstraintOperand::Hole(hole))
+                    }
+                    "phrase" => {
+                        let text: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("phrase payload: {e}")))?;
+                        Ok(LqStructuralConstraintOperand::Phrase(text))
+                    }
+                    "raw_string" => {
+                        let text: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("raw_string payload: {e}")))?;
+                        Ok(LqStructuralConstraintOperand::RawString(text))
+                    }
+                    other => Err(A::Error::unknown_variant(
+                        other,
+                        &["hole", "phrase", "raw_string"],
+                    )),
+                }
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralConstraint {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        m.serialize_entry("left", &self.left)?;
+        m.serialize_entry("right", &self.right)?;
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralConstraint {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralConstraint;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralConstraint map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralConstraint, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut left: Option<LqStructuralHoleRef> = None;
+                let mut right: Option<LqStructuralConstraintOperand> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "left" => left = Some(map.next_value()?),
+                        "right" => right = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(LqStructuralConstraint {
+                    left: left.ok_or_else(|| serde::de::Error::missing_field("left"))?,
+                    right: right.ok_or_else(|| serde::de::Error::missing_field("right"))?,
+                })
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralNode {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(3))?;
+        match self {
             Self::Literal(s) => {
                 m.serialize_entry("tag", "literal")?;
                 m.serialize_entry("v", s.as_ref())?;
+            }
+            Self::Group(children) => {
+                m.serialize_entry("tag", "group")?;
+                m.serialize_entry("v", children)?;
             }
             Self::MetaVar(mv) => {
                 m.serialize_entry("tag", "metavar")?;
                 m.serialize_entry("v", mv)?;
             }
-            Self::Group(children) => {
-                m.serialize_entry("tag", "group")?;
-                m.serialize_entry("v", children)?;
+            Self::Hole { name, multiplicity } => {
+                m.serialize_entry("tag", "hole")?;
+                m.serialize_entry("name", name)?;
+                m.serialize_entry("multiplicity", multiplicity)?;
+            }
+            Self::WildcardMany => {
+                m.serialize_entry("tag", "wildcard_many")?;
             }
         }
         m.end()
@@ -777,6 +1053,99 @@ impl<'de> serde::Deserialize<'de> for LqStructuralNode {
                 use serde::de::Error as _;
                 let mut tag: Option<String> = None;
                 let mut buffered: Option<ciborium::value::Value> = None;
+                let mut hole_name: Option<Option<LqMetaVar>> = None;
+                let mut hole_multiplicity: Option<LqStructuralHoleMultiplicity> = None;
+                while let Some(k) = map.next_key::<String>()? {
+                    match k.as_str() {
+                        "tag" => tag = Some(map.next_value()?),
+                        "v" => buffered = Some(map.next_value()?),
+                        "name" => hole_name = Some(map.next_value()?),
+                        "multiplicity" => hole_multiplicity = Some(map.next_value()?),
+                        _ => {
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
+                match tag.as_str() {
+                    "literal" => {
+                        let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
+                        let s: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("literal payload: {e}")))?;
+                        Ok(LqStructuralNode::Literal(s.into_boxed_str()))
+                    }
+                    "group" => {
+                        let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
+                        let kids: Vec<LqStructuralNode> = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("group payload: {e}")))?;
+                        Ok(LqStructuralNode::Group(kids))
+                    }
+                    "hole" => Ok(LqStructuralNode::Hole {
+                        name: hole_name.ok_or_else(|| A::Error::missing_field("name"))?,
+                        multiplicity: hole_multiplicity
+                            .ok_or_else(|| A::Error::missing_field("multiplicity"))?,
+                    }),
+                    "wildcard_many" => Ok(LqStructuralNode::WildcardMany),
+                    other => Err(A::Error::unknown_variant(
+                        other,
+                        &["literal", "group", "hole", "wildcard_many"],
+                    )),
+                }
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+impl serde::Serialize for LqStructuralExpr {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut m = ser.serialize_map(Some(2))?;
+        match self {
+            Self::Pattern(nodes) => {
+                m.serialize_entry("tag", "pattern")?;
+                m.serialize_entry("v", nodes)?;
+            }
+            Self::Where(constraints) => {
+                m.serialize_entry("tag", "where")?;
+                m.serialize_entry("v", constraints)?;
+            }
+            Self::Inside(block) => {
+                m.serialize_entry("tag", "inside")?;
+                m.serialize_entry("v", block)?;
+            }
+            Self::Outside(block) => {
+                m.serialize_entry("tag", "outside")?;
+                m.serialize_entry("v", block)?;
+            }
+        }
+        m.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LqStructuralExpr {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = LqStructuralExpr;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("LqStructuralExpr map")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<LqStructuralExpr, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+                let mut tag: Option<String> = None;
+                let mut buffered: Option<ciborium::value::Value> = None;
                 while let Some(k) = map.next_key::<String>()? {
                     match k.as_str() {
                         "tag" => tag = Some(map.next_value()?),
@@ -789,27 +1158,33 @@ impl<'de> serde::Deserialize<'de> for LqStructuralNode {
                 let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
                 let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
                 match tag.as_str() {
-                    "literal" => {
-                        let s: String = v
+                    "pattern" => {
+                        let nodes: Vec<LqStructuralNode> = v
                             .deserialized()
-                            .map_err(|e| A::Error::custom(format!("literal payload: {e}")))?;
-                        Ok(LqStructuralNode::Literal(s.into_boxed_str()))
+                            .map_err(|e| A::Error::custom(format!("pattern payload: {e}")))?;
+                        Ok(LqStructuralExpr::Pattern(nodes))
                     }
-                    "metavar" => {
-                        let mv: LqMetaVar = v
+                    "where" => {
+                        let constraints: Vec<LqStructuralConstraint> = v
                             .deserialized()
-                            .map_err(|e| A::Error::custom(format!("metavar payload: {e}")))?;
-                        Ok(LqStructuralNode::MetaVar(mv))
+                            .map_err(|e| A::Error::custom(format!("where payload: {e}")))?;
+                        Ok(LqStructuralExpr::Where(constraints))
                     }
-                    "group" => {
-                        let kids: Vec<LqStructuralNode> = v
+                    "inside" => {
+                        let block: LqStructuralBlock = v
                             .deserialized()
-                            .map_err(|e| A::Error::custom(format!("group payload: {e}")))?;
-                        Ok(LqStructuralNode::Group(kids))
+                            .map_err(|e| A::Error::custom(format!("inside payload: {e}")))?;
+                        Ok(LqStructuralExpr::Inside(Box::new(block)))
+                    }
+                    "outside" => {
+                        let block: LqStructuralBlock = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("outside payload: {e}")))?;
+                        Ok(LqStructuralExpr::Outside(Box::new(block)))
                     }
                     other => Err(A::Error::unknown_variant(
                         other,
-                        &["literal", "metavar", "group"],
+                        &["pattern", "where", "inside", "outside"],
                     )),
                 }
             }
@@ -824,12 +1199,13 @@ impl serde::Serialize for LqStructuralBlock {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(2))?;
+        let mut m = ser.serialize_map(Some(3))?;
         match &self.lang {
             Some(l) => m.serialize_entry("lang", l)?,
             None => m.serialize_entry::<_, Option<String>>("lang", &None)?,
         }
         m.serialize_entry("nodes", &self.nodes)?;
+        m.serialize_entry("exprs", &self.exprs)?;
         m.end()
     }
 }
@@ -851,19 +1227,27 @@ impl<'de> serde::Deserialize<'de> for LqStructuralBlock {
             {
                 let mut lang: Option<String> = None;
                 let mut nodes: Option<Vec<LqStructuralNode>> = None;
+                let mut exprs: Option<Vec<LqStructuralExpr>> = None;
                 while let Some(k) = map.next_key::<String>()? {
                     match k.as_str() {
                         "lang" => lang = map.next_value()?,
                         "nodes" => nodes = Some(map.next_value()?),
+                        "exprs" => exprs = Some(map.next_value()?),
                         _ => {
                             let _ignored: serde::de::IgnoredAny = map.next_value()?;
                         }
                     }
                 }
-                Ok(LqStructuralBlock {
-                    lang,
-                    nodes: nodes.ok_or_else(|| serde::de::Error::missing_field("nodes"))?,
-                })
+                let exprs = exprs.unwrap_or_else(|| {
+                    nodes.as_ref().map_or_else(Vec::new, |nodes| {
+                        vec![LqStructuralExpr::Pattern(nodes.clone())]
+                    })
+                });
+                let nodes = nodes.unwrap_or_else(|| match exprs.as_slice() {
+                    [LqStructuralExpr::Pattern(nodes)] => nodes.clone(),
+                    _ => Vec::new(),
+                });
+                Ok(LqStructuralBlock { lang, nodes, exprs })
             }
         }
         de.deserialize_map(V)

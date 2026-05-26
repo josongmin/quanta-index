@@ -1,9 +1,8 @@
 //! Foundational types for the STR-01 structural pattern engine.
 //!
-//! [`DocId`] / [`ByteSpan`] mirror the LEX-05 sibling crate so structural
-//! candidates can join lexical results on the same document identity.
-//! [`MetaVar`] is the pattern-side capture name (e.g. `$X` -> `MetaVar("X")`).
-//! [`LangId`] is the closed v1 ship set from STR-01 §4.10.
+//! [`ByteSpan`] captures local match offsets, [`MetaVar`] is the pattern-side
+//! capture name (e.g. `$X` -> `MetaVar("X")`), and [`LangId`] is the closed
+//! v1 ship set from STR-01 §4.10.
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
 
@@ -40,82 +39,6 @@ pub const MAX_DEPTH: u32 = 16;
 /// Hard cap on the number of distinct [`MetaVar`] names per pattern.
 /// Exceeding this surfaces `PLAN_LIMIT_EXCEEDED { dimension = METAVAR_COUNT }`.
 pub const MAX_METAVARS_PER_PATTERN: u32 = 32;
-
-/// Stable document identifier. Newtype around `u64`; equality and ordering
-/// match the wrapped value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DocId(pub u64);
-
-impl DocId {
-    /// Construct from a raw `u64`.
-    #[must_use]
-    pub const fn new(v: u64) -> Self {
-        Self(v)
-    }
-
-    /// Borrow the wrapped `u64`.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u64> for DocId {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<DocId> for u64 {
-    fn from(d: DocId) -> Self {
-        d.0
-    }
-}
-
-impl fmt::Display for DocId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl serde::Serialize for DocId {
-    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        ser.serialize_u64(self.0)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for DocId {
-    fn deserialize<D>(de: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct V;
-        impl serde::de::Visitor<'_> for V {
-            type Value = DocId;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("DocId u64")
-            }
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<DocId, E> {
-                Ok(DocId(v))
-            }
-            fn visit_u32<E: serde::de::Error>(self, v: u32) -> Result<DocId, E> {
-                Ok(DocId(u64::from(v)))
-            }
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<DocId, E> {
-                if v < 0 {
-                    return Err(E::custom("DocId must be non-negative"));
-                }
-                let u = u64::try_from(v)
-                    .map_err(|err| E::custom(format!("DocId out of u64 range: {err}")))?;
-                Ok(DocId(u))
-            }
-        }
-        de.deserialize_u64(V)
-    }
-}
 
 /// Local byte span within a single source document.
 ///
@@ -336,6 +259,32 @@ impl LangId {
         Some(v)
     }
 
+    /// Canonical lowercase producer language code string.
+    #[must_use]
+    pub const fn as_language_code_str(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::Go => "go",
+        }
+    }
+
+    /// Inverse of [`LangId::as_language_code_str`].
+    #[must_use]
+    pub fn from_language_code_str(s: &str) -> Option<Self> {
+        let v = match s {
+            "rust" => Self::Rust,
+            "python" => Self::Python,
+            "typescript" => Self::TypeScript,
+            "javascript" => Self::JavaScript,
+            "go" => Self::Go,
+            _ => return None,
+        };
+        Some(v)
+    }
+
     /// All v1 supported languages, in declaration order.
     #[must_use]
     pub const fn all() -> &'static [Self] {
@@ -386,7 +335,7 @@ impl<'de> serde::Deserialize<'de> for LangId {
 #[cfg(test)]
 mod tests {
     use super::{
-        ByteSpan, DocId, LangId, MAX_DEPTH, MAX_METAVARS_PER_PATTERN, MAX_STRUCTURAL_NODES, MetaVar,
+        ByteSpan, LangId, MAX_DEPTH, MAX_METAVARS_PER_PATTERN, MAX_STRUCTURAL_NODES, MetaVar,
     };
     use crate::errors::StructuralErrorCode;
 
@@ -395,19 +344,6 @@ mod tests {
         assert_eq!(MAX_STRUCTURAL_NODES, 256);
         assert_eq!(MAX_DEPTH, 16);
         assert_eq!(MAX_METAVARS_PER_PATTERN, 32);
-    }
-
-    #[test]
-    fn docid_roundtrip_u64() {
-        let d = DocId::from(42u64);
-        assert_eq!(d.get(), 42);
-        let v: u64 = d.into();
-        assert_eq!(v, 42);
-    }
-
-    #[test]
-    fn docid_display() {
-        assert_eq!(format!("{}", DocId(7)), "7");
     }
 
     #[test]
@@ -486,6 +422,16 @@ mod tests {
     fn lang_id_code_str_roundtrip() {
         for l in LangId::all() {
             assert_eq!(LangId::from_code_str(l.as_code_str()), Some(*l));
+        }
+    }
+
+    #[test]
+    fn lang_id_language_code_roundtrip() {
+        for l in LangId::all() {
+            assert_eq!(
+                LangId::from_language_code_str(l.as_language_code_str()),
+                Some(*l)
+            );
         }
     }
 

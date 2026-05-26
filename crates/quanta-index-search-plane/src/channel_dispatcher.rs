@@ -14,19 +14,12 @@ use quanta_index_channel::{
     BundleChannelSubscriber, LexicalChannelEvent, LexicalWalSubscriber, SemanticChannelEvent,
     SemanticWalSubscriber,
 };
-use quanta_index_contract::{ChannelSeq, LexicalChannelOp, SemanticChannelOp};
-use quanta_index_core::{ChannelDispatchPolicy, LexicalIndexBuildPort, SemanticIndexBuildPort};
+use quanta_index_contract::{LexicalChannelOp, SemanticChannelOp};
+use quanta_index_core::{LexicalIndexBuildPort, SemanticIndexBuildPort};
 
 use crate::Ledger;
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Identifies which indexing track a ledger read/write targets.
-#[derive(Debug, Clone, Copy)]
-enum ChannelTrack {
-    Lexical,
-    Semantic,
-}
 
 pub struct ChannelDispatcher {
     lex_sub: LexicalWalSubscriber,
@@ -81,14 +74,12 @@ impl ChannelDispatcher {
 
     fn drain_lex(&mut self) -> Result<bool> {
         let mut progressed = false;
-        let mut last_emitted = read_last_seen(ChannelTrack::Lexical, &self.ledger)?;
+        let mut last_observed_seq = 0_u64;
         while let Some(event) = self.lex_sub.next_event()? {
-            ChannelDispatchPolicy::validate_monotonic_seq(event.seq, last_emitted)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            last_emitted = event.seq;
+            validate_observed_seq(event.seq.get(), last_observed_seq)?;
+            last_observed_seq = event.seq.get();
             apply_lex(&event, self.lex_builder.as_ref(), &self.ledger)?;
             self.lex_sub.ack(event.seq)?;
-            record_observed(ChannelTrack::Lexical, event.seq, &self.ledger)?;
             progressed = true;
         }
         Ok(progressed)
@@ -96,48 +87,24 @@ impl ChannelDispatcher {
 
     fn drain_sem(&mut self) -> Result<bool> {
         let mut progressed = false;
-        let mut last_emitted = read_last_seen(ChannelTrack::Semantic, &self.ledger)?;
+        let mut last_observed_seq = 0_u64;
         while let Some(event) = self.sem_sub.next_event()? {
-            ChannelDispatchPolicy::validate_monotonic_seq(event.seq, last_emitted)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            last_emitted = event.seq;
+            validate_observed_seq(event.seq.get(), last_observed_seq)?;
+            last_observed_seq = event.seq.get();
             apply_sem(&event, self.sem_builder.as_ref(), &self.ledger)?;
             self.sem_sub.ack(event.seq)?;
-            record_observed(ChannelTrack::Semantic, event.seq, &self.ledger)?;
             progressed = true;
         }
         Ok(progressed)
     }
 }
 
-/// Read the `last_seen` cursor for the given track. Centralises the lock-poison
-/// translation so both drain loops share one implementation.
-fn read_last_seen(track: ChannelTrack, ledger: &Arc<RwLock<Ledger>>) -> Result<ChannelSeq> {
-    let guard = ledger
-        .read()
-        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-    Ok(match track {
-        ChannelTrack::Lexical => guard.lexical_last_seen(),
-        ChannelTrack::Semantic => guard.semantic_last_seen(),
-    })
-}
-
-/// Persist the observed seq into the ledger's per-track cursor. Used after a
-/// successful `apply_*` + `ack` so the next drain validates monotonicity
-/// against a fresh baseline.
-fn record_observed(
-    track: ChannelTrack,
-    seq: ChannelSeq,
-    ledger: &Arc<RwLock<Ledger>>,
-) -> Result<()> {
-    let mut guard = ledger
-        .write()
-        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
-    match track {
-        ChannelTrack::Lexical => guard.set_lexical_last_seen(seq),
-        ChannelTrack::Semantic => guard.set_semantic_last_seen(seq),
+fn validate_observed_seq(observed_seq: u64, last_observed_seq: u64) -> Result<()> {
+    if observed_seq <= last_observed_seq && last_observed_seq != 0 {
+        return Err(anyhow::anyhow!(
+            "channel seq regression: observed {observed_seq} <= last_observed {last_observed_seq}"
+        ));
     }
-    drop(guard);
     Ok(())
 }
 
@@ -159,6 +126,15 @@ fn apply_lex(
     guard
         .apply_lexical_authority_op(&event.op)
         .map_err(|err| anyhow::anyhow!("lexical authority materialize: {err}"))?;
+    if matches!(event.op, LexicalChannelOp::ReplaceStructuralScope(_)) {
+        guard.record_track_materialized(
+            &repo,
+            &revision,
+            quanta_index_contract::SearchPlaneTrackKind::Structural,
+            generation,
+            None,
+        );
+    }
     if matches!(event.op, LexicalChannelOp::Seal(_)) {
         guard.lexical_seal(generation);
         guard.record_track_seal(
@@ -167,6 +143,18 @@ fn apply_lex(
             quanta_index_contract::SearchPlaneTrackKind::Lexical,
             generation,
         );
+        let structural_materialized = guard
+            .structural_state(&repo, &revision, generation)
+            .is_some_and(|state| !state.parse_trees().is_empty());
+        if structural_materialized {
+            guard.request_structural_seal(&repo, &revision, generation);
+            guard.record_track_seal(
+                &repo,
+                &revision,
+                quanta_index_contract::SearchPlaneTrackKind::Structural,
+                generation,
+            );
+        }
     }
     drop(guard);
     Ok(())
@@ -207,13 +195,16 @@ mod tests {
         BundleChannelPublisher, open_lexical_publisher, open_lexical_subscriber,
         open_semantic_publisher, open_semantic_subscriber,
     };
-    use quanta_index_contract::lex::LanguageCode;
+    use quanta_index_contract::lex::{
+        LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+    };
     use quanta_index_contract::{
         BatchIngestMode, ChunkId, ChunkRecord, EmbeddingDistanceMetric, EmbeddingId,
         EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, LexicalChannelOp,
         LexicalReplaceScope, ManifestGeneration, OwnerDocKind, ReplaceLexicalScope,
-        ReplaceSemanticScope, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
-        SearchScopeSurface, SemanticChannelOp, SemanticReplaceScope,
+        ReplaceSemanticScope, ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId,
+        SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticChannelOp,
+        SemanticReplaceScope, StructuralReplaceScope, StructuralTreeRecord,
     };
     use quanta_index_core::CoreError;
 
@@ -371,6 +362,22 @@ mod tests {
         })
     }
 
+    fn parse_tree_record() -> Result<ParseTreeRecord, Box<dyn std::error::Error>> {
+        Ok(ParseTreeRecord {
+            wire_version: 1,
+            lang: rust_language()?,
+            root: ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 3,
+                children: Vec::new(),
+            },
+            source_hash: compute_parse_tree_source_hash("lex"),
+            role_tag_schema_version: 1,
+            role_tags: Vec::new(),
+        })
+    }
+
     fn model_contract() -> EmbeddingModelContract {
         EmbeddingModelContract {
             model_id: "test-model".to_string().into_boxed_str(),
@@ -414,6 +421,26 @@ mod tests {
                 generation: generation(),
                 payload: chunk_payload,
             }))?;
+        let structural_payload = encode_cbor(&(
+            BatchIngestMode::ReplaceGeneration,
+            None::<ManifestGeneration>,
+            StructuralReplaceScope {
+                scope: scope_key(),
+                scope_digest: "scope:structural".to_string(),
+                trees: vec![StructuralTreeRecord {
+                    chunk_id: ChunkId::new("chunk-1"),
+                    record: parse_tree_record()?,
+                }],
+            },
+        ))?;
+        let _structural_upsert_seq = lex_pub.publish(LexicalChannelOp::ReplaceStructuralScope(
+            ReplaceStructuralScope {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                payload: structural_payload,
+            },
+        ))?;
         let _lex_seal_seq = lex_pub.seal(repo_id(), revision_id(), generation())?;
 
         let embedding_payload = encode_cbor(&(
@@ -468,19 +495,10 @@ mod tests {
         if guard.semantic_sealed() != Some(generation()) {
             return Err(format!("unexpected semantic seal: {:?}", guard.semantic_sealed()).into());
         }
-        if guard.lexical_last_seen().get() != 2 {
-            return Err(format!(
-                "unexpected lexical last_seen: {}",
-                guard.lexical_last_seen().get()
-            )
-            .into());
-        }
-        if guard.semantic_last_seen().get() != 2 {
-            return Err(format!(
-                "unexpected semantic last_seen: {}",
-                guard.semantic_last_seen().get()
-            )
-            .into());
+        if guard.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural)
+            != Some(generation())
+        {
+            return Err("expected structural track seal after structural authority + seal".into());
         }
         let structural = guard
             .structural_state(&repo_id(), &revision_id(), generation())
@@ -496,7 +514,7 @@ mod tests {
             .calls
             .lock()
             .map_err(|err| format!("lex calls poisoned: {err}"))?;
-        if lex_calls.as_slice() != ["replace_lexical_scope", "seal"] {
+        if lex_calls.as_slice() != ["replace_lexical_scope", "replace_structural_scope", "seal"] {
             return Err(format!("unexpected lexical calls: {:?}", lex_calls.as_slice()).into());
         }
         drop(lex_calls);

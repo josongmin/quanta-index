@@ -99,7 +99,8 @@ fn language_code_cbor_rejects_unknown_string_shape() -> TestRes {
 
 #[test]
 fn lexical_error_code_all_is_at_least_30() -> TestRes {
-    // Spec requires "30+ SCREAMING_SNAKE_CASE variants". We land 84.
+    // Spec requires "30+ SCREAMING_SNAKE_CASE variants". Keep the live
+    // contract surface above that floor.
     if LexicalErrorCode::ALL.len() < 30 {
         return Err(format!(
             "expected >= 30 variants, got {}",

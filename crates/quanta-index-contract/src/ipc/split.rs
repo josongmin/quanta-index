@@ -13,10 +13,9 @@ use crate::{
     RepoMapQueryResponse, RuntimeMetadataQueryRequest, SearchPlaneActivateGenerationRequest,
     SearchPlaneActivationAck, SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSourcegraphQueryRequest,
-    SearchPlaneSourcegraphQueryResponse, SearchPlaneStructuralQueryResponse, SemanticQueryRequest,
-    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
 };
 
 const SEARCH_PLANE_ENVELOPE_FIELDS: &[&str] = &["request_id", "payload"];
@@ -32,7 +31,6 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Bridge",
     "RepoMapQuery",
     "Explain",
-    "Sourcegraph",
 ];
 const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Text",
@@ -46,7 +44,6 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "RepoMapQuery",
     "Explain",
     "Error",
-    "Sourcegraph",
 ];
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ActivateGeneration",
@@ -80,7 +77,6 @@ pub enum SearchPlaneQueryIpcRequest {
     Bridge(BridgeQueryRequest),
     RepoMapQuery(RepoMapQueryRequest),
     Explain(SearchPlaneExplainQueryRequest),
-    Sourcegraph(SearchPlaneSourcegraphQueryRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -102,7 +98,6 @@ pub enum SearchPlaneQueryIpcResponse {
     RepoMapQuery(RepoMapQueryResponse),
     Explain(SearchPlaneExplainQueryResponse),
     Error(SearchPlaneIpcError),
-    Sourcegraph(SearchPlaneSourcegraphQueryResponse),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -330,12 +325,6 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
-            Self::Sourcegraph(payload) => serialize_adjacent_tagged(
-                "SearchPlaneQueryIpcRequest",
-                "Sourcegraph",
-                payload,
-                serializer,
-            ),
         }
     }
 }
@@ -385,7 +374,6 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                             SearchPlaneQueryIpcRequest::RepoMapQuery(map.next_value()?)
                         }
                         "Explain" => SearchPlaneQueryIpcRequest::Explain(map.next_value()?),
-                        "Sourcegraph" => SearchPlaneQueryIpcRequest::Sourcegraph(map.next_value()?),
                         other => {
                             return Err(de::Error::unknown_variant(
                                 other,
@@ -547,12 +535,6 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
-            Self::Sourcegraph(payload) => serialize_adjacent_tagged(
-                "SearchPlaneQueryIpcResponse",
-                "Sourcegraph",
-                payload,
-                serializer,
-            ),
         }
     }
 }
@@ -603,9 +585,6 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                         }
                         "Explain" => SearchPlaneQueryIpcResponse::Explain(map.next_value()?),
                         "Error" => SearchPlaneQueryIpcResponse::Error(map.next_value()?),
-                        "Sourcegraph" => {
-                            SearchPlaneQueryIpcResponse::Sourcegraph(map.next_value()?)
-                        }
                         other => {
                             return Err(de::Error::unknown_variant(
                                 other,

@@ -1,28 +1,33 @@
 //! Search-plane ingest orchestration (QI-RT-01).
 //!
 //! Producer sends a typed [`SearchPlaneIngestIpcRequest`] over UDS
-//! `ingest.sock`. This dispatcher fans the typed batch out to the channel
-//! publishers (for lexical / semantic) or to the repo-map bundle ingest port
-//! (for repo-map). The producer never opens a channel publisher directly.
+//! `ingest.sock`. This dispatcher routes the typed batch to owner materializer
+//! ports. The concrete runtime may choose to mirror accepted batches into
+//! legacy channel persistence, but channel row-op fanout is no longer the
+//! public ingest truth.
 //!
 //! Composition root in `quanta-index-searchd` is the only place that names
-//! concrete adapter types (channel publishers, repo-map ingest); this module
-//! holds only [`Arc<dyn ...Port>`] (CLAUDE.md DIP rule).
+//! concrete adapter types (materializers, channel mirrors, repo-map ingest);
+//! this module holds only [`Arc<dyn ...Port>`] (CLAUDE.md DIP rule).
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use quanta_index_channel::BundleChannelPublisher;
 use quanta_index_contract::{
     BatchPublishReceipt, DeleteRef, DeleteTag, DirtyIngestBatch, EvictDirty, HistoryIngestBatch,
-    LexicalChannelOp, LexicalIngestBatch, ReplaceLexicalScope, ReplaceSemanticScope,
+    LexicalChannelOp, LexicalIngestBatch, LexicalSeal, ReplaceLexicalScope, ReplaceSemanticScope,
     ReplaceStructuralScope, RepoMapMutationAck, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneIpcError, SemanticChannelOp, SemanticIngestBatch,
-    StructuralIngestBatch, TombstoneLexicalScope, TombstoneSemanticScope, TombstoneStructuralScope,
-    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertRef, UpsertTag,
+    SearchPlaneIngestIpcResponse, SearchPlaneIpcError, SearchPlaneTrackKind, SemanticChannelOp,
+    SemanticIngestBatch, SemanticSeal, StructuralIngestBatch, TombstoneLexicalScope,
+    TombstoneSemanticScope, TombstoneStructuralScope, UpsertCommit, UpsertDiffHunk, UpsertDirty,
+    UpsertRef, UpsertTag,
 };
 use quanta_index_core::{
-    CoreError, LexicalIngestPort, RepoMapBundleIngestPort, SemanticIngestPort,
+    CoreError, LexicalIndexBuildPort, LexicalIngestPort, RepoMapBundleIngestPort,
+    SemanticIndexBuildPort, SemanticIngestPort,
 };
+
+use crate::Ledger;
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -46,14 +51,15 @@ pub trait StructuralIngestPort: Send + Sync {
 }
 
 // =============================================================================
-// Channel-backed adapters
+// Legacy channel mirror adapters
 // =============================================================================
 
 /// Adapter that implements [`LexicalIngestPort`] on top of a channel publisher.
 ///
 /// Lifted out of the SDK so the SDK can drop its direct
 /// `quanta-index-channel` dependency (QI-SDK-01); searchd's composition root
-/// owns the publisher.
+/// owns the publisher. In the may-26 integration packet this adapter is a
+/// persistence mirror, not the readiness/materialization authority.
 pub struct ChannelLexicalIngestAdapter {
     publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
 }
@@ -128,7 +134,7 @@ impl LexicalIngestPort for ChannelLexicalIngestAdapter {
 }
 
 /// Adapter that implements [`SemanticIngestPort`] on top of a channel
-/// publisher.
+/// publisher as a legacy persistence mirror.
 pub struct ChannelSemanticIngestAdapter {
     publisher: Arc<dyn BundleChannelPublisher<Op = SemanticChannelOp> + Send + Sync>,
 }
@@ -335,8 +341,8 @@ impl HistoryIngestPort for ChannelHistoryIngestAdapter {
     }
 }
 
-/// Adapter that implements [`SemanticIngestPort`] on top of a channel
-/// publisher.
+/// Adapter that implements [`RuntimeMetadataIngestPort`] on top of a channel
+/// publisher as a legacy persistence mirror.
 pub struct ChannelRuntimeMetadataIngestAdapter {
     publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync>,
 }
@@ -471,6 +477,546 @@ impl StructuralIngestPort for ChannelStructuralIngestAdapter {
     }
 }
 
+fn lexical_ops_for_batch(
+    batch: &LexicalIngestBatch,
+    include_seal: bool,
+) -> Result<Vec<LexicalChannelOp>, CoreError> {
+    let mut ops = Vec::with_capacity(
+        batch.replace_scopes.len()
+            + batch.tombstone_scopes.len()
+            + if include_seal { 1 } else { 0 },
+    );
+    for scope in &batch.replace_scopes {
+        ops.push(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            payload: encode_cbor(&(batch.mode, batch.base_generation, scope.clone())).map_err(
+                |err| {
+                    CoreError::InvalidContract(format!(
+                        "direct lexical materialize: encode replace scope payload: {err}"
+                    ))
+                },
+            )?,
+        }));
+    }
+    for scope in &batch.tombstone_scopes {
+        ops.push(LexicalChannelOp::TombstoneLexicalScope(
+            TombstoneLexicalScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(&(batch.mode, batch.base_generation, scope.clone())).map_err(
+                    |err| {
+                        CoreError::InvalidContract(format!(
+                            "direct lexical materialize: encode tombstone scope payload: {err}"
+                        ))
+                    },
+                )?,
+            },
+        ));
+    }
+    if include_seal {
+        ops.push(LexicalChannelOp::Seal(LexicalSeal {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        }));
+    }
+    Ok(ops)
+}
+
+fn semantic_ops_for_batch(
+    batch: &SemanticIngestBatch,
+    include_seal: bool,
+) -> Result<Vec<SemanticChannelOp>, CoreError> {
+    let mut ops = Vec::with_capacity(
+        batch.replace_scopes.len()
+            + batch.tombstone_scopes.len()
+            + if include_seal { 1 } else { 0 },
+    );
+    for scope in &batch.replace_scopes {
+        ops.push(SemanticChannelOp::ReplaceSemanticScope(
+            ReplaceSemanticScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(&(
+                    batch.mode,
+                    batch.base_generation,
+                    batch.model_contract.clone(),
+                    scope.clone(),
+                ))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "direct semantic materialize: encode replace scope payload: {err}"
+                    ))
+                })?,
+            },
+        ));
+    }
+    for scope in &batch.tombstone_scopes {
+        ops.push(SemanticChannelOp::TombstoneSemanticScope(
+            TombstoneSemanticScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(&(
+                    batch.mode,
+                    batch.base_generation,
+                    batch.model_contract.clone(),
+                    scope.clone(),
+                ))
+                .map_err(|err| {
+                    CoreError::InvalidContract(format!(
+                        "direct semantic materialize: encode tombstone scope payload: {err}"
+                    ))
+                })?,
+            },
+        ));
+    }
+    if include_seal {
+        ops.push(SemanticChannelOp::Seal(SemanticSeal {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        }));
+    }
+    Ok(ops)
+}
+
+fn history_ops_for_batch(batch: &HistoryIngestBatch) -> Result<Vec<LexicalChannelOp>, CoreError> {
+    let mut ops = Vec::with_capacity(
+        batch.commits.len() + batch.refs.len() + batch.tags.len() + batch.diff_hunks.len(),
+    );
+    for record in &batch.commits {
+        ops.push(LexicalChannelOp::UpsertCommit(UpsertCommit {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            payload: encode_cbor(record).map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "direct history materialize: encode commit record: {err}"
+                ))
+            })?,
+        }));
+    }
+    for mutation in &batch.refs {
+        ops.push(match mutation {
+            quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+                LexicalChannelOp::UpsertRef(UpsertRef {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    name: payload.name.clone(),
+                    sha: *payload.sha.as_bytes(),
+                })
+            }
+            quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                LexicalChannelOp::DeleteRef(DeleteRef {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    name: payload.name.clone(),
+                })
+            }
+        });
+    }
+    for mutation in &batch.tags {
+        ops.push(match mutation {
+            quanta_index_contract::HistoryRefMutation::Upsert(payload) => {
+                LexicalChannelOp::UpsertTag(UpsertTag {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    name: payload.name.clone(),
+                    sha: *payload.sha.as_bytes(),
+                })
+            }
+            quanta_index_contract::HistoryRefMutation::Delete(payload) => {
+                LexicalChannelOp::DeleteTag(DeleteTag {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    name: payload.name.clone(),
+                })
+            }
+        });
+    }
+    for hunk in &batch.diff_hunks {
+        ops.push(LexicalChannelOp::UpsertDiffHunk(UpsertDiffHunk {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            commit_sha: *hunk.commit_sha.as_bytes(),
+            file_path: hunk.file_path.clone(),
+            payload: encode_cbor(&hunk.record).map_err(|err| {
+                CoreError::InvalidContract(format!(
+                    "direct history materialize: encode diff hunk record: {err}"
+                ))
+            })?,
+        }));
+    }
+    Ok(ops)
+}
+
+fn dirty_ops_for_batch(batch: &DirtyIngestBatch) -> Vec<LexicalChannelOp> {
+    batch
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            quanta_index_contract::DirtyMutation::Upsert(record) => {
+                LexicalChannelOp::UpsertDirty(UpsertDirty {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    doc_id: record.doc_id.clone(),
+                    applied_at_ms: record.applied_at_ms,
+                    payload_hash: record.payload_hash,
+                })
+            }
+            quanta_index_contract::DirtyMutation::Delete(payload) => {
+                LexicalChannelOp::EvictDirty(EvictDirty {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: batch.generation,
+                    doc_id: payload.doc_id.clone(),
+                })
+            }
+        })
+        .collect()
+}
+
+fn structural_ops_for_batch(
+    batch: &StructuralIngestBatch,
+) -> Result<Vec<LexicalChannelOp>, CoreError> {
+    let mut ops = Vec::with_capacity(batch.replace_scopes.len() + batch.tombstone_scopes.len());
+    for scope in &batch.replace_scopes {
+        ops.push(LexicalChannelOp::ReplaceStructuralScope(
+            ReplaceStructuralScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(&(batch.mode, batch.base_generation, scope.clone())).map_err(
+                    |err| {
+                        CoreError::InvalidContract(format!(
+                            "direct structural materialize: encode replace scope payload: {err}"
+                        ))
+                    },
+                )?,
+            },
+        ));
+    }
+    for scope in &batch.tombstone_scopes {
+        ops.push(LexicalChannelOp::TombstoneStructuralScope(
+            TombstoneStructuralScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(&(batch.mode, batch.base_generation, scope.clone())).map_err(
+                    |err| {
+                        CoreError::InvalidContract(format!(
+                            "direct structural materialize: encode tombstone scope payload: {err}"
+                        ))
+                    },
+                )?,
+            },
+        ));
+    }
+    Ok(ops)
+}
+
+/// Direct lexical batch materializer that updates the builder + readiness
+/// ledger immediately and keeps the supplied ingest port only as a durability
+/// mirror.
+pub struct DirectLexicalMaterializer {
+    mirror: Arc<dyn LexicalIngestPort + Send + Sync>,
+    builder: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+    ledger: Arc<RwLock<Ledger>>,
+}
+
+impl DirectLexicalMaterializer {
+    #[must_use]
+    pub fn new(
+        mirror: Arc<dyn LexicalIngestPort + Send + Sync>,
+        builder: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Self {
+        Self {
+            mirror,
+            builder,
+            ledger,
+        }
+    }
+}
+
+impl LexicalIngestPort for DirectLexicalMaterializer {
+    fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let _mirror_receipt = self.mirror.publish_batch(batch)?;
+        let ops = lexical_ops_for_batch(batch, batch.seal)?;
+        self.builder
+            .build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct lexical materialize: ledger poisoned: {err}"
+            ))
+        })?;
+        for op in &ops {
+            guard.apply_lexical_authority_op(op)?;
+        }
+        guard.lexical_materialize(batch.generation, Some(batch.manifest_digest.as_str()));
+        guard.record_track_materialized(
+            &batch.repo_id,
+            &batch.revision_id,
+            SearchPlaneTrackKind::Lexical,
+            batch.generation,
+            Some(batch.manifest_digest.as_str()),
+        );
+        if batch.seal {
+            guard.lexical_seal_with_digest(batch.generation, batch.manifest_digest.as_str());
+            guard.record_track_seal_with_digest(
+                &batch.repo_id,
+                &batch.revision_id,
+                SearchPlaneTrackKind::Lexical,
+                batch.generation,
+                batch.manifest_digest.as_str(),
+            );
+        }
+        drop(guard);
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for _scope in &batch.replace_scopes {
+            receipt.accept_replace_scope();
+        }
+        for _scope in &batch.tombstone_scopes {
+            receipt.accept_tombstone_scope();
+        }
+        if batch.seal {
+            receipt.mark_sealed();
+        }
+        Ok(receipt)
+    }
+}
+
+/// Direct semantic batch materializer that updates the semantic builder + the
+/// readiness ledger immediately and keeps the supplied ingest port only as a
+/// durability mirror.
+pub struct DirectSemanticMaterializer {
+    mirror: Arc<dyn SemanticIngestPort + Send + Sync>,
+    builder: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
+    ledger: Arc<RwLock<Ledger>>,
+}
+
+impl DirectSemanticMaterializer {
+    #[must_use]
+    pub fn new(
+        mirror: Arc<dyn SemanticIngestPort + Send + Sync>,
+        builder: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Self {
+        Self {
+            mirror,
+            builder,
+            ledger,
+        }
+    }
+}
+
+impl SemanticIngestPort for DirectSemanticMaterializer {
+    fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let _mirror_receipt = self.mirror.publish_batch(batch)?;
+        let ops = semantic_ops_for_batch(batch, batch.seal)?;
+        self.builder
+            .build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct semantic materialize: ledger poisoned: {err}"
+            ))
+        })?;
+        guard.semantic_materialize(batch.generation, Some(batch.manifest_digest.as_str()));
+        guard.record_track_materialized(
+            &batch.repo_id,
+            &batch.revision_id,
+            SearchPlaneTrackKind::Semantic,
+            batch.generation,
+            Some(batch.manifest_digest.as_str()),
+        );
+        if batch.seal {
+            guard.semantic_seal_with_digest(batch.generation, batch.manifest_digest.as_str());
+            guard.record_track_seal_with_digest(
+                &batch.repo_id,
+                &batch.revision_id,
+                SearchPlaneTrackKind::Semantic,
+                batch.generation,
+                batch.manifest_digest.as_str(),
+            );
+        }
+        drop(guard);
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for _scope in &batch.replace_scopes {
+            receipt.accept_replace_scope();
+        }
+        for _scope in &batch.tombstone_scopes {
+            receipt.accept_tombstone_scope();
+        }
+        if batch.seal {
+            receipt.mark_sealed();
+        }
+        Ok(receipt)
+    }
+}
+
+/// Direct history materializer. History is auxiliary and non-activation
+/// blocking, but direct ledger updates keep query truth aligned with accepted
+/// ingest batches.
+pub struct DirectHistoryMaterializer {
+    mirror: Arc<dyn HistoryIngestPort + Send + Sync>,
+    ledger: Arc<RwLock<Ledger>>,
+}
+
+impl DirectHistoryMaterializer {
+    #[must_use]
+    pub fn new(
+        mirror: Arc<dyn HistoryIngestPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Self {
+        Self { mirror, ledger }
+    }
+}
+
+impl HistoryIngestPort for DirectHistoryMaterializer {
+    fn publish_batch(&self, batch: &HistoryIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let _mirror_receipt = self.mirror.publish_batch(batch)?;
+        let ops = history_ops_for_batch(batch)?;
+        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct history materialize: ledger poisoned: {err}"
+            ))
+        })?;
+        for op in &ops {
+            match op {
+                LexicalChannelOp::DeleteRef(_) | LexicalChannelOp::DeleteTag(_) => {
+                    receipt.accept_tombstone_scope();
+                }
+                _ => receipt.accept_replace_scope(),
+            }
+            guard.apply_lexical_authority_op(op)?;
+        }
+        drop(guard);
+        Ok(receipt)
+    }
+}
+
+/// Direct dirty-overlay materializer. Dirty state remains auxiliary and
+/// non-activation-blocking.
+pub struct DirectRuntimeMetadataMaterializer {
+    mirror: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
+    ledger: Arc<RwLock<Ledger>>,
+}
+
+impl DirectRuntimeMetadataMaterializer {
+    #[must_use]
+    pub fn new(
+        mirror: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Self {
+        Self { mirror, ledger }
+    }
+}
+
+impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
+    fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        let _mirror_receipt = self.mirror.publish_batch(batch)?;
+        let ops = dirty_ops_for_batch(batch);
+        let mut receipt = BatchPublishReceipt::empty_for(batch.generation, String::new());
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!("direct dirty materialize: ledger poisoned: {err}"))
+        })?;
+        for op in &ops {
+            match op {
+                LexicalChannelOp::EvictDirty(_) => receipt.accept_tombstone_scope(),
+                _ => receipt.accept_replace_scope(),
+            }
+            guard.apply_lexical_authority_op(op)?;
+        }
+        drop(guard);
+        Ok(receipt)
+    }
+}
+
+/// Direct structural materializer. Structural readiness is first-class and no
+/// longer inferred from lexical seal replay; the mirrored lexical channel path
+/// is kept only for restart-time authority rebuild.
+pub struct DirectStructuralMaterializer {
+    mirror: Arc<dyn StructuralIngestPort + Send + Sync>,
+    ledger: Arc<RwLock<Ledger>>,
+}
+
+impl DirectStructuralMaterializer {
+    #[must_use]
+    pub fn new(
+        mirror: Arc<dyn StructuralIngestPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Self {
+        Self { mirror, ledger }
+    }
+}
+
+impl StructuralIngestPort for DirectStructuralMaterializer {
+    fn publish_batch(
+        &self,
+        batch: &StructuralIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let mut mirrored_batch = batch.clone();
+        mirrored_batch.seal = false;
+        let _mirror_receipt = self.mirror.publish_batch(&mirrored_batch)?;
+        let ops = structural_ops_for_batch(batch)?;
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct structural materialize: ledger poisoned: {err}"
+            ))
+        })?;
+        for op in &ops {
+            guard.apply_lexical_authority_op(op)?;
+        }
+        guard.record_track_materialized(
+            &batch.repo_id,
+            &batch.revision_id,
+            SearchPlaneTrackKind::Structural,
+            batch.generation,
+            Some(batch.manifest_digest.as_str()),
+        );
+        let has_parse_trees = guard
+            .structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
+            .is_some_and(|state| !state.parse_trees().is_empty());
+        if batch.seal && has_parse_trees {
+            guard.request_structural_seal(&batch.repo_id, &batch.revision_id, batch.generation);
+            guard.record_track_seal_with_digest(
+                &batch.repo_id,
+                &batch.revision_id,
+                SearchPlaneTrackKind::Structural,
+                batch.generation,
+                batch.manifest_digest.as_str(),
+            );
+        }
+        drop(guard);
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+        for _scope in &batch.replace_scopes {
+            receipt.accept_replace_scope();
+        }
+        for _scope in &batch.tombstone_scopes {
+            receipt.accept_tombstone_scope();
+        }
+        if batch.seal {
+            receipt.mark_sealed();
+        }
+        Ok(receipt)
+    }
+}
+
 // =============================================================================
 // Top-level dispatcher
 // =============================================================================
@@ -600,7 +1146,7 @@ mod tests {
     use quanta_index_channel::ChannelError;
     use quanta_index_contract::lex::{
         CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
-        ParseRoleTag, ParseTreeRecord,
+        ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
     };
     use quanta_index_contract::{
         BatchIngestMode, ChannelSeq, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingDistanceMetric,
@@ -852,7 +1398,7 @@ mod tests {
                 byte_end: 10,
                 children: Vec::new(),
             },
-            source_hash: [9; 32],
+            source_hash: compute_parse_tree_source_hash("fn main() {}"),
             role_tag_schema_version: 1,
             role_tags: vec![ParseRoleTag {
                 role: "expr".to_string().into_boxed_str(),
@@ -1063,6 +1609,8 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
+            manifest_digest: Some("manifest:hist".to_string()),
+            batch_digest: "batch:hist".to_string(),
             commits: vec![fixture_commit_record()],
             refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
                 name: "refs/heads/main".to_string().into_boxed_str(),
@@ -1126,6 +1674,8 @@ mod tests {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(1),
+            overlay_epoch_ms: 1_717_171_717_000,
+            batch_digest: "batch:dirty".to_string(),
             entries: vec![
                 quanta_index_contract::DirtyMutation::Upsert(fixture_dirty_record()),
                 quanta_index_contract::DirtyMutation::Delete(quanta_index_contract::DirtyDelete {

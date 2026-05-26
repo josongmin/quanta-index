@@ -8,8 +8,9 @@
 //! Two surfaces:
 //!
 //! * Query path (`query`, `results`, `ipc` envelopes/split) — UDS frame payloads sent by query clients.
-//! * Channel path (`channel`) — typed transport ops produced by producer and consumed
-//!   by `searchd` modules.
+//! * Channel path (`channel`) — legacy typed transport ops still consumed by
+//!   `searchd` internals. New producer-facing publish authority lives under
+//!   `ipc`.
 //!
 //! Core identifiers, generation pinning, and text-query syntax live in the
 //! sibling `quanta-index-contract-base` crate. They are re-exported here so
@@ -28,9 +29,9 @@ pub mod results;
 pub use channel::{
     ChannelSeq, ChunkId, ChunkRecord, ChunkStructuralMetadata, DeleteChunk, DeleteEmbedding,
     DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag, EmbeddingId, EmbeddingRecord, EvictDirty,
-    LexicalChannelOp, LexicalFullBundle, LexicalRepoMetadataRecord, LexicalSeal, OwnerDocKind,
-    ReplaceLexicalScope, ReplaceSemanticScope, ReplaceStructuralScope, SemanticChannelOp,
-    SemanticFullBundle, SemanticSeal, SymbolId, TombstoneLexicalScope, TombstoneSemanticScope,
+    LexicalChannelOp, LexicalFullBundle, LexicalSeal, OwnerDocKind, ReplaceLexicalScope,
+    ReplaceSemanticScope, ReplaceStructuralScope, SemanticChannelOp, SemanticFullBundle,
+    SemanticSeal, SymbolId, TombstoneLexicalScope, TombstoneSemanticScope,
     TombstoneStructuralScope, UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty,
     UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };

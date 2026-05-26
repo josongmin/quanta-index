@@ -13,8 +13,8 @@ use quanta_index_contract::{
 use crate::{
     ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace, QueryTransport,
     RepoMapNamespace, RuntimeNamespace, SdkError, SearchNamespace, SemanticNamespace,
-    SourcegraphNamespace, StructuralNamespace, SymbolNamespace, UdsControlTransport,
-    UdsIngestTransport, UdsQueryTransport,
+    StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
+    UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -76,11 +76,6 @@ impl QuantaIndex {
     }
 
     #[must_use]
-    pub fn sourcegraph(&self) -> SourcegraphNamespace<'_> {
-        SourcegraphNamespace::new(self)
-    }
-
-    #[must_use]
     pub fn repomap(&self) -> RepoMapNamespace<'_> {
         RepoMapNamespace::new(self)
     }
@@ -134,7 +129,6 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Sourcegraph(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
         }
     }
@@ -225,7 +219,6 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
             SearchPlaneQueryIpcResponse::Error(_) => "error",
-            SearchPlaneQueryIpcResponse::Sourcegraph(_) => "sourcegraph",
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "runtime_metadata",
         }
     }

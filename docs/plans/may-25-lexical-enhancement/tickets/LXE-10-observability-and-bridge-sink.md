@@ -18,7 +18,7 @@ Do not conflate Sourcegraph translation with CodeQL/bridge candidate export.
 - `crates/quanta-index-search-plane/src/query_dispatcher.rs`
 - `crates/quanta-index-lexical/src/**`
 - new `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`
-- new `crates/quanta-index-searchd-runtime/tests/e2e_sourcegraph_parity.rs`
+- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
 
 ## File-level work breakdown
 

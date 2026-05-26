@@ -25,26 +25,49 @@ use std::time::{Duration, Instant};
 use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
 };
-use quanta_index_contract::lex::LanguageCode;
+use quanta_index_contract::lex::{
+    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+};
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EmbeddingId,
-    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle,
-    LexicalRepoMetadataRecord, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneSourcegraphQueryRequest, SemanticChannelOp, SemanticFullBundle,
+    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, DeleteChunk, EmbeddingId,
+    GenerationPin, HybridQueryRequest, LexicalChannelOp, LexicalFullBundle, LqVisibility,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp, SemanticFullBundle,
     SemanticQueryRequest, SemanticVectorRef, StructuralQueryRequest, TextQueryRequest,
-    TextQuerySyntax, UpsertChunk, UpsertEmbedding,
+    TextQuerySyntax, UpsertChunk, UpsertEmbedding, UpsertParseTree,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_lq_bridge::{SUPPORTED_SG_VERSION, TRANSLATOR_VERSION};
+use quanta_index_lq_bridge::TRANSLATOR_VERSION;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+
+struct RepoMetadataPayload<'a> {
+    fork: bool,
+    archived: bool,
+    visibility: LqVisibility,
+    contexts: &'a [&'a str],
+}
+
+impl Serialize for RepoMetadataPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMetadataPayload", 4)?;
+        state.serialize_field("fork", &self.fork)?;
+        state.serialize_field("archived", &self.archived)?;
+        state.serialize_field("visibility", &self.visibility)?;
+        state.serialize_field("contexts", &self.contexts)?;
+        state.end()
+    }
+}
 
 fn repo() -> RepoId {
     RepoId::new("repo-int")
@@ -103,17 +126,76 @@ fn chunk_payload_with_metadata(
     Ok(buf)
 }
 
+fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
+    Ok(ParseTreeRecord {
+        wire_version: 1,
+        lang: LanguageCode::new("rust")
+            .map_err(|err| -> Box<dyn Error> { format!("invalid tree lang: {err}").into() })?,
+        root: ParseNode {
+            kind: "function_item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 10,
+            children: vec![
+                ParseNode {
+                    kind: "identifier".to_string().into_boxed_str(),
+                    byte_start: 3,
+                    byte_end: 7,
+                    children: Vec::new(),
+                },
+                ParseNode {
+                    kind: "block".to_string().into_boxed_str(),
+                    byte_start: 8,
+                    byte_end: 10,
+                    children: Vec::new(),
+                },
+            ],
+        },
+        source_hash: compute_parse_tree_source_hash("fn main() {}"),
+        role_tag_schema_version: 1,
+        role_tags: Vec::new(),
+    })
+}
+
+fn publish_structural_ready_fixture(state_root: &Path) -> TestResult {
+    let publisher = open_lexical_publisher(state_root)?;
+    let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: generation(),
+        payload: b"manifest".to_vec(),
+    }))?;
+    let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: generation(),
+        chunk_id: ChunkId::new("chunk-tree"),
+        payload: chunk_payload_with_metadata("src/lib.rs", "rust", 1, 1, "fn main() {}")?,
+    }))?;
+    let tree = structural_tree_record()?;
+    let mut payload = Vec::new();
+    ciborium::into_writer(&tree, &mut payload)
+        .map_err(|err| -> Box<dyn Error> { format!("encode parse tree: {err}").into() })?;
+    let _ = publisher.publish(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+        repo_id: repo(),
+        revision_id: revision(),
+        generation: generation(),
+        chunk_id: ChunkId::new("chunk-tree"),
+        payload,
+    }))?;
+    Ok(())
+}
+
 fn repo_metadata_payload(
     fork: bool,
     archived: bool,
     visibility: LqVisibility,
     contexts: &[&str],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let record = LexicalRepoMetadataRecord {
+    let record = RepoMetadataPayload {
         fork,
         archived,
         visibility,
-        contexts: contexts.iter().map(ToString::to_string).collect(),
+        contexts,
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)
@@ -255,7 +337,6 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
                 | SearchPlaneQueryIpcResponse::Bridge(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
-                | SearchPlaneQueryIpcResponse::Sourcegraph(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
                 | SearchPlaneQueryIpcResponse::Error(_) => false,
             },
@@ -352,20 +433,21 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
         &socket,
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 44,
-            payload: SearchPlaneQueryIpcRequest::Sourcegraph(SearchPlaneSourcegraphQueryRequest {
-                source_syntax: "hello".into(),
-                sg_version: SUPPORTED_SG_VERSION.into(),
+            payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: "hello".to_string(),
                 generation: Some(pin.clone()),
+                generation_selector: None,
                 top_k: 50,
             }),
         },
     )?;
     let sourcegraph = match response.payload {
-        SearchPlaneQueryIpcResponse::Sourcegraph(payload) => payload,
+        SearchPlaneQueryIpcResponse::Text(payload) => payload,
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Sourcegraph, got {other:?}").into());
+            return Err(format!("expected Text, got {other:?}").into());
         }
     };
     if sourcegraph.generation != pin {
@@ -2235,7 +2317,7 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
 }
 
 #[test]
-fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
+fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
@@ -2259,8 +2341,8 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
             request_id: 42,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: "match { foo($X) }".to_string(),
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { :[x] }".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -2276,21 +2358,132 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" {
+    if err.code != "STR_GENERATION_NOT_READY" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected STR_GENERATION_NOT_READY, got {}", err.code).into());
+    }
+    if !err.message.contains("not yet materialized") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
-            "expected STR_PRODUCER_PARSE_TREE_UNAVAILABLE, got {}",
-            err.code
+            "expected generation-not-ready structural message, got {}",
+            err.message
         )
         .into());
     }
-    if !err.message.contains("fail-closed") {
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let publisher = open_lexical_publisher(state_root)?;
+        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: b"manifest".to_vec(),
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-tree"),
+            payload: chunk_payload_with_metadata("src/lib.rs", "rust", 1, 1, "fn main() {}")?,
+        }))?;
+        let tree = ParseTreeRecord {
+            wire_version: 1,
+            lang: LanguageCode::new("rust")
+                .map_err(|err| -> Box<dyn Error> { format!("invalid tree lang: {err}").into() })?,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+            source_hash: compute_parse_tree_source_hash("fn main() {}"),
+            role_tag_schema_version: 1,
+            role_tags: Vec::new(),
+        };
+        let mut payload = Vec::new();
+        ciborium::into_writer(&tree, &mut payload)
+            .map_err(|err| -> Box<dyn Error> { format!("encode parse tree: {err}").into() })?;
+        let _ = publisher.publish(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-tree"),
+            payload,
+        }))?;
+        let _ = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            chunk_id: ChunkId::new("chunk-tree"),
+        }))?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-shard-unavailable-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 44,
+        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { :[x] }".to_string(),
+                generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_expected = wait_until(Duration::from_secs(2), || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Error(err) => {
+                    observed = Some(err.code.clone());
+                    err.code == "STR_SHARD_UNAVAILABLE"
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(format!("{err}"));
+                false
+            }
+        }
+    });
+    if !saw_expected {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!(
-            "expected fail-closed structural message, got {}",
-            err.message
+            "expected STR_SHARD_UNAVAILABLE after orphaning structural chunk authority, observed {observed:?}"
         )
         .into());
     }
@@ -2309,11 +2502,12 @@ fn structural_query_returns_typed_parse_tree_unavailable_error() -> TestResult {
 /// through the domain port and emit a typed error response — never a
 /// panic, never a transport error, never a candidate list. The exact
 /// error code is *loosely* asserted here so this gate survives Track 2's
-/// planned migration from `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` to a
-/// `NotImplemented`-shaped code (or any other typed structural error).
+/// current live producer adapter should return a typed readiness error when
+/// no structural generation has been materialized yet.
 /// The strict-code assertion lives in
-/// `structural_query_returns_typed_parse_tree_unavailable_error` above
-/// and will flip red the moment Track 2 lands, forcing an honest update.
+/// `structural_query_returns_typed_generation_not_ready_error` above and
+/// this looser wiring check ensures the composition root still emits a
+/// typed structural code rather than panicking or returning a payload.
 #[test]
 fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -2339,8 +2533,8 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
                 text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: "match { foo($X) }".to_string(),
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { :[x] }".to_string(),
                     generation: Some(GenerationPin::new(repo(), revision(), generation())),
                     generation_selector: None,
                     top_k: 50,
@@ -2353,16 +2547,16 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
         SearchPlaneQueryIpcResponse::Error(err) => {
             // Loose typed-code surface assertion: the dispatcher must
             // surface SOME structural-shaped typed error. Acceptable
-            // shapes today: STR_PRODUCER_PARSE_TREE_UNAVAILABLE (current
-            // fail-closed wiring) or NOT_IMPLEMENTED (Track 2 migration
-            // target). Anything else is a genuine wiring regression.
+            // shape today: STR_GENERATION_NOT_READY while no structural
+            // materialization exists. Anything else is a genuine wiring
+            // regression.
             let code = err.code.as_str();
-            if code == "STR_PRODUCER_PARSE_TREE_UNAVAILABLE" || code == "NOT_IMPLEMENTED" {
+            if code == "STR_GENERATION_NOT_READY" {
                 Ok(())
             } else {
                 Err(format!(
                     "structural composition wiring: expected typed structural error \
-                     (STR_PRODUCER_PARSE_TREE_UNAVAILABLE or NOT_IMPLEMENTED), got code={code} \
+                     (STR_GENERATION_NOT_READY), got code={code} \
                      message={}",
                     err.message
                 ))
@@ -2370,7 +2564,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
         }
         SearchPlaneQueryIpcResponse::Structural(_) => Err(
             "structural composition wiring: expected Error, got Structural \
-                 (no real parse-tree adapter is wired today)"
+                 (no structural generation was materialized for this test)"
                 .to_string(),
         ),
         other => Err(format!(
@@ -2381,6 +2575,249 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
     shutdown.store(true, Ordering::Release);
     drop(join.join());
     result.map_err(Into::into)
+}
+
+#[test]
+fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    publish_structural_ready_fixture(state_root)?;
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-sourcegraph-success-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 46,
+        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: r#"repo:repo-int path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#.to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Structural(structural) => {
+                    observed = Some(format!("{structural:?}"));
+                    structural.generation == pin && structural.results.len() == 1
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_ready {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "structural Sourcegraph query never became ready; observed {observed:?}"
+        )
+        .into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let structural = match response.payload {
+        SearchPlaneQueryIpcResponse::Structural(structural) => structural,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Structural, got {other:?}").into());
+        }
+    };
+    if structural.generation != pin || structural.results.len() != 1 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected structural Sourcegraph response: {structural:?}").into());
+    }
+    let candidate = structural
+        .results
+        .first()
+        .ok_or_else(|| "missing structural Sourcegraph candidate".to_string())?;
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural Sourcegraph binding".to_string())?;
+    if candidate.candidate_id != "chunk-tree"
+        || binding.metavariable != "name"
+        || binding.start_byte != 3
+        || binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(
+            format!("unexpected structural Sourcegraph candidate/binding: {candidate:?}").into(),
+        );
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-sourcegraph-pattern-type-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 47,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: r#""function_item""#.to_string(),
+                    generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+            }),
+        },
+    )?;
+    let err = match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => err,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Error, got {other:?}").into());
+        }
+    };
+    if err.code != "BRIDGE_TRANSLATE_FAIL" || !err.message.contains("patterntype:structural") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected BRIDGE_TRANSLATE_FAIL structural pattern-type error, got {err:?}"
+        )
+        .into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
+fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    publish_structural_ready_fixture(state_root)?;
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-sourcegraph-select-filter-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 48,
+        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: r#"select:repo patterntype:structural "function_item""#.to_string(),
+                generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_expected = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                SearchPlaneQueryIpcResponse::Error(err) => {
+                    observed = Some(format!("{err:?}"));
+                    err.code == "STR_INVALID_REQUEST" && err.message.contains("filter `select`")
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_expected {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected STR_INVALID_REQUEST for structural SG select filter, observed {observed:?}"
+        )
+        .into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
 }
 
 #[test]

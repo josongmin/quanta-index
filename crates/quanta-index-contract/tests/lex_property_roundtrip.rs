@@ -68,7 +68,7 @@ fn prop_symbol_relationship() -> impl Strategy<Value = SymbolRelationship> {
 }
 
 fn prop_lexical_error_code() -> impl Strategy<Value = LexicalErrorCode> {
-    // Sample one of the 84 variants by index.
+    // Sample one of the current variants by index.
     (0usize..LexicalErrorCode::ALL.len()).prop_map(|idx| {
         LexicalErrorCode::ALL
             .get(idx)

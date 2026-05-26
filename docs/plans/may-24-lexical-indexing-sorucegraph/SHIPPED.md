@@ -16,7 +16,7 @@
 | Ship date | 2026-05-25 |
 | Active runtime path | [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) owns readiness, lowering, and query orchestration; [`crates/quanta-index-searchd`](../../../crates/quanta-index-searchd/) binds transport/runtime shells around it |
 | Hard DSL scenario coverage | [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs) exercises the live repo-first runtime path end to end |
-| Live fail-closed surfaces | `history` and `structural` stay unavailable on the active runtime path until producer commit/diff / parse-tree ops arrive |
+| Live fail-closed surfaces | `history` stays unavailable until producer commit/diff ops arrive; `structural` now executes the shipped authority subset (expanded after the initial root-only ship) and fail-closes on missing authority or unsupported shape/filter |
 | Crates shipped | 17 (Wave-0 prerequisites + Wave 1–8 ticket crates) |
 | Tests passing | 1,072 across the 17 crates |
 | Tests failed | 0 |
@@ -51,7 +51,7 @@ All 17 crates ship under [`crates/`](../../../crates/). Test counts are aggregat
 | 9 | [`quanta-index-lq-symbol`](../../../crates/quanta-index-lq-symbol/) | 3 | LEX-05 | 51 | `SymbolRecordDecoder`, `SymbolIndex` | **architecture-corrected** — tree-sitter dependency dropped; decodes `UpsertSymbol.payload` (`SymbolRecord`); ADR-002/018 withdrawn; ADR-022 proposed |
 | 10 | [`quanta-index-lq-ranker`](../../../crates/quanta-index-lq-ranker/) | 4 | LEX-06 | 65 | `Ranker::rank`, `Explainer::explain` | linear weighted sum, frozen-per-gen `weights_hash`; 6-component tiebreak tuple `(score, repo, gen, path, line, doc_id)` (RFC-GAP-LEX-06-1 closed); `boost:` enters as `(boost − 1.0) × w.boost_directive` |
 | 11 | [`quanta-index-lq-history`](../../../crates/quanta-index-lq-history/) | 4 | LEX-07 | 76 | `CommitGraph` (channel-subscriber callbacks), history decoders | **architecture-corrected** — search-side git dropped; consumes `UpsertCommit` / `UpsertRef` / `UpsertTag` (+ proposed `UpsertDiffHunk`); ADR-023 / ADR-025 proposed |
-| 12 | [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) | 5 | STR-01 | 71 | `StructuralMatcher::match_pattern(pattern, parsed_tree)`, `ParseTreeRecord` decoder | **architecture-corrected** — tree-sitter on search side dropped; consumes producer `UpsertParseTree` (Option A) or surfaces `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` (Option B); ADR-003/005 withdrawn; ADR-024 proposed |
+| 12 | [`quanta-index-lq-structural`](../../../crates/quanta-index-lq-structural/) | 5 | STR-01 | 71 | `TruthfulSubsetAuthorityMatcher`, `ParseTreeRecord` decoder | **architecture-corrected** — tree-sitter on search side dropped; the initial ship consumed producer `UpsertParseTree` on the truthful root-only subset, and the later shipped may-26 residue pack expanded that runtime to tree-walk, variadic sibling capture, and `where` / `inside` / `outside`; ADR-003/005 withdrawn; ADR-024 proposed |
 | 13 | [`quanta-index-lq-runtime`](../../../crates/quanta-index-lq-runtime/) | 5 | RT-01 | 32 | `DirtyBuffer` (channel-subscriber callbacks), snapshot / ownership catalogs | **architecture-corrected** — separate `apply_changes` IPC dropped; consumes `UpsertDirty` / `EvictDirty`; channel monotonic seq replaces advisory lock; ADR-017 withdrawn |
 | 14 | [`quanta-index-lq-semantic`](../../../crates/quanta-index-lq-semantic/) | 6 | SEM-01 | 112 | `LexicalUniversePushdown::narrow`, ANN integration | HNSW chosen (deterministic seed) over Lance for v1; cosine distance pinned (L2/Dot reserved); D ≤ 1024; RFC3339 timestamps |
 | 15 | [`quanta-index-lq-bridge`](../../../crates/quanta-index-lq-bridge/) | 6 | BRIDGE-01 | 70 | `SearchPlaneBridgePort::route`, `BridgeCandidatePacket` | **one-way** Sourcegraph→LQ (RFC-GAP-BRIDGE-TARGET); subset table (adopted/normalized/refused); FS-GAP-2 closed |
@@ -110,7 +110,7 @@ The following RFC `§Ticket Pack` roll-up scopes were not authored as spec sheet
 | `RFC-SEM-02-original` "incremental semantic derivatives" | deferred | original RFC scope; spec retargeted to hybrid fusion ([§5.5](#55-rfc-roll-up-scope-reframings)); incremental-derivative rail lives in `quanta-index-lq-hybrid::SemanticDerivative::apply_delta` |
 | `RFC-BRIDGE-01-CodeQL` "CodeQL bridge and candidate export" | deferred | spec retargeted to Sourcegraph→LQ bridge ([§5.5](#55-rfc-roll-up-scope-reframings)); CodeQL invocation builder is contract-only |
 
-These are documentation-only deferrals; the active runtime path exercises lexical / semantic / hybrid / bridge behaviour through the routed spec sheets above, while `history` / `structural` remain explicit fail-closed paths until producer ops arrive.
+These are documentation-only deferrals; the active runtime path exercises lexical / semantic / hybrid / bridge behaviour through the routed spec sheets above, `history` remains an explicit fail-closed path until producer commit/diff ops arrive, and `structural` now executes the current producer-authored parse-tree subset that was expanded after the initial root-only ship.
 
 ---
 
@@ -164,7 +164,7 @@ Tuple selection is one-shot at plan time; no dynamic extension.
 | Family | Owning ticket | Codes added |
 |---|---|---|
 | `HISTORY_*` | LEX-07 | `HISTORY_REF_NOT_FOUND`, `HISTORY_RANGE_OVERRUN`, `HISTORY_MERGE_CYCLE`, `HISTORY_TRACE_INCOMPLETE`, `HISTORY_UNINDEXED`, `HISTORY_COMMIT_DECODE_FAIL`, `HISTORY_REF_DECODE_FAIL`, `HISTORY_COMMIT_PARENT_UNKNOWN` |
-| `STR_*` | STR-01 | `STR_PARSE_FAIL`, `STR_INVALID_METAVAR`, `STR_LANG_NOT_SUPPORTED`, `STR_LANG_RESOLUTION_EMPTY`, `STR_TYPED_HOLE_NOT_IMPLEMENTED`, `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` |
+| `STR_*` | STR-01 | `STR_PARSE_FAIL`, `STR_INVALID_METAVAR`, `STR_LANG_NOT_SUPPORTED`, `STR_PARSE_TREE_DECODE_FAIL`, `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` |
 | `DIRTY_*` | RT-01 | `DIRTY_STALE_GEN`, `DIRTY_BUFFER_FULL`, `DIRTY_TTL_EXPIRED`, `DIRTY_BAD_IDENTITY`, `DIRTY_PAYLOAD_DECODE_FAIL` |
 | `SEM_*` | SEM-01 | `SEM_DIM_MISMATCH`, `SEM_NOT_READY`, `SEM_INVALID_VECTOR`, `SEM_METRIC_UNSUPPORTED`, `SEM_ANN_NONDETERMINISTIC`, `SEM_HNSW_PARAMS_INVALID` |
 | `HYB_*` | SEM-02 | `HYB_INVALID_WEIGHTS`, `HYB_GEN_MISMATCH`, `HYB_PUSHDOWN_INCOMPLETE`, `HYB_TOP_K_INVALID`, `HYB_STRATEGY_UNSUPPORTED`, `HYB_SUBQUERY_INVALID` |
@@ -231,7 +231,7 @@ All 12 producer-handoff ambiguities have at least a recommended default per [pro
 | AMB-PROD-8 | `EvictDirty` vs `UpsertDirty` ordering at same `doc_id` | CLOSED (channel monotonic seq is authority; producer contract guarantees seq ordering) |
 | AMB-PROD-9 | Channel WAL retention horizon vs RT-01 TTL | OWNED-BY-PRODUCER (producer keeps segments ≥ `max(subscriber_lag, dirty_ttl=300s)`) |
 | AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing | CLOSED (sync at apply per RT-01 §8 + [producer-handoff.md §3.2.6](../../ssot/producer-handoff.md)) |
-| AMB-PROD-11 | STR-01 Option A (ship `UpsertParseTree` v1) vs Option B (defer to v2) | OPEN (gated on integrator decision at wave-5 entry; both code paths shipped in `quanta-index-lq-structural`) |
+| AMB-PROD-11 | STR-01 producer parse-tree cutover | CLOSED for the active runtime subset; `UpsertParseTree` is live on the truthful root-only path, and broader semantics move to follow-on tickets |
 | AMB-PROD-12 | Diff hunk Option Y producer cost | OPEN (non-blocking; flagged for producer-side buffer sizing) |
 
 ### 6.2 RFC-GAP-*
@@ -302,7 +302,7 @@ The 17 shipped crates are **green per-crate**, and the repo-level proof rails ar
 
 Other deferred items (not roadmap-blocking but should be tracked):
 
-- AMB-PROD-11 (STR-01 Option A vs B): integrator decision at wave-5 entry; both code paths already ship.
+- AMB-PROD-11 (STR-01 cutover breadth): active runtime subset resolved; follow-on work is broader structural semantics only.
 - ADR-008 (ACL source — Q-FS-3): producer metadata authority decision.
 - Q-FS-8 (Bridge candidate generation stability across mid-flight activation): cross-wave activation behaviour spec.
 - Q-FS-context (`context:` lifecycle): Phase-4+ authz roadmap.
@@ -398,7 +398,7 @@ Major decisions locked during the program. Each row is a final, non-revisitable 
 | Blocker | Side | Item |
 |---|---|---|
 | Producer ops cutover + `wire_version=1` handshake | producer | [§7](#7-integration-roadmap-next) item 1 |
-| STR-01 Option A vs B (AMB-PROD-11) | integrator | [§6.1](#61-amb-prod--producer-handoff-owned) |
+| STR-01 live subset breadth expansion (AMB-PROD-11 residue) | integrator | [§6.1](#61-amb-prod--producer-handoff-owned) |
 | Live channel subscriber cutover for producer-fed history / dirty / parse-tree data | integration | [§7](#7-integration-roadmap-next) item 2 |
 | Real-engine conformance CI cutover | tools/ci | [§7](#7-integration-roadmap-next) item 3 |
 | OTel / Prometheus sidecar + bridge downstream sink | ops / integration | [§7](#7-integration-roadmap-next) items 4–5 |

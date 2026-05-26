@@ -1477,6 +1477,8 @@ pub struct HistoryIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub manifest_digest: Option<String>,
+    pub batch_digest: String,
     pub commits: Vec<CommitRecord>,
     pub refs: Vec<HistoryRefMutation>,
     pub tags: Vec<HistoryTagMutation>,
@@ -1487,6 +1489,8 @@ const HISTORY_INGEST_BATCH_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "generation",
+    "manifest_digest",
+    "batch_digest",
     "commits",
     "refs",
     "tags",
@@ -1498,10 +1502,12 @@ impl Serialize for HistoryIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("HistoryIngestBatch", 7)?;
+        let mut state = serializer.serialize_struct("HistoryIngestBatch", 9)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("commits", &self.commits)?;
         state.serialize_field("refs", &self.refs)?;
         state.serialize_field("tags", &self.tags)?;
@@ -1526,6 +1532,8 @@ impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
+        let mut manifest_digest: Option<Option<String>> = None;
+        let mut batch_digest: Option<String> = None;
         let mut commits: Option<Vec<CommitRecord>> = None;
         let mut refs: Option<Vec<HistoryRefMutation>> = None;
         let mut tags: Option<Vec<HistoryTagMutation>> = None;
@@ -1535,6 +1543,8 @@ impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
                 "repo_id" => repo_id = Some(map.next_value()?),
                 "revision_id" => revision_id = Some(map.next_value()?),
                 "generation" => generation = Some(map.next_value()?),
+                "manifest_digest" => manifest_digest = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
                 "commits" => commits = Some(map.next_value()?),
                 "refs" => refs = Some(map.next_value()?),
                 "tags" => tags = Some(map.next_value()?),
@@ -1546,6 +1556,9 @@ impl<'de> Visitor<'de> for HistoryIngestBatchVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             commits: commits.ok_or_else(|| de::Error::missing_field("commits"))?,
             refs: refs.ok_or_else(|| de::Error::missing_field("refs"))?,
             tags: tags.ok_or_else(|| de::Error::missing_field("tags"))?,
@@ -1688,20 +1701,31 @@ pub struct DirtyIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
+    pub overlay_epoch_ms: u64,
+    pub batch_digest: String,
     pub entries: Vec<DirtyMutation>,
 }
 
-const DIRTY_INGEST_BATCH_FIELDS: &[&str] = &["repo_id", "revision_id", "generation", "entries"];
+const DIRTY_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "overlay_epoch_ms",
+    "batch_digest",
+    "entries",
+];
 
 impl Serialize for DirtyIngestBatch {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("DirtyIngestBatch", 4)?;
+        let mut state = serializer.serialize_struct("DirtyIngestBatch", 6)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("overlay_epoch_ms", &self.overlay_epoch_ms)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("entries", &self.entries)?;
         state.end()
     }
@@ -1723,12 +1747,16 @@ impl<'de> Visitor<'de> for DirtyIngestBatchVisitor {
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
+        let mut overlay_epoch_ms: Option<u64> = None;
+        let mut batch_digest: Option<String> = None;
         let mut entries: Option<Vec<DirtyMutation>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => repo_id = Some(map.next_value()?),
                 "revision_id" => revision_id = Some(map.next_value()?),
                 "generation" => generation = Some(map.next_value()?),
+                "overlay_epoch_ms" => overlay_epoch_ms = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
                 "entries" => entries = Some(map.next_value()?),
                 other => return Err(de::Error::unknown_field(other, DIRTY_INGEST_BATCH_FIELDS)),
             }
@@ -1737,6 +1765,9 @@ impl<'de> Visitor<'de> for DirtyIngestBatchVisitor {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            overlay_epoch_ms: overlay_epoch_ms
+                .ok_or_else(|| de::Error::missing_field("overlay_epoch_ms"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
         })
     }
@@ -2747,7 +2778,7 @@ mod tests {
     use super::*;
     use crate::lex::{
         CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
-        ParseRoleTag, ParseTreeRecord,
+        ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
     };
     use crate::{ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath};
 
@@ -2880,7 +2911,7 @@ mod tests {
                 byte_end: 10,
                 children: Vec::new(),
             },
-            source_hash: [9; 32],
+            source_hash: compute_parse_tree_source_hash("fn main() {}"),
             role_tag_schema_version: 1,
             role_tags: vec![ParseRoleTag {
                 role: "expr".to_string().into_boxed_str(),
@@ -2964,6 +2995,8 @@ mod tests {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
+            manifest_digest: Some("manifest:feed".to_string()),
+            batch_digest: "batch:feed".to_string(),
             commits: vec![fixture_commit_record()],
             refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
                 name: "refs/heads/main".to_string().into_boxed_str(),
@@ -2986,6 +3019,8 @@ mod tests {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
+            overlay_epoch_ms: 1_717_171_717_000,
+            batch_digest: "dirty-batch:feed".to_string(),
             entries: vec![
                 DirtyMutation::Upsert(fixture_dirty_record()),
                 DirtyMutation::Delete(DirtyDelete {
