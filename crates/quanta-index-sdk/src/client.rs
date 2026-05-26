@@ -183,7 +183,6 @@ impl QuantaIndex {
                 message: error.message,
             }),
             payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
@@ -239,7 +238,6 @@ impl QuantaIndex {
     ) -> &'static str {
         match response {
             SearchPlaneIngestIpcResponse::LexicalReceipt(_) => "lexical_receipt",
-            SearchPlaneIngestIpcResponse::SemanticReceipt(_) => "semantic_receipt",
             SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
             SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
             SearchPlaneIngestIpcResponse::DirtyReceipt(_) => "dirty_receipt",

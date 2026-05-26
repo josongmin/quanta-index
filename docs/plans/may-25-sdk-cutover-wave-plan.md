@@ -27,14 +27,17 @@ Landed on the current tree:
   crate-internal
 - `quanta-index-contract` legacy channel ops now stay under
   `quanta_index_contract::channel::*`; contract-root re-exports for
-  `ChannelSeq`, `LexicalChannelOp`, and `SemanticChannelOp` are removed on the
-  current tree
+  `ChannelSeq`, `LexicalChannelOp`, `SemanticChannelOp`, and the semantic
+  legacy payload carriers are removed on the current tree
+- lexical ingest always derives search-owned semantic authority on the current
+  tree; query-embedder mode no longer disables semantic derivation or accepts
+  numeric query text as an internal vector-compat path
+- the retired `quanta-index-channel` workspace crate is no longer part of the
+  live verification inventory; de-channelized authority lives in
+  `search-plane` / `searchd` runtime code, not a channel backend crate
 
 Current residue after the public-surface closure program:
 
-- `searchd-runtime` and `search-plane` still depend on legacy channel
-  publishers/subscribers and mirror paths internally; the public SDK front
-  door is closed, but the composition root is not channel-free
 - search-owned semantic derivation is still a deferred follow-on; current
   public semantic/hybrid query contracts are already text-only on the current
   tree
@@ -44,8 +47,9 @@ Current residue after the public-surface closure program:
 ## SEM-OWN entry criteria (2026-05-27 freeze)
 
 - Lane A/B/C and the public-surface quarantine are green on current source
-- current vector-centric semantic/hybrid request surface is treated as stable
-  present truth, not as a partially-landed text-only migration
+- current semantic/hybrid request surface is already text-only on the current
+  tree; the follow-on must not reopen vector/handle or public semantic publish
+  paths
 - docs/tracker refresh must land first; `SEM-OWN-00 -> 01 -> 02 -> 03 -> 04 ->
   05` starts only after this packet is closed
 
@@ -105,7 +109,7 @@ Add `SearchPlaneIngestIpcRequest/Response` and the `ingest.sock` surface to the 
 - [tools/ci/lint/baselines/cargo-modules/](../../tools/ci/lint/baselines/cargo-modules/)
 
 **Acceptance**
-- `SearchPlaneIngestIpcRequest` variants: `PublishLexicalBatch`, `PublishSemanticBatch`, `PublishRepoMapBatch`
+- `SearchPlaneIngestIpcRequest` variants: `PublishLexicalBatch`, `PublishHistoryBatch`, `PublishDirtyBatch`, `PublishStructuralBatch`, `PublishRepoMapBundle`
 - `SearchPlaneIngestIpcResponse` variants: `BatchReceipt`, `Error(SearchPlaneIpcError)`
 - Each variant payload is a typed batch DTO. Raw `LexicalChannelOp` / opaque `Vec<u8>` payloads are banned (CLAUDE.md "no fat enum variant in DTO")
 - All envelopes implement `serde::Serialize` / `Deserialize` manually. No proc-macro derive
@@ -135,7 +139,7 @@ Add `SearchPlaneIngestIpcRequest/Response` and the `ingest.sock` surface to the 
 
 **Acceptance**
 - Default path resolves to `state_root/search-plane/ingest.sock`
-- Ingest dispatcher accepts `PublishLexicalBatch` / `PublishSemanticBatch` / `PublishRepoMapBatch` and fans out to internal publishers. Each op's sequence is returned via `BatchReceipt`
+- Ingest dispatcher accepts `PublishLexicalBatch` / `PublishHistoryBatch` / `PublishDirtyBatch` / `PublishStructuralBatch` / `PublishRepoMapBundle`. Search-owned semantic materialization is derived from accepted lexical batches instead of a public semantic ingest route. Each op's sequence is returned via `BatchReceipt`
 - Partial failure propagates as typed `SearchPlaneIpcError`. No `Err(_) => Default::default()` or `if x.is_ok()` two-branch shapes (CLAUDE.md silent-fallback rules)
 - Dispatcher fields use `Arc<dyn ...IngestPort>` (DIP). No concrete adapter types exposed
 - Existing query / control behavior unchanged

@@ -21,8 +21,8 @@ Landed on the current tree:
 
 Residue that keeps this ticket partial:
 
-- `searchd` composition still uses internal legacy channel publishers,
-  subscribers, and mirror paths
+- `searchd` composition still uses internal legacy channel publishers and
+  persisted mirror paths
 - richer history/runtime/structural feature families in this ticket are not all
   closed on the current tree
 - `SEM-OWN` still remains deferred because the full internal derivation worker

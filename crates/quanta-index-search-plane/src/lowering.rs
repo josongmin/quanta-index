@@ -1,5 +1,7 @@
 use quanta_index_contract::{
-    LqExpr, LqLeaf, LqPatternType, LqQuery, LqStructuralBlock, TextQueryRequest, TextQuerySyntax,
+    LqExpr, LqLeaf, LqMetaVar, LqPatternType, LqQuery, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
+    LqStructuralHoleRef, LqStructuralNode, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -8,6 +10,7 @@ use quanta_index_lq_bridge::{
 use quanta_index_lq_norm::{
     LqParseError, LqParseErrorCode, normalizer::normalize, parser::parse, tokenizer::tokenize,
 };
+use quanta_index_lq_regex::RegexExecutor;
 
 use quanta_index_core::CoreError;
 
@@ -225,14 +228,9 @@ fn rewrite_sourcegraph_structural_expr(
         LqExpr::Leaf(LqLeaf::Keyword(body) | LqLeaf::Phrase(body)) => Ok(LqExpr::Leaf(
             LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
         )),
-        LqExpr::Leaf(LqLeaf::Regex(_)) => Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeTranslateFail
-                .as_code_str()
-                .to_string(),
-            message:
-                "bridge: regex pattern bodies are not supported on the Sourcegraph structural route"
-                    .to_string(),
-        }),
+        LqExpr::Leaf(LqLeaf::Regex(body)) => Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
+            lower_sourcegraph_structural_regex_body(body)?,
+        ))),
         LqExpr::Leaf(
             LqLeaf::RawString(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. },
         )
@@ -292,6 +290,48 @@ fn lower_sourcegraph_structural_body(
         });
     };
     Ok(block)
+}
+
+fn lower_sourcegraph_structural_regex_body(
+    regex_body: &str,
+) -> Result<LqStructuralBlock, CoreError> {
+    let _validated_regex = RegexExecutor::compile(regex_body).map_err(|err| CoreError::Typed {
+        code: BridgeErrorCode::BridgeTranslateFail
+            .as_code_str()
+            .to_string(),
+        message: format!("bridge: invalid Sourcegraph structural regex body: {err}"),
+    })?;
+    let capture = structural_regex_capture_name(regex_body);
+    let capture_metavar = LqMetaVar::new(capture);
+    Ok(LqStructuralBlock {
+        lang: None,
+        nodes: vec![LqStructuralNode::Hole {
+            name: Some(capture_metavar.clone()),
+            multiplicity: LqStructuralHoleMultiplicity::One,
+        }],
+        exprs: vec![
+            LqStructuralExpr::Pattern(vec![LqStructuralNode::Hole {
+                name: Some(capture_metavar.clone()),
+                multiplicity: LqStructuralHoleMultiplicity::One,
+            }]),
+            LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                left: LqStructuralHoleRef {
+                    name: capture_metavar,
+                    multiplicity: LqStructuralHoleMultiplicity::One,
+                },
+                right: LqStructuralConstraintOperand::Regex(regex_body.to_string()),
+            }]),
+        ],
+    })
+}
+
+fn structural_regex_capture_name(regex_body: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in regex_body.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("__sg_regex_{hash:016x}")
 }
 
 fn map_lq_error(err: &LqParseError) -> CoreError {
@@ -493,6 +533,81 @@ mod tests {
             return Err(
                 format!("expected non-trivial SG structural pattern nodes, got {nodes:?}").into(),
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rewrites_regex_body_into_structural_leaf() -> TestResult {
+        let lowered =
+            lower_sourcegraph_structural_query_text(r"patterntype:structural /^function_item$/")
+                .map_err(|err| -> Box<dyn std::error::Error> {
+                    format!("sourcegraph structural regex lowering must succeed: {err:?}").into()
+                })?;
+
+        let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = lowered.expr else {
+            return Err("expected structural leaf after SG structural regex lowering".into());
+        };
+        let [
+            LqStructuralExpr::Pattern(nodes),
+            LqStructuralExpr::Where(constraints),
+        ] = block.exprs.as_slice()
+        else {
+            return Err(format!(
+                "expected pattern+where SG structural regex block, got {:?}",
+                block.exprs
+            )
+            .into());
+        };
+        if !matches!(
+            nodes.as_slice(),
+            [quanta_index_contract::LqStructuralNode::Hole { .. }]
+        ) {
+            return Err(format!(
+                "expected synthetic single-hole regex structural pattern, got {nodes:?}"
+            )
+            .into());
+        }
+        let [constraint] = constraints.as_slice() else {
+            return Err(format!(
+                "expected exactly one SG structural regex constraint, got {constraints:?}"
+            )
+            .into());
+        };
+        if !matches!(
+            constraint.right,
+            quanta_index_contract::LqStructuralConstraintOperand::Regex(ref regex)
+                if regex == "^function_item$"
+        ) {
+            return Err(format!(
+                "expected regex structural constraint, got {:?}",
+                constraint.right
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_invalid_regex_body() -> TestResult {
+        let err = match lower_sourcegraph_structural_query_text(r"patterntype:structural /(/") {
+            Ok(query) => {
+                return Err(
+                    format!("expected invalid regex structural rejection, got {query:?}").into(),
+                );
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        if code != BridgeErrorCode::BridgeTranslateFail.as_code_str() {
+            return Err(format!(
+                "expected {}, got {code}",
+                BridgeErrorCode::BridgeTranslateFail.as_code_str()
+            )
+            .into());
+        }
+        if !message.starts_with("bridge: invalid Sourcegraph structural regex body:") {
+            return Err(format!("unexpected structural regex rejection message: {message}").into());
         }
         Ok(())
     }

@@ -1,6 +1,6 @@
 # SEM-OWN-05 — Legacy Vector Ingress Removal, Observability, and Final Proof
 
-Status: `proposed`
+Status: `partial-execution-live`
 Parent: [../README.md](../README.md)
 Depends on: [SEM-OWN-04.md](SEM-OWN-04.md)
 
@@ -9,13 +9,25 @@ Depends on: [SEM-OWN-04.md](SEM-OWN-04.md)
 Remove the old producer-authored semantic assumptions, add operator-facing
 observability for the new embedder path, and close the final proof rails.
 
+## 1.1 Current tree truth
+
+Already live on the current tree:
+
+- no public SDK semantic publish path exists
+- no public CLI semantic/hybrid path requires caller-side vectors
+- old public vector flags are already rejected fail-closed
+- public ingest IPC no longer exposes semantic publish/receipt variants
+
+Remaining work under this ticket is observability and proof: keep the legacy
+semantic ingress removal closed, add operator-visible metrics, and close the
+final ownership proof.
+
 ## 2. Deliverables
 
 ### 2.1 Cleanup
 
 - remove or clearly demote producer-authored semantic vector docs
-- remove or clearly demote public query-vector surfaces
-- mark semantic publishing as internal-only implementation detail
+- keep semantic publishing internal-only in docs and tests; no public ingress regression
 
 ### 2.2 Observability
 
@@ -47,6 +59,7 @@ Required proof matrix:
 
 - no user-facing documentation tells external producers to publish embeddings
 - no public semantic/hybrid happy path requires caller-side vector creation
+- no low-level semantic ingress seam is documented as a stable external producer path
 - one real end-to-end flow demonstrates:
   - producer publishes chunk text
   - `quanta-index` derives embeddings

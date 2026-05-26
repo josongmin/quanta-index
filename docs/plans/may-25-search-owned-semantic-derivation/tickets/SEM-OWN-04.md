@@ -1,13 +1,14 @@
 # SEM-OWN-04 — Query Text Embedding and Public Search-surface Cutover
 
-Status: `proposed`
+Status: `partial-execution-live`
 Parent: [../README.md](../README.md)
 Depends on: [SEM-OWN-03.md](SEM-OWN-03.md)
 
 ## 1. Purpose
 
-Align the public query API with search-owned embedding. Users send text; the
-search plane embeds it internally against the selected generation manifest.
+Finish manifest-guided internal query embedding while keeping the already-landed
+text-only public query API stable. Users already send text; the remaining work
+is to make the internal embedder/cache path fully manifest-authoritative.
 
 ## 2. Required interface decision
 
@@ -38,6 +39,13 @@ Remove from the stable public request contract:
 - `semantic_vector`
 - `semantic_vector_ref`
 
+Current tree truth:
+
+- the public DTO shape above is already live
+- `searchctl` is already cut over to text-only semantic/hybrid flags
+- the remaining ownership under this ticket is internal normalization, manifest
+  lookup, query embedding, and cache-key discipline
+
 ## 3. Required runtime interface
 
 ```rust
@@ -65,18 +73,16 @@ normalize and embed the query text using that exact provider/model/dim contract.
 
 ## 4. Deliverables
 
-- query dispatcher cutover to internal query embedding
-- `searchctl` cutover to text-only semantic/hybrid public CLI
-- removal of numeric-vector-text fallback from the public path
+- query dispatcher cutover to manifest-guided internal query embedding
 - explicit typed error for embedder failures on query time
 - normalized-query cache contract keyed by `QueryEmbeddingCacheKey`
 
 ## 5. Acceptance
 
-- semantic query e2e succeeds from plain text only
-- hybrid query e2e succeeds from plain text only
-- old public vector flags or wire fields fail closed instead of silently
-  behaving as the main API
+- semantic query e2e keeps succeeding from plain text only
+- hybrid query e2e keeps succeeding from plain text only
+- old public vector flags or wire fields stay fail-closed instead of silently
+  re-entering as the main API
 - query-time dim drift cannot happen without a typed failure because the
   generation manifest is authoritative
 - `FooBar`, `foobar`, `foo_bar`, and `foo bar` have a defined normalization and

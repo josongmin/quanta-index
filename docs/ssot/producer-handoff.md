@@ -11,6 +11,9 @@ Current-tree note (2026-05-27):
 - the current runtime hot path is de-channelized; do not treat
   `open_lexical_subscriber`, `open_semantic_subscriber`, or `ChannelDispatcher`
   as live source truth for the daemon
+- the standalone `quanta-index-channel` crate is retired from the workspace;
+  only the contract-level channel DTOs remain live as historical/internal
+  carriers
 - semantic query/public SDK truth has also changed: public semantic publish is
   removed and semantic query/hybrid are text-only
 

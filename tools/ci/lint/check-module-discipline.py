@@ -28,8 +28,8 @@ Disallowed at the top level of these files:
   * `extern`
   * inline `mod foo { ... }` block bodies (must be file-backed)
 
-Other crates' `lib.rs` are exempt — they legitimately host factory functions
-(see `quanta-index-channel::open_lexical_publisher`).
+Other crates' `lib.rs` are exempt — they may legitimately host composition
+helpers or factories.
 """
 
 from __future__ import annotations

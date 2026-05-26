@@ -573,6 +573,55 @@ fn authority_where_constraint_filters_by_bound_source_text() {
 }
 
 #[test]
+fn authority_where_regex_constraint_filters_by_bound_source_text() {
+    let matching_source = "alpha";
+    let non_matching_source = "beta";
+    let matching_end = match u32::try_from(matching_source.len()) {
+        Ok(value) => value,
+        Err(err) => fatal(&format!("test source length must fit u32: {err}")),
+    };
+    let non_matching_end = match u32::try_from(non_matching_source.len()) {
+        Ok(value) => value,
+        Err(err) => fatal(&format!("test source length must fit u32: {err}")),
+    };
+    let matching_tree = tree("rust", "identifier", 0, matching_end, matching_source);
+    let non_matching_tree = tree(
+        "rust",
+        "identifier",
+        0,
+        non_matching_end,
+        non_matching_source,
+    );
+    let pattern = compile_exprs(
+        vec![
+            LqStructuralExpr::Pattern(vec![metavar("name")]),
+            LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                left: hole_ref("name", LqStructuralHoleMultiplicity::One),
+                right: LqStructuralConstraintOperand::Regex("^alpha$".to_string()),
+            }]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let matching = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(matching_source, &matching_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    let non_matching = match matcher.match_authority(
+        lower(&pattern),
+        StructuralAuthorityView::new(non_matching_source, &non_matching_tree),
+    ) {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(matching.len(), 1);
+    assert!(non_matching.is_empty());
+}
+
+#[test]
 fn authority_inside_and_outside_constraints_follow_ancestor_chain() {
     let nested_source = "impl x";
     let nested_tree = tree_with_children(

@@ -154,8 +154,6 @@ rust-test-integration:
     {{cargo}} --lane test-integration-lane test -p quanta-index-contract --test lex_scaffold --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-core --test hybrid_policy --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-core --test semantic_policy --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-channel --test hellgate --all-features --locked
-    {{cargo}} --lane test-integration-lane test -p quanta-index-channel --test wal_roundtrip --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-lexical --test tantivy_smoke --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test bootstrap_owner_flow --all-features --locked
     {{cargo}} --lane test-integration-lane test -p quanta-index-repomap --test owner_surface --all-features --locked

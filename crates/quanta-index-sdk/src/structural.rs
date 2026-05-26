@@ -158,7 +158,6 @@ impl crate::NamespaceIngest for StructuralNs {
         match response {
             SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)

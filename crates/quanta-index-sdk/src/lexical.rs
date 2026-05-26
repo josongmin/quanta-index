@@ -161,8 +161,7 @@ impl crate::NamespaceIngest for LexicalNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire_batch))?;
         match response {
             SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::SemanticReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)

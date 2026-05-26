@@ -96,7 +96,6 @@ impl crate::NamespaceIngest for RepoMapNs {
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)

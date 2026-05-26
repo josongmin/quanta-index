@@ -1121,7 +1121,6 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishDirtyBatch(q
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishHistoryBatch(quanta_index_contract::HistoryIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishLexicalBatch(quanta_index_contract::LexicalIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRepoMapBundle(quanta_index_contract::RepoMapSourceBundle)
-pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishSemanticBatch(quanta_index_contract::SemanticIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -1147,7 +1146,6 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::Error(quanta_index
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::HistoryReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::LexicalReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RepoMapReceipt(quanta_index_contract::RepoMapMutationAck)
-pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::SemanticReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse
@@ -5518,7 +5516,6 @@ pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishHistoryBatch(quanta_index_contract::HistoryIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishLexicalBatch(quanta_index_contract::LexicalIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRepoMapBundle(quanta_index_contract::RepoMapSourceBundle)
-pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishSemanticBatch(quanta_index_contract::SemanticIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -5544,7 +5541,6 @@ pub quanta_index_contract::SearchPlaneIngestIpcResponse::Error(quanta_index_cont
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::LexicalReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::RepoMapReceipt(quanta_index_contract::RepoMapMutationAck)
-pub quanta_index_contract::SearchPlaneIngestIpcResponse::SemanticReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse

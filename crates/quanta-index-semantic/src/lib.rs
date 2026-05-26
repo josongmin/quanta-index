@@ -16,12 +16,13 @@ mod hnsw;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::channel::SemanticChannelOp;
+use quanta_index_contract::channel::{
+    ReplaceSemanticScope, SemanticChannelOp, SemanticSeal, TombstoneSemanticScope,
+};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingModelContract, EmbeddingRecord, LexicalCandidate, ManifestGeneration,
-    ReplaceSemanticScope, RepoId, RepoRelativePath, RevisionId, SemanticIngestBatch, SemanticSeal,
-    TombstoneSemanticScope,
+    RepoId, RepoRelativePath, RevisionId, SemanticIngestBatch,
 };
 use quanta_index_core::{
     CoreError, SemanticBatchBuildPort, SemanticIndexBuildPort, SemanticIndexOpenPort,

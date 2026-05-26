@@ -13,12 +13,14 @@
 //! D18 — no proc-macro derives.
 
 use core::fmt;
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use quanta_index_contract::{
     LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
     LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
     lex::{ParseNode, ParseTreeRecord, compute_parse_tree_source_hash},
 };
+use quanta_index_lq_regex::RegexExecutor;
 
 use crate::binding::{StructuralAuthorityCandidate, StructuralBinding};
 use crate::errors::{StructuralError, StructuralErrorCode};
@@ -27,6 +29,8 @@ use crate::pattern::{
     StructuralPattern, TypedHoleKind,
 };
 use crate::types::{ByteSpan, LangId, MetaVar};
+
+type StructuralRegexCache = BTreeMap<String, RegexExecutor>;
 
 /// Compile a contract-layer structural block into the shared structural IR,
 /// anchored to a canonical lowercase producer language code.
@@ -253,12 +257,14 @@ impl StructuralAuthorityMatcher for TruthfulSubsetAuthorityMatcher {
         }
         let mut out = Vec::new();
         let mut ancestors: Vec<&ParseNode> = Vec::new();
+        let mut regex_cache = StructuralRegexCache::new();
         collect_authority_candidates(
             pattern.pattern(),
             &authority.tree.root,
             &mut ancestors,
             authority.tree,
             authority.source,
+            &mut regex_cache,
             &mut out,
         )?;
         Ok(out)
@@ -383,6 +389,7 @@ fn lower_contract_constraint(
             LqStructuralConstraintOperand::RawString(text) => {
                 ConstraintOperand::RawString(text.clone())
             }
+            LqStructuralConstraintOperand::Regex(text) => ConstraintOperand::Regex(text.clone()),
         },
     })
 }
@@ -602,10 +609,17 @@ fn collect_authority_candidates<'a>(
     ancestors: &mut Vec<&'a ParseNode>,
     tree: &ParseTreeRecord,
     source: &str,
+    regex_cache: &mut StructuralRegexCache,
     out: &mut Vec<StructuralAuthorityCandidate>,
 ) -> Result<(), StructuralError> {
-    if let Some(binding) = match_pattern_at_node(pattern, node, ancestors.as_slice(), tree, source)?
-    {
+    if let Some(binding) = match_pattern_at_node(
+        pattern,
+        node,
+        ancestors.as_slice(),
+        tree,
+        source,
+        regex_cache,
+    )? {
         out.push(StructuralAuthorityCandidate::new(
             ByteSpan::new(node.byte_start, node.byte_end)?,
             binding,
@@ -613,7 +627,7 @@ fn collect_authority_candidates<'a>(
     }
     ancestors.push(node);
     for child in &node.children {
-        collect_authority_candidates(pattern, child, ancestors, tree, source, out)?;
+        collect_authority_candidates(pattern, child, ancestors, tree, source, regex_cache, out)?;
     }
     let _popped: Option<&ParseNode> = ancestors.pop();
     Ok(())
@@ -625,18 +639,19 @@ fn match_pattern_at_node(
     ancestors: &[&ParseNode],
     tree: &ParseTreeRecord,
     source: &str,
+    regex_cache: &mut StructuralRegexCache,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
     let Some(binding) = match_node_pattern(pattern.root(), node, tree, StructuralBinding::empty())?
     else {
         return Ok(None);
     };
-    if !constraints_match(pattern, &binding, source)? {
+    if !constraints_match(pattern, &binding, source, regex_cache)? {
         return Ok(None);
     }
-    if !inside_patterns_match(pattern.inside(), ancestors, tree, source)? {
+    if !inside_patterns_match(pattern.inside(), ancestors, tree, source, regex_cache)? {
         return Ok(None);
     }
-    if outside_patterns_match(pattern.outside(), ancestors, tree, source)? {
+    if outside_patterns_match(pattern.outside(), ancestors, tree, source, regex_cache)? {
         return Ok(None);
     }
     Ok(Some(binding))
@@ -647,12 +662,15 @@ fn inside_patterns_match(
     ancestors: &[&ParseNode],
     tree: &ParseTreeRecord,
     source: &str,
+    regex_cache: &mut StructuralRegexCache,
 ) -> Result<bool, StructuralError> {
     for pattern in patterns {
         let mut matched = false;
         for (idx, ancestor) in ancestors.iter().enumerate() {
             let prefix = ancestors.get(..idx).unwrap_or(&[]);
-            if match_pattern_at_node(pattern, ancestor, prefix, tree, source)?.is_some() {
+            if match_pattern_at_node(pattern, ancestor, prefix, tree, source, regex_cache)?
+                .is_some()
+            {
                 matched = true;
                 break;
             }
@@ -669,11 +687,14 @@ fn outside_patterns_match(
     ancestors: &[&ParseNode],
     tree: &ParseTreeRecord,
     source: &str,
+    regex_cache: &mut StructuralRegexCache,
 ) -> Result<bool, StructuralError> {
     for pattern in patterns {
         for (idx, ancestor) in ancestors.iter().enumerate() {
             let prefix = ancestors.get(..idx).unwrap_or(&[]);
-            if match_pattern_at_node(pattern, ancestor, prefix, tree, source)?.is_some() {
+            if match_pattern_at_node(pattern, ancestor, prefix, tree, source, regex_cache)?
+                .is_some()
+            {
                 return Ok(true);
             }
         }
@@ -685,6 +706,7 @@ fn constraints_match(
     pattern: &StructuralPattern,
     binding: &StructuralBinding,
     source: &str,
+    regex_cache: &mut StructuralRegexCache,
 ) -> Result<bool, StructuralError> {
     for constraint in pattern.constraints() {
         let Some(left_span) = binding.get(&constraint.left.name) else {
@@ -701,12 +723,32 @@ fn constraints_match(
             ConstraintOperand::Phrase(text) | ConstraintOperand::RawString(text) => {
                 left_text == text
             }
+            ConstraintOperand::Regex(pattern) => {
+                structural_regex_matches(pattern, left_text, regex_cache)?
+            }
         };
         if !matched {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn structural_regex_matches(
+    pattern: &str,
+    text: &str,
+    regex_cache: &mut StructuralRegexCache,
+) -> Result<bool, StructuralError> {
+    let executor = match regex_cache.entry(pattern.to_string()) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => entry.insert(RegexExecutor::compile(pattern).map_err(|err| {
+            StructuralError::new(
+                StructuralErrorCode::StrParseFail,
+                format!("structural regex constraint invalid: {err}"),
+            )
+        })?),
+    };
+    Ok(executor.verify(text.as_bytes()))
 }
 
 fn extract_source_text(source: &str, span: ByteSpan) -> Result<&str, StructuralError> {

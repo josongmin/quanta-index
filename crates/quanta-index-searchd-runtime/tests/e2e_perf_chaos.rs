@@ -13,7 +13,8 @@ mod e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, SearchPlaneTrackKind, TextQuerySyntax,
+    BridgeScope, BridgeTarget, EarlyStopReason, EngineTouched, SearchPlaneTrackKind,
+    TextQuerySyntax,
 };
 
 use crate::e2e_harness::{E2eRuntime, E2eTypedError};
@@ -25,6 +26,65 @@ fn require_no_typed_error(error: Option<E2eTypedError>, context: &str) -> AnyRes
             error.code,
             error.message
         ));
+    }
+    Ok(())
+}
+
+fn assert_closed_metric_suffix(
+    rt: &E2eRuntime,
+    expected_suffix: &[&str],
+    allowed: &[&str],
+    leaked_terms: &[&str],
+) -> AnyResult<()> {
+    let errors = rt.query_metric_errors()?;
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "unexpected runtime metric errors: {errors:?}"
+        ));
+    }
+    let samples = rt.query_metrics_snapshot()?;
+    let names = samples
+        .iter()
+        .map(|sample| sample.name.as_ref().to_string())
+        .collect::<Vec<_>>();
+    if names.iter().any(|name| !allowed.contains(&name.as_str())) {
+        return Err(anyhow::anyhow!(
+            "runtime metric names escaped closed set: {names:?}"
+        ));
+    }
+    let suffix = names
+        .get(names.len().saturating_sub(expected_suffix.len())..)
+        .unwrap_or_default()
+        .to_vec();
+    let expected = expected_suffix
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    if suffix != expected {
+        return Err(anyhow::anyhow!(
+            "unexpected runtime metric suffix: names={names:?} expected_suffix={expected:?}"
+        ));
+    }
+    for sample in &samples {
+        if sample.dimensions.ticket_id.as_ref() != "LXE-10"
+            || sample.dimensions.wave_id.as_ref() != "8"
+            || sample.dimensions.tenant_id.as_ref() != "local"
+            || sample.dimensions.repo_id.as_ref() != "repo-e2e"
+            || sample.dimensions.generation_id != 1
+        {
+            return Err(anyhow::anyhow!(
+                "unexpected runtime metric dimensions: {:?}",
+                sample.dimensions
+            ));
+        }
+        for leaked in leaked_terms {
+            if sample.name.contains(leaked) {
+                return Err(anyhow::anyhow!(
+                    "runtime metric leaked query content `{leaked}` in name={}",
+                    sample.name
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -59,6 +119,40 @@ fn seed_hybrid_tie_fixture(rt: &mut E2eRuntime, count: usize) -> AnyResult<()> {
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
     ])?;
+    Ok(())
+}
+
+fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let path = "src/structural.rs";
+    let content = "fn chaos_structural_alpha() {}";
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_structural_function_tree(path, content, "chaos_structural_alpha")?;
+    _ = rt.seal_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    Ok(())
+}
+
+fn seed_history_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let path = "src/history.rs";
+    rt.ingest_text("repo-e2e", path, "history lexical proof")?;
+    rt.ingest_history_fixture(path)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
+fn seed_runtime_dirty_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let path = "src/dirty.rs";
+    rt.ingest_text("repo-e2e", path, "todo dirty scope")?;
+    rt.ingest_dirty_for_path(path, 100)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
     Ok(())
 }
 
@@ -371,6 +465,173 @@ fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult
 }
 
 #[test]
+fn history_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let result = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+    require_no_typed_error(result.typed_error, "history metrics query")?;
+    if result.commit_ids.len() != 1 || !result.diff_paths.is_empty() {
+        return Err(anyhow::anyhow!(
+            "unexpected history query result commit_ids={:?} diff_paths={:?}",
+            result.commit_ids,
+            result.diff_paths
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["fix", "history", "alice"],
+    )
+}
+
+#[test]
+fn runtime_metadata_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_dirty_fixture(&mut rt)?;
+
+    let result = rt.query_runtime_metadata(TextQuerySyntax::Native, "dirty:yes todo", 10);
+    require_no_typed_error(result.typed_error, "runtime metadata metrics query")?;
+    if result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "unexpected runtime metadata candidate ids: {:?}",
+            result.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["dirty", "todo", "src/dirty.rs"],
+    )
+}
+
+#[test]
+fn structural_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let result = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "structural metrics query")?;
+    if result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "unexpected structural candidate ids: {:?}",
+            result.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["function_item", "name.expr", "chaos_structural_alpha"],
+    )
+}
+
+#[test]
+fn bridge_structural_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let result = rt.query_bridge(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }""#,
+        10,
+        BridgeTarget::CodeQl,
+    );
+    require_no_typed_error(result.typed_error, "bridge structural metrics query")?;
+    if result.scope != Some(BridgeScope::Structural) || result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "unexpected structural bridge result scope={:?} candidate_ids={:?}",
+            result.scope,
+            result.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["function_item", "name.expr", "codeql"],
+    )
+}
+
+#[test]
+fn bridge_translate_fail_runtime_metrics_use_parse_bucket_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let result = rt.query_bridge(
+        TextQuerySyntax::Sourcegraph,
+        "patterntype:structural /(/",
+        10,
+        BridgeTarget::CodeQl,
+    );
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected bridge translate failure"))?;
+    if error.code != "BRIDGE_TRANSLATE_FAIL" {
+        return Err(anyhow::anyhow!(
+            "expected BRIDGE_TRANSLATE_FAIL, got {}",
+            error.code
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_parse_total"],
+        &["lq_query_intake_total", "lq_typed_error_parse_total"],
+        &["chaos_", "structural", "codeql"],
+    )
+}
+
+#[test]
 fn hybrid_large_tied_result_set_keeps_order_stable() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_hybrid_tie_fixture(&mut rt, 24)?;
@@ -425,7 +686,12 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
             error.code
         ));
     }
-    Ok(())
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
+        &["match", "tree.rs"],
+    )
 }
 
 #[test]
@@ -453,6 +719,150 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
         return Err(anyhow::anyhow!(
             "expected STR_SHARD_UNAVAILABLE, got {}",
             error.code
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["match", "tree.rs"],
+    )
+}
+
+#[test]
+fn structural_mixed_lexical_boolean_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()>
+{
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let invalid = rt.query_structural(
+        TextQuerySyntax::Native,
+        "chaos_structural_alpha AND match { function_item }",
+        10,
+    );
+    let error = invalid
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed mixed lexical/structural rejection"))?;
+    if error.code != "STR_INVALID_REQUEST" {
+        return Err(anyhow::anyhow!(
+            "expected STR_INVALID_REQUEST, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("structural-only boolean tree of `match { ... }` leaves")
+    {
+        return Err(anyhow::anyhow!(
+            "mixed lexical/structural rejection lost exact detail: {}",
+            error.message
+        ));
+    }
+
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let follow_up = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up structural query after mixed lexical/structural reject",
+    )?;
+    if follow_up.candidate_ids != vec![expected_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up structural query diverged after mixed lexical/structural reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_pure_negative_boolean_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()>
+{
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let invalid = rt.query_structural(TextQuerySyntax::Native, "NOT match { function_item }", 10);
+    let error = invalid
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed pure-negative structural rejection"))?;
+    if error.code != "STR_INVALID_REQUEST" {
+        return Err(anyhow::anyhow!(
+            "expected STR_INVALID_REQUEST, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("pure-negative structural boolean queries are not executable")
+    {
+        return Err(anyhow::anyhow!(
+            "pure-negative structural rejection lost exact detail: {}",
+            error.message
+        ));
+    }
+
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let follow_up = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up structural query after pure-negative reject",
+    )?;
+    if follow_up.candidate_ids != vec![expected_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up structural query diverged after pure-negative reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let invalid = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.lambda] } } }",
+        10,
+    );
+    let error = invalid
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed structural typed-hole rejection"))?;
+    if error.code != "STR_HOLE_KIND_UNSUPPORTED" {
+        return Err(anyhow::anyhow!(
+            "expected STR_HOLE_KIND_UNSUPPORTED, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("typed hole kind `lambda`") {
+        return Err(anyhow::anyhow!(
+            "typed-hole rejection lost exact unsupported-kind detail: {}",
+            error.message
+        ));
+    }
+
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let follow_up = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }""#,
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up structural query after typed-hole reject",
+    )?;
+    if follow_up.candidate_ids != vec![expected_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up structural query diverged after typed-hole reject: {:?}",
+            follow_up.candidate_ids
         ));
     }
     Ok(())

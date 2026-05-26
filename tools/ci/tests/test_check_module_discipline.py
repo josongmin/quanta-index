@@ -167,9 +167,8 @@ def test_macro_rules_flagged(tmp_path: Path):
 def test_lint_loads_workspace_members():
     """The lint correctly reads workspace.members and produces a non-empty
     facade-file list. Intentionally not asserting the tree itself passes —
-    the lint is expected to surface existing structural debt (e.g.
-    quanta-index-channel/src/backends/wal_mmap/mod.rs carries impl blocks
-    that need to migrate to sibling files). Pre-commit and CI run the lint
-    against the tree and will block PRs until that debt is resolved."""
+    the lint is expected to surface existing structural debt until the
+    tree is cleaned up. Pre-commit and CI run the lint against the tree and
+    will block PRs until that debt is resolved."""
     facade_files = MODULE.collect_facade_files()
     assert len(facade_files) > 0, "lint sees no facade files — workspace.members empty?"

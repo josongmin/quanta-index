@@ -454,6 +454,11 @@ fn write_structural_constraint_key(
             out.push_str(text);
             out.push('\'');
         }
+        crate::ast::LqStructuralConstraintOperand::Regex(text) => {
+            out.push('/');
+            out.push_str(text);
+            out.push('/');
+        }
     }
 }
 

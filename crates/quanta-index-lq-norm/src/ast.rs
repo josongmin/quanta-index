@@ -167,6 +167,7 @@ pub enum LqStructuralConstraintOperand {
     Hole(LqStructuralHoleRef),
     Phrase(String),
     RawString(String),
+    Regex(String),
 }
 
 /// Conjunction-only structural constraint per dsl.md §8.3.
@@ -889,6 +890,10 @@ impl serde::Serialize for LqStructuralConstraintOperand {
                 m.serialize_entry("tag", "raw_string")?;
                 m.serialize_entry("v", text)?;
             }
+            Self::Regex(text) => {
+                m.serialize_entry("tag", "regex")?;
+                m.serialize_entry("v", text)?;
+            }
         }
         m.end()
     }
@@ -942,9 +947,15 @@ impl<'de> serde::Deserialize<'de> for LqStructuralConstraintOperand {
                             .map_err(|e| A::Error::custom(format!("raw_string payload: {e}")))?;
                         Ok(LqStructuralConstraintOperand::RawString(text))
                     }
+                    "regex" => {
+                        let text: String = v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("regex payload: {e}")))?;
+                        Ok(LqStructuralConstraintOperand::Regex(text))
+                    }
                     other => Err(A::Error::unknown_variant(
                         other,
-                        &["hole", "phrase", "raw_string"],
+                        &["hole", "phrase", "raw_string", "regex"],
                     )),
                 }
             }

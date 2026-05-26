@@ -1397,11 +1397,12 @@ impl<'a> StructuralParser<'a> {
             Some(b'$') => LqStructuralConstraintOperand::Hole(self.parse_hole_ref()?),
             Some(b'"') => LqStructuralConstraintOperand::Phrase(self.parse_phrase_literal()?),
             Some(b'\'') => LqStructuralConstraintOperand::RawString(self.parse_raw_literal()?),
+            Some(b'/') => LqStructuralConstraintOperand::Regex(self.parse_regex_literal()?),
             _ => {
                 return Err(LqParseError::new(
                     LqParseErrorCode::SyntaxError,
                     self.span,
-                    "structural constraint RHS must be a hole, phrase, or raw string",
+                    "structural constraint RHS must be a hole, phrase, raw string, or regex",
                 ));
             }
         };
@@ -1532,6 +1533,35 @@ impl<'a> StructuralParser<'a> {
             self.span,
             "unterminated raw string in structural where",
         ))
+    }
+
+    fn parse_regex_literal(&mut self) -> Result<String, LqParseError> {
+        self.bump()?;
+        let mut out = String::new();
+        let mut escaped = false;
+        loop {
+            let Some(&byte) = self.bytes.get(self.pos) else {
+                return Err(LqParseError::new(
+                    LqParseErrorCode::SyntaxError,
+                    self.span,
+                    "unterminated regex literal in structural where",
+                ));
+            };
+            self.bump()?;
+            if escaped {
+                out.push(char::from(byte));
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'/' => return Ok(out),
+                b'\\' => {
+                    out.push('\\');
+                    escaped = true;
+                }
+                _ => out.push(char::from(byte)),
+            }
+        }
     }
 
     fn parse_hole_node_dollar(&mut self) -> Result<LqStructuralNode, LqParseError> {
@@ -2204,7 +2234,7 @@ mod tests {
     #[test]
     fn structural_block_parses_where_inside_outside_exprs() {
         let q = parse_input(
-            "match { fn $X() where $X == \"name\" AND :[X] == 'name' inside { impl $T { ... } } outside { trait $T { ... } } }",
+            "match { fn $X() where $X == \"name\" AND :[X] == 'name' AND $X == /na.*/ inside { impl $T { ... } } outside { trait $T { ... } } }",
         );
         match q.expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
@@ -2215,7 +2245,7 @@ mod tests {
                 ));
                 match block.exprs.get(1) {
                     Some(crate::ast::LqStructuralExpr::Where(constraints)) => {
-                        assert_eq!(constraints.len(), 2);
+                        assert_eq!(constraints.len(), 3);
                         let Some(first) = constraints.first() else {
                             assert!(false, "missing first structural constraint");
                             return;
@@ -2224,8 +2254,18 @@ mod tests {
                             assert!(false, "missing second structural constraint");
                             return;
                         };
+                        let Some(third) = constraints.get(2) else {
+                            assert!(false, "missing third structural constraint");
+                            return;
+                        };
                         assert_eq!(first.left.name.as_str(), "X");
                         assert_eq!(second.left.name.as_str(), "X");
+                        assert_eq!(third.left.name.as_str(), "X");
+                        assert!(matches!(
+                            third.right,
+                            crate::ast::LqStructuralConstraintOperand::Regex(ref pattern)
+                                if pattern == "na.*"
+                        ));
                     }
                     other => assert!(false, "expected where expr, got {other:?}"),
                 }

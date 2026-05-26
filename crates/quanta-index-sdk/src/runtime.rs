@@ -105,7 +105,6 @@ impl crate::NamespaceIngest for RuntimeNs {
         match response {
             SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)

@@ -33,7 +33,7 @@ pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridQueryBuilder, SearchNamespace};
-pub use semantic::{SemanticBatch, SemanticNamespace, SemanticQueryBuilder};
+pub use semantic::{SemanticNamespace, SemanticQueryBuilder};
 pub use structural::{StructuralBatch, StructuralNamespace, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
 pub(crate) use transport::{
@@ -59,9 +59,8 @@ pub use quanta_index_contract::{
     SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
-    SemanticReplaceScope, SemanticTombstoneScope, StructuralReplaceScope, StructuralTombstoneScope,
-    StructuralTreeRecord, SymbolCandidate, SymbolId, SymbolQueryResponse, TextQueryResponse,
-    TextQuerySyntax, TrackReadinessRecord,
+    StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,
+    SymbolId, SymbolQueryResponse, TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

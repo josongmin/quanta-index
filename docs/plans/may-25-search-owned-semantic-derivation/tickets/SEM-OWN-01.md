@@ -1,6 +1,6 @@
 # SEM-OWN-01 — Raw Ingest Contract and Chunk-text Authority
 
-Status: `proposed`
+Status: `partial-execution-live`
 Parent: [../README.md](../README.md)
 Depends on: [SEM-OWN-00.md](SEM-OWN-00.md)
 
@@ -8,6 +8,19 @@ Depends on: [SEM-OWN-00.md](SEM-OWN-00.md)
 
 Define the exact external payload that `quanta-index` receives for semantic
 derivation. The worker cannot be correct until the raw input contract is stable.
+
+## 1.1 Current tree truth
+
+Already live on the current tree:
+
+- `ChunkRecord.text` is the canonical lexical/semantic source field
+- lexical indexing already consumes `text`
+- public semantic/hybrid query callers no longer need producer-authored
+  semantic vectors
+
+Remaining work under this ticket is migration discipline and boundary cleanup:
+producer-facing docs and low-level ingest assumptions still need to stop
+treating raw semantic vectors as a stable external requirement.
 
 ## 2. Scope
 

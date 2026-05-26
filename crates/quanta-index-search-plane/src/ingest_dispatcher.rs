@@ -639,7 +639,6 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
 /// for the new ingest surface (QI-RT-01).
 pub struct SearchPlaneIngestDispatcher {
     lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
-    semantic: Arc<dyn SemanticIngestPort + Send + Sync>,
     history: Arc<dyn HistoryIngestPort + Send + Sync>,
     runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
@@ -650,7 +649,6 @@ impl SearchPlaneIngestDispatcher {
     #[must_use]
     pub fn new(
         lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
-        semantic: Arc<dyn SemanticIngestPort + Send + Sync>,
         history: Arc<dyn HistoryIngestPort + Send + Sync>,
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
@@ -658,7 +656,6 @@ impl SearchPlaneIngestDispatcher {
     ) -> Self {
         Self {
             lexical,
-            semantic,
             history,
             runtime,
             structural,
@@ -672,12 +669,6 @@ impl SearchPlaneIngestDispatcher {
             SearchPlaneIngestIpcRequest::PublishLexicalBatch(batch) => {
                 match self.lexical.publish_batch(&batch) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::LexicalReceipt(receipt),
-                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
-                }
-            }
-            SearchPlaneIngestIpcRequest::PublishSemanticBatch(batch) => {
-                match self.semantic.publish_batch(&batch) {
-                    Ok(receipt) => SearchPlaneIngestIpcResponse::SemanticReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }

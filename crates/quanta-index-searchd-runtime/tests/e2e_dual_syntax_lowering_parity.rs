@@ -399,6 +399,16 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_regex_body_parity",
+        sg_query: r"patterntype:structural /^parity_needle_alpha$/",
+        lq_query: "match { :[name] where :[name] == /^parity_needle_alpha$/ }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
         id: "structural_sourcegraph_native_select_rejection_parity",
         sg_query: r#"select:repo patterntype:structural "function_item""#,
         lq_query: "select:repo match { function_item }",

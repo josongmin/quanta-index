@@ -17,15 +17,14 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
-    ChunkRecord, EarlyStopReason, EmbeddingDistanceMetric, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, EngineTouched, GenerationPin, HybridQueryRequest,
+    ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest,
     LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration,
-    OwnerDocKind, PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
+    PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-    SemanticQueryRequest, SemanticReplaceScope, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -137,8 +136,7 @@ fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg =
-        SearchdConfig::from_state_root(state_root.to_path_buf()).with_decimal_query_text_embedder();
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
@@ -170,13 +168,6 @@ where
         thread::sleep(Duration::from_millis(10));
     }
     false
-}
-
-fn float_vec_to_query_text(vec: &[f32]) -> String {
-    vec.iter()
-        .map(|value| format!("{value}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
@@ -228,45 +219,6 @@ fn scope_key(path: &str) -> SearchScopeKey {
     }
 }
 
-fn semantic_model_contract(dimension: usize) -> Result<EmbeddingModelContract, Box<dyn Error>> {
-    let dimension = u32::try_from(dimension).map_err(|err| -> Box<dyn Error> {
-        format!("semantic dimension overflow: {err}").into()
-    })?;
-    if dimension == 0 {
-        return Err("semantic dimension must be non-zero".into());
-    }
-    Ok(EmbeddingModelContract {
-        model_id: "dsl-scenarios-model".to_string().into_boxed_str(),
-        model_version: None,
-        dimension,
-        normalization: EmbeddingNormalization::None,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: "policy:dsl-scenarios".to_string().into_boxed_str(),
-        view_policy_digest: None,
-    })
-}
-
-fn semantic_embedding(chunk: &ChunkRecord, vector: Vec<f32>) -> EmbeddingRecord {
-    EmbeddingRecord {
-        embedding_id: quanta_index_contract::EmbeddingId::new(chunk.chunk_id.as_str()),
-        owner_kind: OwnerDocKind::Chunk,
-        owner_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        source_doc_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        repo_relative_path: chunk.repo_relative_path.clone(),
-        language: chunk.language.clone(),
-        symbol_kind: None,
-        start_byte: chunk.start_byte,
-        end_byte: chunk.end_byte,
-        start_line: chunk.start_line,
-        end_line: chunk.end_line,
-        snippet: chunk.text.clone(),
-        embedding_input_digest: format!("embed-in:{}", chunk.chunk_id.as_str()).into_boxed_str(),
-        vector_digest: format!("embed-vec:{vector:?}").into_boxed_str(),
-        view_kind: "raw_chunk".to_string().into_boxed_str(),
-        vector,
-    }
-}
-
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
     let response = send_ingest_request(
         socket,
@@ -277,7 +229,6 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     )?;
     match response.payload {
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
@@ -345,68 +296,6 @@ fn seal_lexical(socket: &Path) -> TestResult {
             ),
             mode: BatchIngestMode::Delta,
             bundle_payload: None,
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            seal: true,
-        }),
-    )
-}
-
-fn publish_semantic_embeddings(socket: &Path, embeddings: Vec<EmbeddingRecord>) -> TestResult {
-    let dimension = embeddings
-        .first()
-        .map_or(1, |embedding| embedding.vector.len());
-    let mut embeddings_by_path: BTreeMap<String, Vec<EmbeddingRecord>> = BTreeMap::new();
-    for embedding in embeddings {
-        embeddings_by_path
-            .entry(embedding.repo_relative_path.as_str().to_string())
-            .or_default()
-            .push(embedding);
-    }
-    let replace_scopes = embeddings_by_path
-        .into_iter()
-        .map(|(path, embeddings)| SemanticReplaceScope {
-            scope: scope_key(&path),
-            scope_digest: format!("dsl-sem-scope:{path}"),
-            embeddings,
-        })
-        .collect();
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("dsl-sem-manifest-{}", generation().get()),
-            batch_digest: format!(
-                "dsl-sem-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
-            mode: BatchIngestMode::Delta,
-            model_contract: semantic_model_contract(dimension)?,
-            replace_scopes,
-            tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
-}
-
-fn seal_semantic(socket: &Path, dimension: usize) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("dsl-sem-seal-{}", generation().get()),
-            batch_digest: format!(
-                "dsl-sem-seal-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
-            mode: BatchIngestMode::Delta,
-            model_contract: semantic_model_contract(dimension)?,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -932,31 +821,22 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-semantic-complex-scope")?;
-    let alpha = chunk_record("alpha", "scope alpha keep")?;
-    let beta = chunk_record("beta", "scope beta keep")?;
-    let gamma = chunk_record("gamma", "scope alpha outsider")?;
-    let omega = chunk_record("omega", "global outsider")?;
     publish_lexical_chunks(
         &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone(), omega.clone()],
+        vec![
+            chunk_record("alpha", "scope alpha keep")?,
+            chunk_record("beta", "scope beta keep")?,
+            chunk_record("gamma", "scope alpha outsider")?,
+            chunk_record("omega", "global outsider")?,
+        ],
         None,
     )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![0.9_f32, 0.1_f32]),
-            semantic_embedding(&beta, vec![0.8_f32, 0.2_f32]),
-            semantic_embedding(&gamma, vec![0.99_f32, 0.01_f32]),
-            semantic_embedding(&omega, vec![1.0_f32, 0.0_f32]),
-        ],
-    )?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 3,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: "scope".to_string(),
             generation: Some(pin()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
@@ -1054,26 +934,17 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-complex-scope")?;
-    let alpha = chunk_record("alpha", "scope alpha keep")?;
-    let beta = chunk_record("beta", "scope beta keep")?;
-    let gamma = chunk_record("gamma", "scope alpha outsider")?;
-    let omega = chunk_record("omega", "global outsider")?;
     publish_lexical_chunks(
         &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone(), omega.clone()],
+        vec![
+            chunk_record("alpha", "scope alpha keep")?,
+            chunk_record("beta", "scope beta keep")?,
+            chunk_record("gamma", "scope alpha outsider")?,
+            chunk_record("omega", "global outsider")?,
+        ],
         None,
     )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![0.9_f32, 0.1_f32]),
-            semantic_embedding(&beta, vec![0.8_f32, 0.2_f32]),
-            semantic_embedding(&gamma, vec![0.99_f32, 0.01_f32]),
-            semantic_embedding(&omega, vec![1.0_f32, 0.0_f32]),
-        ],
-    )?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 4,
@@ -1085,7 +956,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "scope".to_string(),
             generation: Some(pin()),
             generation_selector: None,
             top_k: 2,
@@ -1178,24 +1049,16 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-count-reached")?;
-    let alpha = chunk_record("alpha", "scope alpha keep")?;
-    let beta = chunk_record("beta", "scope beta keep")?;
-    let gamma = chunk_record("gamma", "scope gamma keep")?;
     publish_lexical_chunks(
         &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone()],
+        vec![
+            chunk_record("alpha", "scope alpha keep")?,
+            chunk_record("beta", "scope beta keep")?,
+            chunk_record("gamma", "scope gamma keep")?,
+        ],
         None,
     )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![0.9_f32, 0.1_f32]),
-            semantic_embedding(&gamma, vec![0.8_f32, 0.2_f32]),
-        ],
-    )?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 5,
@@ -1207,7 +1070,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "scope".to_string(),
             generation: Some(pin()),
             generation_selector: None,
             top_k: 2,

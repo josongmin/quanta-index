@@ -2364,7 +2364,6 @@ impl Default for BatchPublishReceipt {
 )]
 pub enum SearchPlaneIngestIpcRequest {
     PublishLexicalBatch(LexicalIngestBatch),
-    PublishSemanticBatch(SemanticIngestBatch),
     PublishHistoryBatch(HistoryIngestBatch),
     PublishDirtyBatch(DirtyIngestBatch),
     PublishStructuralBatch(StructuralIngestBatch),
@@ -2373,7 +2372,6 @@ pub enum SearchPlaneIngestIpcRequest {
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishLexicalBatch",
-    "PublishSemanticBatch",
     "PublishHistoryBatch",
     "PublishDirtyBatch",
     "PublishStructuralBatch",
@@ -2390,12 +2388,6 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "SearchPlaneIngestIpcRequest",
                 0,
                 "PublishLexicalBatch",
-                payload,
-            ),
-            Self::PublishSemanticBatch(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest",
-                1,
-                "PublishSemanticBatch",
                 payload,
             ),
             Self::PublishHistoryBatch(payload) => serializer.serialize_newtype_variant(
@@ -2444,9 +2436,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishLexicalBatch" => Ok(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
                 variant.newtype_variant()?,
             )),
-            "PublishSemanticBatch" => Ok(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
-                variant.newtype_variant()?,
-            )),
             "PublishHistoryBatch" => Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
                 variant.newtype_variant()?,
             )),
@@ -2484,7 +2473,6 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneIngestIpcResponse {
     LexicalReceipt(BatchPublishReceipt),
-    SemanticReceipt(BatchPublishReceipt),
     HistoryReceipt(BatchPublishReceipt),
     DirtyReceipt(BatchPublishReceipt),
     StructuralReceipt(BatchPublishReceipt),
@@ -2494,7 +2482,6 @@ pub enum SearchPlaneIngestIpcResponse {
 
 const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "LexicalReceipt",
-    "SemanticReceipt",
     "HistoryReceipt",
     "DirtyReceipt",
     "StructuralReceipt",
@@ -2512,12 +2499,6 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "SearchPlaneIngestIpcResponse",
                 0,
                 "LexicalReceipt",
-                payload,
-            ),
-            Self::SemanticReceipt(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcResponse",
-                1,
-                "SemanticReceipt",
                 payload,
             ),
             Self::HistoryReceipt(payload) => serializer.serialize_newtype_variant(
@@ -2570,9 +2551,6 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
             "LexicalReceipt" => Ok(SearchPlaneIngestIpcResponse::LexicalReceipt(
-                variant.newtype_variant()?,
-            )),
-            "SemanticReceipt" => Ok(SearchPlaneIngestIpcResponse::SemanticReceipt(
                 variant.newtype_variant()?,
             )),
             "HistoryReceipt" => Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(
@@ -3146,22 +3124,6 @@ mod tests {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 1,
             payload: SearchPlaneIngestIpcRequest::PublishLexicalBatch(fixture_lexical_batch()),
-        };
-        let bytes = encode(&envelope)?;
-        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
-        assert_eq!(decoded, envelope);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
-    )]
-    fn search_plane_ingest_request_envelope_round_trip_semantic() -> TestRes {
-        let envelope = SearchPlaneIngestIpcRequestEnvelope {
-            request_id: 2,
-            payload: SearchPlaneIngestIpcRequest::PublishSemanticBatch(fixture_semantic_batch()),
         };
         let bytes = encode(&envelope)?;
         let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;

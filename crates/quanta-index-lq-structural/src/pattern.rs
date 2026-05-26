@@ -89,6 +89,7 @@ pub enum ConstraintOperand {
     Hole(HoleRef),
     Phrase(String),
     RawString(String),
+    Regex(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -429,6 +430,10 @@ impl serde::Serialize for ConstraintOperand {
                 m.serialize_entry("kind", "RAW_STRING")?;
                 m.serialize_entry("value", text)?;
             }
+            Self::Regex(text) => {
+                m.serialize_entry("kind", "REGEX")?;
+                m.serialize_entry("value", text)?;
+            }
         }
         m.end()
     }
@@ -444,6 +449,7 @@ impl<'de> serde::Deserialize<'de> for ConstraintOperand {
             Hole(HoleRef),
             Phrase(String),
             RawString(String),
+            Regex(String),
         }
 
         struct V;
@@ -471,10 +477,11 @@ impl<'de> serde::Deserialize<'de> for ConstraintOperand {
                                 "HOLE" => Held::Hole(map.next_value()?),
                                 "PHRASE" => Held::Phrase(map.next_value()?),
                                 "RAW_STRING" => Held::RawString(map.next_value()?),
+                                "REGEX" => Held::Regex(map.next_value()?),
                                 other => {
                                     return Err(serde::de::Error::unknown_variant(
                                         other,
-                                        &["HOLE", "PHRASE", "RAW_STRING"],
+                                        &["HOLE", "PHRASE", "RAW_STRING", "REGEX"],
                                     ));
                                 }
                             };
@@ -489,6 +496,7 @@ impl<'de> serde::Deserialize<'de> for ConstraintOperand {
                     Held::Hole(v) => Ok(ConstraintOperand::Hole(v)),
                     Held::Phrase(v) => Ok(ConstraintOperand::Phrase(v)),
                     Held::RawString(v) => Ok(ConstraintOperand::RawString(v)),
+                    Held::Regex(v) => Ok(ConstraintOperand::Regex(v)),
                 }
             }
         }

@@ -1956,6 +1956,53 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .into());
     }
 
+    let structural_sourcegraph_regex = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .sourcegraph(
+                    r"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural /^main$/",
+                )
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    if structural_sourcegraph_regex.generation != pin()
+        || structural_sourcegraph_regex.results.len() != 1
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected Sourcegraph structural regex response: {structural_sourcegraph_regex:?}"
+        )
+        .into());
+    }
+    let structural_sourcegraph_regex_candidate = structural_sourcegraph_regex
+        .results
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural regex candidate".to_string())?;
+    let structural_sourcegraph_regex_binding = structural_sourcegraph_regex_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural regex binding".to_string())?;
+    if structural_sourcegraph_regex_candidate.candidate_id != "chunk-tree"
+        || !structural_sourcegraph_regex_binding
+            .metavariable
+            .starts_with("__sg_regex_")
+        || structural_sourcegraph_regex_binding.start_byte != 3
+        || structural_sourcegraph_regex_binding.end_byte != 7
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected Sourcegraph structural regex candidate/binding: \
+             {structural_sourcegraph_regex_candidate:?}"
+        )
+        .into());
+    }
+
     let structural_repo_miss = client
         .structural()
         .query()

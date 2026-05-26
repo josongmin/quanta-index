@@ -59,13 +59,13 @@ fn explain_pretty_roundtrip() {
 }
 
 #[test]
-fn semantic_inline_vector_json_roundtrip() {
+fn semantic_query_text_json_roundtrip() {
     let result = semantic_query_text_json_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
-fn hybrid_vector_handle_pretty_roundtrip() {
+fn hybrid_query_text_pretty_roundtrip() {
     let result = hybrid_query_text_pretty_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }

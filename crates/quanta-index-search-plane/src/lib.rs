@@ -29,9 +29,7 @@ pub use query_dispatcher::{
     BoundedQueryObsStore, QueryObsSink, SearchPlaneDispatcher, SearchPlaneQueryDispatcher,
     SearchPlaneQueryService, make_pin,
 };
-pub use query_embedder::{
-    DecimalQueryTextEmbedder, HashingQueryTextEmbedder, QueryTextEmbedderPort,
-};
+pub use query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort};
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger, TrackLedger,
 };

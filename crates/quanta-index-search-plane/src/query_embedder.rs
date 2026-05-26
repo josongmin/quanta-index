@@ -1,11 +1,9 @@
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::{CoreError, SemanticPolicy};
+use quanta_index_core::CoreError;
 
 pub trait QueryTextEmbedderPort {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
 }
-
-pub struct DecimalQueryTextEmbedder;
 
 pub struct HashingQueryTextEmbedder {
     dimension: usize,
@@ -15,12 +13,6 @@ impl HashingQueryTextEmbedder {
     #[must_use]
     pub const fn new(dimension: usize) -> Self {
         Self { dimension }
-    }
-}
-
-impl QueryTextEmbedderPort for DecimalQueryTextEmbedder {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
-        decode_query_text_as_vector(query_text)
     }
 }
 
@@ -110,23 +102,4 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
-}
-
-fn decode_query_text_as_vector(text: &str) -> Result<Vec<f32>, CoreError> {
-    let mut query_vector = Vec::new();
-    for token in text.split_whitespace() {
-        let value = token.parse::<f32>().map_err(|err| CoreError::Typed {
-            code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
-            message: format!("semantic: query vector token `{token}` is not a valid f32: {err}"),
-        })?;
-        if !value.is_finite() {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
-                message: format!("semantic: query vector token `{token}` is not finite"),
-            });
-        }
-        query_vector.push(value);
-    }
-    SemanticPolicy::validate_query_vector(&query_vector)?;
-    Ok(query_vector)
 }

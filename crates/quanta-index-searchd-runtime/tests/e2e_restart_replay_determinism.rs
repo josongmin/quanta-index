@@ -93,6 +93,37 @@ fn query_semantic_scope_ids_and_explanation(
     Ok((result.candidate_ids, explanation))
 }
 
+fn ingest_structural_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let path = "src/structural.rs";
+    let content = "fn restart_structural_alpha() {}";
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_structural_function_tree(path, content, "restart_structural_alpha")?;
+    _ = rt.seal_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    Ok(())
+}
+
+fn query_structural_ids(
+    rt: &mut E2eRuntime,
+    syntax: TextQuerySyntax,
+    query_text: &str,
+) -> AnyResult<Vec<String>> {
+    let result = rt.query_structural(syntax, query_text, 10);
+    require_no_typed_error(result.typed_error, "query_structural")?;
+    if result.candidate_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "query_structural returned zero candidates for {query_text:?}"
+        ));
+    }
+    Ok(result.candidate_ids)
+}
+
 #[test]
 fn reopen_preserves_lexical_ids_and_explanation() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
@@ -225,6 +256,91 @@ fn fresh_reingest_replays_equivalent_hybrid_ids_and_early_stop_truth() -> AnyRes
             "expected CountReached on hybrid replay proof, got baseline={:?} replay={:?}",
             baseline.1.early_stop_reason,
             replay.1.early_stop_reason
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_structural_typed_hole_and_sourcegraph_boolean_ids() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_structural_fixture(&mut rt)?;
+
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let before_typed = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+    )?;
+    let before_sourcegraph_boolean = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }" AND NOT "trait_item""#,
+    )?;
+
+    let mut rt = rt.reopen();
+    let after_typed = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+    )?;
+    let after_sourcegraph_boolean = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }" AND NOT "trait_item""#,
+    )?;
+
+    if before_typed != vec![expected_id.clone()] || after_typed != vec![expected_id.clone()] {
+        return Err(anyhow::anyhow!(
+            "typed structural reopen proof drifted: before={before_typed:?} after={after_typed:?} expected={expected_id}"
+        ));
+    }
+    if before_sourcegraph_boolean != vec![expected_id.clone()]
+        || after_sourcegraph_boolean != vec![expected_id.clone()]
+    {
+        return Err(anyhow::anyhow!(
+            "Sourcegraph structural boolean reopen proof drifted: before={before_sourcegraph_boolean:?} after={after_sourcegraph_boolean:?} expected={expected_id}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn fresh_reingest_replays_equivalent_structural_native_and_sourcegraph_ids() -> AnyResult<()> {
+    let mut baseline = E2eRuntime::boot()?;
+    ingest_structural_fixture(&mut baseline)?;
+    let baseline_native = query_structural_ids(
+        &mut baseline,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } } OR match { trait_item }",
+    )?;
+    let baseline_sourcegraph = query_structural_ids(
+        &mut baseline,
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }" OR patterntype:structural "trait_item""#,
+    )?;
+
+    let mut replay = E2eRuntime::boot()?;
+    ingest_structural_fixture(&mut replay)?;
+    let replay_native = query_structural_ids(
+        &mut replay,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } } OR match { trait_item }",
+    )?;
+    let replay_sourcegraph = query_structural_ids(
+        &mut replay,
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { :[name.expr] } }" OR patterntype:structural "trait_item""#,
+    )?;
+
+    if baseline_native != replay_native {
+        return Err(anyhow::anyhow!(
+            "fresh re-ingest diverged for native structural replay proof: baseline={baseline_native:?} replay={replay_native:?}"
+        ));
+    }
+    if baseline_sourcegraph != replay_sourcegraph {
+        return Err(anyhow::anyhow!(
+            "fresh re-ingest diverged for Sourcegraph structural replay proof: baseline={baseline_sourcegraph:?} replay={replay_sourcegraph:?}"
         ));
     }
     Ok(())

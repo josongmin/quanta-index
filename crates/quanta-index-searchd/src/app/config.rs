@@ -6,7 +6,6 @@ use anyhow::Result;
 pub enum QueryTextEmbedderMode {
     DeterministicText,
     ProviderUnavailable,
-    DecimalTokens,
 }
 
 /// Resolved runtime paths for one `searchd` instance.
@@ -106,11 +105,6 @@ impl SearchdConfig {
     pub fn with_query_text_embedder_mode(mut self, mode: QueryTextEmbedderMode) -> Self {
         self.query_text_embedder_mode = mode;
         self
-    }
-
-    #[must_use]
-    pub fn with_decimal_query_text_embedder(self) -> Self {
-        self.with_query_text_embedder_mode(QueryTextEmbedderMode::DecimalTokens)
     }
 
     #[must_use]

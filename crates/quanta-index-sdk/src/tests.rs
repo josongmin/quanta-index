@@ -16,8 +16,7 @@ use quanta_index_contract::lex::{
     SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchPublishReceipt, ChunkId, ChunkRecord, DiffHunkSide, EmbeddingDistanceMetric, EmbeddingId,
-    EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationSelector,
+    BatchPublishReceipt, ChunkId, ChunkRecord, DiffHunkSide, GenerationSelector,
     HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
     RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
@@ -32,7 +31,7 @@ use quanta_index_contract::{
 
 use crate::{
     ConnectOptions, ControlTransport, DirtyBatch, HistoryBatch, IngestTransport, LexicalBatch,
-    QuantaIndex, QueryTransport, SemanticBatch, StructuralBatch, Track,
+    QuantaIndex, QueryTransport, StructuralBatch, Track,
 };
 
 /// QI-SDK-01: small helper to unwrap a `Result` inside a `#[test]` with
@@ -259,40 +258,6 @@ fn sample_search_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-    }
-}
-
-fn sample_embedding_model_contract() -> EmbeddingModelContract {
-    EmbeddingModelContract {
-        model_id: "text-embedding-3-small".to_string().into_boxed_str(),
-        model_version: None,
-        dimension: 3,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        normalization: EmbeddingNormalization::L2Unit,
-        policy_digest: "policy:sdk-tests".to_string().into_boxed_str(),
-        view_policy_digest: None,
-    }
-}
-
-fn sample_embedding() -> EmbeddingRecord {
-    let chunk = sample_chunk();
-    EmbeddingRecord {
-        embedding_id: EmbeddingId::new("embed-1"),
-        owner_kind: quanta_index_contract::OwnerDocKind::Chunk,
-        owner_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        source_doc_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        repo_relative_path: chunk.repo_relative_path,
-        language: chunk.language,
-        symbol_kind: None,
-        start_byte: chunk.start_byte,
-        end_byte: chunk.end_byte,
-        start_line: chunk.start_line,
-        end_line: chunk.end_line,
-        snippet: chunk.text,
-        embedding_input_digest: "embed-in:chunk-1".to_string().into_boxed_str(),
-        vector_digest: "embed-vec:[0.1, 0.2, 0.3]".to_string().into_boxed_str(),
-        view_kind: "raw_chunk".to_string().into_boxed_str(),
-        vector: vec![0.1, 0.2, 0.3],
     }
 }
 
@@ -995,47 +960,6 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
         panic!("replace_scopes length already asserted");
     };
     assert_eq!(first_scope.trees.len(), 1);
-}
-
-#[test]
-fn semantic_publish_routes_through_ingest_transport_and_carries_embedding_scopes() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SemanticReceipt(BatchPublishReceipt::default()),
-    ));
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let embedding = sample_embedding();
-    let batch = SemanticBatch::delta(
-        repo_id(),
-        revision_id(),
-        ManifestGeneration::new(6),
-        ManifestGeneration::new(5),
-        "manifest:semantic",
-        "batch:semantic",
-        sample_embedding_model_contract(),
-    )
-    .replace_scope(
-        sample_search_scope(),
-        "scope:semantic",
-        vec![embedding.clone()],
-    )
-    .tombstone_scope(SearchScopeKey {
-        doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new("src/old_semantic.rs"),
-    })
-    .without_seal();
-    let _receipt = ok_or_fail!(client.semantic().publish(&batch));
-    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
-    let SearchPlaneIngestIpcRequest::PublishSemanticBatch(wire) = &captured.payload else {
-        panic!("expected PublishSemanticBatch, got {:?}", captured.payload);
-    };
-    assert_eq!(wire.model_contract, sample_embedding_model_contract());
-    assert_eq!(wire.replace_scopes.len(), 1);
-    assert_eq!(wire.tombstone_scopes.len(), 1);
-    assert!(!wire.seal);
-    let Some(first_scope) = wire.replace_scopes.first() else {
-        panic!("replace_scopes length already asserted");
-    };
-    assert_eq!(first_scope.embeddings, vec![embedding]);
 }
 
 #[test]

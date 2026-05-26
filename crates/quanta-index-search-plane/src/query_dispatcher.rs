@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
-    ActivationCatalog, Ledger, lower_lexical_text_query,
+    ActivationCatalog, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, lower_lexical_text_query,
     lowering::{lower_sourcegraph_bridge_query_text, lower_sourcegraph_structural_query_text},
-    query_embedder::{DecimalQueryTextEmbedder, QueryTextEmbedderPort},
+    query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort},
     readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
@@ -136,6 +136,7 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
     match err {
         CoreError::Typed { code, .. }
             if code.contains("PARSE")
+                || code.contains("TRANSLATE_FAIL")
                 || code.contains("INVALID_VECTOR")
                 || code.contains("INVALID_REQUEST")
                 || code.contains("HOLE_KIND_UNSUPPORTED") =>
@@ -199,7 +200,9 @@ impl SearchPlaneDispatcher {
             structural_producer,
             ledger,
             activation_catalog,
-            Arc::new(DecimalQueryTextEmbedder),
+            Arc::new(HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
             Arc::new(NoopQueryObsSink),
         )
     }
@@ -2731,7 +2734,10 @@ mod tests {
         ERR_HISTORY_SHARD_UNAVAILABLE, ERR_NOT_IMPLEMENTED, FailClosedStructuralProducer,
         QueryObsSink, SearchPlaneDispatcher, classify_error_metric_name, make_pin,
     };
-    use crate::{ActivationCatalog, DecimalQueryTextEmbedder, Ledger};
+    use crate::{
+        ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
+        SEARCH_OWNED_SEMANTIC_DIMENSION,
+    };
     use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
@@ -2758,6 +2764,12 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         ciborium::into_writer(value, &mut buf)?;
         Ok(buf)
+    }
+
+    fn default_query_embedder() -> Arc<dyn QueryTextEmbedderPort + Send + Sync> {
+        Arc::new(HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        ))
     }
 
     struct RejectLexicalOpener;
@@ -3677,7 +3689,7 @@ mod tests {
 
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: "1.0 0.0 2.0".to_string(),
+                query_text: "focus alpha".to_string(),
                 generation: Some(GenerationPin::new(
                     RepoId::new("repo-map-ipc"),
                     RevisionId::new("rev-map-ipc"),
@@ -3718,7 +3730,8 @@ mod tests {
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
             (guard.search_vectors.clone(), guard.scoped_vectors.clone())
         };
-        if search_vectors.as_slice() != [vec![1.0, 0.0, 2.0]] {
+        let expected = default_query_embedder().embed_query("focus alpha")?;
+        if search_vectors.as_slice() != [expected] {
             return Err(format!("unexpected semantic vectors: {search_vectors:?}").into());
         }
         if !scoped_vectors.is_empty() {
@@ -3757,7 +3770,7 @@ mod tests {
                     generation_selector: None,
                     top_k: 2,
                 },
-                semantic_query_text: "0.25 0.75".to_string(),
+                semantic_query_text: "scope alpha".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 2,
@@ -3789,7 +3802,8 @@ mod tests {
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
             (guard.scoped_vectors.clone(), guard.search_vectors.clone())
         };
-        if scoped_vectors.as_slice() != [vec![0.25, 0.75]] {
+        let expected = default_query_embedder().embed_query("scope alpha")?;
+        if scoped_vectors.as_slice() != [expected] {
             return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
         }
         if !search_vectors.is_empty() {
@@ -3997,7 +4011,7 @@ mod tests {
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
-            Arc::new(DecimalQueryTextEmbedder),
+            default_query_embedder(),
             obs_sink,
         ))
     }
@@ -4028,6 +4042,47 @@ mod tests {
         }
     }
 
+    fn assert_closed_obs_metrics(
+        obs_sink: &Arc<BoundedQueryObsStore>,
+        expected: &[&str],
+    ) -> TestResult {
+        let names = obs_sink
+            .snapshot()
+            .into_iter()
+            .map(|sample| sample.name.into_string())
+            .collect::<Vec<_>>();
+        let expected = expected
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        if names != expected {
+            return Err(format!("unexpected obs metric names: {names:?}").into());
+        }
+        let errors = obs_sink.errors();
+        if !errors.is_empty() {
+            return Err(format!("unexpected obs errors: {errors:?}").into());
+        }
+        let samples = obs_sink.snapshot();
+        for sample in &samples {
+            if sample.dimensions.ticket_id.as_ref() != "LXE-10"
+                || sample.dimensions.wave_id.as_ref() != "8"
+                || sample.dimensions.tenant_id.as_ref() != "local"
+                || sample.dimensions.repo_id.as_ref() != "repo-map-ipc"
+                || sample.dimensions.generation_id != 9
+            {
+                return Err(format!("unexpected obs dimensions: {:?}", sample.dimensions).into());
+            }
+            if sample.name.contains("needle")
+                || sample.name.contains("alpha")
+                || sample.name.contains("scope")
+                || sample.name.contains("fix")
+            {
+                return Err(format!("metric name leaked query content: {}", sample.name).into());
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         let obs_sink = Arc::new(BoundedQueryObsStore::default());
@@ -4051,7 +4106,7 @@ mod tests {
                     generation_selector: None,
                     top_k: 1,
                 },
-                semantic_query_text: "1.0 0.0".to_string(),
+                semantic_query_text: "scope alpha".to_string(),
                 generation: Some(ready_pin()),
                 generation_selector: None,
                 top_k: 1,
@@ -4158,7 +4213,7 @@ mod tests {
             Arc::new(FailClosedStructuralProducer),
             Arc::new(RwLock::new(Ledger::default())),
             test_activation_catalog()?,
-            Arc::new(DecimalQueryTextEmbedder),
+            default_query_embedder(),
             obs_sink.clone(),
         );
 
@@ -4261,12 +4316,259 @@ mod tests {
     }
 
     #[test]
+    fn history_dispatch_success_emits_closed_obs_metrics() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let commit_payload = encode_cbor(&history_commit_record())?;
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger_with_history_ops(vec![LexicalChannelOp::UpsertCommit(UpsertCommit {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("rev-map-ipc"),
+                generation: ManifestGeneration::new(9),
+                payload: commit_payload,
+            })])?,
+            test_activation_catalog()?,
+            default_query_embedder(),
+            obs_sink.clone(),
+        );
+
+        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        match response {
+            SearchPlaneQueryIpcResponse::History(history) => {
+                if history.generation != ready_pin()
+                    || history.commits.len() != 1
+                    || !history.diffs.is_empty()
+                {
+                    return Err(format!("unexpected history response: {history:?}").into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected History response, got {other:?}").into());
+            }
+        }
+
+        assert_closed_obs_metrics(
+            &obs_sink,
+            &[
+                "lq_query_intake_total",
+                "lq_planner_total",
+                "lq_engine_fanout_count",
+                "lq_merge_result_count",
+            ],
+        )
+    }
+
+    #[test]
+    fn history_dispatch_unavailable_emits_closed_obs_metric() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+            default_query_embedder(),
+            obs_sink.clone(),
+        );
+
+        let response = dispatcher.dispatch(history_query_request("type:commit fix"));
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_PRODUCER_UNAVAILABLE {
+            return Err(format!("expected {ERR_HISTORY_PRODUCER_UNAVAILABLE}, got {code}").into());
+        }
+
+        assert_closed_obs_metrics(
+            &obs_sink,
+            &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        )
+    }
+
+    #[test]
+    fn structural_dispatch_success_emits_closed_obs_metrics() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(RecordingStructuralProducer::ready_with(vec![
+                structural_match_candidate("chunk-tree"),
+            ])),
+            ready_ledger(),
+            test_activation_catalog()?,
+            default_query_embedder(),
+            obs_sink.clone(),
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { :[x] }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 4,
+                },
+            },
+        ));
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                if results.generation != ready_pin() || results.results.len() != 1 {
+                    return Err(format!("unexpected structural response: {results:?}").into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
+        }
+
+        assert_closed_obs_metrics(
+            &obs_sink,
+            &[
+                "lq_query_intake_total",
+                "lq_planner_total",
+                "lq_engine_fanout_count",
+                "lq_merge_result_count",
+            ],
+        )
+    }
+
+    #[test]
+    fn bridge_dispatch_structural_success_emits_closed_obs_metrics() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(PatternRoutingStructuralProducer::new()),
+            ready_ledger(),
+            test_activation_catalog()?,
+            default_query_embedder(),
+            obs_sink.clone(),
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: r#"patterntype:structural "alpha""#.to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+        match response {
+            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                if bridge.generation != ready_pin()
+                    || bridge.packet.scope != quanta_index_contract::BridgeScope::Structural
+                    || bridge.packet.candidates.len() != 2
+                {
+                    return Err(format!("unexpected structural bridge response: {bridge:?}").into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Bridge response, got {other:?}").into());
+            }
+        }
+
+        assert_closed_obs_metrics(
+            &obs_sink,
+            &[
+                "lq_query_intake_total",
+                "lq_planner_total",
+                "lq_engine_fanout_count",
+                "lq_merge_result_count",
+            ],
+        )
+    }
+
+    #[test]
+    fn bridge_dispatch_translate_fail_emits_parse_obs_metric() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+            default_query_embedder(),
+            obs_sink.clone(),
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: r#"patterntype:regexp "needle""#.to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != BridgeErrorCode::BridgeTranslateFail.as_code_str() {
+            return Err(format!(
+                "expected {}, got {code}",
+                BridgeErrorCode::BridgeTranslateFail.as_code_str()
+            )
+            .into());
+        }
+
+        assert_closed_obs_metrics(
+            &obs_sink,
+            &["lq_query_intake_total", "lq_typed_error_parse_total"],
+        )
+    }
+
+    #[test]
     fn classify_error_metric_name_uses_closed_taxonomy() {
         let cases = [
             (
                 CoreError::Typed {
                     code: "PARSE_FAIL".to_string(),
                     message: "parse".to_string(),
+                },
+                "lq_typed_error_parse_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "BRIDGE_TRANSLATE_FAIL".to_string(),
+                    message: "bridge".to_string(),
                 },
                 "lq_typed_error_parse_total",
             ),

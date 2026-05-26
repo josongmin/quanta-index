@@ -29,17 +29,15 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
-    ChunkRecord, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, GenerationPin, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, LexicalIngestBatch, LexicalReplaceScope,
-    LexicalTombstoneScope, LqVisibility, ManifestGeneration, OwnerDocKind, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
-    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    ChunkRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest, HybridQueryRequest,
+    LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope, LqVisibility,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-    SemanticQueryRequest, SemanticReplaceScope, StructuralIngestBatch, StructuralQueryRequest,
-    StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest,
-    TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
+    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -304,8 +302,7 @@ fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg =
-        SearchdConfig::from_state_root(state_root.to_path_buf()).with_decimal_query_text_embedder();
+    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
     // The unit socket path under tmpdir state root can exceed the 104-byte
     // AF_UNIX limit on macOS for long temp paths; use a flat path in
     // /tmp instead.
@@ -340,21 +337,6 @@ where
         thread::sleep(Duration::from_millis(10));
     }
     false
-}
-
-fn float_vec_to_bytes(vec: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let owned: Vec<f32> = vec.to_vec();
-    let mut out: Vec<u8> = Vec::new();
-    ciborium::into_writer(&owned, &mut out)
-        .map_err(|err| -> Box<dyn Error> { format!("ciborium encode embedding: {err}").into() })?;
-    Ok(out)
-}
-
-fn float_vec_to_query_text(vec: &[f32]) -> String {
-    vec.iter()
-        .map(|v| format!("{v}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
@@ -401,45 +383,6 @@ fn scope_key(path: &str) -> SearchScopeKey {
     }
 }
 
-fn semantic_model_contract(dimension: usize) -> Result<EmbeddingModelContract, Box<dyn Error>> {
-    let dimension = u32::try_from(dimension).map_err(|err| -> Box<dyn Error> {
-        format!("semantic dimension overflow: {err}").into()
-    })?;
-    if dimension == 0 {
-        return Err("semantic dimension must be non-zero".into());
-    }
-    Ok(EmbeddingModelContract {
-        model_id: "end-to-end-model".to_string().into_boxed_str(),
-        model_version: None,
-        dimension,
-        normalization: EmbeddingNormalization::None,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: "policy:end-to-end".to_string().into_boxed_str(),
-        view_policy_digest: None,
-    })
-}
-
-fn semantic_embedding(chunk: &ChunkRecord, vector: Vec<f32>) -> EmbeddingRecord {
-    EmbeddingRecord {
-        embedding_id: EmbeddingId::new(chunk.chunk_id.as_str()),
-        owner_kind: OwnerDocKind::Chunk,
-        owner_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        source_doc_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
-        repo_relative_path: chunk.repo_relative_path.clone(),
-        language: chunk.language.clone(),
-        symbol_kind: None,
-        start_byte: chunk.start_byte,
-        end_byte: chunk.end_byte,
-        start_line: chunk.start_line,
-        end_line: chunk.end_line,
-        snippet: chunk.text.clone(),
-        embedding_input_digest: format!("embed-in:{}", chunk.chunk_id.as_str()).into_boxed_str(),
-        vector_digest: format!("embed-vec:{vector:?}").into_boxed_str(),
-        view_kind: "raw_chunk".to_string().into_boxed_str(),
-        vector,
-    }
-}
-
 fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
     let response = send_ingest_request(
         socket,
@@ -450,7 +393,6 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     )?;
     match response.payload {
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
@@ -545,68 +487,6 @@ fn seal_lexical(socket: &Path) -> TestResult {
             ),
             mode: BatchIngestMode::Delta,
             bundle_payload: None,
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            seal: true,
-        }),
-    )
-}
-
-fn publish_semantic_embeddings(socket: &Path, embeddings: Vec<EmbeddingRecord>) -> TestResult {
-    let dimension = embeddings
-        .first()
-        .map_or(1, |embedding| embedding.vector.len());
-    let mut embeddings_by_path: BTreeMap<String, Vec<EmbeddingRecord>> = BTreeMap::new();
-    for embedding in embeddings {
-        embeddings_by_path
-            .entry(embedding.repo_relative_path.as_str().to_string())
-            .or_default()
-            .push(embedding);
-    }
-    let replace_scopes = embeddings_by_path
-        .into_iter()
-        .map(|(path, embeddings)| SemanticReplaceScope {
-            scope: scope_key(&path),
-            scope_digest: format!("e2e-sem-scope:{path}"),
-            embeddings,
-        })
-        .collect();
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("e2e-sem-manifest-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-sem-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
-            mode: BatchIngestMode::Delta,
-            model_contract: semantic_model_contract(dimension)?,
-            replace_scopes,
-            tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
-}
-
-fn seal_semantic(socket: &Path, dimension: usize) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("e2e-sem-seal-{}", generation().get()),
-            batch_digest: format!(
-                "e2e-sem-seal-batch-{}",
-                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
-            ),
-            mode: BatchIngestMode::Delta,
-            model_contract: semantic_model_contract(dimension)?,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -1028,29 +908,14 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
 }
 
 #[test]
-fn hybrid_query_requires_joint_seal() -> TestResult {
+fn hybrid_query_requires_joint_materialization() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
-    publish_lexical_chunks(
-        &ingest_socket,
-        vec![chunk_record("c1", "only lex sealed")?],
-        None,
-    )?;
-    seal_lexical(&ingest_socket)?;
-    // Wait until lex seal is consumed.
-    if !wait_until(READINESS_TIMEOUT, || {
-        let probe = lex_query("only");
-        send_query_request(&socket, &probe)
-            .map(|r| !matches!(r.payload, SearchPlaneQueryIpcResponse::Error(_)))
-            .unwrap_or(false)
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("lex seal not consumed".into());
-    }
+    drop(ingest_socket);
 
-    // Hybrid query should fail NOT_READY because semantic side is unsealed.
+    // Hybrid query should fail NOT_READY because neither lexical nor semantic
+    // generation has materialized yet.
     let hybrid_req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -1061,7 +926,7 @@ fn hybrid_query_requires_joint_seal() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: "1.0 0.0".to_string(),
+            semantic_query_text: "only".to_string(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             top_k: 5,
@@ -1090,23 +955,13 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
 
-    let lex_vec_a = [1.0_f32, 0.0_f32];
-    let lex_vec_b = [0.0_f32, 1.0_f32];
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
-    let alpha = chunk_record("alpha", "sphinx of quartz")?;
+    let alpha = chunk_record("alpha", "sphinx quartz")?;
     let beta = chunk_record("beta", "sphinx riddles")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha.clone(), beta.clone()], None)?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, lex_vec_a.to_vec()),
-            semantic_embedding(&beta, lex_vec_b.to_vec()),
-        ],
-    )?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
     let pin = GenerationPin::new(repo(), revision(), generation());
-    // Wait for joint seal: hybrid must stop returning Error.
+    // Wait for joint lexical/semantic materialization from lexical ingest.
     if !wait_until(READINESS_TIMEOUT, || {
         let req = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 0,
@@ -1118,7 +973,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
-                semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+                semantic_query_text: "quartz".to_string(),
                 generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 5,
@@ -1130,12 +985,10 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("joint seal never reached".into());
+        return Err("joint materialization never reached".into());
     }
 
-    // Final hybrid: must return both candidates fused with alpha ranked first
-    // (alpha matches both lexical substring AND nearest semantic vector to
-    // [1,0]).
+    // Final hybrid: must return both candidates fused with alpha ranked first.
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 99,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -1146,7 +999,7 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "quartz".to_string(),
             generation: Some(pin),
             generation_selector: None,
             top_k: 5,
@@ -1214,7 +1067,7 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
-                semantic_query_text: "1.0 0.0".to_string(),
+                semantic_query_text: "needle".to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 1,
@@ -1329,7 +1182,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
     let alpha = chunk_record("alpha", "needle")?;
     publish_lexical_chunks(
         &ingest_socket,
-        vec![alpha.clone()],
+        vec![alpha],
         Some(repo_metadata_payload(
             false,
             false,
@@ -1337,12 +1190,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
             &["global"],
         )?),
     )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32])],
-    )?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -1356,7 +1204,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "needle".to_string(),
             generation: Some(pin),
             generation_selector: None,
             top_k: 1,
@@ -1404,7 +1252,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
 }
 
 #[test]
-fn semantic_only_query_requires_semantic_seal() -> TestResult {
+fn semantic_only_query_requires_semantic_materialization() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let config = build_config(state_root);
@@ -1425,7 +1273,7 @@ fn semantic_only_query_requires_semantic_seal() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "1.0".to_string(),
+            query_text: "semantic".to_string(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -1463,20 +1311,14 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
         start_runtime(state_root, "searchd-semantic-no-scope-success-test")?;
     let alpha = chunk_record("alpha", "semantic alpha")?;
     let beta = chunk_record("beta", "semantic beta")?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![0.0_f32, 1.0_f32]),
-        ],
-    )?;
-    seal_semantic(&ingest_socket, 2)?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
+    seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: "alpha".to_string(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: None,
@@ -1624,7 +1466,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
         &SearchPlaneQueryIpcRequestEnvelope {
             request_id: 43,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+                query_text: "scope".to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 lexical_scope: Some(TextQueryRequest {
@@ -1679,17 +1521,14 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-lowering-error-test")?;
     let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32])],
-    )?;
-    seal_semantic(&ingest_socket, 2)?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha], None)?;
+    seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: "semantic".to_string(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
@@ -1749,26 +1588,13 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let alpha = chunk_record("alpha", "scope needle")?;
     let beta = chunk_record("beta", "scope miss")?;
     let gamma = chunk_record("gamma", "outside needle")?;
-    publish_lexical_chunks(
-        &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone()],
-        None,
-    )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![0.0_f32, 1.0_f32]),
-            semantic_embedding(&gamma, vec![1.0_f32, 0.0_f32]),
-        ],
-    )?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: "needle".to_string(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
@@ -1821,29 +1647,16 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     let pin = GenerationPin::new(repo(), revision(), generation());
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-scope-starvation-test")?;
-    let alpha = chunk_record("alpha", "outside")?;
-    let beta = chunk_record("beta", "scope beta")?;
+    let alpha = chunk_record("alpha", "focus alpha")?;
+    let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_lexical_chunks(
-        &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone()],
-        None,
-    )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![0.9_f32, 0.1_f32]),
-            semantic_embedding(&gamma, vec![0.0_f32, 1.0_f32]),
-        ],
-    )?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            query_text: "focus alpha".to_string(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
@@ -1890,17 +1703,22 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
 }
 
 #[test]
-fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
+fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-sem-invalid-vector-test")?;
-    seal_semantic(&ingest_socket, 1)?;
+        start_runtime(state_root, "searchd-sem-empty-query-test")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![chunk_record("alpha", "semantic alpha")?],
+        None,
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 43,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "NaN".to_string(),
+            query_text: "!!!".to_string(),
             generation: Some(GenerationPin::new(repo(), revision(), generation())),
             generation_selector: None,
             lexical_scope: None,
@@ -1918,7 +1736,7 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("semantic invalid-vector query never progressed past NOT_READY".into());
+        return Err("semantic empty-query request never progressed past NOT_READY".into());
     }
 
     let response = send_query_request(&socket, &req)?;
@@ -1930,10 +1748,10 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "SEM_INVALID_VECTOR" {
+    if err.code != "EMPTY_QUERY" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected SEM_INVALID_VECTOR, got {}", err.code).into());
+        return Err(format!("expected EMPTY_QUERY, got {}", err.code).into());
     }
 
     stop_runtime(shutdown, join)
@@ -1965,11 +1783,8 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     }
 
     let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32])],
-    )?;
-    seal_semantic(&ingest_socket, 2)?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha], None)?;
+    seal_lexical(&ingest_socket)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
@@ -2044,7 +1859,7 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
                     generation_selector: None,
                     top_k: 50,
                 },
-                semantic_query_text: "1.0 0.0".to_string(),
+                semantic_query_text: "needle".to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,
                 top_k: 0,
@@ -2079,24 +1894,11 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-outsider-test")?;
-    let alpha = chunk_record("alpha", "outside")?;
-    let beta = chunk_record("beta", "scope beta")?;
+    let alpha = chunk_record("alpha", "focus alpha")?;
+    let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_lexical_chunks(
-        &ingest_socket,
-        vec![alpha.clone(), beta.clone(), gamma.clone()],
-        None,
-    )?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![0.9_f32, 0.1_f32]),
-            semantic_embedding(&gamma, vec![0.0_f32, 1.0_f32]),
-        ],
-    )?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -2109,7 +1911,7 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "focus alpha".to_string(),
             generation: Some(pin),
             generation_selector: None,
             top_k: 2,
@@ -2161,16 +1963,8 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
         start_runtime(state_root, "searchd-hybrid-tie-determinism-test")?;
     let alpha = chunk_record("alpha", "scope tie")?;
     let beta = chunk_record("beta", "scope tie")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha.clone(), beta.clone()], None)?;
-    publish_semantic_embeddings(
-        &ingest_socket,
-        vec![
-            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
-            semantic_embedding(&beta, vec![1.0_f32, 0.0_f32]),
-        ],
-    )?;
+    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
     seal_lexical(&ingest_socket)?;
-    seal_semantic(&ingest_socket, 2)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
@@ -2183,7 +1977,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
+            semantic_query_text: "scope tie".to_string(),
             generation: Some(pin),
             generation_selector: None,
             top_k: 2,
@@ -2557,6 +2351,100 @@ fn structural_sourcegraph_query_returns_match_after_parse_tree_ingest() -> TestR
         return Err(
             format!("unexpected structural Sourcegraph candidate/binding: {candidate:?}").into(),
         );
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn structural_sourcegraph_regex_query_returns_match_after_parse_tree_ingest() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) = start_runtime(
+        state_root,
+        "searchd-structural-sourcegraph-regex-success-test",
+    )?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 46,
+        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text:
+                    r"repo:repo-int path:src/lib.rs lang:rust patterntype:structural /^main$/"
+                        .to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Structural(structural) => {
+                    observed = Some(format!("{structural:?}"));
+                    structural.generation == pin && structural.results.len() == 1
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_ready {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "structural Sourcegraph regex query never became ready; observed {observed:?}"
+        )
+        .into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let structural = match response.payload {
+        SearchPlaneQueryIpcResponse::Structural(structural) => structural,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Structural, got {other:?}").into());
+        }
+    };
+    let candidate = structural
+        .results
+        .first()
+        .ok_or_else(|| "missing structural Sourcegraph regex candidate".to_string())?;
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural Sourcegraph regex binding".to_string())?;
+    if candidate.candidate_id != "chunk-tree"
+        || !binding.metavariable.starts_with("__sg_regex_")
+        || binding.start_byte != 3
+        || binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected structural Sourcegraph regex candidate/binding: {candidate:?}"
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)
@@ -3235,6 +3123,114 @@ fn bridge_query_sourcegraph_structural_returns_structural_packet_with_metadata()
         drop(join.join());
         return Err(format!(
             "unexpected Sourcegraph structural bridge candidate/binding: {candidate:?}"
+        )
+        .into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn bridge_query_sourcegraph_structural_regex_returns_structural_packet() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let (socket, ingest_socket, shutdown, join) = start_runtime(
+        state_root,
+        "searchd-bridge-sourcegraph-structural-regex-test",
+    )?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
+
+    let query_text =
+        r"repo:repo-int path:src/lib.rs lang:rust patterntype:structural /^main$/".to_string();
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 52,
+        payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text,
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+            target: BridgeTarget::CodeQl,
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                    observed = Some(format!("{bridge:?}"));
+                    bridge.generation == pin && bridge.packet.scope == BridgeScope::Structural
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_ready {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "Sourcegraph structural regex bridge never became ready; observed {observed:?}"
+        )
+        .into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let bridge = match response.payload {
+        SearchPlaneQueryIpcResponse::Bridge(bridge) => bridge,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Bridge, got {other:?}").into());
+        }
+    };
+    let candidate = match bridge.packet.candidates.first() {
+        Some(BridgeCandidate::Structural(candidate)) => candidate,
+        Some(BridgeCandidate::Lexical(candidate)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "expected structural regex bridge candidate, got lexical `{}`",
+                candidate.candidate_id
+            )
+            .into());
+        }
+        None => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err("missing Sourcegraph structural regex bridge candidate".into());
+        }
+    };
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural regex bridge binding".to_string())?;
+    if candidate.candidate_id != "chunk-tree"
+        || !binding.metavariable.starts_with("__sg_regex_")
+        || binding.start_byte != 3
+        || binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected Sourcegraph structural regex bridge candidate/binding: {candidate:?}"
         )
         .into());
     }

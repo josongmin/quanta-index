@@ -13,6 +13,23 @@ chaos proof against the current source.
 - add bounded metrics proof for structural / bridge / history / runtime paths
 - close the remaining perf / chaos rows that still lack current owner proof
 
+## Current Source Truth
+
+Closed in current source:
+
+- `classify_error_metric_name` covers parse / invalid / not-ready / unavailable /
+  plan-limit / internal / other under the bounded name taxonomy
+- owner-unit proof exists for structural / bridge / history / runtime route
+  metrics
+- runtime E2E proof exists for hybrid, structural, bridge, history, and runtime
+  metadata routes with closed dimensions and no query-text leakage
+
+Still open:
+
+- cancellation-specific owner + E2E rail
+- broader partial-shard / chaos rows beyond the currently proven structural and
+  history unavailable cases
+
 ## Guardrails
 
 - keep the existing `MetricSample + Dimensions` contract

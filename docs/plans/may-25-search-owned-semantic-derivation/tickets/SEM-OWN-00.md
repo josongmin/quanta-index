@@ -1,6 +1,6 @@
 # SEM-OWN-00 — Semantic Ownership Inversion and Boundary Freeze
 
-Status: `proposed`
+Status: `partial-execution-live`
 Parent: [../README.md](../README.md)
 Depends on: none
 
@@ -15,6 +15,18 @@ Freeze one canonical ownership model before code changes start:
 
 Without this freeze, contract and runtime work will drift in opposite
 directions.
+
+## 1.1 Current tree truth
+
+Already live on the current tree:
+
+- public semantic/hybrid query requests are text-only
+- `searchctl` rejects the old vector/handle flags
+- SDK public semantic publish is removed
+
+Remaining work under this ticket is the boundary freeze itself: all active docs
+and contract notes must keep semantic publishing out of the public producer
+surface and must not reopen producer-authored semantic happy paths.
 
 ## 2. Required decisions
 

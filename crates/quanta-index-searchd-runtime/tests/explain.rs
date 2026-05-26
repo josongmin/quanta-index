@@ -194,7 +194,6 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     )?;
     match response.payload {
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)

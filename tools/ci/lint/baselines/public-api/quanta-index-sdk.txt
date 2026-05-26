@@ -440,41 +440,8 @@ impl<'a> core::marker::Unpin for quanta_index_sdk::SearchNamespace<'a>
 impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::SearchNamespace<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SearchNamespace<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SearchNamespace<'a>
-pub struct quanta_index_sdk::SemanticBatch
-pub quanta_index_sdk::SemanticBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
-pub quanta_index_sdk::SemanticBatch::batch_digest: alloc::string::String
-pub quanta_index_sdk::SemanticBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_sdk::SemanticBatch::manifest_digest: alloc::string::String
-pub quanta_index_sdk::SemanticBatch::mode: quanta_index_sdk::BatchMode
-pub quanta_index_sdk::SemanticBatch::model_contract: quanta_index_contract::ipc::ingest::EmbeddingModelContract
-pub quanta_index_sdk::SemanticBatch::replace_scopes: alloc::vec::Vec<quanta_index_contract::ipc::ingest::SemanticReplaceScope>
-pub quanta_index_sdk::SemanticBatch::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_sdk::SemanticBatch::revision_id: quanta_index_contract_base::ids::RevisionId
-pub quanta_index_sdk::SemanticBatch::seal: bool
-pub quanta_index_sdk::SemanticBatch::tombstone_scopes: alloc::vec::Vec<quanta_index_contract::ipc::ingest::SemanticTombstoneScope>
-impl quanta_index_sdk::SemanticBatch
-pub fn quanta_index_sdk::SemanticBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>, model_contract: quanta_index_contract::ipc::ingest::EmbeddingModelContract) -> Self
-pub fn quanta_index_sdk::SemanticBatch::replace_generation(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>, model_contract: quanta_index_contract::ipc::ingest::EmbeddingModelContract) -> Self
-pub fn quanta_index_sdk::SemanticBatch::replace_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, embeddings: alloc::vec::Vec<quanta_index_contract::channel::records::EmbeddingRecord>) -> Self
-pub fn quanta_index_sdk::SemanticBatch::tombstone_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey) -> Self
-pub fn quanta_index_sdk::SemanticBatch::without_seal(self) -> Self
-impl core::clone::Clone for quanta_index_sdk::SemanticBatch
-pub fn quanta_index_sdk::SemanticBatch::clone(&self) -> quanta_index_sdk::SemanticBatch
-impl core::cmp::PartialEq for quanta_index_sdk::SemanticBatch
-pub fn quanta_index_sdk::SemanticBatch::eq(&self, other: &quanta_index_sdk::SemanticBatch) -> bool
-impl core::fmt::Debug for quanta_index_sdk::SemanticBatch
-pub fn quanta_index_sdk::SemanticBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_sdk::SemanticBatch
-impl core::marker::Freeze for quanta_index_sdk::SemanticBatch
-impl core::marker::Send for quanta_index_sdk::SemanticBatch
-impl core::marker::Sync for quanta_index_sdk::SemanticBatch
-impl core::marker::Unpin for quanta_index_sdk::SemanticBatch
-impl core::marker::UnsafeUnpin for quanta_index_sdk::SemanticBatch
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SemanticBatch
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SemanticBatch
 pub struct quanta_index_sdk::SemanticNamespace<'a>
 impl<'a> quanta_index_sdk::SemanticNamespace<'a>
-pub fn quanta_index_sdk::SemanticNamespace<'a>::publish(&self, batch: &quanta_index_sdk::SemanticBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SemanticNamespace<'a>::query(&self) -> quanta_index_sdk::SemanticQueryBuilder<'a>
 pub fn quanta_index_sdk::SemanticNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::SemanticQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SemanticQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SemanticNamespace<'a>

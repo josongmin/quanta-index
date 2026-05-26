@@ -32,10 +32,10 @@ use quanta_index_lq_structural::{
     compile_authoritative_pattern,
 };
 use quanta_index_search_plane::{
-    ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DecimalQueryTextEmbedder,
-    DirectHistoryMaterializer, DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer,
-    DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
-    HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DirectHistoryMaterializer,
+    DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer, DirectSemanticMaterializer,
+    DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
+    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
     SearchPlaneIngestDispatcher, SemanticAuthorityStore, StructuralIngestPort,
 };
@@ -85,7 +85,6 @@ fn build_query_text_embedder(
         QueryTextEmbedderMode::ProviderUnavailable => {
             Arc::new(ProviderUnavailableQueryTextEmbedder)
         }
-        QueryTextEmbedderMode::DecimalTokens => Arc::new(DecimalQueryTextEmbedder),
     }
 }
 
@@ -475,21 +474,12 @@ impl SearchdRuntime {
                 Arc::clone(&ledger),
             ));
         let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
-            match config.query_text_embedder_mode() {
-                QueryTextEmbedderMode::DeterministicText => {
-                    Arc::new(DirectLexicalMaterializer::new_with_search_owned_semantics(
-                        Arc::clone(&lex_build_port),
-                        Arc::clone(&ledger),
-                        Arc::clone(&direct_sem_ingest_port),
-                        SEARCH_OWNED_SEMANTIC_DIMENSION,
-                    ))
-                }
-                QueryTextEmbedderMode::ProviderUnavailable
-                | QueryTextEmbedderMode::DecimalTokens => Arc::new(DirectLexicalMaterializer::new(
-                    Arc::clone(&lex_build_port),
-                    Arc::clone(&ledger),
-                )),
-            };
+            Arc::new(DirectLexicalMaterializer::new_with_search_owned_semantics(
+                Arc::clone(&lex_build_port),
+                Arc::clone(&ledger),
+                Arc::clone(&direct_sem_ingest_port),
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            ));
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
             DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),
         );
@@ -521,7 +511,6 @@ impl SearchdRuntime {
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_lex_ingest_port,
-            direct_sem_ingest_port,
             direct_history_ingest_port,
             direct_runtime_ingest_port,
             direct_structural_ingest_port,

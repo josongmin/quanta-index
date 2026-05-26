@@ -8,6 +8,9 @@ Current tree truth:
 - `ChannelDispatcher` is not the runtime authority path
 - readiness and live materialization are driven by direct authority apply plus
   persisted authority stores
+- the standalone `quanta-index-channel` crate has been retired from the
+  workspace; remaining channel types live under
+  `quanta_index_contract::channel::*` and historical prose here is archive-only
 - use live source in `crates/quanta-index-searchd/src/app/runtime.rs`,
   `crates/quanta-index-searchd-runtime/src/lib.rs`, and
   `crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`

@@ -38,14 +38,20 @@ Current source-backed state, not stale packet prose:
 
 - native structural execution already ships the truthful subset over
   producer-authored parse-tree authority
-- structural dispatcher still fences the route to one top-level structural leaf
-  plus executable `repo:` / `file:` / `lang:` filters
-- Sourcegraph structural lowering still ships only the quoted / keyword subset
+- structural dispatcher already accepts structural-only boolean trees over
+  `match { ... }` leaves plus executable `repo:` / `file:` / `lang:` filters;
+  mixed lexical / structural boolean remains typed fail-closed
+- Sourcegraph structural lowering now ships quoted bodies, boolean composition,
+  typed-hole surface parity, and regex bodies by rewriting only into native
+  executable structural semantics; broader non-executable filter breadth stays
+  typed fail-closed
 - producer-side history / runtime / structural channel ops already exist in the
   contract and are wired into search-side ingest/readiness paths
 - bounded query observability already exists as a closed-dimension
   `MetricSample + Dimensions` sink; remaining work is route coverage, proof, and
   doc drift closure rather than inventing a new metrics subsystem
+- `select:path` and `select:content.match` already have owner proof; remaining
+  work is matrix re-anchoring rather than executor bring-up
 
 This packet therefore treats the remaining work as:
 
@@ -112,6 +118,8 @@ This packet is materially complete only when all are true:
    rather than fixture-only evidence
 5. structural / bridge / history / runtime query paths emit bounded metrics with
    no raw query text or file path leakage
+6. Sourcegraph structural route and structural bridge packet stay aligned with
+   native semantics, including regex-body lowering without lexical fallback
 
 ## 7. Historical Evidence
 

@@ -30,16 +30,17 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, EngineTouched,
-    GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope,
-    LexicalTombstoneScope, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
+    BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
+    ChunkRecord, EngineTouched, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
     SearchExplanation, SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticIngestBatch,
-    SemanticQueryRequest, SemanticReplaceScope, StructuralIngestBatch, StructuralQueryRequest,
-    StructuralReplaceScope, StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
+    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
+    SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_search_plane::ActivationCatalog;
@@ -126,6 +127,26 @@ pub(super) struct E2eQueryResult {
     pub(super) candidate_ids: Vec<String>,
     pub(super) engines_touched: Vec<EngineTouched>,
     pub(super) explanation: Option<SearchExplanation>,
+    pub(super) typed_error: Option<E2eTypedError>,
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "sibling test modules import this private-module harness surface"
+)]
+pub(super) struct E2eHistoryResult {
+    pub(super) commit_ids: Vec<String>,
+    pub(super) diff_paths: Vec<String>,
+    pub(super) typed_error: Option<E2eTypedError>,
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "sibling test modules import this private-module harness surface"
+)]
+pub(super) struct E2eBridgeResult {
+    pub(super) candidate_ids: Vec<String>,
+    pub(super) scope: Option<BridgeScope>,
     pub(super) typed_error: Option<E2eTypedError>,
 }
 
@@ -324,66 +345,6 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn ingest_semantic_embedding_for_path(
-        &mut self,
-        path: &str,
-        vector: &[f32],
-    ) -> AnyResult<()> {
-        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
-            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for semantic path `{path}`")
-        })?;
-        let chunk = self
-            .chunk_records_by_path
-            .get(path)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "e2e-harness: no lexical chunk payload recorded for semantic path `{path}`"
-                )
-            })?;
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
-            SemanticIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation: None,
-                manifest_digest: format!("sem:{path}:{}", self.current_generation().get()),
-                batch_digest: format!(
-                    "sem-batch:{path}:{}",
-                    self.request_id_counter.load(Ordering::Relaxed)
-                ),
-                mode: BatchIngestMode::Delta,
-                model_contract: semantic_model_contract(vector.len())?,
-                replace_scopes: vec![SemanticReplaceScope {
-                    scope: scope_key(path),
-                    scope_digest: format!("sem-scope:{path}"),
-                    embeddings: vec![EmbeddingRecord {
-                        embedding_id: EmbeddingId::new(chunk_id.as_str()),
-                        owner_kind: OwnerDocKind::Chunk,
-                        owner_id: chunk_id.as_str().to_string().into_boxed_str(),
-                        source_doc_id: chunk_id.as_str().to_string().into_boxed_str(),
-                        repo_relative_path: RepoRelativePath::new(path),
-                        language: chunk.language,
-                        symbol_kind: None,
-                        start_byte: chunk.start_byte,
-                        end_byte: chunk.end_byte,
-                        start_line: chunk.start_line,
-                        end_line: chunk.end_line,
-                        snippet: chunk.text,
-                        embedding_input_digest: format!("embed-in:{path}:{vector:?}")
-                            .into_boxed_str(),
-                        vector_digest: format!("embed-vec:{path}:{vector:?}").into_boxed_str(),
-                        view_kind: "raw_chunk".to_string().into_boxed_str(),
-                        vector: vector.to_vec(),
-                    }],
-                }],
-                tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
-        Ok(())
-    }
-
     pub(super) fn ingest_structural_function_tree(
         &mut self,
         path: &str,
@@ -462,6 +423,125 @@ impl E2eRuntime {
                 }],
                 tombstone_scopes: Vec::new(),
                 seal: false,
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub(super) fn ingest_history_fixture(&mut self, file_path: &str) -> AnyResult<()> {
+        use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
+        use quanta_index_contract::{
+            DiffHunkSide, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefMutation,
+            HistoryRefUpsert,
+        };
+
+        let commit_sha = CommitSha::from_bytes([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        ]);
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
+            HistoryIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                manifest_digest: Some(format!(
+                    "history:{}:{}",
+                    file_path,
+                    self.current_generation().get()
+                )),
+                batch_digest: format!(
+                    "history-batch:{file_path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                commits: vec![CommitRecord {
+                    wire_version: 1,
+                    sha: commit_sha,
+                    parents: Vec::new(),
+                    author_time_ms: 11,
+                    committer_time_ms: 12,
+                    applied_at_ms: 13,
+                    author: "alice".to_string().into_boxed_str(),
+                    committer: "alice".to_string().into_boxed_str(),
+                    message: "fix: sample history".to_string().into_boxed_str(),
+                    is_merge: false,
+                    tags: vec!["v1.0.0".to_string().into_boxed_str()],
+                }],
+                refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                    name: "refs/heads/main".to_string().into_boxed_str(),
+                    sha: commit_sha,
+                })],
+                tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                    name: "v1.0.0".to_string().into_boxed_str(),
+                    sha: commit_sha,
+                })],
+                diff_hunks: vec![HistoryDiffHunkUpsert {
+                    commit_sha,
+                    file_path: file_path.to_string().into_boxed_str(),
+                    record: DiffHunkRecord {
+                        wire_version: 1,
+                        hunk_header: "@@ -1 +1 @@".to_string().into_boxed_str(),
+                        side: DiffHunkSide::After,
+                        added_text: "history added line".to_string().into_boxed_str(),
+                        removed_text: String::new().into_boxed_str(),
+                        touched_text: "history touched line".to_string().into_boxed_str(),
+                        byte_start: 0,
+                        byte_end: 20,
+                    },
+                }],
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub(super) fn ingest_dirty_for_path(
+        &mut self,
+        path: &str,
+        applied_at_ms: u64,
+    ) -> AnyResult<()> {
+        use quanta_index_contract::lex::DirtyRecord;
+        use quanta_index_contract::{DirtyIngestBatch, DirtyMutation};
+
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for dirty path `{path}`")
+        })?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
+            DirtyIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                overlay_epoch_ms: applied_at_ms,
+                batch_digest: format!(
+                    "dirty-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                entries: vec![DirtyMutation::Upsert(DirtyRecord {
+                    wire_version: 1,
+                    doc_id: chunk_id,
+                    applied_at_ms,
+                    payload_hash: [0x5a; 32],
+                })],
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub(super) fn evict_dirty_for_path(&mut self, path: &str) -> AnyResult<()> {
+        use quanta_index_contract::{DirtyDelete, DirtyIngestBatch, DirtyMutation};
+
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for dirty path `{path}`")
+        })?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
+            DirtyIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                overlay_epoch_ms: 0,
+                batch_digest: format!(
+                    "dirty-evict:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                entries: vec![DirtyMutation::Delete(DirtyDelete { doc_id: chunk_id })],
             },
         ))?;
         Ok(())
@@ -564,6 +644,13 @@ impl E2eRuntime {
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<ManifestGeneration> {
         let sealed = self.current_generation();
+        if tracks.contains(&SearchPlaneTrackKind::Semantic)
+            && !tracks.contains(&SearchPlaneTrackKind::Lexical)
+        {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: semantic-only seal helper was removed; derive semantic authority from lexical ingest first"
+            ));
+        }
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {
             self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
                 LexicalIngestBatch {
@@ -575,23 +662,6 @@ impl E2eRuntime {
                     batch_digest: format!("lex-seal-batch:{}", sealed.get()),
                     mode: BatchIngestMode::Delta,
                     bundle_payload: None,
-                    replace_scopes: Vec::new(),
-                    tombstone_scopes: Vec::new(),
-                    seal: true,
-                },
-            ))?;
-        }
-        if tracks.contains(&SearchPlaneTrackKind::Semantic) {
-            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
-                SemanticIngestBatch {
-                    repo_id: self.repo(),
-                    revision_id: self.revision(),
-                    generation: sealed,
-                    base_generation: None,
-                    manifest_digest: format!("sem-seal:{}", sealed.get()),
-                    batch_digest: format!("sem-seal-batch:{}", sealed.get()),
-                    mode: BatchIngestMode::Delta,
-                    model_contract: semantic_model_contract(1)?,
                     replace_scopes: Vec::new(),
                     tombstone_scopes: Vec::new(),
                     seal: true,
@@ -625,6 +695,302 @@ impl E2eRuntime {
     ) -> E2eQueryResult {
         let pin = self.last_sealed_pin();
         self.query_structural_with_pin(syntax, query_text, top_k, pin)
+    }
+
+    pub(super) fn query_history(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+    ) -> E2eHistoryResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    generation: self.last_sealed_pin(),
+                    generation_selector: None,
+                    top_k,
+                },
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eHistoryResult {
+                    commit_ids: Vec::new(),
+                    diff_paths: Vec::new(),
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => {
+                let query_result = self.semantic_transport_error(readiness_reached, err);
+                return E2eHistoryResult {
+                    commit_ids: Vec::new(),
+                    diff_paths: Vec::new(),
+                    typed_error: query_result.typed_error,
+                };
+            }
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::History(history) => E2eHistoryResult {
+                commit_ids: history
+                    .commits
+                    .into_iter()
+                    .map(|candidate| candidate.sha.to_string())
+                    .collect(),
+                diff_paths: history
+                    .diffs
+                    .into_iter()
+                    .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+                    .collect(),
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eHistoryResult {
+                commit_ids: Vec::new(),
+                diff_paths: Vec::new(),
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_history_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_history_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_history_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_history_response("Structural"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_history_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
+                unexpected_history_response("RepoMapQuery")
+            }
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_history_response("Explain"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_history_response("RuntimeMetadata")
+            }
+        }
+    }
+
+    pub(super) fn query_runtime_metadata(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+    ) -> E2eQueryResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    generation: self.last_sealed_pin(),
+                    generation_selector: None,
+                    top_k,
+                },
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eQueryResult {
+                    candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
+                    engines_touched: Vec::new(),
+                    explanation: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(runtime) => E2eQueryResult {
+                candidate_ids: runtime
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.clone())
+                    .collect(),
+                candidates: runtime.results,
+                engines_touched: Vec::new(),
+                explanation: None,
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: Vec::new(),
+                engines_touched: Vec::new(),
+                explanation: None,
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+        }
+    }
+
+    pub(super) fn query_bridge(
+        &mut self,
+        syntax: TextQuerySyntax,
+        query_text: &str,
+        top_k: u32,
+        target: BridgeTarget,
+    ) -> E2eBridgeResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: query_text.to_string(),
+                    generation: self.last_sealed_pin(),
+                    generation_selector: None,
+                    top_k,
+                },
+                target,
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eBridgeResult {
+                    candidate_ids: Vec::new(),
+                    scope: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => {
+                let query_result = self.semantic_transport_error(readiness_reached, err);
+                return E2eBridgeResult {
+                    candidate_ids: Vec::new(),
+                    scope: None,
+                    typed_error: query_result.typed_error,
+                };
+            }
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Bridge(bridge) => E2eBridgeResult {
+                candidate_ids: bridge
+                    .packet
+                    .candidates
+                    .iter()
+                    .map(|candidate| match candidate {
+                        BridgeCandidate::Lexical(candidate) => candidate.candidate_id.clone(),
+                        BridgeCandidate::Structural(candidate) => candidate.candidate_id.clone(),
+                    })
+                    .collect(),
+                scope: Some(bridge.packet.scope),
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eBridgeResult {
+                candidate_ids: Vec::new(),
+                scope: None,
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_bridge_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_bridge_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_bridge_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_bridge_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_bridge_response("History"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_bridge_response("Structural"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
+                unexpected_bridge_response("RepoMapQuery")
+            }
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_bridge_response("Explain"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_bridge_response("RuntimeMetadata")
+            }
+        }
     }
 
     /// Variant that lets a self-test exercise the "no generation pin"
@@ -1185,7 +1551,6 @@ impl E2eRuntime {
         let response: SearchPlaneIngestIpcResponseEnvelope = send_request(&socket, &envelope)?;
         match response.payload {
             SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
@@ -1205,6 +1570,28 @@ fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),
             message: format!("expected Explain, got {kind}"),
+        }),
+    }
+}
+
+fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
+    E2eHistoryResult {
+        commit_ids: Vec::new(),
+        diff_paths: Vec::new(),
+        typed_error: Some(E2eTypedError {
+            code: "UNEXPECTED_RESPONSE".to_string(),
+            message: format!("expected History, got {kind}"),
+        }),
+    }
+}
+
+fn unexpected_bridge_response(kind: &str) -> E2eBridgeResult {
+    E2eBridgeResult {
+        candidate_ids: Vec::new(),
+        scope: None,
+        typed_error: Some(E2eTypedError {
+            code: "UNEXPECTED_RESPONSE".to_string(),
+            message: format!("expected Bridge, got {kind}"),
         }),
     }
 }
@@ -1304,40 +1691,4 @@ fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {
         doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
         repo_relative_path: RepoRelativePath::new(path),
     }
-}
-
-fn semantic_model_contract(
-    dimension: usize,
-) -> AnyResult<quanta_index_contract::EmbeddingModelContract> {
-    let dimension = u32::try_from(dimension)
-        .map_err(|err| anyhow::anyhow!("semantic model contract dimension overflow: {err}"))?;
-    if dimension == 0 {
-        return Err(anyhow::anyhow!(
-            "semantic model contract dimension must be non-zero"
-        ));
-    }
-    Ok(quanta_index_contract::EmbeddingModelContract {
-        model_id: "e2e-harness-model".to_string().into_boxed_str(),
-        model_version: None,
-        dimension,
-        normalization: quanta_index_contract::EmbeddingNormalization::None,
-        distance_metric: quanta_index_contract::EmbeddingDistanceMetric::Cosine,
-        policy_digest: "policy:e2e-harness".to_string().into_boxed_str(),
-        view_policy_digest: None,
-    })
-}
-
-fn float_vec_to_bytes(vec: &[f32]) -> AnyResult<Vec<u8>> {
-    let owned: Vec<f32> = vec.to_vec();
-    let mut out = Vec::new();
-    ciborium::into_writer(&owned, &mut out)
-        .map_err(|err| anyhow::anyhow!("ciborium encode embedding: {err}"))?;
-    Ok(out)
-}
-
-fn float_vec_to_query_text(vec: &[f32]) -> String {
-    vec.iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
 }

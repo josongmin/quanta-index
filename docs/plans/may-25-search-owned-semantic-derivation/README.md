@@ -20,6 +20,13 @@ target design for the later `SEM-OWN` wave.
 - `searchctl` rejects the old vector/handle flags; the CLI surface is text-only
 - SDK public semantic publish is removed; `sdk_frontdoor` proof now exercises
   lexical ingest plus search-owned semantic derivation
+- query-time semantic text embedding is search-owned only; the old
+  numeric-token-as-vector compatibility mode is removed from the runtime
+- the runtime hot path is de-channelized; search-owned semantic derivation is
+  fed by accepted lexical batches and persisted authority, not by a live
+  subscriber replay loop
+- low-level raw semantic ingress is removed from the public IPC surface;
+  semantic batches remain an internal materialization/replay datatype
 
 ## 2. Target decision if `SEM-OWN` starts
 
@@ -67,8 +74,10 @@ Target public query surface becomes text-only for semantic paths.
 - `semantic(query_text, top_k, generation, lexical_scope?)`
 - `hybrid(lexical_query, semantic_query_text, top_k, generation)`
 
-Current tree truth: public vector/handle query surfaces are still present. The
-text-only contract below is deferred until `SEM-OWN`.
+Current tree truth: public semantic/hybrid query surfaces are already
+text-only on the current tree. The remaining `SEM-OWN` work is internal
+semantic derivation ownership, manifest/readiness proof, and final cleanup of
+producer-authored semantic ingress assumptions.
 
 ## 4. Canonical data model
 
@@ -159,11 +168,11 @@ Required internal surfaces:
 
 Canonical worker flow:
 
-1. subscribe to lexical channel
+1. observe accepted lexical ingest from the direct authority path
 2. consume `UpsertChunk` / `DeleteChunk` / `Seal`
 3. render chunk text into embedding input
 4. call external embedding API
-5. publish internal `UpsertEmbedding` / `DeleteEmbedding`
+5. apply internal `UpsertEmbedding` / `DeleteEmbedding`
 6. write semantic manifest + semantic seal after all chunk jobs complete
 
 ## 6. Invariants
@@ -248,8 +257,11 @@ Wave order:
 Entry condition before this pack starts:
 
 - current public-surface closure packet is closed
-- current vector/handle semantic contract is documented as present truth
-- no current-tree README claims semantic ownership is already shipped
+- current tree truth is frozen as: text-only public semantic/hybrid query
+  surface, no SDK public semantic publish, and remaining semantic ownership
+  work is internal-only
+- no current-tree README claims the full semantic worker / manifest / seal
+  packet is already shipped
 
 ## 10. Non-goals
 
