@@ -28,7 +28,13 @@ impl LexicalPolicy {
                 message:
                     "lexical: structural execution is fail-closed until producer parse-tree ops land"
                         .to_string(),
-            });
+                });
+        }
+        if query.options.timeout_ms.is_some() && !query_contains_timeout_executable_surface(query) {
+            return Err(CoreError::InvalidContract(
+                "lexical: timeout option is executable only for regex-backed lexical queries"
+                    .to_string(),
+            ));
         }
         validate_supported_filter_surface(query)?;
         Ok(())
@@ -86,6 +92,46 @@ fn filters_contain_structural(filters: &[LqFilter]) -> bool {
 
 fn leaf_contains_structural(leaf: &LqLeaf) -> bool {
     matches!(leaf, LqLeaf::StructuralBlock(_))
+}
+
+fn query_contains_timeout_executable_surface(query: &LqQuery) -> bool {
+    expr_contains_timeout_executable_surface(&query.expr, query.options.pattern_type)
+        || query.filters.iter().any(|filter| match filter {
+            LqFilter::Content { leaf } => {
+                leaf_contains_timeout_executable_surface(leaf, query.options.pattern_type)
+            }
+            LqFilter::Repo { .. }
+            | LqFilter::File { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => false,
+        })
+}
+
+fn expr_contains_timeout_executable_surface(expr: &LqExpr, pattern_type: LqPatternType) -> bool {
+    match expr {
+        LqExpr::Empty | LqExpr::SemanticVector { .. } => false,
+        LqExpr::Leaf(leaf) => leaf_contains_timeout_executable_surface(leaf, pattern_type),
+        LqExpr::Not(inner) => expr_contains_timeout_executable_surface(inner, pattern_type),
+        LqExpr::All(children) | LqExpr::Any(children) => children
+            .iter()
+            .any(|child| expr_contains_timeout_executable_surface(child, pattern_type)),
+    }
+}
+
+fn leaf_contains_timeout_executable_surface(leaf: &LqLeaf, pattern_type: LqPatternType) -> bool {
+    matches!(leaf, LqLeaf::Regex(_))
+        || (pattern_type == LqPatternType::Regexp
+            && matches!(leaf, LqLeaf::Keyword(_) | LqLeaf::RawString(_)))
 }
 
 fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
@@ -196,6 +242,29 @@ mod tests {
         q.filters.push(LqFilter::Content {
             leaf: LqLeaf::Keyword("needle".to_string()),
         });
+        assert!(LexicalPolicy::validate_query(&q).is_ok());
+    }
+
+    #[test]
+    fn timeout_without_regex_backing_is_rejected() {
+        let mut q = make_query(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            Vec::new(),
+            LqOptions::defaults(),
+        );
+        q.options.timeout_ms = Some(1);
+        let result = LexicalPolicy::validate_query(&q);
+        assert!(matches!(result, Err(CoreError::InvalidContract(_))));
+    }
+
+    #[test]
+    fn timeout_with_regex_backing_is_accepted() {
+        let mut q = make_query(
+            LqExpr::Leaf(LqLeaf::Regex("needle.*".to_string())),
+            Vec::new(),
+            LqOptions::defaults(),
+        );
+        q.options.timeout_ms = Some(0);
         assert!(LexicalPolicy::validate_query(&q).is_ok());
     }
 

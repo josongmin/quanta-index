@@ -87,8 +87,8 @@ impl ControlTransport for UdsControlTransport {
 /// QI-SDK-01: typed ingest transport.
 ///
 /// The SDK's `publish()` paths route through this trait so the producer never
-/// opens a channel publisher directly. `quanta-index-channel` is
-/// intentionally absent from the SDK's `Cargo.toml` dependency surface.
+/// opens legacy channel publishers directly. `quanta-index-channel` is
+/// intentionally absent from the SDK's dependency surface.
 pub(crate) trait IngestTransport: Send + Sync {
     fn send(
         &self,

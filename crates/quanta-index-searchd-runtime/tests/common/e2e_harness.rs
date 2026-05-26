@@ -493,6 +493,13 @@ impl E2eRuntime {
         Ok(())
     }
 
+    pub(super) fn publish_history_batch(
+        &mut self,
+        batch: quanta_index_contract::HistoryIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch))
+    }
+
     pub(super) fn ingest_dirty_for_path(
         &mut self,
         path: &str,
@@ -542,6 +549,31 @@ impl E2eRuntime {
                     self.request_id_counter.load(Ordering::Relaxed)
                 ),
                 entries: vec![DirtyMutation::Delete(DirtyDelete { doc_id: chunk_id })],
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub(super) fn tombstone_structural_for_path(&mut self, path: &str) -> AnyResult<()> {
+        use quanta_index_contract::StructuralTombstoneScope;
+
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
+            StructuralIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("struct-del:{path}:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "struct-del-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                replace_scopes: Vec::new(),
+                tombstone_scopes: vec![StructuralTombstoneScope {
+                    scope: scope_key(path),
+                }],
+                seal: false,
             },
         ))?;
         Ok(())

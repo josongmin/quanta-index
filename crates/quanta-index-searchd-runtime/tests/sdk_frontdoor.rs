@@ -968,7 +968,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .repo(repo())
             .revision(revision())
             .generation(generation())
-            .manifest_digest("manifest:sdk-frontdoor")
+            .manifest_digest("manifest:lexical")
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
@@ -2163,7 +2163,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             .repo(repo())
             .revision(revision())
             .generation(generation())
-            .manifest_digest("manifest:contract-exact")
+            .manifest_digest("manifest:lexical")
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
@@ -2411,7 +2411,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
             .repo(repo())
             .revision(revision())
             .generation(generation())
-            .manifest_digest("manifest:builder-variants")
+            .manifest_digest("manifest:lexical")
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,

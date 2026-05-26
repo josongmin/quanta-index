@@ -57,8 +57,6 @@ pub use quanta_index_sdk::SearchPlaneTrackKind
 pub use quanta_index_sdk::SearchScopeKey
 pub use quanta_index_sdk::SearchScopeSurface
 pub use quanta_index_sdk::SemanticQueryResponse
-pub use quanta_index_sdk::SemanticReplaceScope
-pub use quanta_index_sdk::SemanticTombstoneScope
 pub use quanta_index_sdk::StructuralReplaceScope
 pub use quanta_index_sdk::StructuralTombstoneScope
 pub use quanta_index_sdk::StructuralTreeRecord

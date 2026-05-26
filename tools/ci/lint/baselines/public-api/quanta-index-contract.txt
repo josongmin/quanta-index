@@ -131,10 +131,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::OwnerDoc
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::OwnerDocKind
 pub enum quanta_index_contract::channel::SemanticChannelOp
 pub quanta_index_contract::channel::SemanticChannelOp::DeleteEmbedding(quanta_index_contract::DeleteEmbedding)
-pub quanta_index_contract::channel::SemanticChannelOp::FullBundle(quanta_index_contract::SemanticFullBundle)
-pub quanta_index_contract::channel::SemanticChannelOp::ReplaceSemanticScope(quanta_index_contract::ReplaceSemanticScope)
-pub quanta_index_contract::channel::SemanticChannelOp::Seal(quanta_index_contract::SemanticSeal)
-pub quanta_index_contract::channel::SemanticChannelOp::TombstoneSemanticScope(quanta_index_contract::TombstoneSemanticScope)
+pub quanta_index_contract::channel::SemanticChannelOp::FullBundle(quanta_index_contract::channel::SemanticFullBundle)
+pub quanta_index_contract::channel::SemanticChannelOp::ReplaceSemanticScope(quanta_index_contract::channel::ReplaceSemanticScope)
+pub quanta_index_contract::channel::SemanticChannelOp::Seal(quanta_index_contract::channel::SemanticSeal)
+pub quanta_index_contract::channel::SemanticChannelOp::TombstoneSemanticScope(quanta_index_contract::channel::TombstoneSemanticScope)
 pub quanta_index_contract::channel::SemanticChannelOp::UpsertEmbedding(quanta_index_contract::UpsertEmbedding)
 impl quanta_index_contract::channel::SemanticChannelOp
 pub fn quanta_index_contract::channel::SemanticChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
@@ -570,21 +570,21 @@ pub quanta_index_contract::channel::ReplaceSemanticScope::generation: quanta_ind
 pub quanta_index_contract::channel::ReplaceSemanticScope::payload: alloc::vec::Vec<u8>
 pub quanta_index_contract::channel::ReplaceSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::channel::ReplaceSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::clone(&self) -> quanta_index_contract::ReplaceSemanticScope
-impl core::cmp::Eq for quanta_index_contract::ReplaceSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::eq(&self, other: &quanta_index_contract::ReplaceSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Freeze for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Send for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Sync for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Unpin for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::ReplaceSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ReplaceSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ReplaceSemanticScope
+impl core::clone::Clone for quanta_index_contract::channel::ReplaceSemanticScope
+pub fn quanta_index_contract::channel::ReplaceSemanticScope::clone(&self) -> quanta_index_contract::channel::ReplaceSemanticScope
+impl core::cmp::Eq for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::cmp::PartialEq for quanta_index_contract::channel::ReplaceSemanticScope
+pub fn quanta_index_contract::channel::ReplaceSemanticScope::eq(&self, other: &quanta_index_contract::channel::ReplaceSemanticScope) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::ReplaceSemanticScope
+pub fn quanta_index_contract::channel::ReplaceSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::marker::Freeze for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::marker::Send for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::marker::Sync for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::marker::Unpin for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::ReplaceSemanticScope
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::ReplaceSemanticScope
 pub struct quanta_index_contract::channel::ReplaceStructuralScope
 pub quanta_index_contract::channel::ReplaceStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::channel::ReplaceStructuralScope::payload: alloc::vec::Vec<u8>
@@ -610,40 +610,40 @@ pub quanta_index_contract::channel::SemanticFullBundle::generation: quanta_index
 pub quanta_index_contract::channel::SemanticFullBundle::payload: alloc::vec::Vec<u8>
 pub quanta_index_contract::channel::SemanticFullBundle::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::channel::SemanticFullBundle::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::clone(&self) -> quanta_index_contract::SemanticFullBundle
-impl core::cmp::Eq for quanta_index_contract::SemanticFullBundle
-impl core::cmp::PartialEq for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::eq(&self, other: &quanta_index_contract::SemanticFullBundle) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticFullBundle
-impl core::marker::Freeze for quanta_index_contract::SemanticFullBundle
-impl core::marker::Send for quanta_index_contract::SemanticFullBundle
-impl core::marker::Sync for quanta_index_contract::SemanticFullBundle
-impl core::marker::Unpin for quanta_index_contract::SemanticFullBundle
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticFullBundle
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticFullBundle
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticFullBundle
+impl core::clone::Clone for quanta_index_contract::channel::SemanticFullBundle
+pub fn quanta_index_contract::channel::SemanticFullBundle::clone(&self) -> quanta_index_contract::channel::SemanticFullBundle
+impl core::cmp::Eq for quanta_index_contract::channel::SemanticFullBundle
+impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticFullBundle
+pub fn quanta_index_contract::channel::SemanticFullBundle::eq(&self, other: &quanta_index_contract::channel::SemanticFullBundle) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::SemanticFullBundle
+pub fn quanta_index_contract::channel::SemanticFullBundle::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticFullBundle
+impl core::marker::Freeze for quanta_index_contract::channel::SemanticFullBundle
+impl core::marker::Send for quanta_index_contract::channel::SemanticFullBundle
+impl core::marker::Sync for quanta_index_contract::channel::SemanticFullBundle
+impl core::marker::Unpin for quanta_index_contract::channel::SemanticFullBundle
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticFullBundle
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticFullBundle
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticFullBundle
 pub struct quanta_index_contract::channel::SemanticSeal
 pub quanta_index_contract::channel::SemanticSeal::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::channel::SemanticSeal::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::channel::SemanticSeal::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::clone(&self) -> quanta_index_contract::SemanticSeal
-impl core::cmp::Eq for quanta_index_contract::SemanticSeal
-impl core::cmp::PartialEq for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::eq(&self, other: &quanta_index_contract::SemanticSeal) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticSeal
-impl core::marker::Freeze for quanta_index_contract::SemanticSeal
-impl core::marker::Send for quanta_index_contract::SemanticSeal
-impl core::marker::Sync for quanta_index_contract::SemanticSeal
-impl core::marker::Unpin for quanta_index_contract::SemanticSeal
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSeal
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSeal
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSeal
+impl core::clone::Clone for quanta_index_contract::channel::SemanticSeal
+pub fn quanta_index_contract::channel::SemanticSeal::clone(&self) -> quanta_index_contract::channel::SemanticSeal
+impl core::cmp::Eq for quanta_index_contract::channel::SemanticSeal
+impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticSeal
+pub fn quanta_index_contract::channel::SemanticSeal::eq(&self, other: &quanta_index_contract::channel::SemanticSeal) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::SemanticSeal
+pub fn quanta_index_contract::channel::SemanticSeal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticSeal
+impl core::marker::Freeze for quanta_index_contract::channel::SemanticSeal
+impl core::marker::Send for quanta_index_contract::channel::SemanticSeal
+impl core::marker::Sync for quanta_index_contract::channel::SemanticSeal
+impl core::marker::Unpin for quanta_index_contract::channel::SemanticSeal
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticSeal
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticSeal
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticSeal
 pub struct quanta_index_contract::channel::SymbolId(_)
 impl quanta_index_contract::SymbolId
 pub fn quanta_index_contract::SymbolId::as_str(&self) -> &str
@@ -699,21 +699,21 @@ pub quanta_index_contract::channel::TombstoneSemanticScope::generation: quanta_i
 pub quanta_index_contract::channel::TombstoneSemanticScope::payload: alloc::vec::Vec<u8>
 pub quanta_index_contract::channel::TombstoneSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::channel::TombstoneSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::clone(&self) -> quanta_index_contract::TombstoneSemanticScope
-impl core::cmp::Eq for quanta_index_contract::TombstoneSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::eq(&self, other: &quanta_index_contract::TombstoneSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Freeze for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Send for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Sync for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Unpin for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::TombstoneSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TombstoneSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TombstoneSemanticScope
+impl core::clone::Clone for quanta_index_contract::channel::TombstoneSemanticScope
+pub fn quanta_index_contract::channel::TombstoneSemanticScope::clone(&self) -> quanta_index_contract::channel::TombstoneSemanticScope
+impl core::cmp::Eq for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::cmp::PartialEq for quanta_index_contract::channel::TombstoneSemanticScope
+pub fn quanta_index_contract::channel::TombstoneSemanticScope::eq(&self, other: &quanta_index_contract::channel::TombstoneSemanticScope) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::TombstoneSemanticScope
+pub fn quanta_index_contract::channel::TombstoneSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::marker::Freeze for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::marker::Send for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::marker::Sync for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::marker::Unpin for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::TombstoneSemanticScope
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::TombstoneSemanticScope
 pub struct quanta_index_contract::channel::TombstoneStructuralScope
 pub quanta_index_contract::channel::TombstoneStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::channel::TombstoneStructuralScope::payload: alloc::vec::Vec<u8>
@@ -6582,26 +6582,6 @@ impl core::marker::Unpin for quanta_index_contract::ReplaceLexicalScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::ReplaceLexicalScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ReplaceLexicalScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ReplaceLexicalScope
-pub struct quanta_index_contract::ReplaceSemanticScope
-pub quanta_index_contract::ReplaceSemanticScope::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::ReplaceSemanticScope::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::ReplaceSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::ReplaceSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::clone(&self) -> quanta_index_contract::ReplaceSemanticScope
-impl core::cmp::Eq for quanta_index_contract::ReplaceSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::eq(&self, other: &quanta_index_contract::ReplaceSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::ReplaceSemanticScope
-pub fn quanta_index_contract::ReplaceSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Freeze for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Send for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Sync for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::Unpin for quanta_index_contract::ReplaceSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::ReplaceSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ReplaceSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ReplaceSemanticScope
 pub struct quanta_index_contract::ReplaceStructuralScope
 pub quanta_index_contract::ReplaceStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ReplaceStructuralScope::payload: alloc::vec::Vec<u8>
@@ -7540,26 +7520,6 @@ impl core::marker::Unpin for quanta_index_contract::SearchScopeKey
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeKey
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeKey
-pub struct quanta_index_contract::SemanticFullBundle
-pub quanta_index_contract::SemanticFullBundle::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::SemanticFullBundle::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::SemanticFullBundle::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::SemanticFullBundle::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::clone(&self) -> quanta_index_contract::SemanticFullBundle
-impl core::cmp::Eq for quanta_index_contract::SemanticFullBundle
-impl core::cmp::PartialEq for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::eq(&self, other: &quanta_index_contract::SemanticFullBundle) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticFullBundle
-pub fn quanta_index_contract::SemanticFullBundle::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticFullBundle
-impl core::marker::Freeze for quanta_index_contract::SemanticFullBundle
-impl core::marker::Send for quanta_index_contract::SemanticFullBundle
-impl core::marker::Sync for quanta_index_contract::SemanticFullBundle
-impl core::marker::Unpin for quanta_index_contract::SemanticFullBundle
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticFullBundle
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticFullBundle
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticFullBundle
 pub struct quanta_index_contract::SemanticIngestBatch
 pub quanta_index_contract::SemanticIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::SemanticIngestBatch::batch_digest: alloc::string::String
@@ -7658,25 +7618,6 @@ impl core::marker::Unpin for quanta_index_contract::SemanticReplaceScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticReplaceScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticReplaceScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticReplaceScope
-pub struct quanta_index_contract::SemanticSeal
-pub quanta_index_contract::SemanticSeal::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::SemanticSeal::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::SemanticSeal::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::clone(&self) -> quanta_index_contract::SemanticSeal
-impl core::cmp::Eq for quanta_index_contract::SemanticSeal
-impl core::cmp::PartialEq for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::eq(&self, other: &quanta_index_contract::SemanticSeal) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticSeal
-pub fn quanta_index_contract::SemanticSeal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticSeal
-impl core::marker::Freeze for quanta_index_contract::SemanticSeal
-impl core::marker::Send for quanta_index_contract::SemanticSeal
-impl core::marker::Sync for quanta_index_contract::SemanticSeal
-impl core::marker::Unpin for quanta_index_contract::SemanticSeal
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSeal
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSeal
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSeal
 pub struct quanta_index_contract::SemanticTombstoneScope
 pub quanta_index_contract::SemanticTombstoneScope::scope: quanta_index_contract::SearchScopeKey
 impl core::clone::Clone for quanta_index_contract::SemanticTombstoneScope
@@ -7962,26 +7903,6 @@ impl core::marker::Unpin for quanta_index_contract::TombstoneLexicalScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::TombstoneLexicalScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TombstoneLexicalScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TombstoneLexicalScope
-pub struct quanta_index_contract::TombstoneSemanticScope
-pub quanta_index_contract::TombstoneSemanticScope::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::TombstoneSemanticScope::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::TombstoneSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::TombstoneSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::clone(&self) -> quanta_index_contract::TombstoneSemanticScope
-impl core::cmp::Eq for quanta_index_contract::TombstoneSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::eq(&self, other: &quanta_index_contract::TombstoneSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::TombstoneSemanticScope
-pub fn quanta_index_contract::TombstoneSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Freeze for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Send for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Sync for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::Unpin for quanta_index_contract::TombstoneSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::TombstoneSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TombstoneSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TombstoneSemanticScope
 pub struct quanta_index_contract::TombstoneStructuralScope
 pub quanta_index_contract::TombstoneStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::TombstoneStructuralScope::payload: alloc::vec::Vec<u8>

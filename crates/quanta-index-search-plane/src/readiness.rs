@@ -23,6 +23,11 @@ use quanta_index_core::CoreError;
 type SharedLedger = Arc<RwLock<Ledger>>;
 type SharedActivationCatalog = Arc<ActivationCatalog>;
 
+pub(crate) const ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED: &str =
+    "SEMANTIC_GENERATION_NOT_MATERIALIZED";
+pub(crate) const ERR_SEMANTIC_GENERATION_NOT_SEALED: &str = "SEMANTIC_GENERATION_NOT_SEALED";
+pub(crate) const ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH: &str = "SEMANTIC_MANIFEST_DIGEST_MISMATCH";
+
 macro_rules! impl_struct_serde {
     ($ty:ident { $($field:ident : $field_ty:ty),+ $(,)? }) => {
         impl Serialize for $ty {
@@ -183,12 +188,47 @@ impl TrackAuthorityState {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SemanticGenerationState {
+    manifest_digest: String,
+    materialized: bool,
+    sealed: bool,
+}
+
+impl SemanticGenerationState {
+    #[must_use]
+    pub(crate) fn manifest_digest(&self) -> &str {
+        self.manifest_digest.as_str()
+    }
+
+    #[must_use]
+    pub(crate) const fn materialized(&self) -> bool {
+        self.materialized
+    }
+
+    #[must_use]
+    pub(crate) const fn sealed(&self) -> bool {
+        self.sealed
+    }
+
+    fn record_materialized(&mut self, manifest_digest: &str) {
+        self.materialized = true;
+        self.manifest_digest = manifest_digest.to_string();
+    }
+
+    fn record_sealed(&mut self, manifest_digest: &str) {
+        self.record_materialized(manifest_digest);
+        self.sealed = true;
+    }
+}
+
 /// Shared in-memory readiness ledger for query/readiness gating and direct authority recovery.
 #[derive(Debug, Default)]
 pub struct Ledger {
     lexical: TrackLedger,
     semantic: TrackLedger,
     search_tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
+    semantic_generations: BTreeMap<AuthorityKey, SemanticGenerationState>,
     history: BTreeMap<AuthorityKey, HistoryAuthorityState>,
     runtime_metadata: BTreeMap<AuthorityKey, RuntimeMetadataState>,
     structural: BTreeMap<AuthorityKey, StructuralAuthorityState>,
@@ -282,6 +322,11 @@ impl Ledger {
             .entry(key)
             .or_default()
             .record_materialized(generation, manifest_digest);
+        if track == SearchPlaneTrackKind::Semantic
+            && let Some(digest) = manifest_digest
+        {
+            self.record_semantic_generation_materialized(repo_id, revision_id, generation, digest);
+        }
     }
 
     pub fn record_track_seal(
@@ -336,6 +381,11 @@ impl Ledger {
             .entry(key)
             .or_default()
             .record_seal(generation, manifest_digest);
+        if track == SearchPlaneTrackKind::Semantic
+            && let Some(digest) = manifest_digest
+        {
+            self.record_semantic_generation_sealed(repo_id, revision_id, generation, digest);
+        }
     }
 
     #[must_use]
@@ -395,6 +445,103 @@ impl Ledger {
         self.search_tracks
             .get(&key)
             .and_then(|state| state.manifest_digest.as_deref())
+    }
+
+    pub(crate) fn record_semantic_generation_materialized(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        self.semantic_generations
+            .entry(Self::authority_key(repo_id, revision_id, generation))
+            .or_default()
+            .record_materialized(manifest_digest);
+    }
+
+    pub(crate) fn record_semantic_generation_sealed(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        self.semantic_generations
+            .entry(Self::authority_key(repo_id, revision_id, generation))
+            .or_default()
+            .record_sealed(manifest_digest);
+    }
+
+    #[must_use]
+    pub(crate) fn semantic_generation_state(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> Option<&SemanticGenerationState> {
+        self.semantic_generations
+            .get(&Self::authority_key(repo_id, revision_id, generation))
+    }
+
+    pub(crate) fn validate_semantic_generation(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        expected_manifest_digest: Option<&str>,
+        require_sealed: bool,
+        plane: &str,
+    ) -> Result<(), CoreError> {
+        let Some(state) = self.semantic_generation_state(repo_id, revision_id, generation) else {
+            return Err(CoreError::Typed {
+                code: ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED.to_string(),
+                message: format!(
+                    "{plane}: semantic generation {} is not materialized for repo={} revision={}",
+                    generation.get(),
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                ),
+            });
+        };
+        if !state.materialized() {
+            return Err(CoreError::Typed {
+                code: ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED.to_string(),
+                message: format!(
+                    "{plane}: semantic generation {} is not materialized for repo={} revision={}",
+                    generation.get(),
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                ),
+            });
+        }
+        if require_sealed && !state.sealed() {
+            return Err(CoreError::Typed {
+                code: ERR_SEMANTIC_GENERATION_NOT_SEALED.to_string(),
+                message: format!(
+                    "{plane}: semantic generation {} is not sealed for repo={} revision={}",
+                    generation.get(),
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                ),
+            });
+        }
+        if let Some(expected_manifest_digest) = expected_manifest_digest
+            && state.manifest_digest() != expected_manifest_digest
+        {
+            return Err(CoreError::Typed {
+                code: ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "{plane}: semantic manifest digest mismatch for repo={} revision={} generation={}: expected={}, observed={}",
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                    generation.get(),
+                    expected_manifest_digest,
+                    state.manifest_digest(),
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn authority_key(
@@ -1193,6 +1340,12 @@ impl_struct_serde!(TrackAuthorityState {
     manifest_digest: Option<String>,
 });
 
+impl_struct_serde!(SemanticGenerationState {
+    manifest_digest: String,
+    materialized: bool,
+    sealed: bool,
+});
+
 impl_struct_serde!(AuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
@@ -1876,6 +2029,38 @@ mod tests {
             != Some(generation())
         {
             return Err("structural track seal did not restore".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_generation_state_records_exact_digest_and_seal() -> TestResult {
+        let mut ledger = Ledger::default();
+        ledger.record_track_materialized(
+            &repo_id(),
+            &revision_id(),
+            SearchPlaneTrackKind::Semantic,
+            generation(),
+            Some("digest-sem-17"),
+        );
+        ledger.record_track_seal_with_digest(
+            &repo_id(),
+            &revision_id(),
+            SearchPlaneTrackKind::Semantic,
+            generation(),
+            "digest-sem-17",
+        );
+        let state = ledger
+            .semantic_generation_state(&repo_id(), &revision_id(), generation())
+            .ok_or("missing semantic generation state")?;
+        if !state.materialized() {
+            return Err("semantic generation state did not record materialized".into());
+        }
+        if !state.sealed() {
+            return Err("semantic generation state did not record sealed".into());
+        }
+        if state.manifest_digest() != "digest-sem-17" {
+            return Err("semantic generation state lost manifest digest".into());
         }
         Ok(())
     }

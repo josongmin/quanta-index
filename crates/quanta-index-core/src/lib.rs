@@ -13,7 +13,6 @@ pub mod error;
 
 pub use error::CoreError;
 
-pub use domains::channel::{ChannelDispatchPolicy, ChannelObserver};
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
     LexicalBatchBuildPort, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort,
@@ -24,8 +23,8 @@ pub use domains::repomap::{
     RepoMapService,
 };
 pub use domains::semantic::{
-    SemanticBatchBuildPort, SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticPolicy, SemanticQueryPort, SemanticReadiness, SemanticSearcher,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
+    SemanticQueryPort, SemanticReadiness, SemanticSearcher,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

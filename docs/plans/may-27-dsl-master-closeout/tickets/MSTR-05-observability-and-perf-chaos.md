@@ -23,12 +23,18 @@ Closed in current source:
   metrics
 - runtime E2E proof exists for hybrid, structural, bridge, history, and runtime
   metadata routes with closed dimensions and no query-text leakage
+- history ref-shard, tag-shard, structural shard, and history diff-shard
+  unavailable rows now have runtime proof under the bounded unavailable metric
+  bucket
+- lexical regex timeout now lowers from native and Sourcegraph `timeout:`
+  surface into canonical query options, fails closed as `QUERY_TIMEOUT`, and
+  records under the bounded plan-limit metric bucket without poisoning the next
+  query
 
-Still open:
+Repo-local open residue:
 
-- cancellation-specific owner + E2E rail
-- broader partial-shard / chaos rows beyond the currently proven structural and
-  history unavailable cases
+- none under the current packet; wider multi-engine cancellation contract work
+  would be a new scope, not an unclosed repo-local proof row
 
 ## Guardrails
 

@@ -13,8 +13,8 @@ mod e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    BridgeScope, BridgeTarget, EarlyStopReason, EngineTouched, SearchPlaneTrackKind,
-    TextQuerySyntax,
+    BridgeScope, BridgeTarget, EarlyStopReason, EngineTouched, HistoryIngestBatch,
+    HistoryRefMutation, SearchPlaneTrackKind, TextQuerySyntax,
 };
 
 use crate::e2e_harness::{E2eRuntime, E2eTypedError};
@@ -147,6 +147,86 @@ fn seed_history_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
+fn history_partial_shard_batch(
+    rt: &E2eRuntime,
+    file_path: &str,
+    include_ref: bool,
+    include_tag: bool,
+) -> HistoryIngestBatch {
+    use quanta_index_contract::lex::{CommitRecord, CommitSha};
+
+    let commit_sha = CommitSha::from_bytes([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ]);
+    HistoryIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        manifest_digest: Some(format!(
+            "history-partial:{}:{}",
+            file_path,
+            rt.current_generation().get()
+        )),
+        batch_digest: format!(
+            "history-partial-batch:{file_path}:{}",
+            rt.current_generation().get()
+        ),
+        commits: vec![CommitRecord {
+            wire_version: 1,
+            sha: commit_sha,
+            parents: Vec::new(),
+            author_time_ms: 11,
+            committer_time_ms: 12,
+            applied_at_ms: 13,
+            author: "alice".to_string().into_boxed_str(),
+            committer: "alice".to_string().into_boxed_str(),
+            message: "fix: sample history".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: vec!["v1.0.0".to_string().into_boxed_str()],
+        }],
+        refs: if include_ref {
+            vec![HistoryRefMutation::Upsert(
+                quanta_index_contract::HistoryRefUpsert {
+                    name: "refs/heads/main".to_string().into_boxed_str(),
+                    sha: commit_sha,
+                },
+            )]
+        } else {
+            Vec::new()
+        },
+        tags: if include_tag {
+            vec![HistoryRefMutation::Upsert(
+                quanta_index_contract::HistoryRefUpsert {
+                    name: "v1.0.0".to_string().into_boxed_str(),
+                    sha: commit_sha,
+                },
+            )]
+        } else {
+            Vec::new()
+        },
+        diff_hunks: Vec::new(),
+    }
+}
+
+fn seed_history_partial_shard_fixture(
+    rt: &mut E2eRuntime,
+    include_ref: bool,
+    include_tag: bool,
+) -> AnyResult<()> {
+    let path = "src/history.rs";
+    rt.ingest_text("repo-e2e", path, "history lexical proof")?;
+    rt.publish_history_batch(history_partial_shard_batch(
+        rt,
+        path,
+        include_ref,
+        include_tag,
+    ))?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
 fn seed_runtime_dirty_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let path = "src/dirty.rs";
     rt.ingest_text("repo-e2e", path, "todo dirty scope")?;
@@ -231,6 +311,43 @@ fn regex_typed_rejection_does_not_poison_next_query() -> AnyResult<()> {
     if follow_up.candidate_ids != vec![exact_id] {
         return Err(anyhow::anyhow!(
             "follow-up lexical query diverged after regex reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn regex_timeout_is_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_regex_fixture(&mut rt)?;
+
+    let timed_out = rt.query_text(TextQuerySyntax::Native, "timeout:0ms /needle_x\\b/", 10);
+    let error = timed_out
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed regex timeout"))?;
+    if error.code != "QUERY_TIMEOUT" {
+        return Err(anyhow::anyhow!(
+            "expected QUERY_TIMEOUT, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("timed out") {
+        return Err(anyhow::anyhow!(
+            "regex timeout lost timeout detail: {}",
+            error.message
+        ));
+    }
+
+    let exact_id = rt.candidate_id_for_path("src/exact.txt")?;
+    let follow_up = rt.query_text(TextQuerySyntax::Native, "needle_x", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up lexical query after regex timeout",
+    )?;
+    if follow_up.candidate_ids != vec![exact_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up lexical query diverged after regex timeout: {:?}",
             follow_up.candidate_ids
         ));
     }
@@ -628,6 +745,95 @@ fn bridge_translate_fail_runtime_metrics_use_parse_bucket_without_query_leakage(
         &["lq_query_intake_total", "lq_typed_error_parse_total"],
         &["lq_query_intake_total", "lq_typed_error_parse_total"],
         &["chaos_", "structural", "codeql"],
+    )
+}
+
+#[test]
+fn lexical_timeout_runtime_metrics_use_plan_limit_bucket_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_regex_fixture(&mut rt)?;
+
+    let result = rt.query_text(TextQuerySyntax::Native, "timeout:0ms /needle_x\\b/", 10);
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected lexical timeout typed error"))?;
+    if error.code != "QUERY_TIMEOUT" {
+        return Err(anyhow::anyhow!(
+            "expected QUERY_TIMEOUT, got {}",
+            error.code
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_plan_limit_total"],
+        &["lq_query_intake_total", "lq_typed_error_plan_limit_total"],
+        &["needle_x", "timeout:0ms", "regex"],
+    )
+}
+
+#[test]
+fn history_missing_ref_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_partial_shard_fixture(&mut rt, false, false)?;
+
+    let result = rt.query_history(
+        TextQuerySyntax::Sourcegraph,
+        "type:commit rev:refs/heads/main fix",
+        10,
+    );
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected history ref-shard typed error"))?;
+    if error.code != "HISTORY_SHARD_UNAVAILABLE" {
+        return Err(anyhow::anyhow!(
+            "expected HISTORY_SHARD_UNAVAILABLE, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("ref shard is unavailable") {
+        return Err(anyhow::anyhow!(
+            "unexpected history ref-shard message: {}",
+            error.message
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["refs/heads/main", "fix", "history"],
+    )
+}
+
+#[test]
+fn history_missing_tag_shard_uses_closed_unavailable_metric() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_partial_shard_fixture(&mut rt, true, false)?;
+
+    let result = rt.query_history(
+        TextQuerySyntax::Sourcegraph,
+        "type:commit rev:v1.0.0 fix",
+        10,
+    );
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected history tag-shard typed error"))?;
+    if error.code != "HISTORY_SHARD_UNAVAILABLE" {
+        return Err(anyhow::anyhow!(
+            "expected HISTORY_SHARD_UNAVAILABLE, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("tag shard is unavailable") {
+        return Err(anyhow::anyhow!(
+            "unexpected history tag-shard message: {}",
+            error.message
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["v1.0.0", "fix", "history"],
     )
 }
 

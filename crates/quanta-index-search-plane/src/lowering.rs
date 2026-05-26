@@ -426,7 +426,7 @@ mod tests {
         reason = "test asserts lowered structure via assert!/assert_eq! macros"
     )]
     fn filtered_sourcegraph_body_populates_typed_filters_and_options() -> TestResult {
-        let raw = "repo:acme/demo lang:rust case:yes count:25 patterntype:regexp select:content.match needle";
+        let raw = "repo:acme/demo lang:rust case:yes count:25 timeout:5s patterntype:regexp select:content.match needle";
         let lowered =
             lower_sourcegraph_query_text(raw).map_err(|err| -> Box<dyn std::error::Error> {
                 format!("sourcegraph lowering must succeed: {err:?}").into()
@@ -454,6 +454,7 @@ mod tests {
         );
         assert_eq!(lowered.options.case, Some(LqCase::Sensitive));
         assert_eq!(lowered.options.count, Some(LqCountBound::Bounded(25)));
+        assert_eq!(lowered.options.timeout_ms, Some(5_000));
         assert_eq!(lowered.options.pattern_type, LqPatternType::Regexp);
         let raw_len = u32::try_from(raw.len()).map_err(|err| -> Box<dyn std::error::Error> {
             format!("test fixture raw length must fit u32: {err}").into()
@@ -1003,6 +1004,16 @@ mod tests {
         let (code, message) = typed_error(err)?;
         assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
         assert!(message.starts_with("bridge: invalid count `nan`:"));
+
+        let err = match lower_sourcegraph_query_text("timeout:soon invalid") {
+            Ok(query) => {
+                return Err(format!("expected invalid timeout failure, got {query:?}").into());
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert!(message.starts_with("bridge: invalid timeout `soon`:"));
         Ok(())
     }
 

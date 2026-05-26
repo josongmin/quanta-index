@@ -38,7 +38,9 @@ use std::sync::{Arc, Mutex};
 
 use ciborium::Value as CborValue;
 use quanta_index_contract::channel::LexicalChannelOp;
-use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily, SymbolRecord};
+use quanta_index_contract::lex::{
+    LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
+};
 use quanta_index_contract::{
     BatchIngestMode, ChunkRecord, LexicalCandidate, LexicalFullBundle, LexicalIngestBatch,
     LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
@@ -2117,6 +2119,10 @@ impl TantivySearcher {
         format!("(?i){source}")
     }
 
+    fn regex_timeout_budget_ms(options: &LqOptions) -> Option<u64> {
+        options.timeout_ms
+    }
+
     fn collect_matching_candidate_ids_for_regex(
         &self,
         source: &str,
@@ -2159,11 +2165,30 @@ impl TantivySearcher {
             shard: authority,
             folded: false,
         };
+        let budget_ms = Self::regex_timeout_budget_ms(options).unwrap_or(0);
+        if options.timeout_ms == Some(0) && !prefiltered_doc_ids.is_empty() {
+            return Err(CoreError::Typed {
+                code: LexicalErrorCode::QueryTimeout.as_code_str().to_string(),
+                message:
+                    "lexical: regex verify timed out before candidate verification began (budget 0ms)"
+                        .to_string(),
+            });
+        }
         let verified_doc_ids = executor
-            .execute_with_budget(&prefiltered_doc_ids, &resolver, 0)
-            .map_err(|err| CoreError::Typed {
-                code: format!("LEX_REGEX_{}", err.code.as_code_str()),
-                message: format!("lexical: regex verify failed: {err}"),
+            .execute_with_budget(&prefiltered_doc_ids, &resolver, budget_ms)
+            .map_err(|err| match err.code {
+                quanta_index_lq_regex::RegexErrorCode::QueryTimeout => CoreError::Typed {
+                    code: LexicalErrorCode::QueryTimeout.as_code_str().to_string(),
+                    message: format!("lexical: regex verify timed out: {err}"),
+                },
+                quanta_index_lq_regex::RegexErrorCode::ParseFail
+                | quanta_index_lq_regex::RegexErrorCode::ForbiddenSyntax
+                | quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded
+                | quanta_index_lq_regex::RegexErrorCode::RegexPrefilterUnusable
+                | quanta_index_lq_regex::RegexErrorCode::ExecutionInternal => CoreError::Typed {
+                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    message: format!("lexical: regex verify failed: {err}"),
+                },
             })?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for doc_id in verified_doc_ids {

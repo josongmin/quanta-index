@@ -827,6 +827,7 @@ mod tests {
                 pattern_type: crate::ast::LqPatternType::Standard,
                 case: Some(LqCase::Insensitive),
                 count: None,
+                timeout_ms: None,
             },
             source_span: crate::errors::LqSpan::new(0, 0),
         };

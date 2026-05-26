@@ -534,6 +534,10 @@ impl Parser<'_> {
                 self.options.count = Some(count);
                 Ok(())
             }
+            "timeout" => {
+                self.options.timeout_ms = Some(parse_timeout_ms(value, span)?);
+                Ok(())
+            }
             "patterntype" => {
                 if self.seen_pattern_type {
                     return Err(LqParseError::new(
@@ -602,6 +606,51 @@ impl Parser<'_> {
             )),
         }
     }
+}
+
+fn parse_timeout_ms(value: &str, span: LqSpan) -> Result<u64, LqParseError> {
+    let (digits, unit) = split_timeout_value(value).ok_or_else(|| {
+        LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "timeout: value must be <int><unit> with unit in {ms,s,m,h}",
+        )
+    })?;
+    let magnitude: u64 = digits.parse().map_err(|_err| {
+        LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "timeout: value must be <int><unit> with unit in {ms,s,m,h}",
+        )
+    })?;
+    let multiplier: u64 = match unit {
+        "ms" => 1,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        _ => {
+            return Err(LqParseError::new(
+                LqParseErrorCode::InvalidFilterValue,
+                span,
+                "timeout: unit must be one of {ms,s,m,h}",
+            ));
+        }
+    };
+    magnitude.checked_mul(multiplier).ok_or_else(|| {
+        LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "timeout: duration exceeds u64 milliseconds",
+        )
+    })
+}
+
+fn split_timeout_value(value: &str) -> Option<(&str, &str)> {
+    let digit_len = value.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_len == 0 || digit_len == value.len() {
+        return None;
+    }
+    Some(value.split_at(digit_len))
 }
 
 fn parse_repo_value(value: &str) -> (String, Vec<String>) {
@@ -1886,6 +1935,26 @@ mod tests {
         assert_eq!(q1.options.count, Some(LqCountBound::Bounded(100)));
         let q2 = parse_input("foo count:all");
         assert_eq!(q2.options.count, Some(LqCountBound::All));
+    }
+
+    #[test]
+    fn timeout_lowered_into_options_ms() {
+        let q1 = parse_input("timeout:0ms /.*/");
+        assert_eq!(q1.options.timeout_ms, Some(0));
+        let q2 = parse_input("timeout:5s /.*/");
+        assert_eq!(q2.options.timeout_ms, Some(5_000));
+    }
+
+    #[test]
+    fn invalid_timeout_errors() {
+        assert_eq!(
+            parse_err("timeout:soon /.*/"),
+            LqParseErrorCode::InvalidFilterValue
+        );
+        assert_eq!(
+            parse_err("timeout:5 /.*/"),
+            LqParseErrorCode::InvalidFilterValue
+        );
     }
 
     #[test]

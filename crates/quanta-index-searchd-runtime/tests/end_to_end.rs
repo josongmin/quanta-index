@@ -914,8 +914,8 @@ fn hybrid_query_requires_joint_materialization() -> TestResult {
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
     drop(ingest_socket);
 
-    // Hybrid query should fail NOT_READY because neither lexical nor semantic
-    // generation has materialized yet.
+    // Hybrid query still fails on the lexical gate first when neither lexical
+    // nor semantic generation has materialized yet.
     let hybrid_req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -1289,10 +1289,14 @@ fn semantic_only_query_requires_semantic_materialization() -> TestResult {
             return Err(format!("expected Error, got {other:?}").into());
         }
     };
-    if err.code != "NOT_READY" {
+    if err.code != "SEMANTIC_GENERATION_NOT_MATERIALIZED" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected NOT_READY, got {}", err.code).into());
+        return Err(format!(
+            "expected SEMANTIC_GENERATION_NOT_MATERIALIZED, got {}",
+            err.code
+        )
+        .into());
     }
 
     shutdown.store(true, Ordering::Release);
@@ -2568,6 +2572,64 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
     }
 
     stop_runtime(shutdown, join)
+}
+
+#[test]
+fn structural_sourcegraph_query_rejects_timeout_filter() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-structural-sourcegraph-timeout-filter-test".into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 49,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: r#"timeout:0ms patterntype:structural "function_item""#.to_string(),
+                    generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+            }),
+        },
+    )?;
+    let err = match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => err,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Error, got {other:?}").into());
+        }
+    };
+    if err.code != "STR_INVALID_REQUEST" || !err.message.contains("timeout option") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(
+            format!("expected STR_INVALID_REQUEST structural timeout error, got {err:?}").into(),
+        );
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
 }
 
 #[test]

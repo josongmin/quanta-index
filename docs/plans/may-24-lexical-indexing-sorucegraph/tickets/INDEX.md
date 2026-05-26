@@ -1,5 +1,16 @@
 # Tickets — Index and Reconciliation
 
+Status: `historical-reconciliation-index`
+
+Current-tree note (2026-05-27):
+
+- this index records the May-24 ticket decomposition and later reconciliation
+- channel-centric runtime language here is historical and predates the
+  de-channelized runtime now live in source
+- use current source in `crates/quanta-index-search-plane`,
+  `crates/quanta-index-searchd`, and `crates/quanta-index-searchd-runtime`
+  before treating any channel/runtime statement below as active truth
+
 > Master index for the 18 ticket docs under [`tickets/`](.) authored against the May-23 Sourcegraph-class Lexical Kernel RFC and the later SDK/source-authority closeout follow-on.
 
 Parent docs: [rfc.md](../rfc.md) · [feature-scope.md](../feature-scope.md) · [usecase.md](../usecase.md) · [dsl.md](../dsl.md) · [implementation-plan.md](../implementation-plan.md)

@@ -6,7 +6,7 @@ mod service;
 
 pub use inbound::SemanticQueryPort;
 pub use outbound::{
-    SemanticBatchBuildPort, SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
-    SemanticReadiness, SemanticSearcher,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticReadiness,
+    SemanticSearcher,
 };
 pub use service::SemanticPolicy;

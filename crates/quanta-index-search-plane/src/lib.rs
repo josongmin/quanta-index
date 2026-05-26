@@ -14,7 +14,7 @@ mod ingest_dispatcher;
 mod lowering;
 mod query_dispatcher;
 mod query_embedder;
-mod readiness;
+pub mod readiness;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{

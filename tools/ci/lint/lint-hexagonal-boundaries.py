@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[3]
 CRATES = ROOT / "crates"
 
-DOMAINS = ("channel", "lexical", "semantic", "hybrid")
+DOMAINS = ("lexical", "semantic", "hybrid")
 
 LEGACY_CORE_MODULES = (
     "artifact_objects",
@@ -127,7 +127,7 @@ _TRANSPORT_LEAK_TOKENS = (
 )
 
 DOMAIN_USE_RE = re.compile(
-    r"\b(?:crate::domains::|domains::)(?P<target>channel|lexical|semantic|hybrid)\b"
+    r"\b(?:crate::domains::|domains::)(?P<target>lexical|semantic|hybrid)\b"
 )
 
 
@@ -296,38 +296,36 @@ def check_contract_is_dto_only() -> list[Violation]:
 def check_channel_backend_isolation() -> list[Violation]:
     violations: list[Violation] = []
     channel_src = CRATES / "quanta-index-channel" / "src"
-    if not channel_src.is_dir():
-        return violations
-
-    api_dir = channel_src / "api"
-    backend_dir = channel_src / "backends"
-    if api_dir.is_dir():
-        for rust_file in sorted(api_dir.rglob("*.rs")):
-            text = rust_file.read_text(encoding="utf-8")
-            if re.search(r"\bbackends::\w", text):
-                violations.append(
-                    Violation(
-                        rust_file,
-                        "channel::api must not reference channel::backends",
-                    )
-                )
-
-    if backend_dir.is_dir():
-        backends = [p for p in backend_dir.iterdir() if p.is_dir()]
-        for backend in backends:
-            other_names = {b.name for b in backends if b != backend}
-            if not other_names:
-                continue
-            for rust_file in sorted(backend.rglob("*.rs")):
+    if channel_src.is_dir():
+        api_dir = channel_src / "api"
+        backend_dir = channel_src / "backends"
+        if api_dir.is_dir():
+            for rust_file in sorted(api_dir.rglob("*.rs")):
                 text = rust_file.read_text(encoding="utf-8")
-                for other in other_names:
-                    if re.search(rf"\bbackends::{re.escape(other)}\b", text):
-                        violations.append(
-                            Violation(
-                                rust_file,
-                                f"channel backend {backend.name!r} must not reference {other!r}",
-                            )
+                if re.search(r"\bbackends::\w", text):
+                    violations.append(
+                        Violation(
+                            rust_file,
+                            "channel::api must not reference channel::backends",
                         )
+                    )
+
+        if backend_dir.is_dir():
+            backends = [p for p in backend_dir.iterdir() if p.is_dir()]
+            for backend in backends:
+                other_names = {b.name for b in backends if b != backend}
+                if not other_names:
+                    continue
+                for rust_file in sorted(backend.rglob("*.rs")):
+                    text = rust_file.read_text(encoding="utf-8")
+                    for other in other_names:
+                        if re.search(rf"\bbackends::{re.escape(other)}\b", text):
+                            violations.append(
+                                Violation(
+                                    rust_file,
+                                    f"channel backend {backend.name!r} must not reference {other!r}",
+                                )
+                            )
 
     leak_scopes = [
         CRATES / "quanta-index-core",

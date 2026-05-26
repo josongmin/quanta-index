@@ -4,10 +4,10 @@ Parent packet: [../README.md](../README.md)
 
 ## Objective
 
-Promote producer-side history / runtime / structural emission from fixture-only
-proof to real emitted-op proof on the existing channel op family.
+Promote producer-side history / runtime / structural ingest from fixture-only
+proof to real public typed-batch UDS proof with persisted reopen behavior.
 
-## Covered Ops
+## Covered Semantics
 
 - history: `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`,
   `UpsertDiffHunk`
@@ -20,6 +20,21 @@ proof to real emitted-op proof on the existing channel op family.
 - diff hunks emit as `UpsertDiffHunk` separate ops
 - dirty events use per-edit emission with a 100ms debounce ceiling
 - parse trees publish only after the matching `UpsertChunk`
+
+## Current Source Truth
+
+- public ingest truth is `SearchPlaneIngestIpcRequest::{PublishHistoryBatch,
+  PublishDirtyBatch, PublishStructuralBatch}`, not direct channel-op IPC
+- history ref/tag deletes, runtime dirty evict, and structural tombstone
+  semantics now have repo-local end-to-end reopen proof through the public UDS
+  ingest surface
+- search-side readiness / authority persistence already restores these
+  auxiliary states across reopen
+
+## Remaining Closeout
+
+- external producer-repo handoff remains outside this repo-local packet
+- do not reintroduce a second ingest truth beside the typed batch surface
 
 ## Guardrails
 

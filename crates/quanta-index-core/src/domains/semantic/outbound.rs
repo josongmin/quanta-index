@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use quanta_index_contract::channel::SemanticChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
     SemanticIngestBatch,
@@ -18,16 +17,6 @@ pub trait SemanticIngestPort: Send + Sync {
 pub struct SemanticReadiness {
     pub manifest_generation: ManifestGeneration,
     pub materialized: bool,
-}
-
-pub trait SemanticIndexBuildPort: Send + Sync {
-    fn build(
-        &self,
-        repo: &RepoId,
-        revision: &RevisionId,
-        generation: ManifestGeneration,
-        ops: &[SemanticChannelOp],
-    ) -> Result<(), CoreError>;
 }
 
 /// Build / replay a typed semantic ingest batch into a semantic index for a

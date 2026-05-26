@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
-    ActivationCatalog, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, lower_lexical_text_query,
+    ActivationCatalog, ActiveGenerationRecord, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    lower_lexical_text_query,
     lowering::{lower_sourcegraph_bridge_query_text, lower_sourcegraph_structural_query_text},
     query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort},
     readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
@@ -153,6 +154,7 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
         CoreError::Typed { code, .. }
             if code.contains("PLAN_LIMIT")
                 || code.contains("BUDGET_EXCEEDED")
+                || code.contains("QUERY_TIMEOUT")
                 || code.contains("COUNT_INVALID") =>
         {
             "lq_typed_error_plan_limit_total"
@@ -182,6 +184,12 @@ pub struct SearchPlaneDispatcher {
 
 pub type SearchPlaneQueryService = SearchPlaneDispatcher;
 pub type SearchPlaneQueryDispatcher = SearchPlaneDispatcher;
+
+#[derive(Clone, Debug)]
+struct SemanticSelection {
+    pin: GenerationPin,
+    expected_manifest_digest: Option<String>,
+}
 
 impl SearchPlaneDispatcher {
     #[must_use]
@@ -285,9 +293,10 @@ impl SearchPlaneDispatcher {
 
     fn semantic(&self, request: &SemanticQueryRequest) -> Result<SemanticQueryResponse, CoreError> {
         SemanticPolicy::validate_top_k(request.top_k)?;
-        let pin = resolve_semantic_request_pin(self.activation_catalog.as_ref(), request)?;
-        let materialized = self.snapshot_sem_materialized(&pin.repo_id, &pin.revision_id)?;
-        SemanticPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
+        let selection =
+            resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
+        let pin = selection.pin.clone();
+        self.validate_semantic_selection(&selection, "semantic")?;
         let scope_candidate_ids = if let Some(scope) = request.lexical_scope.as_ref() {
             let lowered_scope = lower_lexical_text_query(scope)?;
             LexicalPolicy::validate_query(&lowered_scope)?;
@@ -345,14 +354,12 @@ impl SearchPlaneDispatcher {
 
     fn hybrid(&self, request: &HybridQueryRequest) -> Result<HybridQueryResponse, CoreError> {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
-        let pin = resolve_hybrid_request_pin(self.activation_catalog.as_ref(), request)?;
+        let selection =
+            resolve_hybrid_request_selection(self.activation_catalog.as_ref(), request)?;
+        let pin = selection.pin.clone();
         let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        let sem_materialized = self.snapshot_sem_materialized(&pin.repo_id, &pin.revision_id)?;
-        HybridOrchestratorPolicy::validate_joint_readiness(
-            pin.manifest_generation,
-            lex_materialized,
-            sem_materialized,
-        )?;
+        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
+        self.validate_semantic_selection(&selection, "hybrid")?;
 
         let lex_searcher =
             self.lex_opener
@@ -910,16 +917,23 @@ impl SearchPlaneDispatcher {
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
-    fn snapshot_sem_materialized(
+    fn validate_semantic_selection(
         &self,
-        repo_id: &RepoId,
-        revision_id: &RevisionId,
-    ) -> Result<Option<ManifestGeneration>, CoreError> {
+        selection: &SemanticSelection,
+        plane: &str,
+    ) -> Result<(), CoreError> {
         let guard = self
             .ledger
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
-        Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Semantic))
+        guard.validate_semantic_generation(
+            &selection.pin.repo_id,
+            &selection.pin.revision_id,
+            selection.pin.manifest_generation,
+            selection.expected_manifest_digest.as_deref(),
+            true,
+            plane,
+        )
     }
 
     fn emit_metric(
@@ -1163,6 +1177,12 @@ fn validate_executable_text_query(
     query: &LqQuery,
     policy: ExecutableTextPlanePolicy,
 ) -> Result<(), CoreError> {
+    if query.options.timeout_ms.is_some() {
+        return Err(CoreError::InvalidContract(format!(
+            "{}: timeout option is not executable on the current adapter set",
+            policy.plane_name()
+        )));
+    }
     let mut state = ExecutableTextPlaneValidationState::default();
     for filter in &query.filters {
         policy.validate_filter(filter, &mut state)?;
@@ -1341,6 +1361,11 @@ fn lower_bridge_query_request(
 }
 
 fn validate_structural_feature_surface(query: &LqQuery) -> Result<(), CoreError> {
+    if query.options.timeout_ms.is_some() {
+        return Err(structural_invalid_request(
+            "structural: timeout option is not executable on the current authority route",
+        ));
+    }
     reject_typed_structural_holes_in_expr(&query.expr)
 }
 
@@ -2530,6 +2555,56 @@ fn resolve_optional_selection(
     }
 }
 
+fn resolve_semantic_selector_selection(
+    activation_catalog: &ActivationCatalog,
+    selector: &GenerationSelector,
+    plane: &str,
+) -> Result<SemanticSelection, CoreError> {
+    match selector {
+        GenerationSelector::Active {
+            repo_id,
+            revision_id,
+        } => resolve_active_semantic_selection(activation_catalog, repo_id, revision_id, plane),
+        GenerationSelector::Pinned(pin) => Ok(SemanticSelection {
+            pin: pin.clone(),
+            expected_manifest_digest: None,
+        }),
+    }
+}
+
+fn resolve_active_semantic_selection(
+    activation_catalog: &ActivationCatalog,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    plane: &str,
+) -> Result<SemanticSelection, CoreError> {
+    let record = activation_catalog
+        .resolve_record(repo_id, revision_id, SearchPlaneTrackKind::Semantic)
+        .map_err(|err| match err {
+            CoreError::NotReady(msg) => {
+                CoreError::NotReady(format!("{plane}: active generation unresolved: {msg}"))
+            }
+            err @ (CoreError::InvalidContract(_)
+            | CoreError::Typed { .. }
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => err,
+        })?;
+    Ok(selection_from_active_semantic_record(record))
+}
+
+fn selection_from_active_semantic_record(record: ActiveGenerationRecord) -> SemanticSelection {
+    let pin = GenerationPin::new(
+        record.repo_id.clone(),
+        record.revision_id.clone(),
+        record.manifest_generation,
+    );
+    SemanticSelection {
+        pin,
+        expected_manifest_digest: Some(record.manifest_digest),
+    }
+}
+
 fn resolve_lexical_request_pin(
     activation_catalog: &ActivationCatalog,
     request: &TextQueryRequest,
@@ -2546,17 +2621,18 @@ fn resolve_lexical_request_pin(
     .ok_or_else(|| CoreError::InvalidContract(format!("{plane}: generation pin required")))
 }
 
-fn resolve_semantic_request_pin(
+fn resolve_semantic_request_selection(
     activation_catalog: &ActivationCatalog,
     request: &SemanticQueryRequest,
-) -> Result<GenerationPin, CoreError> {
-    let outer_pin = resolve_optional_selection(
-        activation_catalog,
-        request.generation.clone(),
-        request.generation_selector.as_ref(),
-        SearchPlaneTrackKind::Semantic,
-        "semantic",
-    )?;
+) -> Result<SemanticSelection, CoreError> {
+    let outer_selection = match request.generation_selector.as_ref() {
+        Some(selector) => Some(resolve_semantic_selector_selection(
+            activation_catalog,
+            selector,
+            "semantic",
+        )?),
+        None => None,
+    };
     let scope_pin = match request.lexical_scope.as_ref() {
         Some(scope) => Some(resolve_lexical_request_pin(
             activation_catalog,
@@ -2566,40 +2642,86 @@ fn resolve_semantic_request_pin(
         )?),
         None => None,
     };
-    match (outer_pin, scope_pin) {
-        (Some(pin), Some(scope_pin)) if pin != scope_pin => Err(CoreError::InvalidContract(
+    match (request.generation.clone(), outer_selection, scope_pin) {
+        (Some(pin), Some(selection), Some(scope_pin))
+            if pin != selection.pin || pin != scope_pin =>
+        {
+            Err(CoreError::InvalidContract(
+                "semantic: scope generation does not match semantic request generation".to_string(),
+            ))
+        }
+        (Some(pin), Some(selection), None) if pin != selection.pin => {
+            Err(CoreError::InvalidContract(
+                "semantic: explicit generation pin does not match generation selector resolution"
+                    .to_string(),
+            ))
+        }
+        (Some(pin), None, Some(scope_pin)) if pin != scope_pin => Err(CoreError::InvalidContract(
             "semantic: scope generation does not match semantic request generation".to_string(),
         )),
-        (Some(pin), _) | (None, Some(pin)) => Ok(pin),
-        (None, None) => Err(CoreError::InvalidContract(
+        (None, Some(selection), Some(scope_pin)) if selection.pin != scope_pin => {
+            Err(CoreError::InvalidContract(
+                "semantic: scope generation does not match semantic request generation".to_string(),
+            ))
+        }
+        (Some(pin), Some(selection), _) => Ok(SemanticSelection {
+            pin,
+            expected_manifest_digest: selection.expected_manifest_digest,
+        }),
+        (Some(pin), None, _) | (None, None, Some(pin)) => Ok(SemanticSelection {
+            pin,
+            expected_manifest_digest: None,
+        }),
+        (None, Some(selection), _) => Ok(selection),
+        (None, None, None) => Err(CoreError::InvalidContract(
             "semantic: generation pin required".to_string(),
         )),
     }
 }
 
-fn resolve_hybrid_request_pin(
+fn resolve_hybrid_request_selection(
     activation_catalog: &ActivationCatalog,
     request: &HybridQueryRequest,
-) -> Result<GenerationPin, CoreError> {
+) -> Result<SemanticSelection, CoreError> {
     let lexical_pin = resolve_lexical_request_pin(
         activation_catalog,
         &request.text_query,
         SearchPlaneTrackKind::Lexical,
         "hybrid text_query",
     )?;
-    let semantic_pin = resolve_optional_selection(
-        activation_catalog,
-        request.generation.clone(),
-        request.generation_selector.as_ref(),
-        SearchPlaneTrackKind::Semantic,
-        "hybrid",
-    )?;
-    match semantic_pin {
-        Some(pin) if pin != lexical_pin => Err(CoreError::InvalidContract(
+    let semantic_selection = match request.generation_selector.as_ref() {
+        Some(selector) => Some(resolve_semantic_selector_selection(
+            activation_catalog,
+            selector,
+            "hybrid",
+        )?),
+        None => None,
+    };
+    match (request.generation.clone(), semantic_selection) {
+        (Some(pin), Some(selection)) if pin != selection.pin || pin != lexical_pin => {
+            Err(CoreError::InvalidContract(
+                "hybrid: lexical generation does not match semantic generation".to_string(),
+            ))
+        }
+        (Some(pin), None) if pin != lexical_pin => Err(CoreError::InvalidContract(
             "hybrid: lexical generation does not match semantic generation".to_string(),
         )),
-        Some(pin) => Ok(pin),
-        None => Ok(lexical_pin),
+        (None, Some(selection)) if selection.pin != lexical_pin => Err(CoreError::InvalidContract(
+            "hybrid: lexical generation does not match semantic generation".to_string(),
+        )),
+        (Some(pin), Some(selection)) => Ok(SemanticSelection {
+            pin,
+            expected_manifest_digest: selection.expected_manifest_digest,
+        }),
+        (Some(pin), None) => Ok(SemanticSelection {
+            pin,
+            expected_manifest_digest: None,
+        }),
+        (None, Some(selection)) => Ok(selection),
+        (None, None) => Ok(SemanticSelection {
+            pin: lexical_pin,
+            expected_manifest_digest: None,
+        }),
     }
 }
 
@@ -2741,13 +2863,14 @@ mod tests {
     use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
-        BridgeQueryRequest, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
-        LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto,
-        RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-        RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
-        RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest,
-        SearchPlaneQueryIpcResponse, SemanticQueryRequest, SymbolCandidate, TextQueryRequest,
-        TextQuerySyntax, UpsertCommit,
+        BridgeQueryRequest, GenerationPin, GenerationSelector, HistoryQueryRequest,
+        HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType,
+        RepoMapEntryDto, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+        RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapQueryResponse,
+        RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId,
+        RuntimeMetadataQueryRequest, SearchPlaneActivateGenerationRequest,
+        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
+        SymbolCandidate, TextQueryRequest, TextQuerySyntax, UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -2891,7 +3014,7 @@ mod tests {
         let repo_id = RepoId::new("repo-map-ipc");
         let revision_id = RevisionId::new("rev-map-ipc");
         ledger.lexical_seal(ManifestGeneration::new(9));
-        ledger.semantic_seal(ManifestGeneration::new(9));
+        ledger.semantic_seal_with_digest(ManifestGeneration::new(9), "manifest-digest-9");
         ledger.record_track_materialized(
             &repo_id,
             &revision_id,
@@ -2910,13 +3033,14 @@ mod tests {
             &revision_id,
             SearchPlaneTrackKind::Semantic,
             ManifestGeneration::new(9),
-            None,
+            Some("manifest-digest-9"),
         );
-        ledger.record_track_seal(
+        ledger.record_track_seal_with_digest(
             &repo_id,
             &revision_id,
             SearchPlaneTrackKind::Semantic,
             ManifestGeneration::new(9),
+            "manifest-digest-9",
         );
         Arc::new(RwLock::new(ledger))
     }
@@ -3812,6 +3936,167 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn semantic_dispatch_rejects_active_digest_mismatch_with_exact_code() -> TestResult {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.keep())?);
+        activation_catalog.activate(&SearchPlaneActivateGenerationRequest {
+            repo_id: RepoId::new("repo-map-ipc"),
+            revision_id: RevisionId::new("rev-map-ipc"),
+            manifest_generation: ManifestGeneration::new(9),
+            manifest_digest: "activation-digest-9".to_string(),
+            tracks: vec![SearchPlaneTrackKind::Semantic],
+        })?;
+        let mut ledger = Ledger::default();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            ManifestGeneration::new(9),
+            Some("observed-digest-9"),
+        );
+        ledger.record_track_seal_with_digest(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            ManifestGeneration::new(9),
+            "observed-digest-9",
+        );
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            Arc::new(RwLock::new(ledger)),
+            activation_catalog,
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                query_text: "focus alpha".to_string(),
+                generation: None,
+                generation_selector: Some(GenerationSelector::Active {
+                    repo_id: RepoId::new("repo-map-ipc"),
+                    revision_id: RevisionId::new("rev-map-ipc"),
+                }),
+                lexical_scope: None,
+                top_k: 3,
+            }));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != crate::readiness::ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH {
+            return Err(format!("unexpected semantic mismatch code: {code}").into());
+        }
+        if !message.contains("expected=activation-digest-9")
+            || !message.contains("observed=observed-digest-9")
+        {
+            return Err(format!("unexpected semantic mismatch message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_dispatch_rejects_unsealed_pinned_generation_with_exact_code() -> TestResult {
+        let mut ledger = Ledger::default();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            ManifestGeneration::new(9),
+            Some("manifest-digest-9"),
+        );
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            Arc::new(RwLock::new(ledger)),
+            test_activation_catalog()?,
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                query_text: "focus alpha".to_string(),
+                generation: Some(GenerationPin::new(
+                    RepoId::new("repo-map-ipc"),
+                    RevisionId::new("rev-map-ipc"),
+                    ManifestGeneration::new(9),
+                )),
+                generation_selector: None,
+                lexical_scope: None,
+                top_k: 3,
+            }));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != crate::readiness::ERR_SEMANTIC_GENERATION_NOT_SEALED {
+            return Err(format!("unexpected semantic unsealed code: {code}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hybrid_dispatch_rejects_unsealed_semantic_generation_with_exact_code() -> TestResult {
+        let mut ledger = Ledger::default();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Lexical,
+            ManifestGeneration::new(9),
+            None,
+        );
+        ledger.record_track_seal(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Lexical,
+            ManifestGeneration::new(9),
+        );
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            ManifestGeneration::new(9),
+            Some("manifest-digest-9"),
+        );
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            Arc::new(RwLock::new(ledger)),
+            test_activation_catalog()?,
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "scope".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 2,
+                },
+                semantic_query_text: "scope alpha".to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 2,
+            }));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != crate::readiness::ERR_SEMANTIC_GENERATION_NOT_SEALED {
+            return Err(format!("unexpected hybrid unsealed code: {code}").into());
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // LXE-02 / LXE-09 wiring tests.
     //
@@ -4583,6 +4868,13 @@ mod tests {
                 CoreError::Typed {
                     code: "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED".to_string(),
                     message: "plan".to_string(),
+                },
+                "lq_typed_error_plan_limit_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "QUERY_TIMEOUT".to_string(),
+                    message: "timeout".to_string(),
                 },
                 "lq_typed_error_plan_limit_total",
             ),

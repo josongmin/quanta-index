@@ -15,7 +15,8 @@
 //! | `repo:` / `file:` / `path:` / `lang:` / `rev:` / `author:` / `committer:` / `message:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
 //! | `dirty:` / `fork:` / `archived:` / `visibility:` / `context:` | adopted | active LQ filter surface |
 //! | `content:` | normalized | `Pattern{kind: Literal, body: <value>}` |
-//! | `index:` / `boost:` / `timeout:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
+//! | `index:` / `boost:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
+//! | `timeout:` | adopted | `LqOptions.timeout_ms` |
 //! | `file:contains(...)` / `file:has.content(...)` | adopted | active LQ predicate leaf or executable pattern lowering downstream |
 //! | remaining `repo:` / `file:` predicates | adopted | active LQ predicate leaf lowering downstream |
 //! | unknown name | refused | `BRIDGE_UNSUPPORTED_FILTER` |
@@ -38,6 +39,7 @@ struct BridgeMetadata {
     pattern_type: Option<LqPatternType>,
     case: Option<LqCase>,
     count: Option<LqCountBound>,
+    timeout_ms: Option<u64>,
 }
 
 impl BridgeMetadata {
@@ -47,6 +49,7 @@ impl BridgeMetadata {
             && self.pattern_type.is_none()
             && self.case.is_none()
             && self.count.is_none()
+            && self.timeout_ms.is_none()
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -61,6 +64,9 @@ impl BridgeMetadata {
         if let Some(count) = other.count {
             self.count = Some(count);
         }
+        if let Some(timeout_ms) = other.timeout_ms {
+            self.timeout_ms = Some(timeout_ms);
+        }
     }
 
     fn apply_to_query(self, query: &mut LqQuery) {
@@ -74,6 +80,9 @@ impl BridgeMetadata {
         }
         if let Some(count) = self.count {
             query.options.count = Some(count);
+        }
+        if let Some(timeout_ms) = self.timeout_ms {
+            query.options.timeout_ms = Some(timeout_ms);
         }
     }
 }
@@ -268,10 +277,7 @@ fn lower_filter(f: &SgFilter, metadata: &mut BridgeMetadata) -> Result<LowerOutc
             "Sourcegraph `boost:` is not representable on the active LQ contract",
         )),
         SgFilter::Context(v) => apply_bridge_filter("context", v, metadata),
-        SgFilter::Timeout(v) => Err(BridgeError::unsupported_directive(
-            &format!("timeout:{v}"),
-            "Sourcegraph `timeout:` is not representable on the active LQ contract",
-        )),
+        SgFilter::Timeout(v) => apply_bridge_filter("timeout", v, metadata),
     }
 }
 
@@ -623,6 +629,9 @@ fn apply_bridge_filter(
                 LqCountBound::Bounded(parsed)
             });
         }
+        "timeout" => {
+            metadata.timeout_ms = Some(parse_timeout_ms(value)?);
+        }
         "patterntype" => {
             metadata.pattern_type = Some(match value {
                 "literal" => LqPatternType::Literal,
@@ -657,6 +666,41 @@ fn apply_bridge_filter(
         }
     }
     Ok(LowerOutcome::Drop)
+}
+
+fn parse_timeout_ms(value: &str) -> Result<u64, BridgeError> {
+    let (digits, unit) = split_timeout_value(value).ok_or_else(|| {
+        BridgeError::translate_fail(format!(
+            "bridge: invalid timeout `{value}`: expected <int><unit> with unit in {{ms,s,m,h}}"
+        ))
+    })?;
+    let magnitude: u64 = digits.parse().map_err(|err| {
+        BridgeError::translate_fail(format!("bridge: invalid timeout `{value}`: {err}"))
+    })?;
+    let multiplier: u64 = match unit {
+        "ms" => 1,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        _ => {
+            return Err(BridgeError::translate_fail(format!(
+                "bridge: invalid timeout `{value}`: unit must be one of {{ms,s,m,h}}"
+            )));
+        }
+    };
+    magnitude.checked_mul(multiplier).ok_or_else(|| {
+        BridgeError::translate_fail(format!(
+            "bridge: invalid timeout `{value}`: duration exceeds u64 milliseconds"
+        ))
+    })
+}
+
+fn split_timeout_value(value: &str) -> Option<(&str, &str)> {
+    let digit_len = value.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_len == 0 || digit_len == value.len() {
+        return None;
+    }
+    Some(value.split_at(digit_len))
 }
 
 fn lower_yes_no_only_filter(name: &str, value: &str) -> Result<LqYesNoOnly, BridgeError> {
@@ -777,11 +821,12 @@ mod tests {
     }
 
     #[test]
-    fn case_count_and_patterntype_lower_into_canonical_options() {
-        let lq = run("case:yes count:all patterntype:regexp foo");
+    fn case_count_timeout_and_patterntype_lower_into_canonical_options() {
+        let lq = run("case:yes count:all timeout:5s patterntype:regexp foo");
         assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Keyword("foo".to_string())));
         assert_eq!(lq.options.case, Some(LqCase::Sensitive));
         assert_eq!(lq.options.count, Some(LqCountBound::All));
+        assert_eq!(lq.options.timeout_ms, Some(5_000));
         assert_eq!(lq.options.pattern_type, LqPatternType::Regexp);
     }
 
@@ -865,17 +910,32 @@ mod tests {
     }
 
     #[test]
-    fn boost_and_timeout_are_typed_refusals() {
-        for (sg, construct) in [("boost:5 foo", "boost:5"), ("timeout:1s foo", "timeout:1s")] {
-            match translate_query(parse(sg), &ver(), sg.len()) {
-                Ok(_) => assert!(false, "{sg} must refuse"),
-                Err(e) => {
-                    assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
-                    match e.source_construct.as_deref() {
-                        Some(s) => assert_eq!(s, construct),
-                        None => assert!(false, "expected source_construct"),
-                    }
+    fn boost_is_typed_refusal() {
+        match translate_query(parse("boost:5 foo"), &ver(), "boost:5 foo".len()) {
+            Ok(_) => assert!(false, "boost:5 foo must refuse"),
+            Err(e) => {
+                assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
+                match e.source_construct.as_deref() {
+                    Some(s) => assert_eq!(s, "boost:5"),
+                    None => assert!(false, "expected source_construct"),
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn timeout_lowers_into_canonical_option() {
+        let lowered = run("timeout:0ms /foo.*/");
+        assert_eq!(lowered.options.timeout_ms, Some(0));
+    }
+
+    #[test]
+    fn invalid_timeout_is_translate_fail() {
+        match translate_query(parse("timeout:soon foo"), &ver(), "timeout:soon foo".len()) {
+            Ok(_) => assert!(false, "timeout:soon foo must fail"),
+            Err(e) => {
+                assert_eq!(e.code, BridgeErrorCode::BridgeTranslateFail);
+                assert!(e.detail.contains("invalid timeout"));
             }
         }
     }

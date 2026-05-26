@@ -296,9 +296,6 @@ crate quanta_index_contract
 │       ├── struct SearchPlaneExplainQueryRequest: pub
 │       ├── struct SearchPlaneExplainQueryRequestVisitor: pub(self)
 │       │   └── type Value: pub(self)
-│       ├── struct SearchPlaneSourcegraphQueryRequest: pub
-│       ├── struct SearchPlaneSourcegraphQueryRequestVisitor: pub(self)
-│       │   └── type Value: pub(self)
 │       ├── struct SemanticQueryRequest: pub
 │       ├── struct SemanticQueryRequestVisitor: pub(self)
 │       │   └── type Value: pub(self)
@@ -312,29 +309,57 @@ crate quanta_index_contract
 │   ├── struct RepoMapActivateGenerationRequest: pub
 │   ├── struct RepoMapActivateGenerationRequestV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
+│   ├── struct RepoMapCallEdge: pub
+│   ├── struct RepoMapCallEdgeVisitor: pub(self)
+│   │   └── type Value: pub(self)
 │   ├── enum RepoMapChunkExactness: pub
-│   ├── struct RepoMapChunkRecordDto: pub
-│   ├── struct RepoMapChunkRecordDtoV1Visitor: pub(self)
+│   ├── struct RepoMapChunkNode: pub
+│   ├── struct RepoMapChunkNodeVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapContainsEdge: pub
+│   ├── struct RepoMapContainsEdgeVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapDependsOnEdge: pub
+│   ├── struct RepoMapDependsOnEdgeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── enum RepoMapDocType: pub
+│   ├── enum RepoMapEdge: pub
 │   ├── enum RepoMapEdgeKind: pub
+│   ├── struct RepoMapEdgeVisitor: pub(self)
+│   │   └── type Value: pub(self)
 │   ├── struct RepoMapEntryDto: pub
 │   ├── struct RepoMapEntryDtoV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── enum RepoMapExactnessSummary: pub
-│   ├── struct RepoMapFileIndexRecord: pub
-│   ├── struct RepoMapFileIndexRecordV1Visitor: pub(self)
+│   ├── struct RepoMapFileNode: pub
+│   ├── struct RepoMapFileNodeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct RepoMapFocusSubjectDto: pub
 │   ├── struct RepoMapFocusSubjectDtoV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
+│   ├── struct RepoMapGraphCoverage: pub
 │   ├── enum RepoMapGraphCoverageClass: pub
-│   ├── struct RepoMapGraphEdgeDto: pub
-│   ├── struct RepoMapGraphEdgeDtoV1Visitor: pub(self)
+│   ├── struct RepoMapGraphCoverageVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapImportEdge: pub
+│   ├── struct RepoMapImportEdgeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── enum RepoMapItemIndexAvailability: pub
+│   ├── struct RepoMapModuleId: pub
+│   ├── struct RepoMapModuleNode: pub
+│   ├── struct RepoMapModuleNodeVisitor: pub(self)
+│   │   └── type Value: pub(self)
 │   ├── struct RepoMapMutationAck: pub
 │   ├── struct RepoMapMutationAckV1Visitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── enum RepoMapNode: pub
+│   ├── enum RepoMapNodeRef: pub
+│   ├── struct RepoMapNodeRefVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapNodeVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── struct RepoMapOwnsChunkEdge: pub
+│   ├── struct RepoMapOwnsChunkEdgeVisitor: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct RepoMapQueryRequest: pub
 │   ├── struct RepoMapQueryRequestV1Visitor: pub(self)
@@ -349,8 +374,8 @@ crate quanta_index_contract
 │   ├── struct RepoMapSourceBundle: pub
 │   ├── struct RepoMapSourceBundleV1Visitor: pub(self)
 │   │   └── type Value: pub(self)
-│   ├── struct RepoMapSymbolRecordDto: pub
-│   └── struct RepoMapSymbolRecordDtoV1Visitor: pub(self)
+│   ├── struct RepoMapSymbolNode: pub
+│   └── struct RepoMapSymbolNodeVisitor: pub(self)
 │       └── type Value: pub(self)
 └── mod results: pub
     ├── mod commit_candidate: pub(self)
@@ -394,16 +419,18 @@ crate quanta_index_contract
         ├── struct SearchPlaneRuntimeMetadataQueryResponse: pub
         ├── struct SearchPlaneRuntimeMetadataQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── struct SearchPlaneSourcegraphQueryResponse: pub
-        ├── struct SearchPlaneSourcegraphQueryResponseVisitor: pub(self)
-        │   └── type Value: pub(self)
         ├── struct SearchPlaneStructuralQueryResponse: pub
         ├── struct SearchPlaneStructuralQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
         ├── struct SemanticQueryResponse: pub
         ├── struct SemanticQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
-        ├── type SymbolQueryResponse: pub
+        ├── struct SymbolCandidate: pub
+        ├── struct SymbolCandidateVisitor: pub(self)
+        │   └── type Value: pub(self)
+        ├── struct SymbolQueryResponse: pub
+        ├── struct SymbolQueryResponseVisitor: pub(self)
+        │   └── type Value: pub(self)
         ├── struct TextQueryResponse: pub
         └── struct TextQueryResponseVisitor: pub(self)
             └── type Value: pub(self)

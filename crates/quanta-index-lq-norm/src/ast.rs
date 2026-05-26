@@ -5,7 +5,7 @@
 // `IntoLqQuery for LqNormalizedQuery`. The shape here covers the subset of
 // dsl.md §2 that PRE-NORM actually executes: boolean layer, pattern leaves,
 // filters, directives, structural-block leaf, and the `LqOptions` knobs
-// touched by normalization (case, patterntype, count).
+// touched by normalization (case, patterntype, count, timeout).
 //
 // D18: every serde impl on this module is hand-rolled.
 
@@ -386,6 +386,7 @@ pub struct LqOptions {
     pub pattern_type: LqPatternType,
     pub case: Option<LqCase>,
     pub count: Option<LqCountBound>,
+    pub timeout_ms: Option<u64>,
 }
 
 impl LqOptions {
@@ -395,6 +396,7 @@ impl LqOptions {
             pattern_type: LqPatternType::Standard,
             case: None,
             count: None,
+            timeout_ms: None,
         }
     }
 }
@@ -2226,7 +2228,7 @@ impl serde::Serialize for LqOptions {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(3))?;
+        let mut m = ser.serialize_map(Some(4))?;
         m.serialize_entry("pattern_type", &self.pattern_type)?;
         match &self.case {
             Some(c) => m.serialize_entry("case", c)?,
@@ -2235,6 +2237,10 @@ impl serde::Serialize for LqOptions {
         match &self.count {
             Some(c) => m.serialize_entry("count", c)?,
             None => m.serialize_entry::<_, Option<LqCountBound>>("count", &None)?,
+        }
+        match &self.timeout_ms {
+            Some(timeout_ms) => m.serialize_entry("timeout_ms", timeout_ms)?,
+            None => m.serialize_entry::<_, Option<u64>>("timeout_ms", &None)?,
         }
         m.end()
     }
@@ -2258,11 +2264,15 @@ impl<'de> serde::Deserialize<'de> for LqOptions {
                 let mut pattern_type: Option<LqPatternType> = None;
                 let mut case: Option<LqCase> = None;
                 let mut count: Option<LqCountBound> = None;
+                let mut timeout_ms: Option<u64> = None;
                 while let Some(k) = map.next_key::<String>()? {
                     match k.as_str() {
                         "pattern_type" => pattern_type = Some(map.next_value()?),
                         "case" => case = map.next_value()?,
                         "count" => count = map.next_value()?,
+                        "timeout_ms" => {
+                            timeout_ms = map.next_value::<Option<u64>>()?.or(timeout_ms);
+                        }
                         _ => {
                             let _ignored: serde::de::IgnoredAny = map.next_value()?;
                         }
@@ -2272,6 +2282,7 @@ impl<'de> serde::Deserialize<'de> for LqOptions {
                     pattern_type: pattern_type.unwrap_or(LqPatternType::Standard),
                     case,
                     count,
+                    timeout_ms,
                 })
             }
         }

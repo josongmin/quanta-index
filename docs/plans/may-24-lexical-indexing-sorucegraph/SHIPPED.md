@@ -1,5 +1,14 @@
 # LQ Family Search Plane — Wave 0–8 Shipped
 
+Status: `historical-program-record`
+
+Current-tree note (2026-05-27):
+
+- this document is a historical ship record, not the current architecture SSOT
+- channel-centric runtime references below predate the de-channelize cutover
+- current authority lives in `search-plane` direct apply + persisted authority
+  stores, not `ChannelDispatcher` or the retired `quanta-index-channel` crate
+
 > Historical crate-local "where we landed" summary for the May-24 Sourcegraph-class Lexical Kernel program.
 > Companion doc to [implementation-plan.md](implementation-plan.md) (per-wave gates), [tickets/INDEX.md](tickets/INDEX.md) (RFC reconciliation), [rfc.md](rfc.md) (amended), [feature-scope.md](feature-scope.md), [usecase.md](usecase.md), [dsl.md](dsl.md).
 > Parent SSOTs: [../../ssot/channel-architecture.md](../../ssot/channel-architecture.md), [../../ssot/producer-handoff.md](../../ssot/producer-handoff.md).

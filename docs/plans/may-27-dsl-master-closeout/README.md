@@ -45,11 +45,16 @@ Current source-backed state, not stale packet prose:
   typed-hole surface parity, and regex bodies by rewriting only into native
   executable structural semantics; broader non-executable filter breadth stays
   typed fail-closed
-- producer-side history / runtime / structural channel ops already exist in the
-  contract and are wired into search-side ingest/readiness paths
+- producer-side history / runtime / structural public ingest truth is the typed
+  batch UDS surface; delete / evict / tombstone reopen proof now exists for the
+  repo-local search-side ingest/readiness path
 - bounded query observability already exists as a closed-dimension
-  `MetricSample + Dimensions` sink; remaining work is route coverage, proof, and
-  doc drift closure rather than inventing a new metrics subsystem
+  `MetricSample + Dimensions` sink; route coverage now includes lexical
+  regex-timeout fail-closed proof and the remaining work is doc drift closure
+  rather than inventing a new metrics subsystem
+- native and Sourcegraph lexical surfaces now lower `timeout:` into canonical
+  query options for regex-backed execution; structural / history / runtime
+  routes keep timeout typed fail-closed where no executable semantics exist
 - `select:path` and `select:content.match` already have owner proof; remaining
   work is matrix re-anchoring rather than executor bring-up
 
@@ -114,8 +119,9 @@ This packet is materially complete only when all are true:
 3. current capability matrix rows align with actual proof for `select:path`,
    `select:content.match`, explain / bridge / runtime rows, and route-specific
    typed failure behavior
-4. producer-side history / runtime / structural emission has real positive proof
-   rather than fixture-only evidence
+4. producer-side history / runtime / structural typed-batch ingest, including
+   delete / evict / tombstone semantics, has real public UDS proof and survives
+   reopen without drifting
 5. structural / bridge / history / runtime query paths emit bounded metrics with
    no raw query text or file path leakage
 6. Sourcegraph structural route and structural bridge packet stay aligned with

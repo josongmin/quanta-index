@@ -1,8 +1,8 @@
-# Producer Handoff — Wire Shapes, Emission Ordering, New Channel Ops
+# Producer Handoff — Historical Pre-De-channelize Wire Shapes
 
-> Status: `Proposed — pending producer agreement. Authoritative once both teams sign off.`
+> Status: `Historical archive. Not current-tree authority after the 2026-05-27 de-channelize cutover.`
 > Owners: producer-side lead (`semantica-codegraph-v2`), search-side lead (this repo).
-> Parent SSOT: [channel-architecture.md](channel-architecture.md) (this doc extends §3.1 op catalogue; it does NOT supersede).
+> Parent SSOT: [channel-architecture.md](channel-architecture.md) (historical parent; this doc extends its archived channel op catalogue).
 > Posture: **breaking-first** per [../../CLAUDE.md](../../CLAUDE.md) § Agent change posture. No long-lived shims.
 
 Current-tree note (2026-05-27):
@@ -17,9 +17,13 @@ Current-tree note (2026-05-27):
 - semantic query/public SDK truth has also changed: public semantic publish is
   removed and semantic query/hybrid are text-only
 
-This is the single authoritative spec the producer team implements against to unblock [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) integration. It formalises the 9 new channel ops and resolves the 11 AMB-PROD-* ambiguities surfaced in [INDEX.md §3.7](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md).
+This is a historical archive of the old producer/search channel contract that
+was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
 
-If anything here conflicts with [channel-architecture.md](channel-architecture.md), the parent SSOT wins; this document is then defective and must be corrected.
+If anything here conflicts with live source, live source wins. For the current
+tree use `SearchPlaneIngestIpcRequest::{PublishHistoryBatch, PublishDirtyBatch,
+PublishStructuralBatch}` plus the persisted authority stores in
+`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`.
 
 ---
 

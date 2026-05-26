@@ -12,7 +12,8 @@ mod e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, SearchExplanation, SearchPlaneTrackKind, TextQuerySyntax,
+    EarlyStopReason, EngineTouched, HistoryIngestBatch, HistoryRefDelete, HistoryRefMutation,
+    SearchExplanation, SearchPlaneTrackKind, TextQuerySyntax,
 };
 
 use crate::e2e_harness::{E2eRuntime, E2eTypedError};
@@ -122,6 +123,92 @@ fn query_structural_ids(
         ));
     }
     Ok(result.candidate_ids)
+}
+
+fn query_history_commit_ids(rt: &mut E2eRuntime, query_text: &str) -> AnyResult<Vec<String>> {
+    let result = rt.query_history(TextQuerySyntax::Sourcegraph, query_text, 10);
+    require_no_typed_error(result.typed_error, "query_history")?;
+    Ok(result.commit_ids)
+}
+
+fn query_runtime_dirty_ids(rt: &mut E2eRuntime, query_text: &str) -> AnyResult<Vec<String>> {
+    let result = rt.query_runtime_metadata(TextQuerySyntax::Native, query_text, 10);
+    require_no_typed_error(result.typed_error, "query_runtime_metadata")?;
+    Ok(result.candidate_ids)
+}
+
+fn require_structural_typed_error_code(
+    rt: &mut E2eRuntime,
+    syntax: TextQuerySyntax,
+    query_text: &str,
+    expected_code: &str,
+) -> AnyResult<()> {
+    let result = rt.query_structural(syntax, query_text, 10);
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed structural error for {query_text:?}"))?;
+    if error.code != expected_code {
+        return Err(anyhow::anyhow!(
+            "expected {expected_code} for structural query {query_text:?}, got {}",
+            error.code
+        ));
+    }
+    Ok(())
+}
+
+fn history_rev_delete_batch(rt: &E2eRuntime, file_path: &str) -> HistoryIngestBatch {
+    use quanta_index_contract::lex::{CommitRecord, CommitSha};
+
+    let commit_sha = CommitSha::from_bytes([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ]);
+    HistoryIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        manifest_digest: Some(format!(
+            "history-delete:{}:{}",
+            file_path,
+            rt.current_generation().get()
+        )),
+        batch_digest: format!(
+            "history-delete-batch:{file_path}:{}",
+            rt.current_generation().get()
+        ),
+        commits: vec![CommitRecord {
+            wire_version: 1,
+            sha: commit_sha,
+            parents: Vec::new(),
+            author_time_ms: 11,
+            committer_time_ms: 12,
+            applied_at_ms: 13,
+            author: "alice".to_string().into_boxed_str(),
+            committer: "alice".to_string().into_boxed_str(),
+            message: "fix: sample history".to_string().into_boxed_str(),
+            is_merge: false,
+            tags: vec!["v1.0.0".to_string().into_boxed_str()],
+        }],
+        refs: vec![
+            HistoryRefMutation::Upsert(quanta_index_contract::HistoryRefUpsert {
+                name: "refs/heads/main".to_string().into_boxed_str(),
+                sha: commit_sha,
+            }),
+            HistoryRefMutation::Delete(HistoryRefDelete {
+                name: "refs/heads/main".to_string().into_boxed_str(),
+            }),
+        ],
+        tags: vec![
+            HistoryRefMutation::Upsert(quanta_index_contract::HistoryRefUpsert {
+                name: "v1.0.0".to_string().into_boxed_str(),
+                sha: commit_sha,
+            }),
+            HistoryRefMutation::Delete(HistoryRefDelete {
+                name: "v1.0.0".to_string().into_boxed_str(),
+            }),
+        ],
+        diff_hunks: Vec::new(),
+    }
 }
 
 #[test]
@@ -343,5 +430,144 @@ fn fresh_reingest_replays_equivalent_structural_native_and_sourcegraph_ids() -> 
             "fresh re-ingest diverged for Sourcegraph structural replay proof: baseline={baseline_sourcegraph:?} replay={replay_sourcegraph:?}"
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_history_rev_delete_state_without_dropping_commit_matches() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let path = "src/history.rs";
+    rt.ingest_text("repo-e2e", path, "history lexical proof")?;
+    rt.ingest_history_fixture(path)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+
+    let before_rev_ref = query_history_commit_ids(&mut rt, "type:commit rev:refs/heads/main fix")?;
+    let before_rev_tag = query_history_commit_ids(&mut rt, "type:commit rev:v1.0.0 fix")?;
+    if before_rev_ref.len() != 1 || before_rev_tag.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "history fixture failed to expose initial rev resolution: ref={before_rev_ref:?} tag={before_rev_tag:?}"
+        ));
+    }
+
+    rt.publish_history_batch(history_rev_delete_batch(&rt, path))?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+
+    let after_plain = query_history_commit_ids(&mut rt, "type:commit fix")?;
+    let after_rev_ref = query_history_commit_ids(&mut rt, "type:commit rev:refs/heads/main fix")?;
+    let after_rev_tag = query_history_commit_ids(&mut rt, "type:commit rev:v1.0.0 fix")?;
+    if after_plain.len() != 1 || !after_rev_ref.is_empty() || !after_rev_tag.is_empty() {
+        return Err(anyhow::anyhow!(
+            "history delete-state drifted before reopen: plain={after_plain:?} ref={after_rev_ref:?} tag={after_rev_tag:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened_plain = query_history_commit_ids(&mut rt, "type:commit fix")?;
+    let reopened_rev_ref =
+        query_history_commit_ids(&mut rt, "type:commit rev:refs/heads/main fix")?;
+    let reopened_rev_tag = query_history_commit_ids(&mut rt, "type:commit rev:v1.0.0 fix")?;
+    if reopened_plain.len() != 1 || !reopened_rev_ref.is_empty() || !reopened_rev_tag.is_empty() {
+        return Err(anyhow::anyhow!(
+            "history delete-state changed after reopen: plain={reopened_plain:?} ref={reopened_rev_ref:?} tag={reopened_rev_tag:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_dirty_evict_empty_state() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let path = "src/dirty.rs";
+    let content = "todo dirty scope";
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_dirty_for_path(path, 100)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+
+    let before = query_runtime_dirty_ids(&mut rt, "dirty:yes todo")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime dirty fixture failed before evict: {before:?}"
+        ));
+    }
+
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_dirty_for_path(path, 200)?;
+    rt.evict_dirty_for_path(path)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+
+    let after = query_runtime_dirty_ids(&mut rt, "dirty:yes todo")?;
+    if !after.is_empty() {
+        return Err(anyhow::anyhow!(
+            "runtime dirty evict did not clear candidates before reopen: {after:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_dirty_ids(&mut rt, "dirty:yes todo")?;
+    if !reopened.is_empty() {
+        return Err(anyhow::anyhow!(
+            "runtime dirty evict state changed after reopen: {reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let path = "src/structural.rs";
+    let content = "fn restart_structural_tombstone() {}";
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
+    _ = rt.seal_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+
+    let before = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+    )?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "structural tombstone fixture failed before tombstone: {before:?}"
+        ));
+    }
+
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
+    rt.tombstone_structural_for_path(path)?;
+    _ = rt.seal_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+
+    require_structural_typed_error_code(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        "STR_GENERATION_NOT_READY",
+    )?;
+
+    let mut rt = rt.reopen();
+    require_structural_typed_error_code(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        "STR_GENERATION_NOT_READY",
+    )?;
     Ok(())
 }
