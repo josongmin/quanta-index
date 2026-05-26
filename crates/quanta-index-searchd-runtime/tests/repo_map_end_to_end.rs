@@ -341,7 +341,7 @@ fn repo_map_query_roundtrip_through_searchd_socket() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-repomap-test-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -428,7 +428,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-repomap-persist-seed-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -480,7 +480,7 @@ fn repo_map_query_survives_runtime_restart_from_persisted_state() -> TestResult 
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-repomap-persist-restore-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -534,7 +534,7 @@ fn repo_map_query_without_materialized_snapshot_fails_closed() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-repomap-missing-test-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -575,7 +575,7 @@ fn cross_socket_requests_fail_closed() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-repomap-cross-socket-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || query_socket.exists()) {
         shutdown.store(true, Ordering::Release);

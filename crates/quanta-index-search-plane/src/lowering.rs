@@ -1,8 +1,9 @@
 use quanta_index_contract::{
-    LqExpr, LqLeaf, LqPatternType, LqQuery, TextQueryRequest, TextQuerySyntax,
+    LqExpr, LqLeaf, LqPatternType, LqQuery, LqStructuralBlock, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
-    BridgeError, BridgeErrorCode, SourcegraphVersionTag, parse_sourcegraph, translate_query,
+    BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
+    translate_query,
 };
 use quanta_index_lq_norm::{
     LqParseError, LqParseErrorCode, normalizer::normalize, parser::parse, tokenizer::tokenize,
@@ -25,6 +26,14 @@ pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreErr
     clippy::redundant_pub_crate,
     reason = "crate-private lowering helpers are shared across sibling modules"
 )]
+pub(crate) fn lower_sourcegraph_bridge_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
+    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Bridge)
+}
+
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private lowering helpers are shared across sibling modules"
+)]
 pub(crate) fn lower_sourcegraph_structural_query_text(
     query_text: &str,
 ) -> Result<LqQuery, CoreError> {
@@ -34,6 +43,7 @@ pub(crate) fn lower_sourcegraph_structural_query_text(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourcegraphLoweringRoute {
     Lexical,
+    Bridge,
     Structural,
 }
 
@@ -42,13 +52,122 @@ fn lower_sourcegraph_query_text_for_route(
     route: SourcegraphLoweringRoute,
 ) -> Result<LqQuery, CoreError> {
     let sourcegraph = parse_sourcegraph(query_text).map_err(|err| map_bridge_error(&err))?;
+    let (sourcegraph, saw_structural_patterntype) = match route {
+        SourcegraphLoweringRoute::Lexical => (sourcegraph, false),
+        SourcegraphLoweringRoute::Bridge | SourcegraphLoweringRoute::Structural => {
+            strip_sourcegraph_structural_patterntype(sourcegraph)
+                .map_err(|err| map_bridge_error(&err))?
+        }
+    };
     let version = SourcegraphVersionTag::supported().map_err(|err| map_bridge_error(&err))?;
-    let query = translate_query(sourcegraph, &version, query_text.len())
+    let mut query = translate_query(sourcegraph, &version, query_text.len())
         .map_err(|err| map_bridge_error(&err))?;
+    if saw_structural_patterntype {
+        query.options.pattern_type = LqPatternType::Structural;
+    }
     match route {
         SourcegraphLoweringRoute::Lexical => reject_sourcegraph_structural_lexical_shape(query),
+        SourcegraphLoweringRoute::Bridge => {
+            if saw_structural_patterntype {
+                lower_sourcegraph_structural_shape(query_text, query)
+            } else {
+                Ok(query)
+            }
+        }
         SourcegraphLoweringRoute::Structural => {
+            if !saw_structural_patterntype {
+                return Err(CoreError::Typed {
+                    code: BridgeErrorCode::BridgeTranslateFail
+                        .as_code_str()
+                        .to_string(),
+                    message:
+                        "bridge: Sourcegraph structural route requires `patterntype:structural`"
+                            .to_string(),
+                });
+            }
             lower_sourcegraph_structural_shape(query_text, query)
+        }
+    }
+}
+
+fn strip_sourcegraph_structural_patterntype(
+    query: SgQuery,
+) -> Result<(SgQuery, bool), BridgeError> {
+    match query {
+        SgQuery::Pattern { .. } | SgQuery::Predicate { .. } => Ok((query, false)),
+        SgQuery::And(children) => {
+            let mut lowered = Vec::with_capacity(children.len());
+            let mut saw = false;
+            for child in children {
+                let (child, child_saw) = strip_sourcegraph_structural_patterntype(child)?;
+                lowered.push(child);
+                saw |= child_saw;
+            }
+            Ok((SgQuery::And(lowered), saw))
+        }
+        SgQuery::Or(children) => {
+            let mut lowered = Vec::with_capacity(children.len());
+            let mut saw = false;
+            for child in children {
+                let (child, child_saw) = strip_sourcegraph_structural_patterntype(child)?;
+                lowered.push(child);
+                saw |= child_saw;
+            }
+            Ok((SgQuery::Or(lowered), saw))
+        }
+        SgQuery::Not(inner) => {
+            let (inner, saw) = strip_sourcegraph_structural_patterntype(*inner)?;
+            Ok((SgQuery::Not(Box::new(inner)), saw))
+        }
+        SgQuery::Filtered { filters, body } => {
+            let mut kept_filters = Vec::with_capacity(filters.len());
+            let mut saw = false;
+            for filter in filters {
+                match filter {
+                    SgFilter::Patterntype(value) if value.as_ref() == "structural" => {
+                        saw = true;
+                    }
+                    SgFilter::Patterntype(value) => {
+                        return Err(BridgeError::translate_fail(format!(
+                            "bridge: Sourcegraph structural route requires `patterntype:structural`, got `patterntype:{value}`"
+                        )));
+                    }
+                    other @ (SgFilter::Repo(_)
+                    | SgFilter::File(_)
+                    | SgFilter::Path(_)
+                    | SgFilter::Lang(_)
+                    | SgFilter::Rev(_)
+                    | SgFilter::Author(_)
+                    | SgFilter::Committer(_)
+                    | SgFilter::Message(_)
+                    | SgFilter::Type(_)
+                    | SgFilter::Case(_)
+                    | SgFilter::Select(_)
+                    | SgFilter::Count(_)
+                    | SgFilter::Dirty(_)
+                    | SgFilter::Fork(_)
+                    | SgFilter::Archived(_)
+                    | SgFilter::Content(_)
+                    | SgFilter::Visibility(_)
+                    | SgFilter::Context(_)
+                    | SgFilter::Index(_)
+                    | SgFilter::Boost(_)
+                    | SgFilter::Timeout(_)) => kept_filters.push(other),
+                }
+            }
+            let (body, body_saw) = strip_sourcegraph_structural_patterntype(*body)?;
+            saw |= body_saw;
+            if kept_filters.is_empty() {
+                Ok((body, saw))
+            } else {
+                Ok((
+                    SgQuery::Filtered {
+                        filters: kept_filters,
+                        body: Box::new(body),
+                    },
+                    saw,
+                ))
+            }
         }
     }
 }
@@ -86,45 +205,81 @@ fn lower_sourcegraph_structural_shape(
                 .to_string(),
         });
     }
-    let structural_body = match &query.expr {
-        LqExpr::Leaf(LqLeaf::Keyword(body) | LqLeaf::Phrase(body)) => body.clone(),
-        LqExpr::Empty => {
-            return Err(CoreError::Typed {
-                code: BridgeErrorCode::BridgeTranslateFail
-                    .as_code_str()
+    query.expr = rewrite_sourcegraph_structural_expr(query_text, &query.expr)?;
+    Ok(query)
+}
+
+fn rewrite_sourcegraph_structural_expr(
+    query_text: &str,
+    expr: &LqExpr,
+) -> Result<LqExpr, CoreError> {
+    match expr {
+        LqExpr::Empty => Err(CoreError::Typed {
+            code: BridgeErrorCode::BridgeTranslateFail
+                .as_code_str()
+                .to_string(),
+            message:
+                "bridge: Sourcegraph structural route requires at least one structural pattern body"
                     .to_string(),
-                message:
-                    "bridge: Sourcegraph structural route requires exactly one structural pattern body"
-                        .to_string(),
-            });
-        }
-        LqExpr::Leaf(LqLeaf::Regex(_)) => {
-            return Err(CoreError::Typed {
-                code: BridgeErrorCode::BridgeTranslateFail
-                    .as_code_str()
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword(body) | LqLeaf::Phrase(body)) => Ok(LqExpr::Leaf(
+            LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
+        )),
+        LqExpr::Leaf(LqLeaf::Regex(_)) => Err(CoreError::Typed {
+            code: BridgeErrorCode::BridgeTranslateFail
+                .as_code_str()
+                .to_string(),
+            message:
+                "bridge: regex pattern bodies are not supported on the Sourcegraph structural route"
                     .to_string(),
-                message:
-                    "bridge: regex pattern bodies are not supported on the Sourcegraph structural route"
-                        .to_string(),
-            });
-        }
+        }),
         LqExpr::Leaf(
             LqLeaf::RawString(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. },
         )
-        | LqExpr::Not(_)
-        | LqExpr::All(_)
-        | LqExpr::Any(_)
-        | LqExpr::SemanticVector { .. } => {
-            return Err(CoreError::Typed {
-                code: BridgeErrorCode::BridgeTranslateFail
-                    .as_code_str()
+        | LqExpr::SemanticVector { .. } => Err(CoreError::Typed {
+            code: BridgeErrorCode::BridgeTranslateFail
+                .as_code_str()
+                .to_string(),
+            message:
+                "bridge: Sourcegraph structural route accepts only structural pattern bodies plus executable filters"
                     .to_string(),
-                message:
-                    "bridge: Sourcegraph structural route accepts exactly one keyword/quoted pattern body plus executable filters"
-                        .to_string(),
-            });
-        }
-    };
+        }),
+        LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(rewrite_sourcegraph_structural_expr(
+            query_text, inner,
+        )?))),
+        LqExpr::All(children) => rewrite_sourcegraph_structural_children(
+            query_text,
+            children,
+            true,
+        ),
+        LqExpr::Any(children) => rewrite_sourcegraph_structural_children(
+            query_text,
+            children,
+            false,
+        ),
+    }
+}
+
+fn rewrite_sourcegraph_structural_children(
+    query_text: &str,
+    children: &[LqExpr],
+    all: bool,
+) -> Result<LqExpr, CoreError> {
+    let mut lowered = Vec::with_capacity(children.len());
+    for child in children {
+        lowered.push(rewrite_sourcegraph_structural_expr(query_text, child)?);
+    }
+    Ok(if all {
+        LqExpr::All(lowered)
+    } else {
+        LqExpr::Any(lowered)
+    })
+}
+
+fn lower_sourcegraph_structural_body(
+    query_text: &str,
+    structural_body: &str,
+) -> Result<LqStructuralBlock, CoreError> {
     let native_structural = lower_lq_query_text(&format!("match {{ {structural_body} }}"))?;
     let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = native_structural.expr else {
         return Err(CoreError::Typed {
@@ -136,8 +291,7 @@ fn lower_sourcegraph_structural_shape(
             ),
         });
     };
-    query.expr = LqExpr::Leaf(LqLeaf::StructuralBlock(block));
-    Ok(query)
+    Ok(block)
 }
 
 fn map_lq_error(err: &LqParseError) -> CoreError {
@@ -174,7 +328,8 @@ fn map_bridge_error(err: &BridgeError) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        lower_lq_query_text, lower_sourcegraph_query_text, lower_sourcegraph_structural_query_text,
+        lower_lq_query_text, lower_sourcegraph_bridge_query_text, lower_sourcegraph_query_text,
+        lower_sourcegraph_structural_query_text,
     };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
@@ -320,7 +475,13 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(lowered.options.pattern_type, LqPatternType::Structural);
+        if lowered.options.pattern_type != LqPatternType::Structural {
+            return Err(format!(
+                "expected structural pattern type, got {:?}",
+                lowered.options.pattern_type
+            )
+            .into());
+        }
         let LqExpr::Leaf(LqLeaf::StructuralBlock(block)) = lowered.expr else {
             return Err("expected structural leaf after SG structural lowering".into());
         };
@@ -337,27 +498,131 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
-    )]
     fn sourcegraph_structural_route_rejects_boolean_pattern_composition() -> TestResult {
-        let err = match lower_sourcegraph_structural_query_text(
-            r#"patterntype:structural "function_item" OR "identifier""#,
-        ) {
-            Ok(query) => {
-                return Err(
-                    format!("expected SG structural boolean rejection, got {query:?}").into(),
-                );
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "function_item" OR patterntype:structural "identifier""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG structural boolean lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                if children.len() != 2 {
+                    return Err(format!(
+                        "expected 2 boolean structural children, got {children:?}"
+                    )
+                    .into());
+                }
+                for child in children {
+                    if !matches!(child, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                        return Err(format!(
+                            "expected structural leaf in SG boolean tree, got {child:?}"
+                        )
+                        .into());
+                    }
+                }
             }
-            Err(err) => err,
-        };
-        let (code, message) = typed_error(err)?;
-        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
-        assert_eq!(
-            message,
-            "bridge: scoped filters under OR/NOT are not representable on the active LQ wire"
-        );
+            other @ (LqExpr::Empty
+            | LqExpr::Leaf(_)
+            | LqExpr::Not(_)
+            | LqExpr::All(_)
+            | LqExpr::SemanticVector { .. }) => {
+                return Err(format!("expected Any structural tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rewrites_boolean_not_pattern_composition() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "function_item" AND NOT "trait_item""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG structural boolean NOT lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [positive, negated] = children.as_slice() else {
+                    return Err(format!(
+                        "expected 2 structural boolean children, got {children:?}"
+                    )
+                    .into());
+                };
+                if !matches!(positive, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(format!(
+                        "expected structural leaf for positive SG branch, got {positive:?}"
+                    )
+                    .into());
+                }
+                match negated {
+                    LqExpr::Not(inner)
+                        if matches!(inner.as_ref(), LqExpr::Leaf(LqLeaf::StructuralBlock(_))) => {}
+                    other @ (LqExpr::Empty
+                    | LqExpr::Leaf(_)
+                    | LqExpr::Not(_)
+                    | LqExpr::All(_)
+                    | LqExpr::Any(_)
+                    | LqExpr::SemanticVector { .. }) => {
+                        return Err(format!(
+                            "expected structural NOT branch after SG lowering, got {other:?}"
+                        )
+                        .into());
+                    }
+                }
+            }
+            other @ (LqExpr::Empty
+            | LqExpr::Leaf(_)
+            | LqExpr::Not(_)
+            | LqExpr::Any(_)
+            | LqExpr::SemanticVector { .. }) => {
+                return Err(format!(
+                    "expected boolean structural tree after SG NOT lowering, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_bridge_lowering_rewrites_structural_boolean_route() -> TestResult {
+        let lowered = lower_sourcegraph_bridge_query_text(
+            r#"patterntype:structural "function_item" OR patterntype:structural "identifier""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG bridge structural lowering, got {err:?}").into()
+        })?;
+        if lowered.options.pattern_type != LqPatternType::Structural {
+            return Err(format!(
+                "expected structural pattern_type, got {:?}",
+                lowered.options.pattern_type
+            )
+            .into());
+        }
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [first, second] = children.as_slice() else {
+                    return Err(format!(
+                        "expected 2 structural boolean children, got {children:?}"
+                    )
+                    .into());
+                };
+                if !matches!(first, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(format!("expected structural positive leaf, got {first:?}").into());
+                }
+                if !matches!(second, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(format!("expected structural second leaf, got {second:?}").into());
+                }
+            }
+            other @ (LqExpr::Empty
+            | LqExpr::Leaf(_)
+            | LqExpr::Not(_)
+            | LqExpr::All(_)
+            | LqExpr::SemanticVector { .. }) => {
+                return Err(format!("expected structural OR tree, got {other:?}").into());
+            }
+        }
         Ok(())
     }
 

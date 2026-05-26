@@ -41,9 +41,7 @@ pub use channel::{
 };
 pub use ipc::*;
 pub use quanta_index_contract_base::{
-    BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide, FileId,
-    GenerationId, LexicalCandidate, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, StructuralBinding, StructuralCandidate,
+    FileId, GenerationId, ManifestDigest, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
 };
 pub use query::*;
 pub use repomap::*;

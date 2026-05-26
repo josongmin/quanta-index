@@ -2117,6 +2117,45 @@ mod tests {
     }
 
     #[test]
+    fn structural_block_parses_typed_hole_suffix_form() {
+        let q = parse_input("match { fn :[name.expr]() }");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                let captures: Vec<&crate::ast::LqStructuralNode> = block
+                    .exprs
+                    .iter()
+                    .flat_map(|expr| match expr {
+                        crate::ast::LqStructuralExpr::Pattern(nodes) => nodes.iter().collect(),
+                        _ => Vec::new(),
+                    })
+                    .filter(|n| {
+                        matches!(
+                            n,
+                            crate::ast::LqStructuralNode::Hole {
+                                name: Some(_),
+                                multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                            }
+                        )
+                    })
+                    .collect();
+                assert_eq!(captures.len(), 1);
+                if let Some(crate::ast::LqStructuralNode::Hole {
+                    name: Some(m),
+                    multiplicity: crate::ast::LqStructuralHoleMultiplicity::One,
+                }) = captures.first().copied()
+                {
+                    assert_eq!(m.as_str(), "name.expr");
+                } else {
+                    assert!(false, "expected :[name.expr] typed-hole alias");
+                }
+            }
+            other => {
+                assert!(false, "expected StructuralBlock leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
     fn structural_block_parses_nested_group() {
         let q = parse_input("match { fn $X() { $body } }");
         match q.expr {

@@ -1,6 +1,6 @@
 # LXE-09 - Structural Live Integration
 
-Status: `implemented[truthful-subset]`
+Status: `completed`
 Priority: `P1`
 Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md), [LXE-02](LXE-02-planner-authority-ir.md)
 

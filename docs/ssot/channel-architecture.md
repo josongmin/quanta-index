@@ -1,6 +1,17 @@
-# quanta-index Channel Architecture — Canonical SSOT
+# quanta-index Channel Architecture — Historical Pre-De-channelize SSOT
 
-Status: `Canonical architecture for this repo. Supersedes docs/ssot/may-23-storage-architecture-endgame-implementation.md`
+Status: `Historical design doc. Not current-tree authority after the 2026-05-27 de-channelize cutover.`
+
+Current tree truth:
+
+- `searchd-runtime` no longer runs subscriber replay loops in the hot path
+- `ChannelDispatcher` is not the runtime authority path
+- readiness and live materialization are driven by direct authority apply plus
+  persisted authority stores
+- use live source in `crates/quanta-index-searchd/src/app/runtime.rs`,
+  `crates/quanta-index-searchd-runtime/src/lib.rs`, and
+  `crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`
+  as the current authority instead of this document
 
 ## 0. Scope (narrow)
 

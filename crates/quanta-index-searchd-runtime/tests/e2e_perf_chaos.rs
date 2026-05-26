@@ -41,15 +41,7 @@ fn seed_hybrid_count_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     rt.ingest_text("repo-e2e", "src/alpha.rs", "scope alpha keep")?;
     rt.ingest_text("repo-e2e", "src/beta.rs", "scope beta keep")?;
     rt.ingest_text("repo-e2e", "src/gamma.rs", "scope gamma keep")?;
-
-    rt.ingest_semantic_embedding_for_path("src/alpha.rs", &[1.0, 0.0])?;
-    rt.ingest_semantic_embedding_for_path("src/beta.rs", &[0.9, 0.1])?;
-    rt.ingest_semantic_embedding_for_path("src/gamma.rs", &[0.8, 0.2])?;
-
-    _ = rt.seal_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    _ = rt.seal()?;
     rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
@@ -61,12 +53,8 @@ fn seed_hybrid_tie_fixture(rt: &mut E2eRuntime, count: usize) -> AnyResult<()> {
     for idx in 0..count {
         let path = format!("src/tie-{idx:02}.rs");
         rt.ingest_text("repo-e2e", &path, "scope tie keep")?;
-        rt.ingest_semantic_embedding_for_path(&path, &[1.0, 0.0])?;
     }
-    _ = rt.seal_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    _ = rt.seal()?;
     rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
@@ -79,50 +67,12 @@ fn oversized_raw_substring_query() -> String {
 }
 
 fn trigram_limit_raw_substring_query() -> String {
-    fn de_bruijn_symbols(alphabet: &[u8], order: usize) -> Vec<u8> {
-        let k = alphabet.len();
-        let mut a = vec![0usize; k.saturating_mul(order).saturating_add(1)];
-        let mut sequence = Vec::<usize>::new();
-
-        fn build(
-            t: usize,
-            p: usize,
-            k: usize,
-            order: usize,
-            a: &mut [usize],
-            sequence: &mut Vec<usize>,
-        ) {
-            if t > order {
-                if order.is_multiple_of(p) {
-                    sequence.extend_from_slice(&a[1..=p]);
-                }
-                return;
-            }
-            a[t] = a[t - p];
-            build(t + 1, p, k, order, a, sequence);
-            for j in (a[t - p] + 1)..k {
-                a[t] = j;
-                build(t + 1, t, k, order, a, sequence);
-            }
-        }
-
-        build(1, 1, k, order, &mut a, &mut sequence);
-
-        let mut out = sequence
-            .into_iter()
-            .map(|idx| alphabet[idx])
-            .collect::<Vec<_>>();
-        out.extend_from_slice(&alphabet[..order.saturating_sub(1)]);
-        out
-    }
-
-    String::from_utf8(de_bruijn_symbols(b"0123456789abcdefg", 3))
-        .unwrap_or_else(|err| panic!("trigram limit query bytes stay utf-8: {err}"))
+    trigram_plan_limit_raw_substring_query()
 }
 
 fn trigram_plan_limit_raw_substring_query() -> String {
     let alphabet = *b"abcdefghijklmnopq";
-    let mut out = String::with_capacity(alphabet.len() * alphabet.len() * alphabet.len() * 3);
+    let mut out = String::new();
     for a in alphabet {
         for b in alphabet {
             for c in alphabet {
@@ -318,7 +268,7 @@ fn hybrid_count_cap_surfaces_truthful_early_stop_reason() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_hybrid_count_fixture(&mut rt)?;
 
-    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", &[1.0, 0.0], 2);
+    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", "scope", 2);
     require_no_typed_error(result.typed_error, "hybrid count-cap query")?;
     if result.candidate_ids.len() != 2 {
         return Err(anyhow::anyhow!(
@@ -355,7 +305,7 @@ fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult
     let mut rt = E2eRuntime::boot()?;
     seed_hybrid_count_fixture(&mut rt)?;
 
-    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", &[1.0, 0.0], 2);
+    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", "scope", 2);
     require_no_typed_error(result.typed_error, "hybrid runtime metrics query")?;
 
     let errors = rt.query_metric_errors()?;
@@ -427,7 +377,7 @@ fn hybrid_large_tied_result_set_keeps_order_stable() -> AnyResult<()> {
     let mut baseline: Option<Vec<String>> = None;
 
     for run in 0..5 {
-        let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", &[1.0, 0.0], 10);
+        let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", "scope", 10);
         require_no_typed_error(result.typed_error, "hybrid tied-order query")?;
         if result.candidate_ids.len() != 10 {
             return Err(anyhow::anyhow!(

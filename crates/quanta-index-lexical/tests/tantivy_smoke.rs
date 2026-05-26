@@ -10,14 +10,15 @@
 
 use std::error::Error;
 
+use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LexicalFullBundle, LqCase,
-    LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
-    LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalFullBundle, LqCase, LqCountBound, LqExpr,
+    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
@@ -79,7 +80,7 @@ fn encode_chunk_payload_with_texts(
     language: &str,
     start_line: u32,
     end_line: u32,
-    snippet: &str,
+    _snippet: &str,
     indexed_text: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let repo_relative_path = if repo_relative_path.is_empty() {
@@ -102,10 +103,7 @@ fn encode_chunk_payload_with_texts(
         })?,
         start_line,
         end_line,
-        snippet: snippet.to_string().into_boxed_str(),
-        indexed_text: indexed_text.to_string().into_boxed_str(),
-        text_digest: format!("text:{chunk_id}").into_boxed_str(),
-        shape_digest: format!("shape:{chunk_id}").into_boxed_str(),
+        text: indexed_text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     };
@@ -572,7 +570,7 @@ fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
 }
 
 #[test]
-fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
+fn tantivy_phrase_sidecar_uses_text_authority_and_case_rules() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
@@ -583,7 +581,7 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
             "rust",
             4,
             8,
-            "preview only",
+            "Lemon Yellow Banana",
             "Lemon Yellow Banana",
         )?,
         upsert_with_texts(
@@ -592,7 +590,7 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
             "rust",
             10,
             12,
-            "preview only",
+            "banana near lemon but not adjacent",
             "banana near lemon but not adjacent",
         )?,
     ];
@@ -607,16 +605,14 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
         10,
     )?;
     let Some(exact_hit) = exact_hits.first() else {
-        return Err("expected indexed_text-backed phrase hit [alpha], got []".into());
+        return Err("expected text-backed phrase hit [alpha], got []".into());
     };
     if exact_hits.len() != 1 || exact_hit.candidate_id != "alpha" {
-        return Err(
-            format!("expected indexed_text-backed phrase hit [alpha], got {exact_hits:?}").into(),
-        );
+        return Err(format!("expected text-backed phrase hit [alpha], got {exact_hits:?}").into());
     }
-    if exact_hit.snippet != "preview only" {
+    if exact_hit.snippet != "Lemon Yellow Banana" {
         return Err(format!(
-            "expected returned snippet to stay preview text, got {:?}",
+            "expected returned snippet to be derived from text authority, got {:?}",
             exact_hit.snippet
         )
         .into());
@@ -629,7 +625,7 @@ fn tantivy_phrase_sidecar_uses_indexed_text_and_case_rules() -> TestResult {
     let sensitive_miss_hits = searcher.search(&sensitive_miss, 10)?;
     if !sensitive_miss_hits.is_empty() {
         return Err(format!(
-            "expected case:yes lowercase phrase to miss mixed-case indexed_text, got {sensitive_miss_hits:?}"
+            "expected case:yes lowercase phrase to miss mixed-case text authority, got {sensitive_miss_hits:?}"
         )
         .into());
     }
@@ -727,7 +723,7 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
 }
 
 #[test]
-fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
+fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
@@ -738,7 +734,7 @@ fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
             "rust",
             4,
             8,
-            "preview only",
+            "const VERSION: &str = \"v1.2.3-rc.4\";",
             "const VERSION: &str = \"v1.2.3-rc.4\";",
         )?,
         upsert_with_texts(
@@ -747,7 +743,7 @@ fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
             "rust",
             10,
             12,
-            "preview only",
+            "let needle_xx = 1;",
             "let needle_xx = 1;",
         )?,
     ];
@@ -762,17 +758,16 @@ fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
         10,
     )?;
     let Some(regex_hit) = regex_hits.first() else {
-        return Err("expected authoritative indexed_text regex hit [alpha], got []".into());
+        return Err("expected authoritative text regex hit [alpha], got []".into());
     };
     if regex_hits.len() != 1 || regex_hit.candidate_id != "alpha" {
-        return Err(format!(
-            "expected authoritative indexed_text regex hit [alpha], got {regex_hits:?}"
-        )
-        .into());
+        return Err(
+            format!("expected authoritative text regex hit [alpha], got {regex_hits:?}").into(),
+        );
     }
-    if regex_hit.snippet != "preview only" {
+    if regex_hit.snippet != "const VERSION: &str = \"v1.2.3-rc.4\";" {
         return Err(format!(
-            "expected returned snippet to stay preview text, got {:?}",
+            "expected returned snippet to be derived from text authority, got {:?}",
             regex_hit.snippet
         )
         .into());
@@ -784,7 +779,7 @@ fn tantivy_regex_sidecar_verifies_authoritative_indexed_text() -> TestResult {
     )?;
     if !false_positive_hits.is_empty() {
         return Err(format!(
-            "expected regex exact verify to reject indexed_text false positive bait, got {false_positive_hits:?}"
+            "expected regex exact verify to reject text-authority false positive bait, got {false_positive_hits:?}"
         )
         .into());
     }

@@ -1371,8 +1371,8 @@ impl LexicalAdapter {
                 );
                 doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
                 doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
-                add_snippet_field(&self.fields, &mut doc, chunk.snippet.as_ref());
-                add_content_fields(&self.fields, &mut doc, chunk.indexed_text.as_ref());
+                add_snippet_field(&self.fields, &mut doc, chunk.derived_snippet());
+                add_content_fields(&self.fields, &mut doc, chunk.text.as_ref());
                 let _opstamp = writer
                     .add_document(doc)
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
@@ -1446,8 +1446,8 @@ impl LexicalAdapter {
                     );
                     doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
                     doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
-                    add_snippet_field(&self.fields, &mut doc, chunk.snippet.as_ref());
-                    add_content_fields(&self.fields, &mut doc, chunk.indexed_text.as_ref());
+                    add_snippet_field(&self.fields, &mut doc, chunk.derived_snippet());
+                    add_content_fields(&self.fields, &mut doc, chunk.text.as_ref());
                     let _opstamp = writer.add_document(doc).map_err(|err| {
                         CoreError::Storage(format!("lexical: add_document: {err}"))
                     })?;

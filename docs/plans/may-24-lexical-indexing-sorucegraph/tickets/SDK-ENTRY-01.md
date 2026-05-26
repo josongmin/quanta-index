@@ -25,9 +25,9 @@ Residue that keeps this ticket partial:
   subscribers, and mirror paths
 - richer history/runtime/structural feature families in this ticket are not all
   closed on the current tree
-- semantic/hybrid public query surface still preserves the current
-  vector/handle contract; the text-only semantic follow-on is deferred to
-  `SEM-OWN`
+- `SEM-OWN` still remains deferred because the full internal derivation worker
+  / manifest / seal-proof packet has not landed, even though the public
+  semantic/hybrid query surface is already text-only on the current tree
 
 Parent docs:
 - [../closeout-plan.md](../closeout-plan.md)

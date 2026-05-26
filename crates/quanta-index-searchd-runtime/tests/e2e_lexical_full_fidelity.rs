@@ -551,7 +551,7 @@ fn lexical_full_fidelity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;
     _ = rt.seal()?;
-    let mut rt = rt.reopen()?;
+    let mut rt = rt.reopen();
 
     let mut failures: Vec<RowReport> = Vec::new();
     let mut green_count: usize = 0;

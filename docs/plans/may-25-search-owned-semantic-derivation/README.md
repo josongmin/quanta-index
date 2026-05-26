@@ -12,14 +12,14 @@ target design for the later `SEM-OWN` wave.
 
 ## 1. Current tree truth (2026-05-27)
 
-- external producer-facing semantic ingest is still live; the current tree has
-  not inverted semantic ownership into `quanta-index`
-- public semantic/hybrid query contracts still accept vector/handle inputs via
-  the current `query_vector_ref` / `semantic_vector_ref` request fields
-- `searchctl` still exposes `--query-vector`,
-  `--query-vector-handle`, `--semantic-vector`, and
-  `--semantic-vector-handle`
-- `sdk_frontdoor` proof uses that current vector/handle contract on purpose
+- the current tree has partial search-owned semantic derivation: lexical
+  ingest can derive semantic authority from `ChunkRecord.text`, but the full
+  `SEM-OWN` worker / manifest / seal-proof packet has not landed
+- public semantic/hybrid query contracts are text-only; removed vector/handle
+  wire fields fail closed
+- `searchctl` rejects the old vector/handle flags; the CLI surface is text-only
+- SDK public semantic publish is removed; `sdk_frontdoor` proof now exercises
+  lexical ingest plus search-owned semantic derivation
 
 ## 2. Target decision if `SEM-OWN` starts
 

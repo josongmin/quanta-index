@@ -2,10 +2,6 @@
 
 #![forbid(unsafe_code)]
 #![expect(
-    clippy::let_underscore_untyped,
-    reason = "publisher ops intentionally discard ack payloads in integration setup"
-)]
-#![expect(
     clippy::wildcard_enum_match_arm,
     reason = "integration response checks intentionally collapse non-target variants"
 )]
@@ -20,11 +16,11 @@ use std::time::{Duration, Instant};
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord,
-    EarlyStopReason, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
-    EmbeddingRecord, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
-    LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration, OwnerDocKind,
-    PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
+    BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
+    ChunkRecord, EarlyStopReason, EmbeddingDistanceMetric, EmbeddingModelContract,
+    EmbeddingNormalization, EmbeddingRecord, EngineTouched, GenerationPin, HybridQueryRequest,
+    LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration,
+    OwnerDocKind, PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -41,6 +37,7 @@ use std::collections::BTreeMap;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
+type RuntimeHandles = (PathBuf, PathBuf, Arc<AtomicBool>, DriverJoin);
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,10 +99,7 @@ fn chunk_record_with_metadata(
         })?,
         start_line,
         end_line,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
-        text_digest: "text:dsl".to_string().into_boxed_str(),
-        shape_digest: "shape:dsl".to_string().into_boxed_str(),
+        text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     })
@@ -143,7 +137,8 @@ fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut cfg =
+        SearchdConfig::from_state_root(state_root.to_path_buf()).with_decimal_query_text_embedder();
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
     SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
@@ -184,10 +179,7 @@ fn float_vec_to_query_text(vec: &[f32]) -> String {
         .join(" ")
 }
 
-fn start_runtime(
-    state_root: &Path,
-    thread_name: &str,
-) -> Result<(PathBuf, PathBuf, Arc<AtomicBool>, DriverJoin), Box<dyn Error>> {
+fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -196,7 +188,7 @@ fn start_runtime(
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name(thread_name.into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
     if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
         query_socket.exists() && ingest_socket.exists()
     }) {
@@ -267,7 +259,7 @@ fn semantic_embedding(chunk: &ChunkRecord, vector: Vec<f32>) -> EmbeddingRecord 
         end_byte: chunk.end_byte,
         start_line: chunk.start_line,
         end_line: chunk.end_line,
-        snippet: chunk.snippet.clone(),
+        snippet: chunk.text.clone(),
         embedding_input_digest: format!("embed-in:{}", chunk.chunk_id.as_str()).into_boxed_str(),
         vector_digest: format!("embed-vec:{vector:?}").into_boxed_str(),
         view_kind: "raw_chunk".to_string().into_boxed_str(),
@@ -363,8 +355,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
 fn publish_semantic_embeddings(socket: &Path, embeddings: Vec<EmbeddingRecord>) -> TestResult {
     let dimension = embeddings
         .first()
-        .map(|embedding| embedding.vector.len())
-        .unwrap_or(1);
+        .map_or(1, |embedding| embedding.vector.len());
     let mut embeddings_by_path: BTreeMap<String, Vec<EmbeddingRecord>> = BTreeMap::new();
     for embedding in embeddings {
         embeddings_by_path
@@ -445,6 +436,23 @@ fn lexical_ids(results: &[LexicalCandidate]) -> Vec<String> {
         .iter()
         .map(|candidate| candidate.candidate_id.clone())
         .collect()
+}
+
+fn bridge_lexical_ids(results: &[BridgeCandidate]) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut ids = Vec::with_capacity(results.len());
+    for candidate in results {
+        match candidate {
+            BridgeCandidate::Lexical(candidate) => ids.push(candidate.candidate_id.clone()),
+            BridgeCandidate::Structural(candidate) => {
+                return Err(format!(
+                    "expected lexical bridge candidate, got structural `{}`",
+                    candidate.candidate_id
+                )
+                .into());
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn sort_ids(mut ids: Vec<String>) -> Vec<String> {
@@ -1325,7 +1333,7 @@ fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> Te
         )
         .into());
     }
-    let ids = lexical_ids(&bridge.packet.candidates);
+    let ids = bridge_lexical_ids(&bridge.packet.candidates)?;
     if sort_ids(ids.clone()) != ["alpha".to_string(), "beta".to_string()] {
         shutdown.store(true, Ordering::Release);
         drop(join.join());

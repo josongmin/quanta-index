@@ -119,8 +119,6 @@ impl<'a> SemanticNamespace<'a> {
         <SemanticNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// Typed semantic publish entry point backed by the crate-private
-    /// namespace trait owner. See QI-NS-01.
     pub fn publish(&self, batch: &SemanticBatch) -> Result<BatchReceipt, SdkError> {
         <SemanticNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
@@ -162,10 +160,10 @@ impl crate::NamespaceIngest for SemanticNs {
         match response {
             SearchPlaneIngestIpcResponse::SemanticReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "semantic receipt",
                 QuantaIndex::ingest_response_kind(&other),

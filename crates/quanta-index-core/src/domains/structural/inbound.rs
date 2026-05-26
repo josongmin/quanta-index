@@ -19,6 +19,7 @@ pub struct StructuralQueryRequest {
     pub pattern: LqStructuralBlock,
     pub requested_lang: Option<String>,
     pub filters: Vec<StructuralExecutableFilter>,
+    pub candidate_scope: Option<Vec<String>>,
     pub options: LqOptions,
     pub generation: GenerationSelector,
 }

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/quanta-index-channel",
     "crates/quanta-index-contract",
     "crates/quanta-index-contract-base",
     "crates/quanta-index-core",

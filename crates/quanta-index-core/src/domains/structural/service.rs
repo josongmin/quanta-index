@@ -124,6 +124,7 @@ mod tests {
             },
             requested_lang: None,
             filters: Vec::new(),
+            candidate_scope: None,
             options: LqOptions::defaults(),
             generation: GenerationSelector::Active {
                 repo_id: RepoId::new("repo".to_string()),

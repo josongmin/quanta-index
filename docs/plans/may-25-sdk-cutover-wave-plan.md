@@ -35,9 +35,11 @@ Current residue after the public-surface closure program:
 - `searchd-runtime` and `search-plane` still depend on legacy channel
   publishers/subscribers and mirror paths internally; the public SDK front
   door is closed, but the composition root is not channel-free
-- semantic/hybrid public query schema still preserves the current
-  vector/handle contract; text-only public semantic ownership is deferred
-- broader lexical program residue remains open in `E2E-07` and `LXE-10`
+- search-owned semantic derivation is still a deferred follow-on; current
+  public semantic/hybrid query contracts are already text-only on the current
+  tree
+- the broader May-25 lexical program pack is already closed on the current
+  tree; remaining follow-on work is outside this packet
 
 ## SEM-OWN entry criteria (2026-05-27 freeze)
 
@@ -181,20 +183,21 @@ Remove semantic / hybrid legacy filler. Add `top_k` to `TextQueryRequest` and `S
 
 ### QI-SDK-01 | quanta-index | SDK Publish Transport Cutover
 
-Add `IngestTransport`. `lexical().publish()` / `semantic().publish()` / `repomap().publish()` route through ingest IPC only. SDK drops its `quanta-index-channel` dependency.
+Add `IngestTransport`. `lexical().publish()` / `repomap().publish()` route through ingest IPC only. Public semantic publish is removed; semantic corpus materialization is search-owned. SDK drops its `quanta-index-channel` dependency.
 
 **Owner files**
 - [crates/quanta-index-sdk/src/transport.rs:11](../../crates/quanta-index-sdk/src/transport.rs#L11) (add `IngestTransport` trait + `UdsIngestTransport`)
 - [crates/quanta-index-sdk/src/config.rs:7](../../crates/quanta-index-sdk/src/config.rs#L7) (add `ingest_socket` field + resolve)
 - [crates/quanta-index-sdk/src/client.rs:34](../../crates/quanta-index-sdk/src/client.rs#L34) (wire ingest transport)
 - [crates/quanta-index-sdk/src/lexical.rs:130](../../crates/quanta-index-sdk/src/lexical.rs#L130) (drop `open_lexical_publisher` → ingest IPC `PublishLexicalBatch`)
-- [crates/quanta-index-sdk/src/semantic.rs:135](../../crates/quanta-index-sdk/src/semantic.rs#L135) (same shape)
+- [crates/quanta-index-sdk/src/semantic.rs](../../crates/quanta-index-sdk/src/semantic.rs) (query-only semantic namespace after public semantic publish removal)
 - [crates/quanta-index-sdk/src/repomap.rs](../../crates/quanta-index-sdk/src/repomap.rs)
 - [crates/quanta-index-sdk/Cargo.toml](../../crates/quanta-index-sdk/Cargo.toml) (drop `quanta-index-channel` / `quanta-index-lexical` / `quanta-index-semantic` deps)
 
 **Acceptance**
 - `cargo tree -p quanta-index-sdk | grep quanta-index-channel` is empty
-- `publish()` maps batches to `PublishLexicalBatch` / `SemanticBatch` / `RepoMapBatch` and calls `IngestTransport::send()`
+- `publish()` maps batches to `PublishLexicalBatch` / `RepoMapBatch` and calls `IngestTransport::send()`
+- semantic query/hybrid callers do not have a public semantic publish path; semantic authority is derived inside `searchd`
 - `BatchReceipt` comes from the server response, never synthesized from local channel sequences
 - An in-memory `IngestTransport` exists for unit tests. SDK tests must not produce filesystem channel side-effects
 - future source-authority families (history / dirty / parse-tree) must land as dedicated SDK namespaces and typed batches, not raw ingress paths and not `LexicalBatch` overloads

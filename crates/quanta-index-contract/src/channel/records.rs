@@ -158,10 +158,7 @@ pub struct ChunkRecord {
     pub end_byte: u32,
     pub start_line: u32,
     pub end_line: u32,
-    pub snippet: Box<str>,
-    pub indexed_text: Box<str>,
-    pub text_digest: Box<str>,
-    pub shape_digest: Box<str>,
+    pub text: Box<str>,
     pub structural: Option<ChunkStructuralMetadata>,
     pub parent_chunk_id: Option<ChunkId>,
 }
@@ -174,10 +171,7 @@ const CHUNK_RECORD_FIELDS: &[&str] = &[
     "end_byte",
     "start_line",
     "end_line",
-    "snippet",
-    "indexed_text",
-    "text_digest",
-    "shape_digest",
+    "text",
     "structural",
     "parent_chunk_id",
 ];
@@ -187,7 +181,7 @@ impl Serialize for ChunkRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ChunkRecord", 13)?;
+        let mut state = serializer.serialize_struct("ChunkRecord", 10)?;
         state.serialize_field("chunk_id", &self.chunk_id)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("language", &self.language)?;
@@ -195,10 +189,7 @@ impl Serialize for ChunkRecord {
         state.serialize_field("end_byte", &self.end_byte)?;
         state.serialize_field("start_line", &self.start_line)?;
         state.serialize_field("end_line", &self.end_line)?;
-        state.serialize_field("snippet", self.snippet.as_ref())?;
-        state.serialize_field("indexed_text", self.indexed_text.as_ref())?;
-        state.serialize_field("text_digest", self.text_digest.as_ref())?;
-        state.serialize_field("shape_digest", self.shape_digest.as_ref())?;
+        state.serialize_field("text", self.text.as_ref())?;
         state.serialize_field("structural", &self.structural)?;
         state.serialize_field("parent_chunk_id", &self.parent_chunk_id)?;
         state.end()
@@ -225,10 +216,7 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
         let mut end_byte: Option<u32> = None;
         let mut start_line: Option<u32> = None;
         let mut end_line: Option<u32> = None;
-        let mut snippet: Option<String> = None;
-        let mut indexed_text: Option<String> = None;
-        let mut text_digest: Option<String> = None;
-        let mut shape_digest: Option<String> = None;
+        let mut text: Option<String> = None;
         let mut structural: Option<Option<ChunkStructuralMetadata>> = None;
         let mut parent_chunk_id: Option<Option<ChunkId>> = None;
         while let Some(key) = map.next_key::<String>()? {
@@ -275,29 +263,11 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
                     }
                     end_line = Some(map.next_value()?);
                 }
-                "snippet" => {
-                    if snippet.is_some() {
-                        return Err(de::Error::duplicate_field("snippet"));
+                "text" => {
+                    if text.is_some() {
+                        return Err(de::Error::duplicate_field("text"));
                     }
-                    snippet = Some(map.next_value()?);
-                }
-                "indexed_text" => {
-                    if indexed_text.is_some() {
-                        return Err(de::Error::duplicate_field("indexed_text"));
-                    }
-                    indexed_text = Some(map.next_value()?);
-                }
-                "text_digest" => {
-                    if text_digest.is_some() {
-                        return Err(de::Error::duplicate_field("text_digest"));
-                    }
-                    text_digest = Some(map.next_value()?);
-                }
-                "shape_digest" => {
-                    if shape_digest.is_some() {
-                        return Err(de::Error::duplicate_field("shape_digest"));
-                    }
-                    shape_digest = Some(map.next_value()?);
+                    text = Some(map.next_value()?);
                 }
                 "structural" => {
                     if structural.is_some() {
@@ -323,17 +293,8 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
             end_byte: end_byte.ok_or_else(|| de::Error::missing_field("end_byte"))?,
             start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
             end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
-            snippet: snippet
-                .ok_or_else(|| de::Error::missing_field("snippet"))?
-                .into_boxed_str(),
-            indexed_text: indexed_text
-                .ok_or_else(|| de::Error::missing_field("indexed_text"))?
-                .into_boxed_str(),
-            text_digest: text_digest
-                .ok_or_else(|| de::Error::missing_field("text_digest"))?
-                .into_boxed_str(),
-            shape_digest: shape_digest
-                .ok_or_else(|| de::Error::missing_field("shape_digest"))?
+            text: text
+                .ok_or_else(|| de::Error::missing_field("text"))?
                 .into_boxed_str(),
             structural: structural.ok_or_else(|| de::Error::missing_field("structural"))?,
             parent_chunk_id: parent_chunk_id
@@ -348,6 +309,13 @@ impl<'de> Deserialize<'de> for ChunkRecord {
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct("ChunkRecord", CHUNK_RECORD_FIELDS, ChunkRecordVisitor)
+    }
+}
+
+impl ChunkRecord {
+    #[must_use]
+    pub fn derived_snippet(&self) -> &str {
+        self.text.as_ref()
     }
 }
 
@@ -733,6 +701,8 @@ impl<'de> Deserialize<'de> for EmbeddingRecord {
 
 #[cfg(test)]
 mod tests {
+    use ciborium::Value;
+
     use super::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};
     use crate::lex::LanguageCode;
     use crate::{ChunkId, EmbeddingId, RepoRelativePath};
@@ -754,10 +724,7 @@ mod tests {
             end_byte: 12,
             start_line: 1,
             end_line: 2,
-            snippet: "fn main() {}".into(),
-            indexed_text: "fn main() {}".into(),
-            text_digest: "text:abc".into(),
-            shape_digest: "shape:def".into(),
+            text: "fn main() {}".into(),
             structural: Some(ChunkStructuralMetadata {
                 variant_tag: "node".into(),
                 structural_kind_tag: "function".into(),
@@ -773,6 +740,57 @@ mod tests {
         let decoded: ChunkRecord = ciborium::from_reader(bytes.as_slice())?;
         if decoded != record {
             return Err(format!("decoded chunk record mismatch: {decoded:?} != {record:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chunk_record_rejects_legacy_preview_and_digest_fields() -> TestRes {
+        let record = ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 2,
+            text: "fn main() {}".into(),
+            structural: None,
+            parent_chunk_id: None,
+        };
+        for (field, value) in [
+            ("snippet", "legacy snippet"),
+            ("indexed_text", "legacy indexed text"),
+            ("text_digest", "text:legacy"),
+            ("shape_digest", "shape:legacy"),
+        ] {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&record, &mut bytes)?;
+            let mut wire: Value = ciborium::from_reader(bytes.as_slice())?;
+            let Value::Map(entries) = &mut wire else {
+                return Err("chunk record wire shape must remain a map".into());
+            };
+            entries.push((
+                Value::Text(field.to_string()),
+                Value::Text(value.to_string()),
+            ));
+            bytes.clear();
+            ciborium::into_writer(&wire, &mut bytes)?;
+            let err = match ciborium::from_reader::<ChunkRecord, _>(bytes.as_slice()) {
+                Ok(decoded) => {
+                    return Err(format!(
+                        "expected legacy field `{field}` to be rejected, got {decoded:?}"
+                    )
+                    .into());
+                }
+                Err(err) => err.to_string(),
+            };
+            if !err.contains(field) {
+                return Err(format!(
+                    "expected legacy field `{field}` rejection to mention field name, got `{err}`"
+                )
+                .into());
+            }
         }
         Ok(())
     }

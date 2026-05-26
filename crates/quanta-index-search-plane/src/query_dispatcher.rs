@@ -6,23 +6,25 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     ActivationCatalog, Ledger, lower_lexical_text_query,
-    lowering::lower_sourcegraph_structural_query_text,
+    lowering::{lower_sourcegraph_bridge_query_text, lower_sourcegraph_structural_query_text},
+    query_embedder::{DecimalQueryTextEmbedder, QueryTextEmbedderPort},
     readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason,
-    EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFilter, LqLeaf,
-    LqOptions, LqQuery, LqSpan, LqStructuralBlock, LqType, LqYesNoOnly, ManifestGeneration,
-    PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneBridgeQueryResponse,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
-    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    BridgeCandidate, BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate,
+    EarlyStopReason, EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest,
+    HybridQueryRequest, HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr,
+    LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
+    LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest,
+    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SearchPlaneTrackKind, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -104,18 +106,6 @@ impl QueryObsSink for BoundedQueryObsStore {
     }
 }
 
-pub trait QueryTextEmbedderPort {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
-}
-
-pub struct DecimalQueryTextEmbedder;
-
-impl QueryTextEmbedderPort for DecimalQueryTextEmbedder {
-    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
-        decode_query_text_as_vector(query_text)
-    }
-}
-
 fn overflow_bucket_sample(mut sample: MetricSample, err: &ObsError) -> MetricSample {
     match err.dim_overflow.as_deref() {
         Some("tenant_id") => {
@@ -147,7 +137,8 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
         CoreError::Typed { code, .. }
             if code.contains("PARSE")
                 || code.contains("INVALID_VECTOR")
-                || code.contains("INVALID_REQUEST") =>
+                || code.contains("INVALID_REQUEST")
+                || code.contains("HOLE_KIND_UNSUPPORTED") =>
         {
             "lq_typed_error_parse_total"
         }
@@ -500,21 +491,7 @@ impl SearchPlaneDispatcher {
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
         let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
-        let service = StructuralService::new(Arc::clone(&self.structural_producer));
-        let requested_lang = extract_structural_requested_lang(&lowered.expr)?;
-        let (requested_lang, executable_filters) =
-            extract_structural_filters(&lowered, requested_lang.as_deref())?;
-        let candidates = evaluate_structural_expr(
-            &service,
-            &pin,
-            &lowered.expr,
-            requested_lang.as_deref(),
-            &executable_filters,
-            &lowered.options,
-            None,
-        )?;
-        let mut results = project_structural_query_results(candidates);
-        results.truncate(top_k_limit(request.text_query.top_k));
+        let results = self.execute_structural_results(&pin, &lowered, request.text_query.top_k)?;
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
             results,
@@ -525,23 +502,51 @@ impl SearchPlaneDispatcher {
         &self,
         request: &BridgeQueryRequest,
     ) -> Result<SearchPlaneBridgeQueryResponse, CoreError> {
-        let pin = resolve_lexical_request_pin(
-            self.activation_catalog.as_ref(),
-            &request.text_query,
-            SearchPlaneTrackKind::Lexical,
-            "bridge",
-        )?;
-        let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
-        let lowered = lower_lexical_text_query(&request.text_query)?;
-        LexicalPolicy::validate_query(&lowered)?;
-        let searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let candidates = searcher.search(&lowered, request.text_query.top_k)?;
+        let (scope, pin, candidates) = match lower_bridge_query_request(&request.text_query)? {
+            BridgeExecutionPlan::Lexical(lowered) => {
+                let pin = resolve_lexical_request_pin(
+                    self.activation_catalog.as_ref(),
+                    &request.text_query,
+                    SearchPlaneTrackKind::Lexical,
+                    "bridge",
+                )?;
+                let materialized =
+                    self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
+                LexicalPolicy::validate_query_against_readiness(
+                    pin.manifest_generation,
+                    materialized,
+                )?;
+                LexicalPolicy::validate_query(&lowered)?;
+                let searcher = self.lex_opener.open(
+                    &pin.repo_id,
+                    &pin.revision_id,
+                    pin.manifest_generation,
+                )?;
+                let candidates = searcher
+                    .search(&lowered, request.text_query.top_k)?
+                    .into_iter()
+                    .map(BridgeCandidate::Lexical)
+                    .collect();
+                (BridgeScope::Lexical, pin, candidates)
+            }
+            BridgeExecutionPlan::Structural(lowered) => {
+                let pin = resolve_lexical_request_pin(
+                    self.activation_catalog.as_ref(),
+                    &request.text_query,
+                    SearchPlaneTrackKind::Structural,
+                    "bridge",
+                )?;
+                let candidates = self
+                    .execute_structural_results(&pin, &lowered, request.text_query.top_k)?
+                    .into_iter()
+                    .map(BridgeCandidate::Structural)
+                    .collect();
+                (BridgeScope::Structural, pin, candidates)
+            }
+        };
         let packet = export_bridge_candidate_packet(
             request.target,
-            BridgeScope::Lexical,
+            scope,
             &pin,
             &request.text_query,
             candidates,
@@ -629,6 +634,32 @@ impl SearchPlaneDispatcher {
     fn repo_map(&self, request: RepoMapQueryRequest) -> Result<RepoMapQueryResponse, CoreError> {
         RepoMapPolicy::validate_query(&request)?;
         self.repo_map_query.query(request)
+    }
+
+    fn execute_structural_results(
+        &self,
+        pin: &GenerationPin,
+        lowered: &LqQuery,
+        top_k: u32,
+    ) -> Result<Vec<quanta_index_contract::StructuralCandidate>, CoreError> {
+        let service = StructuralService::new(Arc::clone(&self.structural_producer));
+        let requested_lang = extract_structural_requested_lang(&lowered.expr)?;
+        let (requested_lang, executable_filters) =
+            extract_structural_filters(lowered, requested_lang.as_deref())?;
+        let mut ctx = StructuralEvalContext::default();
+        let candidates = evaluate_structural_expr(
+            &mut ctx,
+            &service,
+            pin,
+            &lowered.expr,
+            requested_lang.as_deref(),
+            &executable_filters,
+            &lowered.options,
+            None,
+        )?;
+        let mut results = project_structural_query_results(candidates);
+        results.truncate(top_k_limit(top_k));
+        Ok(results)
     }
 
     #[must_use]
@@ -895,9 +926,9 @@ impl SearchPlaneDispatcher {
         kind: MetricKind,
         value: f64,
     ) {
-        let (repo_id, generation_id) = pin
-            .map(|pin| (pin.repo_id.as_str(), pin.manifest_generation.get()))
-            .unwrap_or(("unresolved", 0));
+        let (repo_id, generation_id) = pin.map_or(("unresolved", 0), |pin| {
+            (pin.repo_id.as_str(), pin.manifest_generation.get())
+        });
         self.obs_sink.emit(MetricSample::new(
             name,
             kind,
@@ -919,7 +950,7 @@ impl SearchPlaneDispatcher {
             Some(pin),
             "lq_engine_fanout_count",
             MetricKind::Histogram,
-            count as f64,
+            metric_count_value(count),
         );
     }
 
@@ -928,7 +959,7 @@ impl SearchPlaneDispatcher {
             Some(pin),
             "lq_merge_result_count",
             MetricKind::Histogram,
-            count as f64,
+            metric_count_value(count),
         );
     }
 
@@ -1277,6 +1308,7 @@ fn lower_structural_query_request(
             lower_sourcegraph_structural_query_text(&request.text_query.query_text)?
         }
     };
+    validate_structural_feature_surface(&lowered)?;
     let pin = resolve_lexical_request_pin(
         activation_catalog,
         &request.text_query,
@@ -1286,7 +1318,172 @@ fn lower_structural_query_request(
     Ok((pin, lowered))
 }
 
+enum BridgeExecutionPlan {
+    Lexical(LqQuery),
+    Structural(LqQuery),
+}
+
+fn lower_bridge_query_request(
+    request: &TextQueryRequest,
+) -> Result<BridgeExecutionPlan, CoreError> {
+    let lowered = match request.syntax {
+        TextQuerySyntax::Native => lower_lexical_text_query(request)?,
+        TextQuerySyntax::Sourcegraph => lower_sourcegraph_bridge_query_text(&request.query_text)?,
+    };
+    if extract_structural_requested_lang(&lowered.expr).is_ok() {
+        validate_structural_feature_surface(&lowered)?;
+        return Ok(BridgeExecutionPlan::Structural(lowered));
+    }
+    Ok(BridgeExecutionPlan::Lexical(lowered))
+}
+
+fn validate_structural_feature_surface(query: &LqQuery) -> Result<(), CoreError> {
+    reject_typed_structural_holes_in_expr(&query.expr)
+}
+
+fn reject_typed_structural_holes_in_expr(expr: &LqExpr) -> Result<(), CoreError> {
+    match expr {
+        LqExpr::Empty
+        | LqExpr::Leaf(
+            LqLeaf::Keyword(_)
+            | LqLeaf::Phrase(_)
+            | LqLeaf::RawString(_)
+            | LqLeaf::Regex(_)
+            | LqLeaf::Predicate { .. },
+        )
+        | LqExpr::SemanticVector { .. } => Ok(()),
+        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+            reject_typed_structural_holes_in_block(block)
+        }
+        LqExpr::Not(inner) => reject_typed_structural_holes_in_expr(inner),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            for child in children {
+                reject_typed_structural_holes_in_expr(child)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn reject_typed_structural_holes_in_block(block: &LqStructuralBlock) -> Result<(), CoreError> {
+    for expr in &block.exprs {
+        reject_typed_structural_holes_in_structural_expr(expr)?;
+    }
+    Ok(())
+}
+
+fn reject_typed_structural_holes_in_structural_expr(
+    expr: &LqStructuralExpr,
+) -> Result<(), CoreError> {
+    match expr {
+        LqStructuralExpr::Pattern(nodes) => {
+            for node in nodes {
+                reject_typed_structural_holes_in_node(node)?;
+            }
+            Ok(())
+        }
+        LqStructuralExpr::Where(constraints) => {
+            for constraint in constraints {
+                reject_typed_structural_holes_in_constraint(constraint)?;
+            }
+            Ok(())
+        }
+        LqStructuralExpr::Inside(block) | LqStructuralExpr::Outside(block) => {
+            reject_typed_structural_holes_in_block(block)
+        }
+    }
+}
+
+fn reject_typed_structural_holes_in_node(node: &LqStructuralNode) -> Result<(), CoreError> {
+    match node {
+        LqStructuralNode::Literal(_)
+        | LqStructuralNode::MetaVar(_)
+        | LqStructuralNode::WildcardMany => Ok(()),
+        LqStructuralNode::Group(children) => {
+            for child in children {
+                reject_typed_structural_holes_in_node(child)?;
+            }
+            Ok(())
+        }
+        LqStructuralNode::Hole { name, multiplicity } => reject_typed_structural_hole_name(
+            name.as_ref().map(quanta_index_contract::LqMetaVar::as_str),
+            *multiplicity,
+        ),
+    }
+}
+
+fn reject_typed_structural_holes_in_constraint(
+    constraint: &LqStructuralConstraint,
+) -> Result<(), CoreError> {
+    reject_typed_structural_hole_ref(&constraint.left)?;
+    if let LqStructuralConstraintOperand::Hole(hole) = &constraint.right {
+        reject_typed_structural_hole_ref(hole)?;
+    }
+    Ok(())
+}
+
+fn reject_typed_structural_hole_ref(hole: &LqStructuralHoleRef) -> Result<(), CoreError> {
+    reject_typed_structural_hole_name(Some(hole.name.as_str()), hole.multiplicity)
+}
+
+fn reject_typed_structural_hole_name(
+    name: Option<&str>,
+    multiplicity: quanta_index_contract::LqStructuralHoleMultiplicity,
+) -> Result<(), CoreError> {
+    let Some(name) = name else {
+        return Ok(());
+    };
+    let Some((metavar, kind)) = name.rsplit_once('.') else {
+        return Ok(());
+    };
+    if metavar.is_empty() || kind.is_empty() {
+        return Ok(());
+    }
+    if multiplicity != quanta_index_contract::LqStructuralHoleMultiplicity::One {
+        return Err(CoreError::Typed {
+            code: LexicalErrorCode::StrHoleKindUnsupported
+                .as_code_str()
+                .to_string(),
+            message: format!(
+                "structural typed hole kind `{kind}` is executable only on single-capture holes"
+            ),
+        });
+    }
+    if matches!(kind, "expr" | "stmt" | "item" | "type") {
+        return Ok(());
+    }
+    Err(CoreError::Typed {
+        code: LexicalErrorCode::StrHoleKindUnsupported
+            .as_code_str()
+            .to_string(),
+        message: format!(
+            "structural typed hole kind `{kind}` is not executable on the current authority route"
+        ),
+    })
+}
+
 type StructuralCandidateBuckets = BTreeMap<String, Vec<StructuralMatchCandidate>>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct StructuralLeafExecutionKey {
+    pattern: LqStructuralBlock,
+    requested_lang: Option<String>,
+    filters: Vec<StructuralExecutableFilter>,
+    candidate_scope: Option<Vec<String>>,
+    options: LqOptions,
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "internal structural leaf memo cache is transient and not part of any persisted or external ordering surface"
+)]
+type StructuralLeafCache =
+    std::collections::HashMap<StructuralLeafExecutionKey, StructuralCandidateBuckets>;
+
+#[derive(Default)]
+struct StructuralEvalContext {
+    leaf_cache: StructuralLeafCache,
+}
 
 fn extract_structural_requested_lang(expr: &LqExpr) -> Result<Option<String>, CoreError> {
     let mut requested_lang = None;
@@ -1345,6 +1542,7 @@ fn merge_structural_requested_lang(
 }
 
 fn evaluate_structural_expr(
+    ctx: &mut StructuralEvalContext,
     service: &StructuralService,
     pin: &GenerationPin,
     expr: &LqExpr,
@@ -1357,9 +1555,16 @@ fn evaluate_structural_expr(
         LqExpr::Empty => Err(structural_invalid_request(
             "query must include at least one structural `match { ... }` leaf",
         )),
-        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-            execute_structural_block(service, pin, block, requested_lang, filters, options)
-        }
+        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => execute_structural_block(
+            ctx,
+            service,
+            pin,
+            block,
+            requested_lang,
+            filters,
+            options,
+            seed,
+        ),
         LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
             "query must lower to a structural-only boolean tree of `match { ... }` leaves",
         )),
@@ -1370,6 +1575,7 @@ fn evaluate_structural_expr(
                 ));
             };
             let blocked = evaluate_structural_expr(
+                ctx,
                 service,
                 pin,
                 inner,
@@ -1391,6 +1597,7 @@ fn evaluate_structural_expr(
                 .filter(|child| !matches!(child, LqExpr::Not(_)));
             let mut current = if let Some(first_positive) = positives.next() {
                 let mut current = evaluate_structural_expr(
+                    ctx,
                     service,
                     pin,
                     first_positive,
@@ -1401,13 +1608,14 @@ fn evaluate_structural_expr(
                 )?;
                 for child in positives {
                     let next = evaluate_structural_expr(
+                        ctx,
                         service,
                         pin,
                         child,
                         requested_lang,
                         filters,
                         options,
-                        seed,
+                        Some(&current),
                     )?;
                     current = intersect_structural_buckets(&current, &next);
                     if current.is_empty() {
@@ -1425,6 +1633,7 @@ fn evaluate_structural_expr(
             for child in children {
                 if matches!(child, LqExpr::Not(_)) {
                     current = evaluate_structural_expr(
+                        ctx,
                         service,
                         pin,
                         child,
@@ -1449,6 +1658,7 @@ fn evaluate_structural_expr(
             let mut union = StructuralCandidateBuckets::new();
             for child in children {
                 let child_matches = evaluate_structural_expr(
+                    ctx,
                     service,
                     pin,
                     child,
@@ -1465,23 +1675,46 @@ fn evaluate_structural_expr(
 }
 
 fn execute_structural_block(
+    ctx: &mut StructuralEvalContext,
     service: &StructuralService,
     pin: &GenerationPin,
     block: &LqStructuralBlock,
     requested_lang: Option<&str>,
     filters: &[StructuralExecutableFilter],
     options: &LqOptions,
+    seed: Option<&StructuralCandidateBuckets>,
 ) -> Result<StructuralCandidateBuckets, CoreError> {
+    let candidate_scope = seed.map(structural_candidate_scope_ids);
+    if candidate_scope.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(StructuralCandidateBuckets::new());
+    }
+    let cache_key = StructuralLeafExecutionKey {
+        pattern: block.clone(),
+        requested_lang: requested_lang.map(str::to_string),
+        filters: filters.to_vec(),
+        candidate_scope: candidate_scope.clone(),
+        options: options.clone(),
+    };
+    if let Some(cached) = ctx.leaf_cache.get(&cache_key) {
+        return Ok(cached.clone());
+    }
     let response = service
         .query(&DomainStructuralQueryRequest {
             pattern: block.clone(),
             requested_lang: requested_lang.map(str::to_string),
             filters: filters.to_vec(),
+            candidate_scope,
             options: options.clone(),
             generation: GenerationSelector::Pinned(pin.clone()),
         })
         .map_err(|err| map_structural_error(&err))?;
-    Ok(bucket_structural_matches(response.candidates))
+    let buckets = bucket_structural_matches(response.candidates);
+    let _prior = ctx.leaf_cache.insert(cache_key, buckets.clone());
+    Ok(buckets)
+}
+
+fn structural_candidate_scope_ids(candidates: &StructuralCandidateBuckets) -> Vec<String> {
+    candidates.keys().cloned().collect()
 }
 
 fn bucket_structural_matches(
@@ -1537,19 +1770,20 @@ fn subtract_structural_buckets(
 ) -> StructuralCandidateBuckets {
     let mut remaining = StructuralCandidateBuckets::new();
     for (candidate_id, base_matches) in base {
-        let next_matches = if let Some(blocked_matches) = blocked.get(candidate_id) {
-            base_matches
-                .iter()
-                .filter(|candidate| {
-                    !blocked_matches.iter().any(|blocked_candidate| {
-                        structural_match_candidates_consistent(candidate, blocked_candidate)
+        let next_matches = blocked.get(candidate_id).map_or_else(
+            || base_matches.clone(),
+            |blocked_matches| {
+                base_matches
+                    .iter()
+                    .filter(|candidate| {
+                        !blocked_matches.iter().any(|blocked_candidate| {
+                            structural_match_candidates_consistent(candidate, blocked_candidate)
+                        })
                     })
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            base_matches.clone()
-        };
+                    .cloned()
+                    .collect::<Vec<_>>()
+            },
+        );
         if !next_matches.is_empty() {
             let _prior = remaining.insert(candidate_id.clone(), next_matches);
         }
@@ -2037,7 +2271,7 @@ fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<boo
                 if !leaf_matches_text(
                     "runtime metadata",
                     leaf,
-                    chunk.indexed_text.as_ref(),
+                    chunk.text.as_ref(),
                     &query.options,
                 )? {
                     return Ok(false);
@@ -2060,7 +2294,7 @@ fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<boo
         leaf_matches_text(
             "runtime metadata",
             leaf,
-            chunk.indexed_text.as_ref(),
+            chunk.text.as_ref(),
             &query.options,
         )
     })
@@ -2214,7 +2448,7 @@ fn lexical_candidate_from_chunk(
         start_line: chunk.start_line,
         end_line: chunk.end_line,
         score: 1.0,
-        snippet: chunk.snippet.to_string(),
+        snippet: chunk.derived_snippet().to_string(),
     }
 }
 
@@ -2466,32 +2700,16 @@ fn prefix_semantic_query_error(plane: &str, err: CoreError) -> CoreError {
             code,
             message: format!("{plane}: {message}"),
         },
-        other => other,
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => other,
     }
 }
 
-/// For the reference semantic adapter, the query text is interpreted as a
-/// space-separated decimal list of `f32` values.
-///
-/// Parsing is fail-closed: unparseable, non-finite, or zero-norm vectors are
-/// rejected explicitly.
-fn decode_query_text_as_vector(text: &str) -> Result<Vec<f32>, CoreError> {
-    let mut query_vector: Vec<f32> = Vec::new();
-    for token in text.split_whitespace() {
-        let value = token.parse::<f32>().map_err(|err| CoreError::Typed {
-            code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
-            message: format!("semantic: query vector token `{token}` is not a valid f32: {err}"),
-        })?;
-        if !value.is_finite() {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
-                message: format!("semantic: query vector token `{token}` is not finite"),
-            });
-        }
-        query_vector.push(value);
-    }
-    SemanticPolicy::validate_query_vector(&query_vector)?;
-    Ok(query_vector)
+fn metric_count_value(count: usize) -> f64 {
+    u32::try_from(count).map_or_else(|_| f64::from(u32::MAX), f64::from)
 }
 
 /// Construct a [`GenerationPin`] from primitives. Public helper used in tests.
@@ -2509,12 +2727,11 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
-        BoundedQueryObsStore, DecimalQueryTextEmbedder, ERR_HISTORY_GENERATION_NOT_READY,
-        ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_NOT_IMPLEMENTED,
-        FailClosedStructuralProducer, QueryObsSink, SearchPlaneDispatcher,
-        classify_error_metric_name, make_pin,
+        BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
+        ERR_HISTORY_SHARD_UNAVAILABLE, ERR_NOT_IMPLEMENTED, FailClosedStructuralProducer,
+        QueryObsSink, SearchPlaneDispatcher, classify_error_metric_name, make_pin,
     };
-    use crate::{ActivationCatalog, Ledger};
+    use crate::{ActivationCatalog, DecimalQueryTextEmbedder, Ledger};
     use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
@@ -3261,6 +3478,190 @@ mod tests {
     }
 
     #[test]
+    fn bridge_dispatch_routes_native_structural_query_to_structural_scope() -> TestResult {
+        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&lexical_state),
+                results: vec![candidate("lexical-should-not-run", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            producer,
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { alpha } AND match { beta }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                if bridge.packet.scope != quanta_index_contract::BridgeScope::Structural {
+                    return Err(format!(
+                        "expected structural bridge scope, got {:?}",
+                        bridge.packet.scope
+                    )
+                    .into());
+                }
+                let ids = bridge
+                    .packet
+                    .candidates
+                    .iter()
+                    .map(|candidate| match candidate {
+                        quanta_index_contract::BridgeCandidate::Structural(candidate) => {
+                            Ok(candidate.candidate_id.clone())
+                        }
+                        quanta_index_contract::BridgeCandidate::Lexical(candidate) => Err(format!(
+                            "expected structural bridge candidate, got lexical `{}`",
+                            candidate.candidate_id
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Box::<dyn std::error::Error>::from)?;
+                if ids != vec!["chunk-shared".to_string()] {
+                    return Err(
+                        format!("unexpected structural bridge candidate ids: {ids:?}").into(),
+                    );
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                return Err(format!("expected Bridge response, got {other:?}").into());
+            }
+        }
+
+        if !lexical_state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?
+            .search_top_ks
+            .is_empty()
+        {
+            return Err("lexical opener must not execute for structural bridge route".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bridge_dispatch_routes_sourcegraph_structural_query_to_structural_scope() -> TestResult {
+        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&lexical_state),
+                results: vec![candidate("lexical-should-not-run", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            producer,
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let query_text =
+            r#"patterntype:structural "alpha" OR patterntype:structural "beta""#.to_string();
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: query_text.clone(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                if bridge.packet.scope != quanta_index_contract::BridgeScope::Structural {
+                    return Err(format!(
+                        "expected structural bridge scope, got {:?}",
+                        bridge.packet.scope
+                    )
+                    .into());
+                }
+                if bridge.packet.source_syntax.as_deref() != Some(query_text.as_str()) {
+                    return Err(format!(
+                        "unexpected structural bridge source_syntax: {:?}",
+                        bridge.packet.source_syntax
+                    )
+                    .into());
+                }
+                if bridge.packet.translator_version.as_deref()
+                    != Some(quanta_index_lq_bridge::TRANSLATOR_VERSION)
+                {
+                    return Err(format!(
+                        "unexpected structural bridge translator_version: {:?}",
+                        bridge.packet.translator_version
+                    )
+                    .into());
+                }
+                let ids = bridge
+                    .packet
+                    .candidates
+                    .iter()
+                    .map(|candidate| match candidate {
+                        quanta_index_contract::BridgeCandidate::Structural(candidate) => {
+                            Ok(candidate.candidate_id.clone())
+                        }
+                        quanta_index_contract::BridgeCandidate::Lexical(candidate) => Err(format!(
+                            "expected structural bridge candidate, got lexical `{}`",
+                            candidate.candidate_id
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Box::<dyn std::error::Error>::from)?;
+                if ids != vec!["chunk-a".to_string(), "chunk-shared".to_string()] {
+                    return Err(
+                        format!("unexpected SG structural bridge candidate ids: {ids:?}").into(),
+                    );
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                return Err(format!("expected Bridge response, got {other:?}").into());
+            }
+        }
+
+        if !lexical_state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?
+            .search_top_ks
+            .is_empty()
+        {
+            return Err("lexical opener must not execute for SG structural bridge route".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn semantic_dispatch_embeds_query_text() -> TestResult {
         let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let dispatcher = SearchPlaneDispatcher::new(
@@ -3476,6 +3877,9 @@ mod tests {
                     StructuralError::LangNotSupported(lang) => {
                         StructuralError::LangNotSupported(lang.clone())
                     }
+                    StructuralError::HoleKindUnsupported(kind) => {
+                        StructuralError::HoleKindUnsupported(kind.clone())
+                    }
                     StructuralError::InvalidRequest(message) => {
                         StructuralError::InvalidRequest(message.clone())
                     }
@@ -3491,6 +3895,7 @@ mod tests {
     struct PatternRoutingStructuralProducer {
         readiness_calls: AtomicUsize,
         execute_calls: AtomicUsize,
+        candidate_scopes: Mutex<Vec<Option<Vec<String>>>>,
     }
 
     impl PatternRoutingStructuralProducer {
@@ -3498,7 +3903,16 @@ mod tests {
             Self {
                 readiness_calls: AtomicUsize::new(0),
                 execute_calls: AtomicUsize::new(0),
+                candidate_scopes: Mutex::new(Vec::new()),
             }
+        }
+
+        fn recorded_scopes(&self) -> Result<Vec<Option<Vec<String>>>, Box<dyn std::error::Error>> {
+            let guard = self
+                .candidate_scopes
+                .lock()
+                .map_err(|err| format!("candidate scope state poisoned: {err}"))?;
+            Ok(guard.clone())
         }
     }
 
@@ -3513,6 +3927,14 @@ mod tests {
             request: &StructuralQueryRequest,
         ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
             let _prev: usize = self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            {
+                let mut scopes = self.candidate_scopes.lock().map_err(|err| {
+                    StructuralError::ProducerExecution(format!(
+                        "candidate scope state poisoned: {err}"
+                    ))
+                })?;
+                scopes.push(request.candidate_scope.clone());
+            }
             match structural_pattern_key(&request.pattern) {
                 Some("alpha") => Ok(vec![
                     structural_match_candidate_with_binding("chunk-a", 10, 15, "x", 10, 15),
@@ -3636,7 +4058,18 @@ mod tests {
             }));
         match response {
             SearchPlaneQueryIpcResponse::Hybrid(_) => {}
-            other => return Err(format!("expected Hybrid response, got {other:?}").into()),
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Hybrid response, got {other:?}").into());
+            }
         }
 
         let names = obs_sink
@@ -3733,7 +4166,18 @@ mod tests {
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()));
         match response {
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {}
-            other => return Err(format!("expected RepoMapQuery response, got {other:?}").into()),
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected RepoMapQuery response, got {other:?}").into());
+            }
         }
 
         let names = obs_sink
@@ -4511,6 +4955,91 @@ mod tests {
     }
 
     #[test]
+    fn structural_dispatch_rejects_typed_hole_kind_with_exact_code() -> TestResult {
+        let producer = Arc::new(RecordingStructuralProducer::ready_with(vec![
+            structural_match_candidate("chunk-tree"),
+        ]));
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 4,
+                },
+            },
+        ));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_HOLE_KIND_UNSUPPORTED" {
+            return Err(format!("expected STR_HOLE_KIND_UNSUPPORTED, got {code}").into());
+        }
+        if !message.contains("typed hole kind `lambda`") {
+            return Err(format!("expected typed-hole rejection message, got {message}").into());
+        }
+        if producer.readiness_calls.load(Ordering::SeqCst) != 0 {
+            return Err("producer readiness must not run for typed-hole rejection".into());
+        }
+        if producer.execute_calls.load(Ordering::SeqCst) != 0 {
+            return Err("producer execute must not run for typed-hole rejection".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bridge_dispatch_rejects_typed_hole_kind_before_structural_execution() -> TestResult {
+        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&lexical_state),
+                results: vec![candidate("lexical-should-not-run", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            producer,
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+                target: quanta_index_contract::BridgeTarget::CodeQl,
+            }));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_HOLE_KIND_UNSUPPORTED" {
+            return Err(format!("expected STR_HOLE_KIND_UNSUPPORTED, got {code}").into());
+        }
+        if !message.contains("typed hole kind `lambda`") {
+            return Err(
+                format!("expected typed-hole bridge rejection message, got {message}").into(),
+            );
+        }
+        if !lexical_state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?
+            .search_top_ks
+            .is_empty()
+        {
+            return Err("lexical opener must not execute for typed-hole bridge rejection".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn structural_dispatch_executes_structural_boolean_and_with_canonical_projection() -> TestResult
     {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
@@ -4537,7 +5066,10 @@ mod tests {
                     )
                     .into());
                 }
-                let candidate = &results.results[0];
+                let candidate = results
+                    .results
+                    .first()
+                    .ok_or_else(|| "missing structural candidate after size check".to_string())?;
                 if candidate.candidate_id != "chunk-shared" {
                     return Err(format!("expected chunk-shared, got {candidate:?}").into());
                 }
@@ -4553,7 +5085,16 @@ mod tests {
                     .into());
                 }
             }
-            other => {
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
         }
@@ -4563,6 +5104,15 @@ mod tests {
         }
         if producer.execute_calls.load(Ordering::SeqCst) != 2 {
             return Err("boolean AND should execute once per structural leaf".into());
+        }
+        let scopes = producer.recorded_scopes()?;
+        if scopes
+            != vec![
+                None,
+                Some(vec!["chunk-a".to_string(), "chunk-shared".to_string()]),
+            ]
+        {
+            return Err(format!("unexpected AND candidate scopes: {scopes:?}").into());
         }
         Ok(())
     }
@@ -4597,7 +5147,16 @@ mod tests {
                     );
                 }
             }
-            other => {
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
         }
@@ -4639,13 +5198,89 @@ mod tests {
                     .into());
                 }
             }
-            other => {
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected Structural response, got {other:?}").into());
             }
         }
 
         if producer.execute_calls.load(Ordering::SeqCst) != 2 {
             return Err("bounded NOT should execute once per structural leaf".into());
+        }
+        let scopes = producer.recorded_scopes()?;
+        if scopes
+            != vec![
+                None,
+                Some(vec!["chunk-a".to_string(), "chunk-shared".to_string()]),
+            ]
+        {
+            return Err(format!("unexpected bounded-NOT candidate scopes: {scopes:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_memoizes_identical_leaf_execution() -> TestResult {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { alpha } OR match { alpha }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                let ids: Vec<&str> = results
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    .collect();
+                if ids != vec!["chunk-a", "chunk-shared"] {
+                    return Err(format!(
+                        "expected memoized OR ids [chunk-a, chunk-shared], got {ids:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Bridge(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
+        }
+
+        if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+            return Err("identical structural leaves should consult readiness once".into());
+        }
+        if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+            return Err("identical structural leaves should execute once".into());
+        }
+        let scopes = producer.recorded_scopes()?;
+        if scopes != vec![None] {
+            return Err(format!("unexpected memoized candidate scopes: {scopes:?}").into());
         }
         Ok(())
     }

@@ -29,11 +29,9 @@ use quanta_index_contract::{
     SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_sdk::{
-    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
-    EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract, EmbeddingNormalization,
-    EmbeddingRecord, LexicalBatch, OwnerDocKind, ParseNode, ParseRoleTag, ParseTreeRecord,
-    QuantaIndex, RepoRelativePath, SdkError, SearchScopeKey, SearchScopeSurface, SemanticBatch,
-    StructuralBatch,
+    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
+    ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex, RepoRelativePath, SdkError,
+    SearchScopeKey, SearchScopeSurface, StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
@@ -117,7 +115,7 @@ fn start_sdk_frontdoor_runtime_at_state_root(
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name(thread_name.into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
@@ -354,8 +352,8 @@ fn lexical_chunk(
     chunk_id: &str,
     path: &str,
     snippet: &str,
-    text_digest: &str,
-    shape_digest: &str,
+    _text_digest: &str,
+    _shape_digest: &str,
     end_byte: u32,
 ) -> Result<ChunkRecord, Box<dyn Error>> {
     Ok(ChunkRecord {
@@ -366,10 +364,7 @@ fn lexical_chunk(
         end_byte,
         start_line: 1,
         end_line: 1,
-        snippet: snippet.to_string().into_boxed_str(),
-        indexed_text: snippet.to_string().into_boxed_str(),
-        text_digest: text_digest.to_string().into_boxed_str(),
-        shape_digest: shape_digest.to_string().into_boxed_str(),
+        text: snippet.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     })
@@ -415,120 +410,6 @@ fn dirty_batch() -> DirtyBatch {
         payload_hash: [7; 32],
     })
     .delete(ChunkId::new("chunk-evict"))
-}
-
-fn semantic_batch() -> Result<SemanticBatch, Box<dyn Error>> {
-    Ok(SemanticBatch::replace_generation(
-        repo(),
-        revision(),
-        generation(),
-        "manifest:semantic",
-        "batch:semantic",
-        semantic_model_contract(),
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
-        },
-        "scope:semantic-alpha",
-        vec![semantic_embedding(
-            "alpha",
-            "src/alpha.rs",
-            "sphinx of quartz",
-            vec![1.0, 0.0],
-        )?],
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/beta.rs"),
-        },
-        "scope:semantic-beta",
-        vec![semantic_embedding(
-            "beta",
-            "src/beta.rs",
-            "sphinx riddles",
-            vec![0.0, 1.0],
-        )?],
-    ))
-}
-
-fn semantic_batch_two() -> Result<SemanticBatch, Box<dyn Error>> {
-    Ok(SemanticBatch::replace_generation(
-        repo(),
-        revision(),
-        generation_two(),
-        "manifest:semantic-v2",
-        "batch:semantic-v2",
-        semantic_model_contract(),
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/gamma.rs"),
-        },
-        "scope:semantic-gamma",
-        vec![semantic_embedding(
-            "gamma",
-            "src/gamma.rs",
-            "obsidian gamma",
-            vec![0.7, 0.7],
-        )?],
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/delta.rs"),
-        },
-        "scope:semantic-delta",
-        vec![semantic_embedding(
-            "delta",
-            "src/delta.rs",
-            "granite delta",
-            vec![0.2, 0.9],
-        )?],
-    ))
-}
-
-fn semantic_model_contract() -> EmbeddingModelContract {
-    EmbeddingModelContract {
-        model_id: "text-embed".into(),
-        model_version: Some("1".into()),
-        dimension: 2,
-        normalization: EmbeddingNormalization::L2Unit,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: "policy:semantic-sdk".into(),
-        view_policy_digest: Some("view:semantic-sdk".into()),
-    }
-}
-
-fn semantic_embedding(
-    embedding_id: &str,
-    path: &str,
-    snippet: &str,
-    vector: Vec<f32>,
-) -> Result<EmbeddingRecord, Box<dyn Error>> {
-    Ok(EmbeddingRecord {
-        embedding_id: EmbeddingId::new(embedding_id),
-        owner_kind: OwnerDocKind::Chunk,
-        owner_id: embedding_id.to_string().into_boxed_str(),
-        source_doc_id: embedding_id.to_string().into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new(path),
-        language: rust_language()?,
-        symbol_kind: None,
-        start_byte: 0,
-        end_byte: u32::try_from(snippet.len()).map_err(|err| -> Box<dyn Error> {
-            format!("snippet byte length does not fit into u32: {err}").into()
-        })?,
-        start_line: 1,
-        end_line: 1,
-        snippet: snippet.to_string().into_boxed_str(),
-        embedding_input_digest: format!("embedding-input:{embedding_id}").into_boxed_str(),
-        vector_digest: format!("vector:{embedding_id}").into_boxed_str(),
-        view_kind: "raw_chunk".to_string().into_boxed_str(),
-        vector,
-    })
 }
 
 fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
@@ -719,11 +600,7 @@ fn structural_batch_with_chunk(chunk_id: ChunkId) -> Result<StructuralBatch, Box
             },
             source_hash: compute_parse_tree_source_hash("fn main() {}"),
             role_tag_schema_version: 1,
-            role_tags: vec![ParseRoleTag {
-                role: "expr".to_string().into_boxed_str(),
-                byte_start: 0,
-                byte_end: 4,
-            }],
+            role_tags: structural_role_tags(10, 3, 7, 8, 10),
         },
     ))
 }
@@ -768,13 +645,35 @@ fn structural_batch_two() -> Result<StructuralBatch, Box<dyn Error>> {
             },
             source_hash: compute_parse_tree_source_hash("fn upgraded() {}"),
             role_tag_schema_version: 1,
-            role_tags: vec![ParseRoleTag {
-                role: "expr".to_string().into_boxed_str(),
-                byte_start: 0,
-                byte_end: 8,
-            }],
+            role_tags: structural_role_tags(14, 3, 11, 12, 14),
         },
     ))
+}
+
+fn structural_role_tags(
+    root_end: u32,
+    identifier_start: u32,
+    identifier_end: u32,
+    block_start: u32,
+    block_end: u32,
+) -> Vec<ParseRoleTag> {
+    vec![
+        ParseRoleTag {
+            role: "item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: root_end,
+        },
+        ParseRoleTag {
+            role: "expr".to_string().into_boxed_str(),
+            byte_start: identifier_start,
+            byte_end: identifier_end,
+        },
+        ParseRoleTag {
+            role: "stmt".to_string().into_boxed_str(),
+            byte_start: block_start,
+            byte_end: block_end,
+        },
+    ]
 }
 
 fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
@@ -967,7 +866,7 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("sdk-frontdoor-publish".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
@@ -984,7 +883,6 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     )?;
 
     let lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
-    let semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
     let history_receipt = client.history().publish(&history_batch())?;
     let dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -996,13 +894,6 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
     {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected lexical receipt: {lexical_receipt:?}").into());
-    }
-    if semantic_receipt.generation != generation()
-        || semantic_receipt.accepted_replace_scopes != 2
-        || semantic_receipt.accepted_tombstone_scopes != 0
-    {
-        stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected semantic receipt: {semantic_receipt:?}").into());
     }
     if history_receipt.generation != generation()
         || history_receipt.accepted_replace_scopes != 4
@@ -1047,7 +938,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("sdk-frontdoor-search".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
@@ -1064,7 +955,6 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
     )?;
 
     let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
-    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
     let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
     if repo_map_receipt.manifest_generation != generation() {
         stop_runtime(&shutdown, join)?;
@@ -1258,7 +1148,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             client
                 .semantic()
                 .query()
-                .text("1.0 0.0")
+                .text("quartz")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
@@ -1284,7 +1174,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
                 .search()
                 .hybrid()
                 .sourcegraph("sphinx")
-                .semantic_text("1.0 0.0")
+                .semantic_text("quartz")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
@@ -1324,7 +1214,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("sdk-frontdoor-query".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
@@ -1716,6 +1606,108 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .into());
     }
 
+    let structural_typed_expr = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item { { :[name.expr] } } }")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let structural_typed_expr_candidate = structural_typed_expr
+        .results
+        .first()
+        .ok_or_else(|| "missing structural typed-expr candidate".to_string())?;
+    let structural_typed_expr_binding = structural_typed_expr_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural typed-expr binding".to_string())?;
+    if structural_typed_expr_candidate.candidate_id != "chunk-tree"
+        || structural_typed_expr_binding.metavariable != "name"
+        || structural_typed_expr_binding.start_byte != 3
+        || structural_typed_expr_binding.end_byte != 7
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected structural typed-expr candidate/binding: \
+             {structural_typed_expr_candidate:?}"
+        )
+        .into());
+    }
+
+    let structural_typed_item = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { :[root.item] }")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let structural_typed_item_candidate = structural_typed_item
+        .results
+        .first()
+        .ok_or_else(|| "missing structural typed-item candidate".to_string())?;
+    let structural_typed_item_binding = structural_typed_item_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural typed-item binding".to_string())?;
+    if structural_typed_item_candidate.candidate_id != "chunk-tree"
+        || structural_typed_item_binding.metavariable != "root"
+        || structural_typed_item_binding.start_byte != 0
+        || structural_typed_item_binding.end_byte != 10
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected structural typed-item candidate/binding: \
+             {structural_typed_item_candidate:?}"
+        )
+        .into());
+    }
+
+    let structural_typed_stmt = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item { { :[body.stmt] } } }")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let structural_typed_stmt_candidate = structural_typed_stmt
+        .results
+        .first()
+        .ok_or_else(|| "missing structural typed-stmt candidate".to_string())?;
+    let structural_typed_stmt_binding = structural_typed_stmt_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural typed-stmt binding".to_string())?;
+    if structural_typed_stmt_candidate.candidate_id != "chunk-tree"
+        || structural_typed_stmt_binding.metavariable != "body"
+        || structural_typed_stmt_binding.start_byte != 8
+        || structural_typed_stmt_binding.end_byte != 10
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected structural typed-stmt candidate/binding: \
+             {structural_typed_stmt_candidate:?}"
+        )
+        .into());
+    }
+
     let structural_where_inside_outside = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
         || {
@@ -2054,7 +2046,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("sdk-frontdoor-history-errors".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(SOCKET_TIMEOUT, || {
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
@@ -2117,7 +2109,6 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
 
     let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
-    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
             .generations()
@@ -2170,7 +2161,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     assert_single_symbol_candidate(&symbol)?;
 
     let semantic_request = SemanticQueryRequest {
-        query_text: "1.0 0.0".to_string(),
+        query_text: "quartz".to_string(),
         generation: None,
         generation_selector: Some(active_selector()),
         lexical_scope: Some(TextQueryRequest {
@@ -2207,7 +2198,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation_selector: Some(active_selector()),
             top_k: 2,
         },
-        semantic_query_text: "1.0 0.0".to_string(),
+        semantic_query_text: "quartz".to_string(),
         generation: None,
         generation_selector: Some(active_selector()),
         top_k: 2,
@@ -2366,7 +2357,6 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
 
     let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
-    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
             .generations()
@@ -2438,7 +2428,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
             client
                 .semantic()
                 .query()
-                .text("1.0 0.0")
+                .text("quartz")
                 .scope_native("sphinx")
                 .scope_top_k(2)
                 .pinned(pin())
@@ -2468,7 +2458,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
                 .search()
                 .hybrid()
                 .native("sphinx")
-                .semantic_text("1.0 0.0")
+                .semantic_text("quartz")
                 .pinned(pin())
                 .top_k(2)
                 .execute()
@@ -2500,7 +2490,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
 
     let _lexical_receipt_v1 = client.lexical().publish(&lexical_batch()?)?;
-    let _semantic_receipt_v1 = client.semantic().publish(&semantic_batch()?)?;
     let _structural_receipt_v1 = client.structural().publish(&structural_batch()?)?;
     let _activation_v1 = wait_for_sdk_ready(complex_timeout, || {
         client
@@ -2539,7 +2528,6 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
     }
 
     let _lexical_receipt_v2 = client.lexical().publish(&lexical_batch_two()?)?;
-    let _semantic_receipt_v2 = client.semantic().publish(&semantic_batch_two()?)?;
     let _structural_receipt_v2 = client.structural().publish(&structural_batch_two()?)?;
 
     let lexical_pinned_v2 = wait_for_sdk_observation(
@@ -2572,7 +2560,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             client
                 .semantic()
                 .query()
-                .text("0.7 0.7")
+                .text("obsidian")
                 .pinned(pin_two())
                 .top_k(2)
                 .execute()
@@ -2683,7 +2671,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             client
                 .semantic()
                 .query()
-                .text("0.7 0.7")
+                .text("obsidian")
                 .pinned(pin_two())
                 .top_k(2)
                 .execute()
@@ -2832,7 +2820,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
         client
             .semantic()
             .query()
-            .text("1.0 0.0")
+            .text("quartz")
             .active(repo(), revision())
             .top_k(2)
             .scope_sourcegraph("sphinx")
@@ -2844,7 +2832,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
         client
             .semantic()
             .query()
-            .text("1.0 0.0")
+            .text("quartz")
             .active(repo(), revision())
             .top_k(2)
             .scope_top_k(1)

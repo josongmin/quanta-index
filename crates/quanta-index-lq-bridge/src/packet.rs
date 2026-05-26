@@ -1,5 +1,5 @@
 use quanta_index_contract_base::{
-    BridgeCandidatePacket, BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate,
+    BridgeCandidate, BridgeCandidatePacket, BridgeScope, BridgeTarget, GenerationPin,
     TextQueryRequest, TextQuerySyntax,
 };
 
@@ -11,7 +11,7 @@ pub fn export_bridge_candidate_packet(
     scope: BridgeScope,
     generation: &GenerationPin,
     request: &TextQueryRequest,
-    candidates: Vec<LexicalCandidate>,
+    candidates: Vec<BridgeCandidate>,
 ) -> BridgeCandidatePacket {
     let sourcegraph = matches!(request.syntax, TextQuerySyntax::Sourcegraph);
     BridgeCandidatePacket {
@@ -29,8 +29,9 @@ pub fn export_bridge_candidate_packet(
 #[cfg(test)]
 mod tests {
     use quanta_index_contract_base::{
-        BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate, ManifestGeneration, RepoId,
-        RepoRelativePath, RevisionId, TextQueryRequest, TextQuerySyntax,
+        BridgeCandidate, BridgeScope, BridgeTarget, GenerationPin, LexicalCandidate,
+        ManifestGeneration, RepoId, RepoRelativePath, RevisionId, StructuralBinding,
+        StructuralCandidate, TextQueryRequest, TextQuerySyntax,
     };
 
     use super::export_bridge_candidate_packet;
@@ -57,6 +58,19 @@ mod tests {
         }
     }
 
+    fn structural_candidate() -> StructuralCandidate {
+        StructuralCandidate {
+            candidate_id: "tree-1".to_string(),
+            bindings: vec![StructuralBinding {
+                metavariable: "name".to_string(),
+                start_byte: 10,
+                end_byte: 17,
+                start_line: 1,
+                end_line: 1,
+            }],
+        }
+    }
+
     #[test]
     fn sourcegraph_request_exports_metadata() {
         let request = TextQueryRequest {
@@ -71,7 +85,7 @@ mod tests {
             BridgeScope::Lexical,
             &pin(),
             &request,
-            vec![candidate()],
+            vec![BridgeCandidate::Lexical(candidate())],
         );
         assert_eq!(
             packet.source_syntax.as_deref(),
@@ -98,10 +112,38 @@ mod tests {
             BridgeScope::Semantic,
             &pin(),
             &request,
-            vec![candidate()],
+            vec![BridgeCandidate::Lexical(candidate())],
         );
         assert_eq!(packet.source_syntax, None);
         assert_eq!(packet.translator_version, None);
         assert_eq!(packet.scope, BridgeScope::Semantic);
+    }
+
+    #[test]
+    fn structural_packet_preserves_structural_scope_and_candidates() {
+        let request = TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "match { function_item }".to_string(),
+            generation: Some(pin()),
+            generation_selector: None,
+            top_k: 10,
+        };
+        let packet = export_bridge_candidate_packet(
+            BridgeTarget::CodeQl,
+            BridgeScope::Structural,
+            &pin(),
+            &request,
+            vec![BridgeCandidate::Structural(structural_candidate())],
+        );
+        assert_eq!(packet.scope, BridgeScope::Structural);
+        assert_eq!(packet.candidates.len(), 1);
+        let candidate_id = packet
+            .candidates
+            .first()
+            .and_then(|candidate| match candidate {
+                BridgeCandidate::Structural(candidate) => Some(candidate.candidate_id.as_str()),
+                BridgeCandidate::Lexical(_) => None,
+            });
+        assert_eq!(candidate_id, Some("tree-1"));
     }
 }

@@ -6,7 +6,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{LexicalCandidate, ManifestGeneration, RepoId, RevisionId};
+use crate::{LexicalCandidate, ManifestGeneration, RepoId, RevisionId, StructuralCandidate};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BridgeTarget {
@@ -63,6 +63,7 @@ impl<'de> Deserialize<'de> for BridgeTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BridgeScope {
     Lexical,
+    Structural,
     Semantic,
     Hybrid,
 }
@@ -72,6 +73,7 @@ impl BridgeScope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lexical => "lexical",
+            Self::Structural => "structural",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
         }
@@ -102,11 +104,12 @@ impl Visitor<'_> for BridgeScopeVisitor {
     {
         match value {
             "lexical" => Ok(BridgeScope::Lexical),
+            "structural" => Ok(BridgeScope::Structural),
             "semantic" => Ok(BridgeScope::Semantic),
             "hybrid" => Ok(BridgeScope::Hybrid),
             other => Err(de::Error::unknown_variant(
                 other,
-                &["lexical", "semantic", "hybrid"],
+                &["lexical", "structural", "semantic", "hybrid"],
             )),
         }
     }
@@ -122,6 +125,87 @@ impl<'de> Deserialize<'de> for BridgeScope {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum BridgeCandidate {
+    Lexical(LexicalCandidate),
+    Structural(StructuralCandidate),
+}
+
+const BRIDGE_CANDIDATE_FIELDS: &[&str] = &["kind", "lexical", "structural"];
+
+impl Serialize for BridgeCandidate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("BridgeCandidate", 2)?;
+        match self {
+            Self::Lexical(candidate) => {
+                state.serialize_field("kind", "lexical")?;
+                state.serialize_field("lexical", candidate)?;
+            }
+            Self::Structural(candidate) => {
+                state.serialize_field("kind", "structural")?;
+                state.serialize_field("structural", candidate)?;
+            }
+        }
+        state.end()
+    }
+}
+
+struct BridgeCandidateVisitor;
+
+impl<'de> Visitor<'de> for BridgeCandidateVisitor {
+    type Value = BridgeCandidate;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a BridgeCandidate map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut kind: Option<String> = None;
+        let mut lexical: Option<LexicalCandidate> = None;
+        let mut structural: Option<StructuralCandidate> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "kind" => kind = Some(map.next_value()?),
+                "lexical" => lexical = Some(map.next_value()?),
+                "structural" => structural = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, BRIDGE_CANDIDATE_FIELDS)),
+            }
+        }
+        match kind.as_deref() {
+            Some("lexical") => Ok(BridgeCandidate::Lexical(
+                lexical.ok_or_else(|| de::Error::missing_field("lexical"))?,
+            )),
+            Some("structural") => Ok(BridgeCandidate::Structural(
+                structural.ok_or_else(|| de::Error::missing_field("structural"))?,
+            )),
+            Some(other) => Err(de::Error::unknown_variant(
+                other,
+                &["lexical", "structural"],
+            )),
+            None => Err(de::Error::missing_field("kind")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BridgeCandidate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "BridgeCandidate",
+            BRIDGE_CANDIDATE_FIELDS,
+            BridgeCandidateVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BridgeCandidatePacket {
     pub target: BridgeTarget,
     pub scope: BridgeScope,
@@ -130,7 +214,7 @@ pub struct BridgeCandidatePacket {
     pub manifest_generation: ManifestGeneration,
     pub source_syntax: Option<String>,
     pub translator_version: Option<String>,
-    pub candidates: Vec<LexicalCandidate>,
+    pub candidates: Vec<BridgeCandidate>,
 }
 
 const BRIDGE_CANDIDATE_PACKET_FIELDS: &[&str] = &[
@@ -193,7 +277,7 @@ impl<'de> Visitor<'de> for BridgeCandidatePacketVisitor {
         let mut manifest_generation: Option<ManifestGeneration> = None;
         let mut source_syntax: Option<Option<String>> = None;
         let mut translator_version: Option<Option<String>> = None;
-        let mut candidates: Option<Vec<LexicalCandidate>> = None;
+        let mut candidates: Option<Vec<BridgeCandidate>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "target" => target = Some(map.next_value()?),

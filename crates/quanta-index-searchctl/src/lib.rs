@@ -1179,10 +1179,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn rejects_legacy_semantic_query_handle_flag() {
         let parsed = ParsedCommand::parse([
             "semantic",
@@ -1206,10 +1202,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn rejects_legacy_hybrid_semantic_handle_flag() {
         let parsed = ParsedCommand::parse([
             "hybrid",

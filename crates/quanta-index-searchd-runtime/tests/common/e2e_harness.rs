@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::{
-    LanguageCode, ParseNode, ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord,
-    SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
+    LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, SymbolKindCode, SymbolKindFamily,
+    SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, EngineTouched,
@@ -54,6 +54,39 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
 
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
+type DriverHandles = (
+    PathBuf,
+    PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+    Arc<BoundedQueryObsStore>,
+);
+
+fn structural_role_tags(
+    root_end: u32,
+    identifier_start: u32,
+    identifier_end: u32,
+    block_start: u32,
+    block_end: u32,
+) -> Vec<ParseRoleTag> {
+    vec![
+        ParseRoleTag {
+            role: "item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: root_end,
+        },
+        ParseRoleTag {
+            role: "expr".to_string().into_boxed_str(),
+            byte_start: identifier_start,
+            byte_end: identifier_end,
+        },
+        ParseRoleTag {
+            role: "stmt".to_string().into_boxed_str(),
+            byte_start: block_start,
+            byte_end: block_end,
+        },
+    ]
+}
 
 /// Tempdir-backed runtime handle.
 #[expect(
@@ -137,9 +170,9 @@ impl E2eRuntime {
     /// same `state_root` so further ingest is possible, then leave the
     /// driver stopped so first query lazy-starts a fresh runtime.
     /// Mirrors a process restart against persistent storage.
-    pub(super) fn reopen(mut self) -> AnyResult<Self> {
+    pub(super) fn reopen(mut self) -> Self {
         self.stop_driver();
-        Ok(self)
+        self
     }
 
     fn stop_driver(&mut self) {
@@ -247,7 +280,7 @@ impl E2eRuntime {
             self.request_id_counter.fetch_add(1, Ordering::Relaxed)
         ));
         let record = ChunkRecord {
-            chunk_id: chunk_id.clone(),
+            chunk_id,
             repo_relative_path: RepoRelativePath::new(path),
             language: LanguageCode::new(language_from_path(path)).map_err(|err| {
                 anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
@@ -257,10 +290,7 @@ impl E2eRuntime {
                 .map_err(|err| anyhow::anyhow!("e2e harness content length overflow: {err}"))?,
             start_line: 1,
             end_line: 2,
-            snippet: content.to_string().into_boxed_str(),
-            indexed_text: content.to_string().into_boxed_str(),
-            text_digest: format!("text:{path}:{content}").into_boxed_str(),
-            shape_digest: format!("shape:{path}:{content}").into_boxed_str(),
+            text: content.to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
         };
@@ -339,7 +369,7 @@ impl E2eRuntime {
                         end_byte: chunk.end_byte,
                         start_line: chunk.start_line,
                         end_line: chunk.end_line,
-                        snippet: chunk.snippet.clone(),
+                        snippet: chunk.text,
                         embedding_input_digest: format!("embed-in:{path}:{vector:?}")
                             .into_boxed_str(),
                         vector_digest: format!("embed-vec:{path}:{vector:?}").into_boxed_str(),
@@ -375,6 +405,7 @@ impl E2eRuntime {
             .map_err(|err| anyhow::anyhow!("e2e harness identifier start overflow: {err}"))?;
         let identifier_end = u32::try_from(identifier_end)
             .map_err(|err| anyhow::anyhow!("e2e harness identifier end overflow: {err}"))?;
+        let block_start = byte_end.saturating_sub(2);
         let tree = ParseTreeRecord {
             wire_version: 1,
             lang: LanguageCode::new(language_from_path(path)).map_err(|err| {
@@ -393,7 +424,7 @@ impl E2eRuntime {
                     },
                     ParseNode {
                         kind: "block".to_string().into_boxed_str(),
-                        byte_start: byte_end.saturating_sub(2),
+                        byte_start: block_start,
                         byte_end,
                         children: Vec::new(),
                     },
@@ -401,7 +432,13 @@ impl E2eRuntime {
             },
             source_hash: compute_parse_tree_source_hash(content),
             role_tag_schema_version: 1,
-            role_tags: Vec::new(),
+            role_tags: structural_role_tags(
+                byte_end,
+                identifier_start,
+                identifier_end,
+                block_start,
+                byte_end,
+            ),
         };
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
             StructuralIngestBatch {
@@ -791,7 +828,7 @@ impl E2eRuntime {
 
     pub(super) fn query_semantic(
         &mut self,
-        vector: &[f32],
+        query_text: &str,
         top_k: u32,
         lexical_scope: Option<(TextQuerySyntax, &str, u32)>,
     ) -> E2eQueryResult {
@@ -799,7 +836,7 @@ impl E2eRuntime {
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: float_vec_to_query_text(vector),
+                query_text: query_text.to_string(),
                 generation: self.last_sealed_pin(),
                 generation_selector: None,
                 lexical_scope: lexical_scope.map(|(syntax, query_text, scope_top_k)| {
@@ -893,7 +930,7 @@ impl E2eRuntime {
         &mut self,
         syntax: TextQuerySyntax,
         text_query: &str,
-        vector: &[f32],
+        semantic_query_text: &str,
         top_k: u32,
     ) -> E2eQueryResult {
         let pin = self.last_sealed_pin();
@@ -908,7 +945,7 @@ impl E2eRuntime {
                     generation_selector: None,
                     top_k: 50,
                 },
-                semantic_query_text: float_vec_to_query_text(vector),
+                semantic_query_text: semantic_query_text.to_string(),
                 generation: pin,
                 generation_selector: None,
                 top_k,
@@ -1179,15 +1216,7 @@ impl Drop for E2eRuntime {
     }
 }
 
-fn start_driver(
-    state_root: &Path,
-) -> AnyResult<(
-    PathBuf,
-    PathBuf,
-    Arc<AtomicBool>,
-    DriverJoin,
-    Arc<BoundedQueryObsStore>,
-)> {
+fn start_driver(state_root: &Path) -> AnyResult<DriverHandles> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -1197,7 +1226,7 @@ fn start_driver(
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("e2e-harness-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
     if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
         query_socket.exists() && ingest_socket.exists()
     }) {

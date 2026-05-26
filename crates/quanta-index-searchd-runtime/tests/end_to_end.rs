@@ -7,10 +7,6 @@
     reason = "test polling paths still use explicit Result fallback checks"
 )]
 #![expect(
-    clippy::let_underscore_untyped,
-    reason = "publisher ops intentionally discard ack payloads in integration setup"
-)]
-#![expect(
     clippy::wildcard_enum_match_arm,
     reason = "integration response checks intentionally collapse non-target variants"
 )]
@@ -28,17 +24,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{
-    CommitRecord, CommitSha, LanguageCode, ParseNode, ParseTreeRecord,
+    CommitRecord, CommitSha, LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord,
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord,
-    EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract, EmbeddingNormalization,
-    EmbeddingRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest, HybridQueryRequest,
-    LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope, LqVisibility,
-    ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
+    ChunkRecord, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
+    EmbeddingNormalization, EmbeddingRecord, GenerationPin, HistoryIngestBatch,
+    HistoryQueryRequest, HybridQueryRequest, LexicalIngestBatch, LexicalReplaceScope,
+    LexicalTombstoneScope, LqVisibility, ManifestGeneration, OwnerDocKind, RepoId,
+    RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
+    SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
     SemanticQueryRequest, SemanticReplaceScope, StructuralIngestBatch, StructuralQueryRequest,
@@ -56,6 +52,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
+type RuntimeHandles = (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+);
 
 struct RepoMetadataPayload<'a> {
     fork: bool,
@@ -117,10 +119,7 @@ fn chunk_record_with_metadata(
         })?,
         start_line,
         end_line,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
-        text_digest: "text:e2e".to_string().into_boxed_str(),
-        shape_digest: "shape:e2e".to_string().into_boxed_str(),
+        text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     })
@@ -154,10 +153,7 @@ fn chunk_payload_with_metadata(
         })?,
         start_line,
         end_line,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
-        text_digest: "text:e2e".to_string().into_boxed_str(),
-        shape_digest: "shape:e2e".to_string().into_boxed_str(),
+        text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     };
@@ -197,6 +193,32 @@ fn history_commit_record() -> CommitRecord {
     }
 }
 
+fn structural_role_tags(
+    root_end: u32,
+    identifier_start: u32,
+    identifier_end: u32,
+    block_start: u32,
+    block_end: u32,
+) -> Vec<ParseRoleTag> {
+    vec![
+        ParseRoleTag {
+            role: "item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: root_end,
+        },
+        ParseRoleTag {
+            role: "expr".to_string().into_boxed_str(),
+            byte_start: identifier_start,
+            byte_end: identifier_end,
+        },
+        ParseRoleTag {
+            role: "stmt".to_string().into_boxed_str(),
+            byte_start: block_start,
+            byte_end: block_end,
+        },
+    ]
+}
+
 fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
     Ok(ParseTreeRecord {
         wire_version: 1,
@@ -223,7 +245,7 @@ fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
         },
         source_hash: compute_parse_tree_source_hash("fn main() {}"),
         role_tag_schema_version: 1,
-        role_tags: Vec::new(),
+        role_tags: structural_role_tags(10, 3, 7, 8, 10),
     })
 }
 
@@ -282,7 +304,8 @@ fn unique_socket_paths() -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
-    let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let mut cfg =
+        SearchdConfig::from_state_root(state_root.to_path_buf()).with_decimal_query_text_embedder();
     // The unit socket path under tmpdir state root can exceed the 104-byte
     // AF_UNIX limit on macOS for long temp paths; use a flat path in
     // /tmp instead.
@@ -336,18 +359,7 @@ fn float_vec_to_query_text(vec: &[f32]) -> String {
 
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 
-fn start_runtime(
-    state_root: &Path,
-    thread_name: &str,
-) -> Result<
-    (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        Arc<AtomicBool>,
-        DriverJoin,
-    ),
-    Box<dyn Error>,
-> {
+fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -356,7 +368,7 @@ fn start_runtime(
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name(thread_name.into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
     if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
         query_socket.exists() && ingest_socket.exists()
     }) {
@@ -374,6 +386,7 @@ fn start_runtime(
 
 fn stop_runtime(shutdown: Arc<AtomicBool>, join: DriverJoin) -> TestResult {
     shutdown.store(true, Ordering::Release);
+    drop(shutdown);
     match join.join() {
         Ok(Ok(())) => Ok(()),
         Ok(Err(err)) => Err(err.into()),
@@ -419,7 +432,7 @@ fn semantic_embedding(chunk: &ChunkRecord, vector: Vec<f32>) -> EmbeddingRecord 
         end_byte: chunk.end_byte,
         start_line: chunk.start_line,
         end_line: chunk.end_line,
-        snippet: chunk.snippet.clone(),
+        snippet: chunk.text.clone(),
         embedding_input_digest: format!("embed-in:{}", chunk.chunk_id.as_str()).into_boxed_str(),
         vector_digest: format!("embed-vec:{vector:?}").into_boxed_str(),
         view_kind: "raw_chunk".to_string().into_boxed_str(),
@@ -542,8 +555,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
 fn publish_semantic_embeddings(socket: &Path, embeddings: Vec<EmbeddingRecord>) -> TestResult {
     let dimension = embeddings
         .first()
-        .map(|embedding| embedding.vector.len())
-        .unwrap_or(1);
+        .map_or(1, |embedding| embedding.vector.len());
     let mut embeddings_by_path: BTreeMap<String, Vec<EmbeddingRecord>> = BTreeMap::new();
     for embedding in embeddings {
         embeddings_by_path
@@ -1178,7 +1190,7 @@ fn hybrid_query_rejects_generation_pin_mismatch() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-hybrid-pin-mismatch-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -1402,7 +1414,7 @@ fn semantic_only_query_requires_semantic_seal() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-test-driver".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -1512,6 +1524,83 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
 }
 
 #[test]
+fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let (query_socket, control_socket) = unique_socket_paths();
+    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-semantic-default-text-derivation-test".into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic default-derivation sockets never appeared".into());
+    }
+
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "parser pipeline typed semantic search")?,
+            chunk_record("beta", "archive storage compaction")?,
+        ],
+        None,
+    )?;
+    seal_lexical(&ingest_socket)?;
+
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 43,
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+            query_text: "typed semantic parser".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 1,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic default text query never became ready".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let semantic = match response.payload {
+        SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Semantic, got {other:?}").into());
+        }
+    };
+    let first = semantic
+        .results
+        .first()
+        .ok_or_else(|| "semantic default derivation returned no results".to_string())?;
+    if first.candidate_id != "alpha" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected alpha candidate, got {}", first.candidate_id).into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
 fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
@@ -1522,7 +1611,7 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-semantic-pin-mismatch-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -1851,6 +1940,80 @@ fn semantic_query_rejects_invalid_vector_with_typed_code() -> TestResult {
 }
 
 #[test]
+fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf())
+        .with_provider_unavailable_query_text_embedder();
+    let (query_socket, control_socket) = unique_socket_paths();
+    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-sem-provider-unavailable-test".into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic provider-unavailable sockets never appeared".into());
+    }
+
+    let alpha = chunk_record("alpha", "semantic alpha")?;
+    publish_semantic_embeddings(
+        &ingest_socket,
+        vec![semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32])],
+    )?;
+    seal_semantic(&ingest_socket, 2)?;
+
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 44,
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+            query_text: "semantic meaning".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 3,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| match resp.payload {
+                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                _ => true,
+            })
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic provider-unavailable query never progressed past NOT_READY".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let err = match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => err,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Error, got {other:?}").into());
+        }
+    };
+    if err.code != "SEM_PROVIDER_UNAVAILABLE" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected SEM_PROVIDER_UNAVAILABLE, got {}", err.code).into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
 fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
@@ -1861,7 +2024,7 @@ fn hybrid_query_rejects_zero_top_k_with_typed_code() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-hybrid-top-k-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -2079,7 +2242,7 @@ fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-structural-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -2169,7 +2332,11 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
                 },
                 source_hash: compute_parse_tree_source_hash("fn main() {}"),
                 role_tag_schema_version: 1,
-                role_tags: Vec::new(),
+                role_tags: vec![ParseRoleTag {
+                    role: "item".to_string().into_boxed_str(),
+                    byte_start: 0,
+                    byte_end: 10,
+                }],
             },
         }],
     )?;
@@ -2243,7 +2410,7 @@ fn structural_query_composition_wiring_emits_typed_error() -> TestResult {
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-structural-wiring-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -2406,7 +2573,7 @@ fn structural_sourcegraph_query_requires_structural_pattern_type() -> TestResult
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("searchd-structural-sourcegraph-pattern-type-test".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
 
     if !wait_until(Duration::from_secs(2), || socket.exists()) {
         shutdown.store(true, Ordering::Release);
@@ -2516,6 +2683,176 @@ fn structural_sourcegraph_query_rejects_select_filter() -> TestResult {
 }
 
 #[test]
+fn structural_query_typed_holes_return_role_tag_scoped_matches() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-structural-typed-hole-success-test")?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let expr_request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 48,
+        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { function_item { { :[name.expr] } } }".to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    };
+    let mut observed_expr: Option<String> = None;
+    let saw_expr = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &expr_request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Structural(structural) => {
+                    observed_expr = Some(format!("{structural:?}"));
+                    structural.generation == pin && structural.results.len() == 1
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed_expr = Some(err.code);
+                    false
+                }
+                other => {
+                    observed_expr = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed_expr = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_expr {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "typed expr structural query never became ready; observed {observed_expr:?}"
+        )
+        .into());
+    }
+
+    let expr_response = send_query_request(&socket, &expr_request)?;
+    let expr_structural = match expr_response.payload {
+        SearchPlaneQueryIpcResponse::Structural(structural) => structural,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Structural for typed expr, got {other:?}").into());
+        }
+    };
+    let expr_candidate = expr_structural
+        .results
+        .first()
+        .ok_or_else(|| "missing typed expr candidate".to_string())?;
+    let expr_binding = expr_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing typed expr binding".to_string())?;
+    if expr_candidate.candidate_id != "chunk-tree"
+        || expr_binding.metavariable != "name"
+        || expr_binding.start_byte != 3
+        || expr_binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected typed expr candidate/binding: {expr_candidate:?}").into());
+    }
+
+    let item_response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 49,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { :[root.item] }".to_string(),
+                    generation: Some(pin),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+            }),
+        },
+    )?;
+    let item_structural = match item_response.payload {
+        SearchPlaneQueryIpcResponse::Structural(structural) => structural,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Structural for typed item, got {other:?}").into());
+        }
+    };
+    let item_candidate = item_structural
+        .results
+        .first()
+        .ok_or_else(|| "missing typed item candidate".to_string())?;
+    let item_binding = item_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing typed item binding".to_string())?;
+    if item_candidate.candidate_id != "chunk-tree"
+        || item_binding.metavariable != "root"
+        || item_binding.start_byte != 0
+        || item_binding.end_byte != 10
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("unexpected typed item candidate/binding: {item_candidate:?}").into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, _ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-structural-typed-hole-reject-test")?;
+
+    let response = send_query_request(
+        &socket,
+        &SearchPlaneQueryIpcRequestEnvelope {
+            request_id: 49,
+            payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
+                    generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+            }),
+        },
+    )?;
+    let err = match response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => err,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Error, got {other:?}").into());
+        }
+    };
+    if err.code != "STR_HOLE_KIND_UNSUPPORTED" || !err.message.contains("typed hole kind `lambda`")
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(
+            format!("expected STR_HOLE_KIND_UNSUPPORTED typed-hole error, got {err:?}").into(),
+        );
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
 fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
@@ -2597,16 +2934,309 @@ fn bridge_query_sourcegraph_returns_packet_with_candidates_and_metadata() -> Tes
         )
         .into());
     }
-    let ids: Vec<String> = bridge
-        .packet
-        .candidates
-        .iter()
-        .map(|candidate| candidate.candidate_id.clone())
-        .collect();
+    let mut ids: Vec<String> = Vec::with_capacity(bridge.packet.candidates.len());
+    for candidate in &bridge.packet.candidates {
+        match candidate {
+            BridgeCandidate::Lexical(candidate) => ids.push(candidate.candidate_id.clone()),
+            BridgeCandidate::Structural(candidate) => {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err(format!(
+                    "expected lexical bridge candidate, got structural `{}`",
+                    candidate.candidate_id
+                )
+                .into());
+            }
+        }
+    }
     if !ids.iter().any(|id| id == "bridge-alpha") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected bridge-alpha candidate in packet, got {ids:?}").into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn bridge_query_native_structural_returns_structural_packet() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-bridge-native-structural-test")?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
+
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 50,
+        payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "match { function_item { { identifier :[name] } } }".to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+            target: BridgeTarget::CodeQl,
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                    observed = Some(format!("{bridge:?}"));
+                    bridge.generation == pin && bridge.packet.scope == BridgeScope::Structural
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_ready {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(
+            format!("native structural bridge never became ready; observed {observed:?}").into(),
+        );
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let bridge = match response.payload {
+        SearchPlaneQueryIpcResponse::Bridge(bridge) => bridge,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Bridge, got {other:?}").into());
+        }
+    };
+    if bridge.generation != pin {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("native structural bridge generation did not echo request pin".into());
+    }
+    if bridge.packet.scope != BridgeScope::Structural {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected structural bridge scope, got {:?}",
+            bridge.packet.scope
+        )
+        .into());
+    }
+    if bridge.packet.source_syntax.is_some() || bridge.packet.translator_version.is_some() {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "native structural bridge must omit Sourcegraph metadata, got source={:?} translator={:?}",
+            bridge.packet.source_syntax,
+            bridge.packet.translator_version
+        )
+        .into());
+    }
+    if bridge.packet.candidates.len() != 1 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected one native structural bridge candidate, got {:?}",
+            bridge.packet.candidates
+        )
+        .into());
+    }
+    let candidate = match bridge.packet.candidates.first() {
+        Some(BridgeCandidate::Structural(candidate)) => candidate,
+        Some(BridgeCandidate::Lexical(candidate)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "expected structural bridge candidate, got lexical `{}`",
+                candidate.candidate_id
+            )
+            .into());
+        }
+        None => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err("missing native structural bridge candidate".into());
+        }
+    };
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing native structural bridge binding".to_string())?;
+    if candidate.candidate_id != "chunk-tree"
+        || binding.metavariable != "name"
+        || binding.start_byte != 3
+        || binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected native structural bridge candidate/binding: {candidate:?}"
+        )
+        .into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn bridge_query_sourcegraph_structural_returns_structural_packet_with_metadata() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-bridge-sourcegraph-structural-test")?;
+    publish_structural_ready_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+    seal_structural(&ingest_socket)?;
+
+    let query_text =
+        r#"patterntype:structural "function_item { { identifier :[name] } }" OR "trait_item""#
+            .to_string();
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 51,
+        payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Sourcegraph,
+                query_text: query_text.clone(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+            target: BridgeTarget::CodeQl,
+        }),
+    };
+    let mut observed: Option<String> = None;
+    let saw_ready = wait_until(READINESS_TIMEOUT, || {
+        match send_query_request(&socket, &request) {
+            Ok(response) => match response.payload {
+                SearchPlaneQueryIpcResponse::Bridge(bridge) => {
+                    observed = Some(format!("{bridge:?}"));
+                    bridge.generation == pin && bridge.packet.scope == BridgeScope::Structural
+                }
+                SearchPlaneQueryIpcResponse::Error(err)
+                    if err.code == "NOT_READY" || err.code == "STR_GENERATION_NOT_READY" =>
+                {
+                    observed = Some(err.code);
+                    false
+                }
+                other => {
+                    observed = Some(format!("{other:?}"));
+                    false
+                }
+            },
+            Err(err) => {
+                observed = Some(err.to_string());
+                false
+            }
+        }
+    });
+    if !saw_ready {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "Sourcegraph structural bridge never became ready; observed {observed:?}"
+        )
+        .into());
+    }
+
+    let response = send_query_request(&socket, &request)?;
+    let bridge = match response.payload {
+        SearchPlaneQueryIpcResponse::Bridge(bridge) => bridge,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Bridge, got {other:?}").into());
+        }
+    };
+    if bridge.generation != pin {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("Sourcegraph structural bridge generation did not echo request pin".into());
+    }
+    if bridge.packet.scope != BridgeScope::Structural {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected structural bridge scope, got {:?}",
+            bridge.packet.scope
+        )
+        .into());
+    }
+    if bridge.packet.source_syntax.as_deref() != Some(query_text.as_str()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected structural bridge source_syntax: {:?}",
+            bridge.packet.source_syntax
+        )
+        .into());
+    }
+    if bridge.packet.translator_version.as_deref() != Some(TRANSLATOR_VERSION) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected structural bridge translator_version: {:?}",
+            bridge.packet.translator_version
+        )
+        .into());
+    }
+    if bridge.packet.candidates.len() != 1 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected one Sourcegraph structural bridge candidate, got {:?}",
+            bridge.packet.candidates
+        )
+        .into());
+    }
+    let candidate = match bridge.packet.candidates.first() {
+        Some(BridgeCandidate::Structural(candidate)) => candidate,
+        Some(BridgeCandidate::Lexical(candidate)) => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!(
+                "expected structural bridge candidate, got lexical `{}`",
+                candidate.candidate_id
+            )
+            .into());
+        }
+        None => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err("missing Sourcegraph structural bridge candidate".into());
+        }
+    };
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural bridge binding".to_string())?;
+    if candidate.candidate_id != "chunk-tree"
+        || binding.metavariable != "name"
+        || binding.start_byte != 3
+        || binding.end_byte != 7
+    {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "unexpected Sourcegraph structural bridge candidate/binding: {candidate:?}"
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)

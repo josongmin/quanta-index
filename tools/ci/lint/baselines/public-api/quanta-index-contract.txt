@@ -1,20 +1,15 @@
 pub mod quanta_index_contract
-pub use quanta_index_contract::BridgeCandidatePacket
+pub use quanta_index_contract::BridgeCandidate
 pub use quanta_index_contract::BridgeCandidatePacket
 pub use quanta_index_contract::BridgeScope
-pub use quanta_index_contract::BridgeScope
-pub use quanta_index_contract::BridgeTarget
 pub use quanta_index_contract::BridgeTarget
 pub use quanta_index_contract::DiffCandidate
-pub use quanta_index_contract::DiffCandidate
-pub use quanta_index_contract::DiffHunkSide
 pub use quanta_index_contract::DiffHunkSide
 pub use quanta_index_contract::FileId
 pub use quanta_index_contract::GenerationId
 pub use quanta_index_contract::GenerationPin
 pub use quanta_index_contract::GenerationSelector
 pub use quanta_index_contract::LQ_VERSION_TAG
-pub use quanta_index_contract::LexicalCandidate
 pub use quanta_index_contract::LexicalCandidate
 pub use quanta_index_contract::LqCase
 pub use quanta_index_contract::LqCountBound
@@ -46,8 +41,6 @@ pub use quanta_index_contract::RepoRelativePath
 pub use quanta_index_contract::RevisionId
 pub use quanta_index_contract::SemanticVectorRef
 pub use quanta_index_contract::StructuralBinding
-pub use quanta_index_contract::StructuralBinding
-pub use quanta_index_contract::StructuralCandidate
 pub use quanta_index_contract::StructuralCandidate
 pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
@@ -232,16 +225,15 @@ pub struct quanta_index_contract::channel::ChunkRecord
 pub quanta_index_contract::channel::ChunkRecord::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::channel::ChunkRecord::end_byte: u32
 pub quanta_index_contract::channel::ChunkRecord::end_line: u32
-pub quanta_index_contract::channel::ChunkRecord::indexed_text: alloc::boxed::Box<str>
 pub quanta_index_contract::channel::ChunkRecord::language: quanta_index_contract::lex::lang::LanguageCode
 pub quanta_index_contract::channel::ChunkRecord::parent_chunk_id: core::option::Option<quanta_index_contract::ChunkId>
 pub quanta_index_contract::channel::ChunkRecord::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
-pub quanta_index_contract::channel::ChunkRecord::shape_digest: alloc::boxed::Box<str>
-pub quanta_index_contract::channel::ChunkRecord::snippet: alloc::boxed::Box<str>
 pub quanta_index_contract::channel::ChunkRecord::start_byte: u32
 pub quanta_index_contract::channel::ChunkRecord::start_line: u32
 pub quanta_index_contract::channel::ChunkRecord::structural: core::option::Option<quanta_index_contract::ChunkStructuralMetadata>
-pub quanta_index_contract::channel::ChunkRecord::text_digest: alloc::boxed::Box<str>
+pub quanta_index_contract::channel::ChunkRecord::text: alloc::boxed::Box<str>
+impl quanta_index_contract::ChunkRecord
+pub fn quanta_index_contract::ChunkRecord::derived_snippet(&self) -> &str
 impl core::clone::Clone for quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::clone(&self) -> quanta_index_contract::ChunkRecord
 impl core::cmp::Eq for quanta_index_contract::ChunkRecord
@@ -1588,6 +1580,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefU
 pub struct quanta_index_contract::ipc::LexicalIngestBatch
 pub quanta_index_contract::ipc::LexicalIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::ipc::LexicalIngestBatch::batch_digest: alloc::string::String
+pub quanta_index_contract::ipc::LexicalIngestBatch::bundle_payload: core::option::Option<alloc::vec::Vec<u8>>
 pub quanta_index_contract::ipc::LexicalIngestBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ipc::LexicalIngestBatch::manifest_digest: alloc::string::String
 pub quanta_index_contract::ipc::LexicalIngestBatch::mode: quanta_index_contract::BatchIngestMode
@@ -2209,8 +2202,10 @@ pub quanta_index_contract::lex::error_code::LexicalErrorCode::SemDimMismatch
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::SemInvalidVector
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::SemMetricUnsupported
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::SemNotReady
+pub quanta_index_contract::lex::error_code::LexicalErrorCode::SemProviderUnavailable
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::StateGenerationRegression
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::StateNotReady
+pub quanta_index_contract::lex::error_code::LexicalErrorCode::StrHoleKindUnsupported
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::StrInvalidMetavar
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::StrLangNotSupported
 pub quanta_index_contract::lex::error_code::LexicalErrorCode::StrParseFail
@@ -2483,7 +2478,7 @@ impl core::marker::Unpin for quanta_index_contract::lex::parse_tree::ParseTreeRe
 impl core::marker::UnsafeUnpin for quanta_index_contract::lex::parse_tree::ParseTreeRecord
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::lex::parse_tree::ParseTreeRecord
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::lex::parse_tree::ParseTreeRecord
-pub fn quanta_index_contract::lex::parse_tree::compute_parse_tree_source_hash(indexed_text: &str) -> [u8; 32]
+pub fn quanta_index_contract::lex::parse_tree::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::lex::symbol
 pub enum quanta_index_contract::lex::symbol::SymbolKindFamily
 pub quanta_index_contract::lex::symbol::SymbolKindFamily::Callable
@@ -2798,8 +2793,10 @@ pub quanta_index_contract::lex::LexicalErrorCode::SemDimMismatch
 pub quanta_index_contract::lex::LexicalErrorCode::SemInvalidVector
 pub quanta_index_contract::lex::LexicalErrorCode::SemMetricUnsupported
 pub quanta_index_contract::lex::LexicalErrorCode::SemNotReady
+pub quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
 pub quanta_index_contract::lex::LexicalErrorCode::StateGenerationRegression
 pub quanta_index_contract::lex::LexicalErrorCode::StateNotReady
+pub quanta_index_contract::lex::LexicalErrorCode::StrHoleKindUnsupported
 pub quanta_index_contract::lex::LexicalErrorCode::StrInvalidMetavar
 pub quanta_index_contract::lex::LexicalErrorCode::StrLangNotSupported
 pub quanta_index_contract::lex::LexicalErrorCode::StrParseFail
@@ -3434,7 +3431,7 @@ impl core::marker::Unpin for quanta_index_contract::WeightsHashError
 impl core::marker::UnsafeUnpin for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsHashError
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
-pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(indexed_text: &str) -> [u8; 32]
+pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::query
 pub use quanta_index_contract::query::GenerationPin
 pub use quanta_index_contract::query::GenerationSelector
@@ -3511,9 +3508,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryQuer
 pub struct quanta_index_contract::query::HybridQueryRequest
 pub quanta_index_contract::query::HybridQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::query::HybridQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
-pub quanta_index_contract::query::HybridQueryRequest::semantic_query_text: core::option::Option<alloc::string::String>
-pub quanta_index_contract::query::HybridQueryRequest::semantic_vector: core::option::Option<alloc::vec::Vec<f32>>
-pub quanta_index_contract::query::HybridQueryRequest::semantic_vector_ref: core::option::Option<quanta_index_lq_norm::ast::SemanticVectorRef>
+pub quanta_index_contract::query::HybridQueryRequest::semantic_query_text: alloc::string::String
 pub quanta_index_contract::query::HybridQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 pub quanta_index_contract::query::HybridQueryRequest::top_k: u32
 impl core::clone::Clone for quanta_index_contract::HybridQueryRequest
@@ -3580,9 +3575,7 @@ pub struct quanta_index_contract::query::SemanticQueryRequest
 pub quanta_index_contract::query::SemanticQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::query::SemanticQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::query::SemanticQueryRequest::lexical_scope: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
-pub quanta_index_contract::query::SemanticQueryRequest::query_text: core::option::Option<alloc::string::String>
-pub quanta_index_contract::query::SemanticQueryRequest::query_vector: core::option::Option<alloc::vec::Vec<f32>>
-pub quanta_index_contract::query::SemanticQueryRequest::query_vector_ref: core::option::Option<quanta_index_lq_norm::ast::SemanticVectorRef>
+pub quanta_index_contract::query::SemanticQueryRequest::query_text: alloc::string::String
 pub quanta_index_contract::query::SemanticQueryRequest::top_k: u32
 impl core::clone::Clone for quanta_index_contract::SemanticQueryRequest
 pub fn quanta_index_contract::SemanticQueryRequest::clone(&self) -> quanta_index_contract::SemanticQueryRequest
@@ -4451,6 +4444,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapSymbolNode
 pub mod quanta_index_contract::results
+pub use quanta_index_contract::results::BridgeCandidate
 pub use quanta_index_contract::results::BridgeCandidatePacket
 pub use quanta_index_contract::results::BridgeScope
 pub use quanta_index_contract::results::BridgeTarget
@@ -5774,16 +5768,15 @@ pub struct quanta_index_contract::ChunkRecord
 pub quanta_index_contract::ChunkRecord::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::ChunkRecord::end_byte: u32
 pub quanta_index_contract::ChunkRecord::end_line: u32
-pub quanta_index_contract::ChunkRecord::indexed_text: alloc::boxed::Box<str>
 pub quanta_index_contract::ChunkRecord::language: quanta_index_contract::lex::lang::LanguageCode
 pub quanta_index_contract::ChunkRecord::parent_chunk_id: core::option::Option<quanta_index_contract::ChunkId>
 pub quanta_index_contract::ChunkRecord::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
-pub quanta_index_contract::ChunkRecord::shape_digest: alloc::boxed::Box<str>
-pub quanta_index_contract::ChunkRecord::snippet: alloc::boxed::Box<str>
 pub quanta_index_contract::ChunkRecord::start_byte: u32
 pub quanta_index_contract::ChunkRecord::start_line: u32
 pub quanta_index_contract::ChunkRecord::structural: core::option::Option<quanta_index_contract::ChunkStructuralMetadata>
-pub quanta_index_contract::ChunkRecord::text_digest: alloc::boxed::Box<str>
+pub quanta_index_contract::ChunkRecord::text: alloc::boxed::Box<str>
+impl quanta_index_contract::ChunkRecord
+pub fn quanta_index_contract::ChunkRecord::derived_snippet(&self) -> &str
 impl core::clone::Clone for quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::clone(&self) -> quanta_index_contract::ChunkRecord
 impl core::cmp::Eq for quanta_index_contract::ChunkRecord
@@ -6393,9 +6386,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefU
 pub struct quanta_index_contract::HybridQueryRequest
 pub quanta_index_contract::HybridQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::HybridQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
-pub quanta_index_contract::HybridQueryRequest::semantic_query_text: core::option::Option<alloc::string::String>
-pub quanta_index_contract::HybridQueryRequest::semantic_vector: core::option::Option<alloc::vec::Vec<f32>>
-pub quanta_index_contract::HybridQueryRequest::semantic_vector_ref: core::option::Option<quanta_index_lq_norm::ast::SemanticVectorRef>
+pub quanta_index_contract::HybridQueryRequest::semantic_query_text: alloc::string::String
 pub quanta_index_contract::HybridQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 pub quanta_index_contract::HybridQueryRequest::top_k: u32
 impl core::clone::Clone for quanta_index_contract::HybridQueryRequest
@@ -6461,6 +6452,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalFull
 pub struct quanta_index_contract::LexicalIngestBatch
 pub quanta_index_contract::LexicalIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::LexicalIngestBatch::batch_digest: alloc::string::String
+pub quanta_index_contract::LexicalIngestBatch::bundle_payload: core::option::Option<alloc::vec::Vec<u8>>
 pub quanta_index_contract::LexicalIngestBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::LexicalIngestBatch::manifest_digest: alloc::string::String
 pub quanta_index_contract::LexicalIngestBatch::mode: quanta_index_contract::BatchIngestMode
@@ -7606,9 +7598,7 @@ pub struct quanta_index_contract::SemanticQueryRequest
 pub quanta_index_contract::SemanticQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::SemanticQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::SemanticQueryRequest::lexical_scope: core::option::Option<quanta_index_contract_base::query::requests::TextQueryRequest>
-pub quanta_index_contract::SemanticQueryRequest::query_text: core::option::Option<alloc::string::String>
-pub quanta_index_contract::SemanticQueryRequest::query_vector: core::option::Option<alloc::vec::Vec<f32>>
-pub quanta_index_contract::SemanticQueryRequest::query_vector_ref: core::option::Option<quanta_index_lq_norm::ast::SemanticVectorRef>
+pub quanta_index_contract::SemanticQueryRequest::query_text: alloc::string::String
 pub quanta_index_contract::SemanticQueryRequest::top_k: u32
 impl core::clone::Clone for quanta_index_contract::SemanticQueryRequest
 pub fn quanta_index_contract::SemanticQueryRequest::clone(&self) -> quanta_index_contract::SemanticQueryRequest

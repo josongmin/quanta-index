@@ -44,6 +44,8 @@ pub enum StructuralError {
     ShardUnavailable,
     #[error("structural: language `{0}` is not supported on the current adapter set")]
     LangNotSupported(String),
+    #[error("structural: typed hole kind is not supported on the current adapter set: {0}")]
+    HoleKindUnsupported(String),
     #[error("structural: invalid request: {0}")]
     InvalidRequest(String),
     #[error("structural: producer execution failed: {0}")]
@@ -62,6 +64,7 @@ impl StructuralError {
             Self::GenerationNotReady => "STR_GENERATION_NOT_READY",
             Self::ShardUnavailable => "STR_SHARD_UNAVAILABLE",
             Self::LangNotSupported(_) => "STR_LANG_NOT_SUPPORTED",
+            Self::HoleKindUnsupported(_) => "STR_HOLE_KIND_UNSUPPORTED",
             Self::InvalidRequest(_) => "STR_INVALID_REQUEST",
             Self::ProducerExecution(_) => "STR_PRODUCER_EXECUTION_FAILED",
         }

@@ -22,6 +22,38 @@ use std::collections::BTreeSet;
 use crate::errors::{LimitDimension, StructuralError, StructuralErrorCode};
 use crate::types::{LangId, MAX_DEPTH, MAX_METAVARS_PER_PATTERN, MAX_STRUCTURAL_NODES, MetaVar};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TypedHoleKind {
+    Expr,
+    Stmt,
+    Item,
+    Type,
+}
+
+impl TypedHoleKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Expr => "expr",
+            Self::Stmt => "stmt",
+            Self::Item => "item",
+            Self::Type => "type",
+        }
+    }
+
+    #[must_use]
+    pub fn from_suffix(value: &str) -> Option<Self> {
+        let kind = match value {
+            "expr" => Self::Expr,
+            "stmt" => Self::Stmt,
+            "item" => Self::Item,
+            "type" => Self::Type,
+            _ => return None,
+        };
+        Some(kind)
+    }
+}
+
 /// Single pattern-IR node.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PatternNode {
@@ -29,6 +61,9 @@ pub enum PatternNode {
     Literal(Box<str>),
     /// Metavariable capture (`$name` / `:[name]`).
     Metavar(MetaVar),
+    /// Typed metavariable capture (`:[name.expr]`, etc.) lowered into the
+    /// closed common-kind family.
+    TypedMetavar { name: MetaVar, kind: TypedHoleKind },
     /// Variadic contiguous sibling capture (`$...name` / `:[...name]`).
     HoleMany(MetaVar),
     /// Anonymous variadic contiguous sibling wildcard (`...`).
@@ -78,7 +113,11 @@ impl PatternNode {
             ));
         }
         match self {
-            Self::Literal(_) | Self::Metavar(_) | Self::HoleMany(_) | Self::WildcardMany => Ok(()),
+            Self::Literal(_)
+            | Self::Metavar(_)
+            | Self::TypedMetavar { .. }
+            | Self::HoleMany(_)
+            | Self::WildcardMany => Ok(()),
             Self::Group(children) => {
                 for c in children {
                     c.count_nodes(acc)?;
@@ -97,7 +136,11 @@ impl PatternNode {
             ));
         }
         match self {
-            Self::Literal(_) | Self::Metavar(_) | Self::HoleMany(_) | Self::WildcardMany => Ok(()),
+            Self::Literal(_)
+            | Self::Metavar(_)
+            | Self::TypedMetavar { .. }
+            | Self::HoleMany(_)
+            | Self::WildcardMany => Ok(()),
             Self::Group(children) => {
                 let next = current.checked_add(1).ok_or_else(|| {
                     StructuralError::plan_limit_exceeded(
@@ -116,7 +159,7 @@ impl PatternNode {
     /// Collect every metavariable name reachable from this node.
     pub(crate) fn collect_metavars(&self, into: &mut BTreeSet<MetaVar>) {
         match self {
-            Self::Metavar(m) | Self::HoleMany(m) => {
+            Self::Metavar(m) | Self::TypedMetavar { name: m, .. } | Self::HoleMany(m) => {
                 let _inserted: bool = into.insert(m.clone());
             }
             Self::Literal(_) | Self::WildcardMany => {}
@@ -145,6 +188,10 @@ impl serde::Serialize for PatternNode {
                 m.serialize_entry("kind", "METAVAR")?;
                 m.serialize_entry("value", v)?;
             }
+            Self::TypedMetavar { name, kind } => {
+                m.serialize_entry("kind", "TYPED_METAVAR")?;
+                m.serialize_entry("value", &format!("{}.{}", name.as_str(), kind.as_str()))?;
+            }
             Self::HoleMany(v) => {
                 m.serialize_entry("kind", "HOLE_MANY")?;
                 m.serialize_entry("value", v)?;
@@ -171,6 +218,7 @@ impl<'de> serde::Deserialize<'de> for PatternNode {
             None,
             Literal(String),
             Metavar(MetaVar),
+            TypedMetavar { name: MetaVar, kind: TypedHoleKind },
             HoleMany(MetaVar),
             WildcardMany,
             Group(Vec<PatternNode>),
@@ -210,6 +258,25 @@ impl<'de> serde::Deserialize<'de> for PatternNode {
                             held = match k {
                                 "LITERAL" => Held::Literal(map.next_value()?),
                                 "METAVAR" => Held::Metavar(map.next_value()?),
+                                "TYPED_METAVAR" => {
+                                    let raw: String = map.next_value()?;
+                                    let Some((name, kind)) = raw.rsplit_once('.') else {
+                                        return Err(serde::de::Error::custom(format!(
+                                            "typed metavar wire value missing kind suffix: {raw}"
+                                        )));
+                                    };
+                                    let name = MetaVar::new(name).map_err(|err| {
+                                        serde::de::Error::custom(format!(
+                                            "typed metavar name invalid {name:?}: {err}"
+                                        ))
+                                    })?;
+                                    let Some(kind) = TypedHoleKind::from_suffix(kind) else {
+                                        return Err(serde::de::Error::custom(format!(
+                                            "typed metavar kind unsupported: {raw}"
+                                        )));
+                                    };
+                                    Held::TypedMetavar { name, kind }
+                                }
                                 "HOLE_MANY" => Held::HoleMany(map.next_value()?),
                                 "WILDCARD_MANY" => {
                                     let _unit: () = map.next_value()?;
@@ -222,6 +289,7 @@ impl<'de> serde::Deserialize<'de> for PatternNode {
                                         &[
                                             "LITERAL",
                                             "METAVAR",
+                                            "TYPED_METAVAR",
                                             "HOLE_MANY",
                                             "WILDCARD_MANY",
                                             "GROUP",
@@ -240,6 +308,9 @@ impl<'de> serde::Deserialize<'de> for PatternNode {
                     Held::None => Err(serde::de::Error::missing_field("value")),
                     Held::Literal(s) => Ok(PatternNode::Literal(s.into_boxed_str())),
                     Held::Metavar(m) => Ok(PatternNode::Metavar(m)),
+                    Held::TypedMetavar { name, kind } => {
+                        Ok(PatternNode::TypedMetavar { name, kind })
+                    }
                     Held::HoleMany(m) => Ok(PatternNode::HoleMany(m)),
                     Held::WildcardMany => Ok(PatternNode::WildcardMany),
                     Held::Group(children) => Ok(PatternNode::Group(children)),
@@ -748,7 +819,7 @@ mod tests {
         LqStructuralNode,
     };
 
-    use super::{PatternNode, StructuralPattern};
+    use super::{PatternNode, StructuralPattern, TypedHoleKind};
     use crate::errors::{LimitDimension, StructuralErrorCode};
     use crate::matcher::compile_authoritative_pattern;
     use crate::types::{LangId, MAX_DEPTH, MAX_METAVARS_PER_PATTERN, MetaVar};
@@ -827,6 +898,27 @@ mod tests {
         match p.root() {
             PatternNode::Metavar(m) => assert_eq!(m.as_str(), "X"),
             other => assert!(false, "expected lowered metavar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_named_typed_hole_one_lowers_to_typed_metavar() {
+        let Ok(p) = compile_block(
+            vec![LqStructuralNode::Hole {
+                name: Some(LqMetaVar::new("X.expr".to_string())),
+                multiplicity: LqStructuralHoleMultiplicity::One,
+            }],
+            "rust",
+        ) else {
+            assert!(false, "must compile typed hole");
+            return;
+        };
+        match p.root() {
+            PatternNode::TypedMetavar { name, kind } => {
+                assert_eq!(name.as_str(), "X");
+                assert_eq!(*kind, TypedHoleKind::Expr);
+            }
+            other => assert!(false, "expected lowered typed metavar, got {other:?}"),
         }
     }
 

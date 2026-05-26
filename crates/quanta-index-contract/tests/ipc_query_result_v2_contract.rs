@@ -5,9 +5,9 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    BridgeCandidatePacket, BridgeQueryRequest, BridgeScope, BridgeTarget, DiffCandidate,
-    DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
-    LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    BridgeCandidate, BridgeCandidatePacket, BridgeQueryRequest, BridgeScope, BridgeTarget,
+    DiffCandidate, DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse,
+    LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse,
     StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
@@ -637,7 +637,7 @@ fn search_plane_ipc_response_v2_bridge_roundtrips_nested_payload() -> TestRes {
             manifest_generation: ManifestGeneration::new(7),
             source_syntax: Some("sourcegraph".to_owned()),
             translator_version: Some("bridge-v2".to_owned()),
-            candidates: vec![lexical_candidate()],
+            candidates: vec![BridgeCandidate::Lexical(lexical_candidate())],
         },
     });
 

@@ -7,16 +7,12 @@
     reason = "test polling paths still use explicit Result fallback checks"
 )]
 #![expect(
-    clippy::let_underscore_untyped,
-    reason = "publisher ops intentionally discard ack payloads in integration setup"
-)]
-#![expect(
     clippy::wildcard_enum_match_arm,
     reason = "integration response checks intentionally collapse non-target variants"
 )]
 
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -39,6 +35,12 @@ use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 type TestResult = Result<(), Box<dyn Error>>;
+type RuntimeHandles = (
+    PathBuf,
+    PathBuf,
+    Arc<AtomicBool>,
+    thread::JoinHandle<anyhow::Result<()>>,
+);
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,10 +69,7 @@ fn chunk_record(id: &str, text: &str) -> Result<ChunkRecord, Box<dyn Error>> {
         })?,
         start_line: 0,
         end_line: 0,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
-        text_digest: "text:explain".to_string().into_boxed_str(),
-        shape_digest: "shape:explain".to_string().into_boxed_str(),
+        text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     })
@@ -160,18 +159,7 @@ fn scope_key(path: &str) -> SearchScopeKey {
     }
 }
 
-fn start_runtime(
-    state_root: &Path,
-    thread_name: &str,
-) -> Result<
-    (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        Arc<AtomicBool>,
-        thread::JoinHandle<anyhow::Result<()>>,
-    ),
-    Box<dyn Error>,
-> {
+fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles, Box<dyn Error>> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
@@ -180,7 +168,7 @@ fn start_runtime(
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name(thread_name.into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
     if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
         query_socket.exists() && ingest_socket.exists()
     }) {

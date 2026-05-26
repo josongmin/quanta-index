@@ -1,9 +1,9 @@
 //! Legacy channel/op transport shapes.
 //!
 //! These types remain the canonical wire records for persisted op streams and
-//! op-oriented adapter tests. The typed ingest front door is defined in
-//! [`crate::ipc::ingest`]; producers are no longer expected to publish these
-//! ops directly.
+//! op-oriented adapter tests. The typed ingest front door is defined under
+//! [`crate::ipc`] (for example [`crate::SearchPlaneIngestIpcRequest`]);
+//! producers are no longer expected to publish these ops directly.
 
 mod ids;
 mod ops;

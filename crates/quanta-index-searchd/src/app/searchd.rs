@@ -12,7 +12,7 @@ use crate::app::runtime::SearchdRuntime;
 const DEFAULT_ACCEPT_IDLE: Duration = Duration::from_millis(50);
 
 /// Run a fully-assembled runtime with an externally-driven shutdown flag.
-pub fn drive(runtime: SearchdRuntime, shutdown: Arc<AtomicBool>) -> Result<()> {
+pub fn drive(runtime: SearchdRuntime, shutdown: &Arc<AtomicBool>) -> Result<()> {
     let SearchdRuntime {
         query_server,
         control_server,

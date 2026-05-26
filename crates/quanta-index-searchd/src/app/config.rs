@@ -2,6 +2,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryTextEmbedderMode {
+    DeterministicText,
+    ProviderUnavailable,
+    DecimalTokens,
+}
+
 /// Resolved runtime paths for one `searchd` instance.
 #[derive(Clone, Debug)]
 pub struct SearchdConfig {
@@ -9,9 +16,10 @@ pub struct SearchdConfig {
     query_socket_path: PathBuf,
     control_socket_path: PathBuf,
     /// QI-RT-01: typed ingest socket. Producer-side SDK publishes typed
-    /// batches here; searchd's ingest dispatcher fans them out to channel
-    /// publishers.
+    /// batches here; searchd's ingest dispatcher applies them through the
+    /// direct authority path.
     ingest_socket_path: PathBuf,
+    query_text_embedder_mode: QueryTextEmbedderMode,
 }
 
 impl SearchdConfig {
@@ -23,6 +31,7 @@ impl SearchdConfig {
             query_socket_path: socket_dir.join("query.sock"),
             control_socket_path: socket_dir.join("control.sock"),
             ingest_socket_path: socket_dir.join("ingest.sock"),
+            query_text_embedder_mode: QueryTextEmbedderMode::DeterministicText,
         }
     }
 
@@ -65,6 +74,11 @@ impl SearchdConfig {
     }
 
     #[must_use]
+    pub const fn query_text_embedder_mode(&self) -> QueryTextEmbedderMode {
+        self.query_text_embedder_mode
+    }
+
+    #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.query_socket_path()
     }
@@ -86,5 +100,21 @@ impl SearchdConfig {
     pub fn with_ingest_socket_override(mut self, ingest_socket: PathBuf) -> Self {
         self.ingest_socket_path = ingest_socket;
         self
+    }
+
+    #[must_use]
+    pub fn with_query_text_embedder_mode(mut self, mode: QueryTextEmbedderMode) -> Self {
+        self.query_text_embedder_mode = mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_decimal_query_text_embedder(self) -> Self {
+        self.with_query_text_embedder_mode(QueryTextEmbedderMode::DecimalTokens)
+    }
+
+    #[must_use]
+    pub fn with_provider_unavailable_query_text_embedder(self) -> Self {
+        self.with_query_text_embedder_mode(QueryTextEmbedderMode::ProviderUnavailable)
     }
 }

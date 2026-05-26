@@ -369,6 +369,36 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_boolean_or_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" OR patterntype:structural "trait_item""#,
+        lq_query: "match { function_item { { identifier :[name] } } } OR match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_boolean_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT "trait_item""#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_typed_expr_hole_parity",
+        sg_query: r#"patterntype:structural "function_item { { :[name.expr] } }""#,
+        lq_query: "match { function_item { { :[name.expr] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
         id: "structural_sourcegraph_native_select_rejection_parity",
         sg_query: r#"select:repo patterntype:structural "function_item""#,
         lq_query: "select:repo match { function_item }",
@@ -536,7 +566,7 @@ fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_corpus(&mut rt)?;
     _ = rt.seal()?;
-    let mut rt = rt.reopen()?;
+    let mut rt = rt.reopen();
 
     let mut failures: Vec<RowReport> = Vec::new();
     let mut expected_failing_count: usize = 0;

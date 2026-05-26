@@ -24,7 +24,7 @@ use crate::binding::{StructuralAuthorityCandidate, StructuralBinding};
 use crate::errors::{StructuralError, StructuralErrorCode};
 use crate::pattern::{
     ConstraintOperand, HoleMultiplicity, HoleRef, PatternNode, StructuralConstraint,
-    StructuralPattern,
+    StructuralPattern, TypedHoleKind,
 };
 use crate::types::{ByteSpan, LangId, MetaVar};
 
@@ -240,6 +240,7 @@ impl StructuralAuthorityMatcher for TruthfulSubsetAuthorityMatcher {
             let binding = match_node_pattern(
                 pattern.pattern().root(),
                 &authority.tree.root,
+                authority.tree,
                 StructuralBinding::empty(),
             )?;
             return Ok(match binding {
@@ -256,6 +257,7 @@ impl StructuralAuthorityMatcher for TruthfulSubsetAuthorityMatcher {
             pattern.pattern(),
             &authority.tree.root,
             &mut ancestors,
+            authority.tree,
             authority.source,
             &mut out,
         )?;
@@ -314,11 +316,16 @@ fn lower_contract_pattern_node(node: &LqStructuralNode) -> Result<PatternNode, S
         LqStructuralNode::Hole {
             name: Some(metavar),
             multiplicity: LqStructuralHoleMultiplicity::One,
-        } => Ok(PatternNode::Metavar(MetaVar::new(metavar.as_str())?)),
+        } => lower_named_hole_one(metavar.as_str()),
         LqStructuralNode::Hole {
             name: Some(metavar),
             multiplicity: LqStructuralHoleMultiplicity::Many,
-        } => Ok(PatternNode::HoleMany(MetaVar::new(metavar.as_str())?)),
+        } => {
+            if typed_hole_suffix(metavar.as_str()).is_some() {
+                return Err(StructuralError::hole_kind_unsupported(metavar.as_str()));
+            }
+            Ok(PatternNode::HoleMany(MetaVar::new(metavar.as_str())?))
+        }
         LqStructuralNode::Hole {
             name: None,
             multiplicity: LqStructuralHoleMultiplicity::Many,
@@ -335,6 +342,32 @@ fn lower_contract_pattern_node(node: &LqStructuralNode) -> Result<PatternNode, S
                 .collect::<Result<Vec<_>, _>>()?,
         )),
     }
+}
+
+fn lower_named_hole_one(name: &str) -> Result<PatternNode, StructuralError> {
+    if let Some((base, kind)) = parse_typed_hole_name(name)? {
+        return Ok(PatternNode::TypedMetavar { name: base, kind });
+    }
+    Ok(PatternNode::Metavar(MetaVar::new(name)?))
+}
+
+fn parse_typed_hole_name(name: &str) -> Result<Option<(MetaVar, TypedHoleKind)>, StructuralError> {
+    let Some((base, suffix)) = typed_hole_suffix(name) else {
+        return Ok(None);
+    };
+    let name = MetaVar::new(base)?;
+    let Some(kind) = TypedHoleKind::from_suffix(suffix) else {
+        return Err(StructuralError::hole_kind_unsupported(suffix));
+    };
+    Ok(Some((name, kind)))
+}
+
+fn typed_hole_suffix(name: &str) -> Option<(&str, &str)> {
+    let (base, suffix) = name.rsplit_once('.')?;
+    if base.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    Some((base, suffix))
 }
 
 fn lower_contract_constraint(
@@ -428,6 +461,7 @@ fn pattern_node_is_executable(node: &PatternNode) -> bool {
     match node {
         PatternNode::Literal(_)
         | PatternNode::Metavar(_)
+        | PatternNode::TypedMetavar { .. }
         | PatternNode::HoleMany(_)
         | PatternNode::WildcardMany => true,
         PatternNode::Group(children) => children.iter().all(pattern_node_is_executable),
@@ -451,6 +485,11 @@ fn lower_authority_node_shape(node: &PatternNode) -> Option<StructuralAuthorityN
         PatternNode::Metavar(metavar) => Some(StructuralAuthorityNodeShape {
             expected_kind: None,
             capture: Some(metavar),
+            child_sequence: None,
+        }),
+        PatternNode::TypedMetavar { name, .. } => Some(StructuralAuthorityNodeShape {
+            expected_kind: None,
+            capture: Some(name),
             child_sequence: None,
         }),
         PatternNode::HoleMany(_) | PatternNode::WildcardMany => {
@@ -491,6 +530,10 @@ fn lower_authority_sequence_shape(
             capture = Some(metavar);
             cursor = cursor.saturating_add(1);
         }
+        PatternNode::TypedMetavar { name, .. } => {
+            capture = Some(name);
+            cursor = cursor.saturating_add(1);
+        }
         PatternNode::HoleMany(_) | PatternNode::WildcardMany => {
             child_sequence = Some(children);
             cursor = cursor.saturating_add(1);
@@ -498,12 +541,20 @@ fn lower_authority_sequence_shape(
         PatternNode::Group(_) => return None,
     }
 
-    if let Some(PatternNode::Metavar(metavar)) = significant.get(cursor).copied() {
-        if capture.is_some() {
-            return None;
+    if let Some(pattern) = significant.get(cursor).copied() {
+        match pattern {
+            PatternNode::Metavar(metavar) | PatternNode::TypedMetavar { name: metavar, .. } => {
+                if capture.is_some() {
+                    return None;
+                }
+                capture = Some(metavar);
+                cursor = cursor.saturating_add(1);
+            }
+            PatternNode::Literal(_)
+            | PatternNode::HoleMany(_)
+            | PatternNode::WildcardMany
+            | PatternNode::Group(_) => {}
         }
-        capture = Some(metavar);
-        cursor = cursor.saturating_add(1);
     }
 
     if let Some(PatternNode::Group(children)) = significant.get(cursor).copied() {
@@ -537,6 +588,7 @@ fn significant_children(children: &[PatternNode]) -> Vec<&PatternNode> {
         .filter(|child| match child {
             PatternNode::Literal(text) => !text.trim().is_empty(),
             PatternNode::Metavar(_)
+            | PatternNode::TypedMetavar { .. }
             | PatternNode::Group(_)
             | PatternNode::HoleMany(_)
             | PatternNode::WildcardMany => true,
@@ -548,10 +600,12 @@ fn collect_authority_candidates<'a>(
     pattern: &StructuralPattern,
     node: &'a ParseNode,
     ancestors: &mut Vec<&'a ParseNode>,
+    tree: &ParseTreeRecord,
     source: &str,
     out: &mut Vec<StructuralAuthorityCandidate>,
 ) -> Result<(), StructuralError> {
-    if let Some(binding) = match_pattern_at_node(pattern, node, ancestors.as_slice(), source)? {
+    if let Some(binding) = match_pattern_at_node(pattern, node, ancestors.as_slice(), tree, source)?
+    {
         out.push(StructuralAuthorityCandidate::new(
             ByteSpan::new(node.byte_start, node.byte_end)?,
             binding,
@@ -559,7 +613,7 @@ fn collect_authority_candidates<'a>(
     }
     ancestors.push(node);
     for child in &node.children {
-        collect_authority_candidates(pattern, child, ancestors, source, out)?;
+        collect_authority_candidates(pattern, child, ancestors, tree, source, out)?;
     }
     let _popped: Option<&ParseNode> = ancestors.pop();
     Ok(())
@@ -569,19 +623,20 @@ fn match_pattern_at_node(
     pattern: &StructuralPattern,
     node: &ParseNode,
     ancestors: &[&ParseNode],
+    tree: &ParseTreeRecord,
     source: &str,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
-    let Some(binding) = match_node_pattern(pattern.root(), node, StructuralBinding::empty())?
+    let Some(binding) = match_node_pattern(pattern.root(), node, tree, StructuralBinding::empty())?
     else {
         return Ok(None);
     };
     if !constraints_match(pattern, &binding, source)? {
         return Ok(None);
     }
-    if !inside_patterns_match(pattern.inside(), ancestors, source)? {
+    if !inside_patterns_match(pattern.inside(), ancestors, tree, source)? {
         return Ok(None);
     }
-    if outside_patterns_match(pattern.outside(), ancestors, source)? {
+    if outside_patterns_match(pattern.outside(), ancestors, tree, source)? {
         return Ok(None);
     }
     Ok(Some(binding))
@@ -590,13 +645,14 @@ fn match_pattern_at_node(
 fn inside_patterns_match(
     patterns: &[StructuralPattern],
     ancestors: &[&ParseNode],
+    tree: &ParseTreeRecord,
     source: &str,
 ) -> Result<bool, StructuralError> {
     for pattern in patterns {
         let mut matched = false;
         for (idx, ancestor) in ancestors.iter().enumerate() {
             let prefix = ancestors.get(..idx).unwrap_or(&[]);
-            if match_pattern_at_node(pattern, ancestor, prefix, source)?.is_some() {
+            if match_pattern_at_node(pattern, ancestor, prefix, tree, source)?.is_some() {
                 matched = true;
                 break;
             }
@@ -611,12 +667,13 @@ fn inside_patterns_match(
 fn outside_patterns_match(
     patterns: &[StructuralPattern],
     ancestors: &[&ParseNode],
+    tree: &ParseTreeRecord,
     source: &str,
 ) -> Result<bool, StructuralError> {
     for pattern in patterns {
         for (idx, ancestor) in ancestors.iter().enumerate() {
             let prefix = ancestors.get(..idx).unwrap_or(&[]);
-            if match_pattern_at_node(pattern, ancestor, prefix, source)?.is_some() {
+            if match_pattern_at_node(pattern, ancestor, prefix, tree, source)?.is_some() {
                 return Ok(true);
             }
         }
@@ -676,6 +733,7 @@ fn extract_source_text(source: &str, span: ByteSpan) -> Result<&str, StructuralE
 fn match_node_pattern(
     pattern: &PatternNode,
     node: &ParseNode,
+    tree: &ParseTreeRecord,
     mut binding: StructuralBinding,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
     match pattern {
@@ -692,14 +750,23 @@ fn match_node_pattern(
             bind_metavar(&mut binding, metavar, span)?;
             Ok(Some(binding))
         }
+        PatternNode::TypedMetavar { name, kind } => {
+            if !node_matches_typed_hole_kind(*kind, node, tree) {
+                return Ok(None);
+            }
+            let span = ByteSpan::new(node.byte_start, node.byte_end)?;
+            bind_metavar(&mut binding, name, span)?;
+            Ok(Some(binding))
+        }
         PatternNode::WildcardMany => Ok(Some(binding)),
-        PatternNode::Group(children) => match_group_pattern(children, node, binding),
+        PatternNode::Group(children) => match_group_pattern(children, node, tree, binding),
     }
 }
 
 fn match_group_pattern(
     children: &[PatternNode],
     node: &ParseNode,
+    tree: &ParseTreeRecord,
     mut binding: StructuralBinding,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
     let significant = significant_children(children);
@@ -710,7 +777,7 @@ fn match_group_pattern(
         let Some(single) = significant.first().copied() else {
             return Ok(Some(binding));
         };
-        return match_node_pattern(single, node, binding);
+        return match_node_pattern(single, node, tree, binding);
     }
 
     let mut cursor: usize = 0;
@@ -723,7 +790,9 @@ fn match_group_pattern(
     }
     if let Some(pattern) = significant.get(cursor).copied() {
         match pattern {
-            PatternNode::Metavar(metavar) | PatternNode::HoleMany(metavar) => {
+            PatternNode::Metavar(metavar)
+            | PatternNode::TypedMetavar { name: metavar, .. }
+            | PatternNode::HoleMany(metavar) => {
                 bind_metavar(
                     &mut binding,
                     metavar,
@@ -747,23 +816,28 @@ fn match_group_pattern(
         && let Some(PatternNode::Group(sequence_children)) = remaining.first().copied()
     {
         let unwrapped = significant_children(sequence_children);
-        return match_child_sequence(&unwrapped, &node.children, binding);
+        return match_child_sequence(&unwrapped, &node.children, tree, binding);
     }
-    match_child_sequence(remaining, &node.children, binding)
+    match_child_sequence(remaining, &node.children, tree, binding)
 }
 
 fn match_child_sequence(
     pattern_children: &[&PatternNode],
     tree_children: &[ParseNode],
+    tree: &ParseTreeRecord,
     binding: StructuralBinding,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
     if pattern_children.is_empty() {
         return Ok(Some(binding));
     }
     for start in 0..=tree_children.len() {
-        if let Some(candidate) =
-            match_child_sequence_from(pattern_children, tree_children, start, binding.clone())?
-        {
+        if let Some(candidate) = match_child_sequence_from(
+            pattern_children,
+            tree_children,
+            tree,
+            start,
+            binding.clone(),
+        )? {
             return Ok(Some(candidate));
         }
     }
@@ -773,6 +847,7 @@ fn match_child_sequence(
 fn match_child_sequence_from(
     pattern_children: &[&PatternNode],
     tree_children: &[ParseNode],
+    tree: &ParseTreeRecord,
     tree_index: usize,
     binding: StructuralBinding,
 ) -> Result<Option<StructuralBinding>, StructuralError> {
@@ -792,6 +867,7 @@ fn match_child_sequence_from(
                 if let Some(next) = match_child_sequence_from(
                     rest,
                     tree_children,
+                    tree,
                     tree_index.saturating_add(consume),
                     candidate_binding,
                 )? {
@@ -806,6 +882,7 @@ fn match_child_sequence_from(
                 if let Some(next) = match_child_sequence_from(
                     rest,
                     tree_children,
+                    tree,
                     tree_index.saturating_add(consume),
                     binding.clone(),
                 )? {
@@ -814,21 +891,37 @@ fn match_child_sequence_from(
             }
             Ok(None)
         }
-        pattern @ (PatternNode::Literal(_) | PatternNode::Metavar(_) | PatternNode::Group(_)) => {
+        pattern @ (PatternNode::Literal(_)
+        | PatternNode::Metavar(_)
+        | PatternNode::TypedMetavar { .. }
+        | PatternNode::Group(_)) => {
             let Some(tree_child) = tree_children.get(tree_index) else {
                 return Ok(None);
             };
-            let Some(next_binding) = match_node_pattern(pattern, tree_child, binding)? else {
+            let Some(next_binding) = match_node_pattern(pattern, tree_child, tree, binding)? else {
                 return Ok(None);
             };
             match_child_sequence_from(
                 rest,
                 tree_children,
+                tree,
                 tree_index.saturating_add(1),
                 next_binding,
             )
         }
     }
+}
+
+fn node_matches_typed_hole_kind(
+    kind: TypedHoleKind,
+    node: &ParseNode,
+    tree: &ParseTreeRecord,
+) -> bool {
+    tree.role_tags.iter().any(|tag| {
+        tag.role.as_ref() == kind.as_str()
+            && tag.byte_start == node.byte_start
+            && tag.byte_end == node.byte_end
+    })
 }
 
 fn capture_sibling_span(

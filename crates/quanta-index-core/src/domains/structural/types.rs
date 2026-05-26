@@ -6,7 +6,7 @@
 
 use quanta_index_contract::LqFileScope;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum StructuralExecutableFilter {
     RepoRegexNoRev { pattern: String },
     FileRegex { pattern: String, scope: LqFileScope },

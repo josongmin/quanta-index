@@ -24,6 +24,6 @@ pub use ids::{
 };
 pub use query::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
 pub use results::{
-    BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide,
+    BridgeCandidate, BridgeCandidatePacket, BridgeScope, BridgeTarget, DiffCandidate, DiffHunkSide,
     LexicalCandidate, StructuralBinding, StructuralCandidate,
 };

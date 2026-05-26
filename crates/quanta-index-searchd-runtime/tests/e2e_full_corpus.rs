@@ -463,7 +463,7 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
                     let mut rt = E2eRuntime::boot()?;
                     ingest_fixture(&mut rt, fixture)?;
                     _ = rt.seal()?;
-                    runtime = Some(rt.reopen()?);
+                    runtime = Some(rt.reopen());
                     current_fixture_name = Some(fixture_name.clone());
                     current_fixture_ids = fixture.path_to_id.clone();
                 }

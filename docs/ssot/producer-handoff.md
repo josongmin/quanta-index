@@ -5,6 +5,15 @@
 > Parent SSOT: [channel-architecture.md](channel-architecture.md) (this doc extends §3.1 op catalogue; it does NOT supersede).
 > Posture: **breaking-first** per [../../CLAUDE.md](../../CLAUDE.md) § Agent change posture. No long-lived shims.
 
+Current-tree note (2026-05-27):
+
+- this document describes the old channel-centric handoff model
+- the current runtime hot path is de-channelized; do not treat
+  `open_lexical_subscriber`, `open_semantic_subscriber`, or `ChannelDispatcher`
+  as live source truth for the daemon
+- semantic query/public SDK truth has also changed: public semantic publish is
+  removed and semantic query/hybrid are text-only
+
 This is the single authoritative spec the producer team implements against to unblock [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) integration. It formalises the 9 new channel ops and resolves the 11 AMB-PROD-* ambiguities surfaced in [INDEX.md §3.7](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md).
 
 If anything here conflicts with [channel-architecture.md](channel-architecture.md), the parent SSOT wins; this document is then defective and must be corrected.

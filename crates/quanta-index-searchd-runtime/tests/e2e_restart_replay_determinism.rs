@@ -68,17 +68,13 @@ fn ingest_dual_track_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     rt.ingest_text("repo-e2e", "src/alpha.rs", "scope alpha keep")?;
     rt.ingest_text("repo-e2e", "src/beta.rs", "scope beta keep")?;
     rt.ingest_text("repo-e2e", "src/gamma.rs", "scope gamma keep")?;
-
-    rt.ingest_semantic_embedding_for_path("src/alpha.rs", &[1.0, 0.0])?;
-    rt.ingest_semantic_embedding_for_path("src/beta.rs", &[0.9, 0.1])?;
-    rt.ingest_semantic_embedding_for_path("src/gamma.rs", &[0.8, 0.2])?;
     Ok(())
 }
 
 fn query_hybrid_ids_and_explanation(
     rt: &mut E2eRuntime,
 ) -> AnyResult<(Vec<String>, SearchExplanation)> {
-    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", &[1.0, 0.0], 2);
+    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", "scope", 2);
     require_no_typed_error(result.typed_error, "query_hybrid")?;
     let explanation = result
         .explanation
@@ -89,7 +85,7 @@ fn query_hybrid_ids_and_explanation(
 fn query_semantic_scope_ids_and_explanation(
     rt: &mut E2eRuntime,
 ) -> AnyResult<(Vec<String>, SearchExplanation)> {
-    let result = rt.query_semantic(&[1.0, 0.0], 2, Some((TextQuerySyntax::Native, "scope", 10)));
+    let result = rt.query_semantic("scope", 2, Some((TextQuerySyntax::Native, "scope", 10)));
     require_no_typed_error(result.typed_error, "query_semantic")?;
     let explanation = result
         .explanation
@@ -105,7 +101,7 @@ fn reopen_preserves_lexical_ids_and_explanation() -> AnyResult<()> {
     rt.activate_last_sealed_generation()?;
 
     let (before_ids, before_explanation) = query_ids_and_explanation(&mut rt)?;
-    let mut rt = rt.reopen()?;
+    let mut rt = rt.reopen();
     let (after_ids, after_explanation) = query_ids_and_explanation(&mut rt)?;
 
     if before_ids != after_ids {
@@ -153,17 +149,14 @@ fn fresh_reingest_replays_equivalent_lexical_ids_and_explanation() -> AnyResult<
 fn reopen_preserves_semantic_scope_ids_and_explanation() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut rt)?;
-    _ = rt.seal_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    _ = rt.seal()?;
     rt.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
     ])?;
 
     let (before_ids, before_explanation) = query_semantic_scope_ids_and_explanation(&mut rt)?;
-    let mut rt = rt.reopen()?;
+    let mut rt = rt.reopen();
     let (after_ids, after_explanation) = query_semantic_scope_ids_and_explanation(&mut rt)?;
 
     if before_ids != after_ids {
@@ -195,10 +188,7 @@ fn reopen_preserves_semantic_scope_ids_and_explanation() -> AnyResult<()> {
 fn fresh_reingest_replays_equivalent_hybrid_ids_and_early_stop_truth() -> AnyResult<()> {
     let mut baseline = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut baseline)?;
-    _ = baseline.seal_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    _ = baseline.seal()?;
     baseline.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
@@ -207,10 +197,7 @@ fn fresh_reingest_replays_equivalent_hybrid_ids_and_early_stop_truth() -> AnyRes
 
     let mut replay = E2eRuntime::boot()?;
     ingest_dual_track_fixture(&mut replay)?;
-    _ = replay.seal_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
+    _ = replay.seal()?;
     replay.activate_last_sealed_generation_with_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,

@@ -153,23 +153,6 @@ impl core::marker::Unpin for quanta_index_sdk::SdkError
 impl core::marker::UnsafeUnpin for quanta_index_sdk::SdkError
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SdkError
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SdkError
-pub enum quanta_index_sdk::SemanticVector
-pub quanta_index_sdk::SemanticVector::Handle(alloc::string::String)
-pub quanta_index_sdk::SemanticVector::Inline(alloc::vec::Vec<f32>)
-impl core::clone::Clone for quanta_index_sdk::SemanticVector
-pub fn quanta_index_sdk::SemanticVector::clone(&self) -> quanta_index_sdk::SemanticVector
-impl core::cmp::PartialEq for quanta_index_sdk::SemanticVector
-pub fn quanta_index_sdk::SemanticVector::eq(&self, other: &quanta_index_sdk::SemanticVector) -> bool
-impl core::fmt::Debug for quanta_index_sdk::SemanticVector
-pub fn quanta_index_sdk::SemanticVector::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_sdk::SemanticVector
-impl core::marker::Freeze for quanta_index_sdk::SemanticVector
-impl core::marker::Send for quanta_index_sdk::SemanticVector
-impl core::marker::Sync for quanta_index_sdk::SemanticVector
-impl core::marker::Unpin for quanta_index_sdk::SemanticVector
-impl core::marker::UnsafeUnpin for quanta_index_sdk::SemanticVector
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SemanticVector
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SemanticVector
 pub struct quanta_index_sdk::ConnectOptions
 impl quanta_index_sdk::ConnectOptions
 pub fn quanta_index_sdk::ConnectOptions::from_state_root(path: impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -317,10 +300,9 @@ pub fn quanta_index_sdk::HybridQueryBuilder<'a>::active(self, repo_id: quanta_in
 pub fn quanta_index_sdk::HybridQueryBuilder<'a>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HybridQueryBuilder<'a>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::HybridQueryBuilder<'a>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> Self
+pub fn quanta_index_sdk::HybridQueryBuilder<'a>::semantic_text(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::HybridQueryBuilder<'a>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::HybridQueryBuilder<'a>::top_k(self, top_k: u32) -> Self
-pub fn quanta_index_sdk::HybridQueryBuilder<'a>::vector(self, vector: alloc::vec::Vec<f32>) -> Self
-pub fn quanta_index_sdk::HybridQueryBuilder<'a>::vector_handle(self, handle: impl core::convert::Into<alloc::string::String>) -> Self
 impl<'a> core::marker::Freeze for quanta_index_sdk::HybridQueryBuilder<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::HybridQueryBuilder<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::HybridQueryBuilder<'a>
@@ -510,9 +492,8 @@ pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::pinned(self, pin: quanta_inde
 pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::scope_native(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::scope_sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::scope_top_k(self, scope_top_k: u32) -> Self
+pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::text(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::top_k(self, top_k: u32) -> Self
-pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::vector(self, vector: alloc::vec::Vec<f32>) -> Self
-pub fn quanta_index_sdk::SemanticQueryBuilder<'a>::vector_handle(self, handle: impl core::convert::Into<alloc::string::String>) -> Self
 impl<'a> core::marker::Freeze for quanta_index_sdk::SemanticQueryBuilder<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SemanticQueryBuilder<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SemanticQueryBuilder<'a>
@@ -570,6 +551,7 @@ pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::active(self, repo_id: quant
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneStructuralQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> Self
+pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> Self
 pub fn quanta_index_sdk::StructuralQueryBuilder<'a>::top_k(self, top_k: u32) -> Self
 impl<'a> core::marker::Freeze for quanta_index_sdk::StructuralQueryBuilder<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::StructuralQueryBuilder<'a>

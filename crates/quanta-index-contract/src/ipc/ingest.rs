@@ -2838,10 +2838,7 @@ mod tests {
             end_byte: 12,
             start_line: 1,
             end_line: 10,
-            snippet: "fn main() {}".to_string().into_boxed_str(),
-            indexed_text: "fn main() {}".to_string().into_boxed_str(),
-            text_digest: "text:feed".to_string().into_boxed_str(),
-            shape_digest: "shape:feed".to_string().into_boxed_str(),
+            text: "fn main() {}".to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
         }

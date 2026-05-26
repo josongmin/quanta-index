@@ -14,10 +14,11 @@
 
 use std::error::Error;
 
+use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalChannelOp, LqCountBound, LqExpr, LqFilter, LqLeaf,
-    LqOptions, LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
     RepoRelativePath, RevisionId, UpsertChunk,
 };
 use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher};
@@ -49,10 +50,7 @@ fn encode_chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         })?,
         start_line: 0,
         end_line: 0,
-        snippet: text.to_string().into_boxed_str(),
-        indexed_text: text.to_string().into_boxed_str(),
-        text_digest: "text:planner".to_string().into_boxed_str(),
-        shape_digest: "shape:planner".to_string().into_boxed_str(),
+        text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
     };

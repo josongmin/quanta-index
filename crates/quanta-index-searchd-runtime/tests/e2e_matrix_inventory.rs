@@ -25,7 +25,7 @@ fn harness_smoke_write_seal_reopen_query() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     ingest_all(&mut rt, SMOKE_CORPUS)?;
     let _sealed = rt.seal()?;
-    let mut rt = rt.reopen()?;
+    let mut rt = rt.reopen();
     // After reopen the harness pin still points at the just-sealed
     // generation, so `query_text` pins to the durable manifest the
     // restarted runtime replays from disk.

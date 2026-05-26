@@ -4,7 +4,7 @@
 )]
 
 use quanta_index_contract::lex::{
-    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
+    LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     LqMetaVar, LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand,
@@ -50,6 +50,13 @@ fn hole_many(name: &str) -> LqStructuralNode {
     LqStructuralNode::Hole {
         name: Some(LqMetaVar::new(name.to_string())),
         multiplicity: LqStructuralHoleMultiplicity::Many,
+    }
+}
+
+fn typed_hole(name: &str, kind: &str) -> LqStructuralNode {
+    LqStructuralNode::Hole {
+        name: Some(LqMetaVar::new(format!("{name}.{kind}"))),
+        multiplicity: LqStructuralHoleMultiplicity::One,
     }
 }
 
@@ -125,6 +132,20 @@ fn tree_with_children(
         role_tag_schema_version: 1,
         role_tags: Vec::new(),
     }
+}
+
+fn tree_with_children_and_roles(
+    lang: &str,
+    kind: &str,
+    start: u32,
+    end: u32,
+    source: &str,
+    children: Vec<ParseNode>,
+    role_tags: Vec<ParseRoleTag>,
+) -> ParseTreeRecord {
+    let mut tree = tree_with_children(lang, kind, start, end, source, children);
+    tree.role_tags = role_tags;
+    tree
 }
 
 fn tree(lang: &str, kind: &str, start: u32, end: u32, source: &str) -> ParseTreeRecord {
@@ -258,6 +279,170 @@ fn authority_tree_walk_binds_direct_child_capture() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].pattern_span, span(0, 10));
     assert_eq!(got[0].binding.get(&mv("name")), Some(span(3, 7)));
+}
+
+#[test]
+fn authority_typed_expr_hole_matches_role_tag_exact_span() {
+    let source = "fn main() {}";
+    let tree = tree_with_children_and_roles(
+        "rust",
+        "function_item",
+        0,
+        10,
+        source,
+        vec![
+            ParseNode {
+                kind: "identifier".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+                children: Vec::new(),
+            },
+            ParseNode {
+                kind: "block".to_string().into_boxed_str(),
+                byte_start: 8,
+                byte_end: 10,
+                children: Vec::new(),
+            },
+        ],
+        vec![
+            ParseRoleTag {
+                role: "item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 10,
+            },
+            ParseRoleTag {
+                role: "expr".to_string().into_boxed_str(),
+                byte_start: 3,
+                byte_end: 7,
+            },
+            ParseRoleTag {
+                role: "stmt".to_string().into_boxed_str(),
+                byte_start: 8,
+                byte_end: 10,
+            },
+        ],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![group(vec![typed_hole("name", "expr")])]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].binding.get(&mv("name")), Some(span(3, 7)));
+}
+
+#[test]
+fn authority_typed_item_hole_matches_root_role_tag() {
+    let source = "fn main() {}";
+    let tree = tree_with_children_and_roles(
+        "rust",
+        "function_item",
+        0,
+        10,
+        source,
+        Vec::new(),
+        vec![ParseRoleTag {
+            role: "item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 10,
+        }],
+    );
+    let pattern = compile_block(vec![typed_hole("root", "item")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].binding.get(&mv("root")), Some(span(0, 10)));
+}
+
+#[test]
+fn authority_typed_stmt_hole_matches_stmt_role_tag() {
+    let source = "fn main() {}";
+    let tree = tree_with_children_and_roles(
+        "rust",
+        "function_item",
+        0,
+        10,
+        source,
+        vec![ParseNode {
+            kind: "block".to_string().into_boxed_str(),
+            byte_start: 8,
+            byte_end: 10,
+            children: Vec::new(),
+        }],
+        vec![ParseRoleTag {
+            role: "stmt".to_string().into_boxed_str(),
+            byte_start: 8,
+            byte_end: 10,
+        }],
+    );
+    let pattern = compile_block(
+        vec![
+            literal("function_item"),
+            group(vec![typed_hole("stmt_node", "stmt")]),
+        ],
+        "rust",
+    );
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].binding.get(&mv("stmt_node")), Some(span(8, 10)));
+}
+
+#[test]
+fn authority_typed_type_hole_matches_type_role_tag() {
+    let source = "T";
+    let tree = tree_with_children_and_roles(
+        "rust",
+        "type_identifier",
+        0,
+        1,
+        source,
+        Vec::new(),
+        vec![ParseRoleTag {
+            role: "type".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: 1,
+        }],
+    );
+    let pattern = compile_block(vec![typed_hole("type_node", "type")], "rust");
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    let got = match matcher
+        .match_authority(lower(&pattern), StructuralAuthorityView::new(source, &tree))
+    {
+        Ok(v) => v,
+        Err(e) => fatal(&format!("{e}")),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].binding.get(&mv("type_node")), Some(span(0, 1)));
+}
+
+#[test]
+fn authority_typed_hole_unknown_kind_fails_closed() {
+    let err =
+        compile_authoritative_pattern(&structural_block(vec![typed_hole("x", "lambda")]), "rust");
+    match err {
+        Ok(pattern) => fatal(&format!("expected typed-hole failure, got {pattern:?}")),
+        Err(err) => assert_eq!(err.code, StructuralErrorCode::StrHoleKindUnsupported),
+    }
 }
 
 #[test]

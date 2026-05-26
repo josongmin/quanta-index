@@ -38,7 +38,7 @@ use crate::{QuantaIndex, SdkError};
 ///   rules).
 pub(crate) trait NamespaceIngest {
     /// SDK-side batch shape. Typically an idiomatic builder type
-    /// (`LexicalBatch`, `SemanticBatch`, etc.).
+    /// (`LexicalBatch`, `HistoryBatch`, etc.).
     type Batch;
     /// Receipt shape returned on a successful publish. Typically
     /// [`quanta_index_contract::BatchPublishReceipt`] for stream
@@ -271,10 +271,7 @@ mod tests {
                 end_byte: 12,
                 start_line: 1,
                 end_line: 2,
-                snippet: "fn main() {}".to_string().into_boxed_str(),
-                indexed_text: "fn main() {}".to_string().into_boxed_str(),
-                text_digest: "text:digest".to_string().into_boxed_str(),
-                shape_digest: "shape:digest".to_string().into_boxed_str(),
+                text: "fn main() {}".to_string().into_boxed_str(),
                 structural: None,
                 parent_chunk_id: None,
             }],

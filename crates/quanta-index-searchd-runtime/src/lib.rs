@@ -74,5 +74,5 @@ pub fn run(command: SearchdCommand) -> Result<()> {
     let config = command.into_config()?;
     let runtime = build_runtime(config)?;
     let shutdown = Arc::new(AtomicBool::new(false));
-    drive(runtime, shutdown)
+    drive(runtime, &shutdown)
 }

@@ -19,6 +19,9 @@ pub enum StructuralErrorCode {
     /// another metavariable, used outside `match { … }`, or referenced
     /// by `where` without ever being bound.
     StrInvalidMetavar,
+    /// Typed structural hole kind is outside the current closed executable set
+    /// or is not valid for the current authority route.
+    StrHoleKindUnsupported,
     /// Explicit `lang:<id>` outside the §4.10 ship set.
     StrLangNotSupported,
     /// Structural pattern exceeds the 256-node, 16-depth, or 32-metavar
@@ -33,6 +36,7 @@ impl StructuralErrorCode {
         match self {
             Self::StrParseFail => "STR_PARSE_FAIL",
             Self::StrInvalidMetavar => "STR_INVALID_METAVAR",
+            Self::StrHoleKindUnsupported => "STR_HOLE_KIND_UNSUPPORTED",
             Self::StrLangNotSupported => "STR_LANG_NOT_SUPPORTED",
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
         }
@@ -44,6 +48,7 @@ impl StructuralErrorCode {
         let v = match s {
             "STR_PARSE_FAIL" => Self::StrParseFail,
             "STR_INVALID_METAVAR" => Self::StrInvalidMetavar,
+            "STR_HOLE_KIND_UNSUPPORTED" => Self::StrHoleKindUnsupported,
             "STR_LANG_NOT_SUPPORTED" => Self::StrLangNotSupported,
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
             _ => return None,
@@ -214,6 +219,16 @@ impl StructuralError {
         }
     }
 
+    /// Convenience: `STR_HOLE_KIND_UNSUPPORTED{kind}` with structured detail.
+    #[must_use]
+    pub fn hole_kind_unsupported(kind: &str) -> Self {
+        Self {
+            code: StructuralErrorCode::StrHoleKindUnsupported,
+            dimension: None,
+            detail: format!("STR_HOLE_KIND_UNSUPPORTED{{kind=\"{kind}\"}}").into_boxed_str(),
+        }
+    }
+
     /// Convenience: `STR_PARSE_FAIL` with the offending offset.
     #[must_use]
     pub fn parse_fail(offset: usize, detail: impl AsRef<str>) -> Self {
@@ -323,6 +338,7 @@ mod tests {
     const ALL_CODES: &[StructuralErrorCode] = &[
         StructuralErrorCode::StrParseFail,
         StructuralErrorCode::StrInvalidMetavar,
+        StructuralErrorCode::StrHoleKindUnsupported,
         StructuralErrorCode::StrLangNotSupported,
         StructuralErrorCode::PlanLimitExceeded,
     ];
@@ -385,6 +401,13 @@ mod tests {
         let e = StructuralError::invalid_metavar("X");
         assert_eq!(e.code, StructuralErrorCode::StrInvalidMetavar);
         assert!(e.detail.contains('X'));
+    }
+
+    #[test]
+    fn hole_kind_unsupported_constructor() {
+        let e = StructuralError::hole_kind_unsupported("expr");
+        assert_eq!(e.code, StructuralErrorCode::StrHoleKindUnsupported);
+        assert!(e.detail.contains("expr"));
     }
 
     #[test]

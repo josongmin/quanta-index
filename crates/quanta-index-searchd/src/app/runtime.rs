@@ -1,10 +1,12 @@
 //! Composed runtime artefacts. Built once per daemon process.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 use std::{fs, path::Path};
 
 use anyhow::Result;
 use memchr::memchr_iter;
+use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
     ManifestGeneration, RepoId, RevisionId, SearchPlaneControlIpcRequest,
@@ -32,13 +34,14 @@ use quanta_index_lq_structural::{
 use quanta_index_search_plane::{
     ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DecimalQueryTextEmbedder,
     DirectHistoryMaterializer, DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer,
-    DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort, Ledger,
-    QueryObsSink, RuntimeMetadataIngestPort, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    DirectSemanticMaterializer, DirectStructuralMaterializer, HashingQueryTextEmbedder,
+    HistoryIngestPort, Ledger, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
     SearchPlaneIngestDispatcher, SemanticAuthorityStore, StructuralIngestPort,
 };
 use regex::Regex;
 
-use crate::app::config::SearchdConfig;
+use crate::app::config::{QueryTextEmbedderMode, SearchdConfig};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
@@ -57,6 +60,33 @@ pub struct SearchdRuntimeParts {
     pub activation_catalog: Arc<ActivationCatalog>,
     pub aux_authority_store: Arc<AuxiliaryAuthorityStore>,
     pub semantic_authority_store: Arc<SemanticAuthorityStore>,
+}
+
+struct ProviderUnavailableQueryTextEmbedder;
+
+impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
+    fn embed_query(&self, _query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+        Err(quanta_index_core::CoreError::Typed {
+            code: LexicalErrorCode::SemProviderUnavailable
+                .as_code_str()
+                .to_string(),
+            message: "query-time embedder is not configured for this runtime".to_string(),
+        })
+    }
+}
+
+fn build_query_text_embedder(
+    mode: QueryTextEmbedderMode,
+) -> Arc<dyn QueryTextEmbedderPort + Send + Sync> {
+    match mode {
+        QueryTextEmbedderMode::DeterministicText => Arc::new(HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        )),
+        QueryTextEmbedderMode::ProviderUnavailable => {
+            Arc::new(ProviderUnavailableQueryTextEmbedder)
+        }
+        QueryTextEmbedderMode::DecimalTokens => Arc::new(DecimalQueryTextEmbedder),
+    }
 }
 
 struct LedgerStructuralProducer {
@@ -128,7 +158,17 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         let mut results = Vec::new();
         let mut observed_unsupported_lang: Option<String> = None;
         let mut saw_supported_lang = false;
+        let candidate_scope = request
+            .candidate_scope
+            .as_ref()
+            .map(|ids| ids.iter().map(String::as_str).collect::<BTreeSet<_>>());
         for (chunk_id, tree) in state.parse_trees() {
+            if candidate_scope
+                .as_ref()
+                .is_some_and(|scope| !scope.contains(chunk_id.as_str()))
+            {
+                continue;
+            }
             let tree_lang = tree.lang.as_str();
             if let Some(lang) = requested_lang
                 && tree_lang != lang
@@ -166,7 +206,7 @@ impl StructuralProducerPort for LedgerStructuralProducer {
                 .matcher
                 .match_authority(
                     authority_pattern,
-                    StructuralAuthorityView::new(chunk.indexed_text.as_ref(), tree),
+                    StructuralAuthorityView::new(chunk.text.as_ref(), tree),
                 )
                 .map_err(map_live_authority_error)?;
             results.extend(project_structural_candidates(
@@ -263,6 +303,9 @@ fn compile_live_structural_pattern(
         LqStructuralErrorCode::StrLangNotSupported => {
             StructuralError::LangNotSupported(lang.to_string())
         }
+        LqStructuralErrorCode::StrHoleKindUnsupported => {
+            StructuralError::HoleKindUnsupported(err.to_string())
+        }
         LqStructuralErrorCode::StrParseFail
         | LqStructuralErrorCode::StrInvalidMetavar
         | LqStructuralErrorCode::PlanLimitExceeded => {
@@ -289,6 +332,9 @@ fn map_live_authority_error(err: LqStructuralError) -> StructuralError {
     match err.code {
         LqStructuralErrorCode::StrLangNotSupported => {
             StructuralError::LangNotSupported(err.detail.to_string())
+        }
+        LqStructuralErrorCode::StrHoleKindUnsupported => {
+            StructuralError::HoleKindUnsupported(err.to_string())
         }
         LqStructuralErrorCode::StrParseFail => StructuralError::ShardUnavailable,
         LqStructuralErrorCode::StrInvalidMetavar | LqStructuralErrorCode::PlanLimitExceeded => {
@@ -341,7 +387,7 @@ fn chunk_line_span(
     start_byte: u32,
     end_byte: u32,
 ) -> Result<(u32, u32), StructuralError> {
-    let text = chunk.indexed_text.as_ref();
+    let text = chunk.text.as_ref();
     let text_bytes = text.as_bytes();
     let start = usize::try_from(start_byte).map_err(|err| {
         StructuralError::ProducerExecution(format!("invalid structural start byte: {err}"))
@@ -422,15 +468,28 @@ impl SearchdRuntime {
                 .restore_into(&mut guard)
                 .map_err(anyhow::Error::from)?;
         }
-        let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> = Arc::new(
-            DirectLexicalMaterializer::new(Arc::clone(&lex_build_port), Arc::clone(&ledger)),
-        );
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
             Arc::new(DirectSemanticMaterializer::new(
                 semantic_authority_store,
                 Arc::clone(&sem_build_port),
                 Arc::clone(&ledger),
             ));
+        let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
+            match config.query_text_embedder_mode() {
+                QueryTextEmbedderMode::DeterministicText => {
+                    Arc::new(DirectLexicalMaterializer::new_with_search_owned_semantics(
+                        Arc::clone(&lex_build_port),
+                        Arc::clone(&ledger),
+                        Arc::clone(&direct_sem_ingest_port),
+                        SEARCH_OWNED_SEMANTIC_DIMENSION,
+                    ))
+                }
+                QueryTextEmbedderMode::ProviderUnavailable
+                | QueryTextEmbedderMode::DecimalTokens => Arc::new(DirectLexicalMaterializer::new(
+                    Arc::clone(&lex_build_port),
+                    Arc::clone(&ledger),
+                )),
+            };
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
             DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),
         );
@@ -452,7 +511,7 @@ impl SearchdRuntime {
             Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
             Arc::clone(&ledger),
             activation_catalog.clone(),
-            Arc::new(DecimalQueryTextEmbedder),
+            build_query_text_embedder(config.query_text_embedder_mode()),
             query_obs_sink,
         ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(

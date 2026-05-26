@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, Visitor};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use quanta_index_contract::ChunkRecord;
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -19,6 +22,68 @@ use quanta_index_core::CoreError;
 
 type SharedLedger = Arc<RwLock<Ledger>>;
 type SharedActivationCatalog = Arc<ActivationCatalog>;
+
+macro_rules! impl_struct_serde {
+    ($ty:ident { $($field:ident : $field_ty:ty),+ $(,)? }) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut state = serializer.serialize_struct(stringify!($ty), FIELDS.len())?;
+                $(state.serialize_field(stringify!($field), &self.$field)?;)+
+                state.end()
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct StructVisitor;
+
+                impl<'de> Visitor<'de> for StructVisitor {
+                    type Value = $ty;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($ty)))
+                    }
+
+                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: MapAccess<'de>,
+                    {
+                        const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                        $(let mut $field: Option<$field_ty> = None;)+
+                        while let Some(key) = map.next_key::<String>()? {
+                            match key.as_str() {
+                                $(
+                                    stringify!($field) => {
+                                        if $field.is_some() {
+                                            return Err(de::Error::duplicate_field(stringify!($field)));
+                                        }
+                                        $field = Some(map.next_value()?);
+                                    }
+                                )+
+                                _ => return Err(de::Error::unknown_field(key.as_str(), FIELDS)),
+                            }
+                        }
+                        Ok($ty {
+                            $(
+                                $field: $field.ok_or_else(|| de::Error::missing_field(stringify!($field)))?,
+                            )+
+                        })
+                    }
+                }
+
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                deserializer.deserialize_struct(stringify!($ty), FIELDS, StructVisitor)
+            }
+        }
+    };
+}
 
 /// Per-track readiness state.
 #[derive(Debug, Default)]
@@ -81,7 +146,7 @@ impl TrackLedger {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct TrackAuthorityState {
     materialized: Option<ManifestGeneration>,
     sealed: Option<ManifestGeneration>,
@@ -417,7 +482,7 @@ impl Ledger {
             .request_seal();
     }
 
-    pub fn apply_lexical_batch(&mut self, batch: &LexicalIngestBatch) -> Result<(), CoreError> {
+    pub fn apply_lexical_batch(&mut self, batch: &LexicalIngestBatch) {
         let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
         for scope in &batch.replace_scopes {
             state.chunks.retain(|_chunk_id, chunk| {
@@ -432,7 +497,6 @@ impl Ledger {
                 chunk.repo_relative_path != scope.scope.repo_relative_path
             });
         }
-        Ok(())
     }
 
     pub fn apply_history_batch(&mut self, batch: &HistoryIngestBatch) -> Result<(), CoreError> {
@@ -926,7 +990,7 @@ fn verify_parse_tree_against_chunk(
             chunk.repo_relative_path.as_str(),
         )));
     }
-    let expected_hash = compute_parse_tree_source_hash(chunk.indexed_text.as_ref());
+    let expected_hash = compute_parse_tree_source_hash(chunk.text.as_ref());
     if record.source_hash != expected_hash {
         return Err(structural_parse_tree_decode_fail(format!(
             "STR_PARSE_TREE_DECODE_FAIL{{reason=source_hash_mismatch, chunk_id=\"{}\"}}",
@@ -936,14 +1000,14 @@ fn verify_parse_tree_against_chunk(
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct TrackAuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
@@ -954,7 +1018,7 @@ struct TrackAuthorityKey {
     clippy::struct_excessive_bools,
     reason = "history authority tracks four independently materialized shard families"
 )]
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct HistoryAuthorityState {
     commits: BTreeMap<CommitSha, CommitRecord>,
     refs: BTreeMap<Box<str>, CommitSha>,
@@ -1024,7 +1088,7 @@ impl HistoryAuthorityState {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct HistoryDiffKey {
     commit_sha: CommitSha,
     file_path: Box<str>,
@@ -1042,7 +1106,7 @@ impl HistoryDiffKey {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirtyDocState {
     applied_at_ms: u64,
     payload_hash: [u8; 32],
@@ -1060,7 +1124,7 @@ impl DirtyDocState {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct RuntimeMetadataState {
     dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
 }
@@ -1072,7 +1136,7 @@ impl RuntimeMetadataState {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct StructuralAuthorityState {
     chunks: BTreeMap<ChunkId, ChunkRecord>,
     parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
@@ -1100,17 +1164,17 @@ impl StructuralAuthorityState {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 struct HistoryAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 struct RuntimeAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 struct StructuralAuthoritySnapshot {
     entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
     tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
@@ -1118,10 +1182,72 @@ struct StructuralAuthoritySnapshot {
 
 #[derive(Debug)]
 pub struct AuxiliaryAuthorityStore {
-    history_path: PathBuf,
-    runtime_path: PathBuf,
-    structural_path: PathBuf,
+    history: PathBuf,
+    runtime: PathBuf,
+    structural: PathBuf,
 }
+
+impl_struct_serde!(TrackAuthorityState {
+    materialized: Option<ManifestGeneration>,
+    sealed: Option<ManifestGeneration>,
+    manifest_digest: Option<String>,
+});
+
+impl_struct_serde!(AuthorityKey {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+});
+
+impl_struct_serde!(TrackAuthorityKey {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    track: SearchPlaneTrackKind,
+});
+
+impl_struct_serde!(HistoryAuthorityState {
+    commits: BTreeMap<CommitSha, CommitRecord>,
+    refs: BTreeMap<Box<str>, CommitSha>,
+    tags: BTreeMap<Box<str>, CommitSha>,
+    diff_hunks: BTreeMap<HistoryDiffKey, DiffHunkRecord>,
+    commits_materialized: bool,
+    refs_materialized: bool,
+    tags_materialized: bool,
+    diff_hunks_materialized: bool,
+});
+
+impl_struct_serde!(HistoryDiffKey {
+    commit_sha: CommitSha,
+    file_path: Box<str>,
+});
+
+impl_struct_serde!(DirtyDocState {
+    applied_at_ms: u64,
+    payload_hash: [u8; 32],
+});
+
+impl_struct_serde!(RuntimeMetadataState {
+    dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
+});
+
+impl_struct_serde!(StructuralAuthorityState {
+    chunks: BTreeMap<ChunkId, ChunkRecord>,
+    parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
+    seal_requested: bool,
+});
+
+impl_struct_serde!(HistoryAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
+});
+
+impl_struct_serde!(RuntimeAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
+});
+
+impl_struct_serde!(StructuralAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
+    tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
+});
 
 impl AuxiliaryAuthorityStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
@@ -1138,9 +1264,9 @@ impl AuxiliaryAuthorityStore {
             })?;
         }
         Ok(Self {
-            history_path: history_dir.join("state.cbor"),
-            runtime_path: runtime_dir.join("state.cbor"),
-            structural_path: structural_dir.join("state.cbor"),
+            history: history_dir.join("state.cbor"),
+            runtime: runtime_dir.join("state.cbor"),
+            structural: structural_dir.join("state.cbor"),
         })
     }
 
@@ -1148,12 +1274,12 @@ impl AuxiliaryAuthorityStore {
         let history = HistoryAuthoritySnapshot {
             entries: ledger.history.clone(),
         };
-        self.write_cbor(&self.history_path, &history, "history")?;
+        self.write_cbor(&self.history, &history, "history")?;
 
         let runtime = RuntimeAuthoritySnapshot {
             entries: ledger.runtime_metadata.clone(),
         };
-        self.write_cbor(&self.runtime_path, &runtime, "runtime metadata")?;
+        self.write_cbor(&self.runtime, &runtime, "runtime metadata")?;
 
         let structural = StructuralAuthoritySnapshot {
             entries: ledger.structural.clone(),
@@ -1164,23 +1290,23 @@ impl AuxiliaryAuthorityStore {
                 .map(|(key, state)| (key.clone(), state.clone()))
                 .collect(),
         };
-        self.write_cbor(&self.structural_path, &structural, "structural")?;
+        self.write_cbor(&self.structural, &structural, "structural")?;
         Ok(())
     }
 
     pub fn restore_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
         if let Some(history) =
-            self.read_cbor::<HistoryAuthoritySnapshot>(&self.history_path, "history")?
+            self.read_cbor::<HistoryAuthoritySnapshot>(&self.history, "history")?
         {
             ledger.history = history.entries;
         }
         if let Some(runtime) =
-            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime_path, "runtime metadata")?
+            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime, "runtime metadata")?
         {
             ledger.runtime_metadata = runtime.entries;
         }
         if let Some(structural) =
-            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural_path, "structural")?
+            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural, "structural")?
         {
             ledger.structural = structural.entries;
             ledger
@@ -1553,42 +1679,34 @@ mod tests {
         }
     }
 
-    fn chunk_record(
-        path: &str,
-        indexed_text: &str,
-    ) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+    fn chunk_record(path: &str, text: &str) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
         Ok(ChunkRecord {
             chunk_id: ChunkId::new("chunk-1"),
             repo_relative_path: RepoRelativePath::new(path),
             language: rust_language()?,
             start_byte: 0,
-            end_byte: u32::try_from(indexed_text.len())
-                .map_err(|err| format!("indexed_text len overflow: {err}"))?,
+            end_byte: u32::try_from(text.len())
+                .map_err(|err| format!("text len overflow: {err}"))?,
             start_line: 1,
             end_line: 1,
-            snippet: indexed_text.to_string().into_boxed_str(),
-            indexed_text: indexed_text.to_string().into_boxed_str(),
-            text_digest: "text:digest".to_string().into_boxed_str(),
-            shape_digest: "shape:digest".to_string().into_boxed_str(),
+            text: text.to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
         })
     }
 
-    fn parse_tree_record(
-        indexed_text: &str,
-    ) -> Result<ParseTreeRecord, Box<dyn std::error::Error>> {
+    fn parse_tree_record(text: &str) -> Result<ParseTreeRecord, Box<dyn std::error::Error>> {
         Ok(ParseTreeRecord {
             wire_version: 1,
             lang: rust_language()?,
             root: ParseNode {
                 kind: "function_item".to_string().into_boxed_str(),
                 byte_start: 0,
-                byte_end: u32::try_from(indexed_text.len())
-                    .map_err(|err| format!("indexed_text len overflow: {err}"))?,
+                byte_end: u32::try_from(text.len())
+                    .map_err(|err| format!("text len overflow: {err}"))?,
                 children: Vec::new(),
             },
-            source_hash: compute_parse_tree_source_hash(indexed_text),
+            source_hash: compute_parse_tree_source_hash(text),
             role_tag_schema_version: 0,
             role_tags: Vec::new(),
         })
@@ -1600,7 +1718,7 @@ mod tests {
         Ok(bytes)
     }
 
-    fn install_chunk(ledger: &mut Ledger, path: &str, indexed_text: &str) -> TestResult {
+    fn install_chunk(ledger: &mut Ledger, path: &str, text: &str) -> TestResult {
         let op = LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
             repo_id: repo_id(),
             revision_id: revision_id(),
@@ -1611,7 +1729,7 @@ mod tests {
                 LexicalReplaceScope {
                     scope: scope(path),
                     scope_digest: "scope:lex".to_string(),
-                    chunks: vec![chunk_record(path, indexed_text)?],
+                    chunks: vec![chunk_record(path, text)?],
                     symbols: Vec::new(),
                 },
             ))?,
@@ -1620,13 +1738,13 @@ mod tests {
         Ok(())
     }
 
-    fn install_parse_tree(ledger: &mut Ledger, indexed_text: &str) -> TestResult {
+    fn install_parse_tree(ledger: &mut Ledger, text: &str) -> TestResult {
         let op = LexicalChannelOp::UpsertParseTree(UpsertParseTree {
             repo_id: repo_id(),
             revision_id: revision_id(),
             generation: generation(),
             chunk_id: ChunkId::new("chunk-1"),
-            payload: encode_cbor(&parse_tree_record(indexed_text)?)?,
+            payload: encode_cbor(&parse_tree_record(text)?)?,
         });
         ledger.apply_lexical_authority_op(&op)?;
         Ok(())
@@ -1733,28 +1851,32 @@ mod tests {
         let mut restored = Ledger::default();
         store.restore_into(&mut restored)?;
 
-        assert!(
-            restored
-                .history_state(&repo_id(), &revision_id(), generation())
-                .is_some_and(|state| state.commits_materialized())
-        );
-        assert_eq!(
-            restored
-                .runtime_state(&repo_id(), &revision_id(), generation())
-                .and_then(|state| state.dirty_docs().get(&ChunkId::new("dirty-1")))
-                .map(|state| state.applied_at_ms()),
-            Some(42)
-        );
-        assert_eq!(
-            restored
-                .structural_state(&repo_id(), &revision_id(), generation())
-                .map(|state| state.chunks().len()),
-            Some(1)
-        );
-        assert_eq!(
-            restored.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural,),
-            Some(generation())
-        );
+        if !restored
+            .history_state(&repo_id(), &revision_id(), generation())
+            .is_some_and(super::HistoryAuthorityState::commits_materialized)
+        {
+            return Err("history authority did not restore commit materialization".into());
+        }
+        if restored
+            .runtime_state(&repo_id(), &revision_id(), generation())
+            .and_then(|state| state.dirty_docs().get(&ChunkId::new("dirty-1")))
+            .map(super::DirtyDocState::applied_at_ms)
+            != Some(42)
+        {
+            return Err("runtime authority did not restore dirty-doc payload".into());
+        }
+        if restored
+            .structural_state(&repo_id(), &revision_id(), generation())
+            .map(|state| state.chunks().len())
+            != Some(1)
+        {
+            return Err("structural authority did not restore chunk inventory".into());
+        }
+        if restored.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural)
+            != Some(generation())
+        {
+            return Err("structural track seal did not restore".into());
+        }
         Ok(())
     }
 
