@@ -18,12 +18,14 @@ use quanta_index_contract::lex::{
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId,
-    RepoMapActivateGenerationRequest, RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge,
-    RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
-    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
-    RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, SearchPlaneTrackKind, SymbolId,
+    ChunkId, ChunkRecord, GenerationPin, GenerationSelector, HybridQueryRequest,
+    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
+    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
+    RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
+    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoMapSymbolNode, RevisionId,
+    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest,
+    SemanticVectorRef, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
@@ -38,6 +40,7 @@ use quanta_index_searchd_runtime::build_runtime;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
+type SdkFrontdoorRuntime = (tempfile::TempDir, QuantaIndex, Arc<AtomicBool>, DriverJoin);
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,6 +59,21 @@ fn generation() -> ManifestGeneration {
 
 fn pin() -> GenerationPin {
     GenerationPin::new(repo(), revision(), generation())
+}
+
+fn generation_two() -> ManifestGeneration {
+    ManifestGeneration::new(32)
+}
+
+fn pin_two() -> GenerationPin {
+    GenerationPin::new(repo(), revision(), generation_two())
+}
+
+fn active_selector() -> GenerationSelector {
+    GenerationSelector::Active {
+        repo_id: repo(),
+        revision_id: revision(),
+    }
 }
 
 fn commit_sha() -> CommitSha {
@@ -84,6 +102,51 @@ fn build_config(state_root: &Path) -> SearchdConfig {
     SearchdConfig::from_state_root(state_root.to_path_buf())
         .with_socket_overrides(query_socket, control_socket)
         .with_ingest_socket_override(ingest_socket)
+}
+
+fn start_sdk_frontdoor_runtime_at_state_root(
+    state_root: &Path,
+    thread_name: &str,
+) -> Result<(QuantaIndex, Arc<AtomicBool>, DriverJoin), Box<dyn Error>> {
+    let runtime = build_runtime(build_config(state_root))?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_TIMEOUT, || {
+        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
+    }) {
+        stop_runtime(&shutdown, join)?;
+        return Err("sdk frontdoor sockets never appeared".into());
+    }
+
+    let client = match QuantaIndex::connect(
+        ConnectOptions::from_state_root(state_root)
+            .with_query_socket(query_socket)
+            .with_control_socket(control_socket)
+            .with_ingest_socket(ingest_socket),
+    ) {
+        Ok(client) => client,
+        Err(err) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("sdk frontdoor connect failed: {err}").into());
+        }
+    };
+
+    Ok((client, shutdown, join))
+}
+
+fn start_sdk_frontdoor_runtime(thread_name: &str) -> Result<SdkFrontdoorRuntime, Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let (client, shutdown, join) =
+        start_sdk_frontdoor_runtime_at_state_root(dir.path(), thread_name)?;
+
+    Ok((dir, client, shutdown, join))
 }
 
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
@@ -234,6 +297,58 @@ fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
     ))
 }
 
+fn lexical_batch_two() -> Result<LexicalBatch, Box<dyn Error>> {
+    Ok(LexicalBatch::replace_generation(
+        repo(),
+        revision(),
+        generation_two(),
+        "manifest:lexical-v2",
+        "batch:lexical-v2",
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        },
+        "scope:lexical-lib-v2",
+        vec![
+            lexical_chunk(
+                "chunk-dirty-v2",
+                "src/lib.rs",
+                "todo_v2!()",
+                "text:digest:v2",
+                "shape:digest:v2",
+                15,
+            )?,
+            lexical_chunk(
+                "chunk-tree-v2",
+                "src/lib.rs",
+                "fn upgraded() {}",
+                "text:tree:v2",
+                "shape:tree:v2",
+                16,
+            )?,
+        ],
+        vec![symbol_record()?],
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/gamma.rs"),
+        },
+        "scope:lexical-gamma",
+        vec![lexical_chunk(
+            "gamma",
+            "src/gamma.rs",
+            "obsidian gamma",
+            "text:gamma",
+            "shape:gamma",
+            14,
+        )?],
+        Vec::new(),
+    ))
+}
+
 fn lexical_chunk(
     chunk_id: &str,
     path: &str,
@@ -334,6 +449,43 @@ fn semantic_batch() -> Result<SemanticBatch, Box<dyn Error>> {
             "src/beta.rs",
             "sphinx riddles",
             vec![0.0, 1.0],
+        )?],
+    ))
+}
+
+fn semantic_batch_two() -> Result<SemanticBatch, Box<dyn Error>> {
+    Ok(SemanticBatch::replace_generation(
+        repo(),
+        revision(),
+        generation_two(),
+        "manifest:semantic-v2",
+        "batch:semantic-v2",
+        semantic_model_contract(),
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/gamma.rs"),
+        },
+        "scope:semantic-gamma",
+        vec![semantic_embedding(
+            "gamma",
+            "src/gamma.rs",
+            "obsidian gamma",
+            vec![0.7, 0.7],
+        )?],
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/delta.rs"),
+        },
+        "scope:semantic-delta",
+        vec![semantic_embedding(
+            "delta",
+            "src/delta.rs",
+            "granite delta",
+            vec![0.2, 0.9],
         )?],
     ))
 }
@@ -579,6 +731,51 @@ fn structural_batch() -> Result<StructuralBatch, Box<dyn Error>> {
     structural_batch_with_chunk(ChunkId::new("chunk-tree"))
 }
 
+fn structural_batch_two() -> Result<StructuralBatch, Box<dyn Error>> {
+    Ok(StructuralBatch::replace_generation(
+        repo(),
+        revision(),
+        generation_two(),
+        "manifest:structural-v2",
+        "batch:structural-v2",
+    )
+    .replace_tree(
+        structural_scope(),
+        "scope:structural-v2",
+        ChunkId::new("chunk-tree-v2"),
+        ParseTreeRecord {
+            wire_version: 1,
+            lang: rust_language()?,
+            root: ParseNode {
+                kind: "function_item".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 14,
+                children: vec![
+                    ParseNode {
+                        kind: "identifier".to_string().into_boxed_str(),
+                        byte_start: 3,
+                        byte_end: 11,
+                        children: Vec::new(),
+                    },
+                    ParseNode {
+                        kind: "block".to_string().into_boxed_str(),
+                        byte_start: 12,
+                        byte_end: 14,
+                        children: Vec::new(),
+                    },
+                ],
+            },
+            source_hash: compute_parse_tree_source_hash("fn upgraded() {}"),
+            role_tag_schema_version: 1,
+            role_tags: vec![ParseRoleTag {
+                role: "expr".to_string().into_boxed_str(),
+                byte_start: 0,
+                byte_end: 8,
+            }],
+        },
+    ))
+}
+
 fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
     LanguageCode::new("rust").map_err(|err| -> Box<dyn Error> {
         format!("invalid hard-coded test language code: {err}").into()
@@ -615,6 +812,22 @@ fn expect_sdk_error<T>(
     }
 }
 
+fn expect_usage_error_contains<T>(
+    result: Result<T, SdkError>,
+    expected_fragment: &str,
+) -> TestResult {
+    match result {
+        Err(SdkError::Usage(message)) if message.contains(expected_fragment) => Ok(()),
+        Err(other) => Err(format!(
+            "expected usage error containing {expected_fragment:?}, got {other:?}"
+        )
+        .into()),
+        Ok(_) => Err(
+            format!("expected usage error containing {expected_fragment:?}, got success").into(),
+        ),
+    }
+}
+
 fn wait_for_sdk_ready<T, F>(timeout: Duration, mut run: F) -> Result<T, SdkError>
 where
     F: FnMut() -> Result<T, SdkError>,
@@ -634,8 +847,17 @@ where
     }
 }
 
-fn wait_for_sdk_observation<T, F, P>(
+fn wait_for_sdk_observation<T, F, P>(timeout: Duration, run: F, ready: P) -> Result<T, SdkError>
+where
+    F: FnMut() -> Result<T, SdkError>,
+    P: FnMut(&T) -> bool,
+{
+    wait_for_sdk_observation_with_retry_codes(timeout, &["NOT_READY"], run, ready)
+}
+
+fn wait_for_sdk_observation_with_retry_codes<T, F, P>(
     timeout: Duration,
+    retry_codes: &[&str],
     mut run: F,
     mut ready: P,
 ) -> Result<T, SdkError>
@@ -649,7 +871,8 @@ where
             Ok(value) if ready(&value) || start.elapsed() >= timeout => return Ok(value),
             Ok(_value) => thread::sleep(Duration::from_millis(10)),
             Err(SdkError::Remote { code, message })
-                if code == "NOT_READY" && start.elapsed() < timeout =>
+                if retry_codes.iter().any(|candidate| code == *candidate)
+                    && start.elapsed() < timeout =>
             {
                 drop(message);
                 thread::sleep(Duration::from_millis(10));
@@ -1539,6 +1762,49 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .into());
     }
 
+    let structural_sourcegraph = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .sourcegraph(
+                    r#"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#,
+                )
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    if structural_sourcegraph.generation != pin() || structural_sourcegraph.results.len() != 1 {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected Sourcegraph structural response: {structural_sourcegraph:?}"
+        )
+        .into());
+    }
+    let structural_sourcegraph_candidate = structural_sourcegraph
+        .results
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural candidate".to_string())?;
+    let structural_sourcegraph_binding = structural_sourcegraph_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing Sourcegraph structural binding".to_string())?;
+    if structural_sourcegraph_candidate.candidate_id != "chunk-tree"
+        || structural_sourcegraph_binding.metavariable != "name"
+        || structural_sourcegraph_binding.start_byte != 3
+        || structural_sourcegraph_binding.end_byte != 7
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected Sourcegraph structural candidate/binding: \
+             {structural_sourcegraph_candidate:?}"
+        )
+        .into());
+    }
+
     let structural_repo_miss = client
         .structural()
         .query()
@@ -1565,6 +1831,22 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         return Err("invalid-filter structural query unexpectedly succeeded".into());
     };
     expect_remote_code(structural_invalid_request_err, "STR_INVALID_REQUEST")?;
+
+    let Err(structural_sourcegraph_invalid_request_err) = client
+        .structural()
+        .query()
+        .sourcegraph(r#"select:repo patterntype:structural "function_item""#)
+        .active(repo(), revision())
+        .top_k(2)
+        .execute()
+    else {
+        stop_runtime(&shutdown, join)?;
+        return Err("invalid Sourcegraph structural filter unexpectedly succeeded".into());
+    };
+    expect_remote_code(
+        structural_sourcegraph_invalid_request_err,
+        "STR_INVALID_REQUEST",
+    )?;
 
     let structural_native_pinned = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
@@ -1666,6 +1948,774 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
         "history diff query should fail when diff shard is absent",
     )?;
     expect_remote_code(shard_unavailable, "HISTORY_SHARD_UNAVAILABLE")?;
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
+    let (_dir, client, shutdown, join) =
+        start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
+
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:contract-exact")
+            .tracks([
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Semantic,
+            ])
+            .commit()
+    })?;
+
+    let lexical_request = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: "todo".to_string(),
+        generation: None,
+        generation_selector: Some(active_selector()),
+        top_k: 2,
+    };
+    let lexical = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.lexical().query_request(lexical_request.clone()),
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_candidate = lexical
+        .results
+        .first()
+        .ok_or_else(|| "missing contract-exact lexical candidate".to_string())?;
+    if lexical.generation != pin()
+        || lexical_candidate.candidate_id != "chunk-dirty"
+        || lexical_candidate.repo_relative_path.as_str() != "src/lib.rs"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected contract-exact lexical response: {lexical:?}").into());
+    }
+
+    let symbol_request = SymbolQueryRequest {
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "select:symbol MySdkSymbol".to_string(),
+        generation: None,
+        generation_selector: Some(active_selector()),
+        top_k: 3,
+    };
+    let symbol = wait_for_symbol_query(SOCKET_TIMEOUT, || {
+        client.symbol().query_request(symbol_request.clone())
+    })?;
+    assert_single_symbol_candidate(&symbol)?;
+
+    let semantic_request = SemanticQueryRequest {
+        query_text: None,
+        query_vector: None,
+        query_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
+        generation: None,
+        generation_selector: Some(active_selector()),
+        lexical_scope: Some(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "sphinx".to_string(),
+            generation: None,
+            generation_selector: Some(active_selector()),
+            top_k: 2,
+        }),
+        top_k: 2,
+    };
+    let semantic = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.semantic().query_request(semantic_request.clone()),
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let semantic_top = semantic
+        .results
+        .first()
+        .ok_or_else(|| "missing contract-exact semantic candidate".to_string())?;
+    if semantic.generation != pin()
+        || semantic_top.candidate_id != "alpha"
+        || semantic.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected contract-exact semantic response: {semantic:?}").into());
+    }
+
+    let hybrid_request = HybridQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "sphinx".to_string(),
+            generation: None,
+            generation_selector: Some(active_selector()),
+            top_k: 2,
+        },
+        semantic_query_text: None,
+        semantic_vector: None,
+        semantic_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
+        generation: None,
+        generation_selector: Some(active_selector()),
+        top_k: 2,
+    };
+    let hybrid = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.search().hybrid_request(hybrid_request.clone()),
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let hybrid_top = hybrid
+        .results
+        .first()
+        .ok_or_else(|| "missing contract-exact hybrid candidate".to_string())?;
+    if hybrid.generation != pin()
+        || hybrid_top.candidate_id != "alpha"
+        || hybrid.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected contract-exact hybrid response: {hybrid:?}").into());
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation() -> TestResult {
+    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-generations")?;
+
+    let initial_status = client.generations().status(repo(), revision())?;
+    if initial_status.repo_id != repo()
+        || initial_status.revision_id != revision()
+        || !initial_status.tracks.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected initial generation status: {initial_status:?}").into());
+    }
+
+    let not_ready = expect_sdk_error(
+        client
+            .generations()
+            .current(repo(), revision(), SearchPlaneTrackKind::Lexical),
+        "generation current before activation should fail closed",
+    )?;
+    expect_remote_code(not_ready, "NOT_READY")?;
+
+    let direct_activation_not_ready = expect_sdk_error(
+        client
+            .generations()
+            .commit(SearchPlaneActivateGenerationRequest {
+                repo_id: repo(),
+                revision_id: revision(),
+                manifest_generation: generation(),
+                manifest_digest: "manifest:direct-activation".to_string(),
+                tracks: vec![SearchPlaneTrackKind::Lexical],
+            }),
+        "direct activation before lexical materialization should fail closed",
+    )?;
+    expect_remote_code(direct_activation_not_ready, "NOT_READY")?;
+
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
+
+    let direct_activation = client
+        .generations()
+        .commit(SearchPlaneActivateGenerationRequest {
+            repo_id: repo(),
+            revision_id: revision(),
+            manifest_generation: generation(),
+            manifest_digest: "manifest:direct-activation".to_string(),
+            tracks: vec![SearchPlaneTrackKind::Lexical],
+        })?;
+    if direct_activation.repo_id != repo()
+        || direct_activation.revision_id != revision()
+        || direct_activation.manifest_generation != generation()
+        || direct_activation.manifest_digest != "manifest:direct-activation"
+        || direct_activation.tracks != vec![SearchPlaneTrackKind::Lexical]
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected direct activation ack: {direct_activation:?}").into());
+    }
+
+    let lexical_snapshot = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .current(repo(), revision(), SearchPlaneTrackKind::Lexical)
+    })?;
+    if lexical_snapshot.repo_id != repo()
+        || lexical_snapshot.revision_id != revision()
+        || lexical_snapshot.track != SearchPlaneTrackKind::Lexical
+        || lexical_snapshot.manifest_generation != generation()
+        || lexical_snapshot.manifest_digest != "manifest:direct-activation"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected lexical generation snapshot: {lexical_snapshot:?}").into());
+    }
+
+    let builder_activation = client
+        .generations()
+        .activate()
+        .repo(repo())
+        .revision(revision())
+        .generation(generation())
+        .manifest_digest("manifest:builder-activation")
+        .track(SearchPlaneTrackKind::Structural)
+        .commit()?;
+    if builder_activation.tracks != vec![SearchPlaneTrackKind::Structural]
+        || builder_activation.manifest_digest != "manifest:builder-activation"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected builder activation ack: {builder_activation:?}").into());
+    }
+
+    let structural_snapshot = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .current(repo(), revision(), SearchPlaneTrackKind::Structural)
+    })?;
+    if structural_snapshot.repo_id != repo()
+        || structural_snapshot.revision_id != revision()
+        || structural_snapshot.track != SearchPlaneTrackKind::Structural
+        || structural_snapshot.manifest_generation != generation()
+        || structural_snapshot.manifest_digest != "manifest:builder-activation"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected structural generation snapshot: {structural_snapshot:?}").into(),
+        );
+    }
+
+    let final_status = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client.generations().status(repo(), revision())
+    })?;
+    if final_status.repo_id != repo() || final_status.revision_id != revision() {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected final generation status: {final_status:?}").into());
+    }
+    match final_status.tracks.as_slice() {
+        [lexical, structural]
+            if lexical.track == SearchPlaneTrackKind::Lexical
+                && lexical.manifest_digest == "manifest:direct-activation"
+                && structural.track == SearchPlaneTrackKind::Structural
+                && structural.manifest_digest == "manifest:builder-activation" => {}
+        _ => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected final generation track set: {final_status:?}").into());
+        }
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() -> TestResult {
+    let (_dir, client, shutdown, join) =
+        start_sdk_frontdoor_runtime("sdk-frontdoor-builder-variants")?;
+
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
+    let _semantic_receipt = client.semantic().publish(&semantic_batch()?)?;
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:builder-variants")
+            .tracks([
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Semantic,
+            ])
+            .commit()
+    })?;
+
+    let lexical_native = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo")
+                .pinned(pin())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_native_candidate = lexical_native
+        .results
+        .first()
+        .ok_or_else(|| "missing lexical native candidate".to_string())?;
+    if lexical_native.generation != pin()
+        || lexical_native_candidate.candidate_id != "chunk-dirty"
+        || lexical_native_candidate.repo_relative_path.as_str() != "src/lib.rs"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected lexical native response: {lexical_native:?}").into());
+    }
+
+    let runtime_native = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .runtime()
+                .query()
+                .native("dirty:yes todo")
+                .pinned(pin())
+                .top_k(3)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let runtime_native_candidate = runtime_native
+        .results
+        .first()
+        .ok_or_else(|| "missing runtime native candidate".to_string())?;
+    if runtime_native.generation != pin()
+        || runtime_native_candidate.candidate_id != "chunk-dirty"
+        || runtime_native_candidate.repo_relative_path.as_str() != "src/lib.rs"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected runtime native response: {runtime_native:?}").into());
+    }
+
+    let semantic_inline = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .semantic()
+                .query()
+                .vector(vec![1.0, 0.0])
+                .scope_native("sphinx")
+                .scope_top_k(2)
+                .pinned(pin())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let semantic_inline_top = semantic_inline
+        .results
+        .first()
+        .ok_or_else(|| "missing semantic inline-vector candidate".to_string())?;
+    if semantic_inline.generation != pin()
+        || semantic_inline_top.candidate_id != "alpha"
+        || semantic_inline.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected semantic inline-vector response: {semantic_inline:?}").into(),
+        );
+    }
+
+    let hybrid_inline = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .search()
+                .hybrid()
+                .native("sphinx")
+                .vector(vec![1.0, 0.0])
+                .pinned(pin())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && !response.results.is_empty(),
+    )?;
+    let hybrid_inline_top = hybrid_inline
+        .results
+        .first()
+        .ok_or_else(|| "missing hybrid inline-vector candidate".to_string())?;
+    if hybrid_inline.generation != pin()
+        || hybrid_inline_top.candidate_id != "alpha"
+        || hybrid_inline.explanation.summary.is_empty()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected hybrid inline-vector response: {hybrid_inline:?}").into());
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_track() -> TestResult
+{
+    let complex_timeout = Duration::from_secs(30);
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path().to_path_buf();
+    let (client, shutdown, join) =
+        start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
+
+    let _lexical_receipt_v1 = client.lexical().publish(&lexical_batch()?)?;
+    let _semantic_receipt_v1 = client.semantic().publish(&semantic_batch()?)?;
+    let _structural_receipt_v1 = client.structural().publish(&structural_batch()?)?;
+    let _activation_v1 = wait_for_sdk_ready(complex_timeout, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:v1-active")
+            .tracks([SearchPlaneTrackKind::Lexical])
+            .commit()
+    })?;
+
+    let lexical_active_v1 = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_active_v1_candidate = lexical_active_v1
+        .results
+        .first()
+        .ok_or_else(|| "missing active v1 lexical candidate".to_string())?;
+    if lexical_active_v1.generation != pin()
+        || lexical_active_v1_candidate.candidate_id != "chunk-dirty"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected active v1 lexical response: {lexical_active_v1:?}").into());
+    }
+
+    let _lexical_receipt_v2 = client.lexical().publish(&lexical_batch_two()?)?;
+    let _semantic_receipt_v2 = client.semantic().publish(&semantic_batch_two()?)?;
+    let _structural_receipt_v2 = client.structural().publish(&structural_batch_two()?)?;
+
+    let lexical_pinned_v2 = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo_v2")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && response.results.len() == 1,
+    )?;
+    let lexical_pinned_v2_candidate = lexical_pinned_v2
+        .results
+        .first()
+        .ok_or_else(|| "missing pinned v2 lexical candidate".to_string())?;
+    if lexical_pinned_v2.generation != pin_two()
+        || lexical_pinned_v2_candidate.candidate_id != "chunk-dirty-v2"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected pinned v2 lexical response: {lexical_pinned_v2:?}").into());
+    }
+
+    let semantic_pinned_v2 = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .semantic()
+                .query()
+                .vector_handle("gamma")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && !response.results.is_empty(),
+    )?;
+    let semantic_pinned_v2_top = semantic_pinned_v2
+        .results
+        .first()
+        .ok_or_else(|| "missing pinned v2 semantic candidate".to_string())?;
+    if semantic_pinned_v2.generation != pin_two() || semantic_pinned_v2_top.candidate_id != "gamma"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected pinned v2 semantic response: {semantic_pinned_v2:?}").into(),
+        );
+    }
+
+    let structural_pinned_v2 = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item }")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && response.results.len() == 1,
+    )?;
+    let structural_pinned_v2_candidate = structural_pinned_v2
+        .results
+        .first()
+        .ok_or_else(|| "missing pinned v2 structural candidate".to_string())?;
+    if structural_pinned_v2.generation != pin_two()
+        || structural_pinned_v2_candidate.candidate_id != "chunk-tree-v2"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected pinned v2 structural response: {structural_pinned_v2:?}").into(),
+        );
+    }
+
+    stop_runtime(&shutdown, join)?;
+    let (client, shutdown, join) =
+        start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v2")?;
+
+    let lexical_active_after_restart = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_active_after_restart_candidate = lexical_active_after_restart
+        .results
+        .first()
+        .ok_or_else(|| "missing restarted active v1 lexical candidate".to_string())?;
+    if lexical_active_after_restart.generation != pin()
+        || lexical_active_after_restart_candidate.candidate_id != "chunk-dirty"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected restarted active v1 lexical response: {lexical_active_after_restart:?}"
+        )
+        .into());
+    }
+
+    let lexical_pinned_v2_after_restart = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo_v2")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && response.results.len() == 1,
+    )?;
+    let lexical_pinned_v2_after_restart_candidate = lexical_pinned_v2_after_restart
+        .results
+        .first()
+        .ok_or_else(|| "missing restarted pinned v2 lexical candidate".to_string())?;
+    if lexical_pinned_v2_after_restart.generation != pin_two()
+        || lexical_pinned_v2_after_restart_candidate.candidate_id != "chunk-dirty-v2"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected restarted pinned v2 lexical response: \
+             {lexical_pinned_v2_after_restart:?}"
+        )
+        .into());
+    }
+
+    let semantic_pinned_v2_after_restart = wait_for_sdk_observation_with_retry_codes(
+        complex_timeout,
+        &["NOT_READY"],
+        || {
+            client
+                .semantic()
+                .query()
+                .vector_handle("gamma")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && !response.results.is_empty(),
+    )?;
+    let semantic_pinned_v2_after_restart_top = semantic_pinned_v2_after_restart
+        .results
+        .first()
+        .ok_or_else(|| "missing restarted pinned v2 semantic candidate".to_string())?;
+    if semantic_pinned_v2_after_restart.generation != pin_two()
+        || semantic_pinned_v2_after_restart_top.candidate_id != "gamma"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected restarted pinned v2 semantic response: \
+             {semantic_pinned_v2_after_restart:?}"
+        )
+        .into());
+    }
+
+    let structural_pinned_v2_after_restart = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .native("match { function_item }")
+            .pinned(pin_two())
+            .top_k(2)
+            .execute(),
+        "structural pinned v2 after restart",
+    )?;
+    expect_remote_code(
+        structural_pinned_v2_after_restart,
+        "STR_GENERATION_NOT_READY",
+    )?;
+
+    let _activation_v2 = wait_for_sdk_ready(complex_timeout, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation_two())
+            .manifest_digest("manifest:v2-active")
+            .tracks([SearchPlaneTrackKind::Lexical])
+            .commit()
+    })?;
+
+    let lexical_snapshot_v2 = wait_for_sdk_ready(complex_timeout, || {
+        client
+            .generations()
+            .current(repo(), revision(), SearchPlaneTrackKind::Lexical)
+    })?;
+    if lexical_snapshot_v2.manifest_generation != generation_two()
+        || lexical_snapshot_v2.manifest_digest != "manifest:v2-active"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected post-restart lexical generation snapshot: {lexical_snapshot_v2:?}"
+        )
+        .into());
+    }
+
+    let lexical_active_v2 = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo_v2")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && response.results.len() == 1,
+    )?;
+    let lexical_active_v2_candidate = lexical_active_v2
+        .results
+        .first()
+        .ok_or_else(|| "missing active v2 lexical candidate".to_string())?;
+    if lexical_active_v2.generation != pin_two()
+        || lexical_active_v2_candidate.candidate_id != "chunk-dirty-v2"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected active v2 lexical response: {lexical_active_v2:?}").into());
+    }
+
+    let lexical_pinned_v1_after_flip = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("todo")
+                .pinned(pin())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_pinned_v1_after_flip_candidate = lexical_pinned_v1_after_flip
+        .results
+        .first()
+        .ok_or_else(|| "missing pinned v1 lexical candidate after flip".to_string())?;
+    if lexical_pinned_v1_after_flip.generation != pin()
+        || lexical_pinned_v1_after_flip_candidate.candidate_id != "chunk-dirty"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected pinned v1 lexical response after flip: {lexical_pinned_v1_after_flip:?}"
+        )
+        .into());
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
+    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-usage")?;
+
+    expect_usage_error_contains(
+        client
+            .lexical()
+            .query()
+            .native("todo")
+            .active(repo(), revision())
+            .execute(),
+        "lexical top_k is required",
+    )?;
+
+    expect_usage_error_contains(
+        client
+            .semantic()
+            .query()
+            .vector_handle("alpha")
+            .active(repo(), revision())
+            .top_k(2)
+            .scope_sourcegraph("sphinx")
+            .execute(),
+        "scope_top_k is missing",
+    )?;
+
+    expect_usage_error_contains(
+        client
+            .semantic()
+            .query()
+            .vector_handle("alpha")
+            .active(repo(), revision())
+            .top_k(2)
+            .scope_top_k(1)
+            .execute(),
+        "no lexical scope was configured",
+    )?;
+
+    expect_usage_error_contains(
+        client
+            .search()
+            .hybrid()
+            .sourcegraph("sphinx")
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "hybrid semantic vector is required",
+    )?;
+
+    expect_usage_error_contains(
+        client
+            .structural()
+            .query()
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "structural query text is required",
+    )?;
+
+    expect_usage_error_contains(
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:missing-tracks")
+            .commit(),
+        "at least one track",
+    )?;
 
     stop_runtime(&shutdown, join)
 }

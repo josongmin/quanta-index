@@ -13,9 +13,9 @@ use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
     BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason,
     EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, LQ_VERSION_TAG, LqCase, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery,
-    LqSpan, LqStructuralBlock, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFilter, LqLeaf,
+    LqOptions, LqQuery, LqSpan, LqStructuralBlock, LqType, LqYesNoOnly, ManifestGeneration,
+    PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
     RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneBridgeQueryResponse,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
@@ -35,6 +35,7 @@ use quanta_index_core::{
     StructuralService,
 };
 use quanta_index_lq_bridge::export_bridge_candidate_packet;
+use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -45,6 +46,50 @@ const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
 const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
 const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
 
+trait QueryObsSink {
+    fn emit(&self, sample: MetricSample);
+}
+
+struct NoopQueryObsSink;
+
+impl QueryObsSink for NoopQueryObsSink {
+    fn emit(&self, _sample: MetricSample) {}
+}
+
+fn classify_error_metric_name(err: &CoreError) -> &'static str {
+    match err {
+        CoreError::Typed { code, .. }
+            if code.contains("PARSE")
+                || code.contains("INVALID_VECTOR")
+                || code.contains("INVALID_REQUEST") =>
+        {
+            "lq_typed_error_parse_total"
+        }
+        CoreError::Typed { code, .. }
+            if code.contains("UNAVAILABLE")
+                || code.contains("NOT_IMPLEMENTED")
+                || code.contains("NOT_FOUND") =>
+        {
+            "lq_typed_error_unavailable_total"
+        }
+        CoreError::Typed { code, .. }
+            if code.contains("PLAN_LIMIT")
+                || code.contains("BUDGET_EXCEEDED")
+                || code.contains("COUNT_INVALID") =>
+        {
+            "lq_typed_error_plan_limit_total"
+        }
+        CoreError::NotReady(_) => "lq_typed_error_not_ready_total",
+        CoreError::Typed { code, .. } if code.contains("NOT_READY") => {
+            "lq_typed_error_not_ready_total"
+        }
+        CoreError::Storage(_) => "lq_typed_error_internal_total",
+        CoreError::InvalidContract(_) => "lq_typed_error_invalid_total",
+        CoreError::NotImplemented(_) | CoreError::NotFound(_) => "lq_typed_error_unavailable_total",
+        CoreError::Typed { .. } => "lq_typed_error_other_total",
+    }
+}
+
 pub struct SearchPlaneDispatcher {
     lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
@@ -53,6 +98,7 @@ pub struct SearchPlaneDispatcher {
     structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     activation_catalog: Arc<ActivationCatalog>,
+    obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
 }
 
 pub type SearchPlaneQueryService = SearchPlaneDispatcher;
@@ -68,6 +114,26 @@ impl SearchPlaneDispatcher {
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
     ) -> Self {
+        Self::new_with_obs(
+            lex_opener,
+            sem_opener,
+            repo_map_query,
+            structural_producer,
+            ledger,
+            activation_catalog,
+            Arc::new(NoopQueryObsSink),
+        )
+    }
+
+    fn new_with_obs(
+        lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+        sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+        repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
+        structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+        activation_catalog: Arc<ActivationCatalog>,
+        obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
+    ) -> Self {
         Self {
             lex_opener,
             sem_opener,
@@ -75,6 +141,7 @@ impl SearchPlaneDispatcher {
             structural_producer,
             ledger,
             activation_catalog,
+            obs_sink,
         }
     }
 
@@ -217,7 +284,8 @@ impl SearchPlaneDispatcher {
         let lexical_query = lower_lexical_text_query(&request.text_query)?;
         LexicalPolicy::validate_query(&lexical_query)?;
         let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
-        let lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        stabilize_ranked_candidates(&mut lex_results);
         let lexical_ids = lex_results
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
@@ -231,8 +299,9 @@ impl SearchPlaneDispatcher {
             "semantic_vector",
             sem_searcher.as_ref(),
         )?;
-        let sem_results =
+        let mut sem_results =
             sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        stabilize_ranked_candidates(&mut sem_results);
         let fused_universe_size = lex_results
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
@@ -496,28 +565,82 @@ impl SearchPlaneDispatcher {
     }
 
     fn dispatch_text(&self, request: TextQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.lexical_query(request),
-            SearchPlaneQueryIpcResponse::Text,
-        )
+        let requested_pin = request.generation.clone();
+        self.emit_intake_metric(requested_pin.as_ref());
+        match self.lexical_query(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                SearchPlaneQueryIpcResponse::Text(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_symbol(&self, request: SymbolQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(self.symbol(request), SearchPlaneQueryIpcResponse::Symbol)
+        let requested_pin = request.generation.clone();
+        self.emit_intake_metric(requested_pin.as_ref());
+        match self.symbol(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                SearchPlaneQueryIpcResponse::Symbol(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_semantic(&self, request: SemanticQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.semantic_query(request),
-            SearchPlaneQueryIpcResponse::Semantic,
-        )
+        let requested_pin = request.generation.clone();
+        self.emit_intake_metric(requested_pin.as_ref());
+        match self.semantic_query(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(
+                    &response.generation,
+                    response.explanation.engines_touched.len(),
+                );
+                self.emit_early_stop_metric(
+                    &response.generation,
+                    response.explanation.early_stop_reason,
+                );
+                SearchPlaneQueryIpcResponse::Semantic(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_hybrid(&self, request: HybridQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.hybrid_query(request),
-            SearchPlaneQueryIpcResponse::Hybrid,
-        )
+        let requested_pin = request.text_query.generation.clone();
+        self.emit_intake_metric(requested_pin.as_ref());
+        match self.hybrid_query(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(
+                    &response.generation,
+                    response.explanation.engines_touched.len(),
+                );
+                self.emit_merge_count_metric(&response.generation, response.results.len());
+                self.emit_early_stop_metric(
+                    &response.generation,
+                    response.explanation.early_stop_reason,
+                );
+                SearchPlaneQueryIpcResponse::Hybrid(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_history(&self, request: &HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
@@ -587,6 +710,65 @@ impl SearchPlaneDispatcher {
             .read()
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Semantic))
+    }
+
+    fn emit_metric(
+        &self,
+        pin: Option<&GenerationPin>,
+        name: &'static str,
+        kind: MetricKind,
+        value: f64,
+    ) {
+        let (repo_id, generation_id) = pin
+            .map(|pin| (pin.repo_id.as_str(), pin.manifest_generation.get()))
+            .unwrap_or(("unresolved", 0));
+        self.obs_sink.emit(MetricSample::new(
+            name,
+            kind,
+            value,
+            Dimensions::new("LXE-10", "8", "local", repo_id, generation_id),
+        ));
+    }
+
+    fn emit_intake_metric(&self, pin: Option<&GenerationPin>) {
+        self.emit_metric(pin, "lq_query_intake_total", MetricKind::Counter, 1.0);
+    }
+
+    fn emit_planner_metric(&self, pin: &GenerationPin) {
+        self.emit_metric(Some(pin), "lq_planner_total", MetricKind::Counter, 1.0);
+    }
+
+    fn emit_engine_fanout_metric(&self, pin: &GenerationPin, count: usize) {
+        self.emit_metric(
+            Some(pin),
+            "lq_engine_fanout_count",
+            MetricKind::Histogram,
+            count as f64,
+        );
+    }
+
+    fn emit_merge_count_metric(&self, pin: &GenerationPin, count: usize) {
+        self.emit_metric(
+            Some(pin),
+            "lq_merge_result_count",
+            MetricKind::Histogram,
+            count as f64,
+        );
+    }
+
+    fn emit_early_stop_metric(&self, pin: &GenerationPin, reason: Option<EarlyStopReason>) {
+        if reason.is_some() {
+            self.emit_metric(Some(pin), "lq_early_stop_total", MetricKind::Counter, 1.0);
+        }
+    }
+
+    fn emit_error_metric(&self, pin: Option<&GenerationPin>, err: &CoreError) {
+        self.emit_metric(
+            pin,
+            classify_error_metric_name(err),
+            MetricKind::Counter,
+            1.0,
+        );
     }
 }
 
@@ -1550,6 +1732,22 @@ fn resolve_generation_selector_pin(
     }
 }
 
+fn stabilize_ranked_candidates(results: &mut [LexicalCandidate]) {
+    results.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| {
+                left.repo_relative_path
+                    .as_str()
+                    .cmp(right.repo_relative_path.as_str())
+            })
+            .then(left.start_line.cmp(&right.start_line))
+            .then(left.end_line.cmp(&right.end_line))
+            .then_with(|| left.candidate_id.as_str().cmp(right.candidate_id.as_str()))
+    });
+}
+
 fn resolve_optional_selection(
     activation_catalog: &ActivationCatalog,
     generation: Option<GenerationPin>,
@@ -1835,8 +2033,8 @@ mod tests {
 
     use super::{
         ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
-        ERR_HISTORY_SHARD_UNAVAILABLE, FailClosedStructuralProducer, SearchPlaneDispatcher,
-        make_pin,
+        ERR_HISTORY_SHARD_UNAVAILABLE, FailClosedStructuralProducer, QueryObsSink,
+        SearchPlaneDispatcher, make_pin,
     };
     use crate::{ActivationCatalog, Ledger};
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
@@ -1854,9 +2052,58 @@ mod tests {
         SemanticSearcher,
     };
     use quanta_index_lq_bridge::BridgeErrorCode;
+    use quanta_index_lq_obs::{CardinalityGuard, MetricSample, validate_dimensions};
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[derive(Default)]
+    struct RecordingObsSink {
+        guard: Mutex<CardinalityGuard>,
+        samples: Mutex<Vec<MetricSample>>,
+    }
+
+    impl QueryObsSink for RecordingObsSink {
+        fn emit(&self, sample: MetricSample) {
+            if let Err(err) = validate_dimensions(&sample.dimensions) {
+                panic!("obs dimensions must stay valid: {err}");
+            }
+            let mut guard = match self.guard.lock() {
+                Ok(guard) => guard,
+                Err(err) => panic!("obs guard poisoned: {err}"),
+            };
+            if let Err(err) = guard.observe(&sample.dimensions) {
+                panic!("obs dimensions must stay within guard bounds: {err}");
+            }
+            drop(guard);
+            let mut samples = match self.samples.lock() {
+                Ok(samples) => samples,
+                Err(err) => panic!("obs samples poisoned: {err}"),
+            };
+            samples.push(sample);
+        }
+    }
+
+    impl RecordingObsSink {
+        fn names(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let samples = self
+                .samples
+                .lock()
+                .map_err(|err| format!("obs samples poisoned: {err}"))?;
+            Ok(samples
+                .iter()
+                .map(|sample| sample.name.to_string())
+                .collect())
+        }
+
+        fn samples(&self) -> Result<Vec<MetricSample>, Box<dyn std::error::Error>> {
+            let samples = self
+                .samples
+                .lock()
+                .map_err(|err| format!("obs samples poisoned: {err}"))?;
+            Ok(samples.clone())
+        }
+    }
 
     fn encode_cbor<T: serde::Serialize>(
         value: &T,
@@ -2831,6 +3078,22 @@ mod tests {
         ))
     }
 
+    fn dispatcher_with_obs(
+        lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+        sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
+        obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>> {
+        Ok(SearchPlaneDispatcher::new_with_obs(
+            lex_opener,
+            sem_opener,
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+            obs_sink,
+        ))
+    }
+
     fn ready_pin() -> quanta_index_contract::GenerationPin {
         make_pin(
             RepoId::new("repo-map-ipc"),
@@ -2855,6 +3118,98 @@ mod tests {
                 Err(format!("expected Error response, got {other:?}"))
             }
         }
+    }
+
+    #[test]
+    fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
+        let obs_sink = Arc::new(RecordingObsSink::default());
+        let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = dispatcher_with_obs(
+            Arc::new(StubLexicalOpener {
+                results: vec![candidate("lex-a", 1.0), candidate("lex-b", 0.5)],
+            }),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&semantic_state),
+            }),
+            obs_sink.clone(),
+        )?;
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "scope".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 1,
+                },
+                semantic_query_text: Some("1.0 0.0".to_string()),
+                semantic_vector: None,
+                semantic_vector_ref: None,
+            }));
+        match response {
+            SearchPlaneQueryIpcResponse::Hybrid(_) => {}
+            other => return Err(format!("expected Hybrid response, got {other:?}").into()),
+        }
+
+        let names = obs_sink.names()?;
+        let expected = vec![
+            "lq_query_intake_total".to_string(),
+            "lq_planner_total".to_string(),
+            "lq_engine_fanout_count".to_string(),
+            "lq_merge_result_count".to_string(),
+            "lq_early_stop_total".to_string(),
+        ];
+        if names != expected {
+            return Err(format!("unexpected obs metric names: {names:?}").into());
+        }
+        let samples = obs_sink.samples()?;
+        for sample in &samples {
+            if sample.dimensions.ticket_id.as_ref() != "LXE-10"
+                || sample.dimensions.wave_id.as_ref() != "8"
+                || sample.dimensions.tenant_id.as_ref() != "local"
+                || sample.dimensions.repo_id.as_ref() != "repo-map-ipc"
+                || sample.dimensions.generation_id != 9
+            {
+                return Err(format!("unexpected obs dimensions: {:?}", sample.dimensions).into());
+            }
+            if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
+                return Err(format!("metric name leaked query content: {}", sample.name).into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn text_dispatch_parse_error_emits_closed_obs_metric() -> TestResult {
+        let obs_sink = Arc::new(RecordingObsSink::default());
+        let dispatcher = dispatcher_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            obs_sink.clone(),
+        )?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "/(?<=needle_)x/".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+        }));
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "PARSE_FAIL" {
+            return Err(format!("expected PARSE_FAIL, got {code}").into());
+        }
+        let names = obs_sink.names()?;
+        let expected = vec![
+            "lq_query_intake_total".to_string(),
+            "lq_typed_error_parse_total".to_string(),
+        ];
+        if names != expected {
+            return Err(format!("unexpected parse-error obs metric names: {names:?}").into());
+        }
+        Ok(())
     }
 
     fn structural_match_candidate(id: &str) -> StructuralMatchCandidate {

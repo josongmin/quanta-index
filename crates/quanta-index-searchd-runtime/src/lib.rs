@@ -11,12 +11,14 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::{fs, io};
 
 use anyhow::Result;
 use quanta_index_channel::{
     BundleChannelPublisher, open_lexical_publisher, open_lexical_subscriber,
     open_semantic_publisher, open_semantic_subscriber,
 };
+use quanta_index_contract::channel::{LexicalChannelOp, SemanticChannelOp};
 use quanta_index_core::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
     RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
@@ -35,14 +37,13 @@ use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let state_root = config.state_root().to_path_buf();
+    rewind_semantic_cursor_for_bootstrap(&state_root)?;
     let lex_sub = open_lexical_subscriber(&state_root)?;
     let sem_sub = open_semantic_subscriber(&state_root)?;
-    let lex_publisher: Arc<
-        dyn BundleChannelPublisher<Op = quanta_index_contract::LexicalChannelOp> + Send + Sync,
-    > = Arc::new(open_lexical_publisher(&state_root)?);
-    let sem_publisher: Arc<
-        dyn BundleChannelPublisher<Op = quanta_index_contract::SemanticChannelOp> + Send + Sync,
-    > = Arc::new(open_semantic_publisher(&state_root)?);
+    let lex_publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync> =
+        Arc::new(open_lexical_publisher(&state_root)?);
+    let sem_publisher: Arc<dyn BundleChannelPublisher<Op = SemanticChannelOp> + Send + Sync> =
+        Arc::new(open_semantic_publisher(&state_root)?);
 
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
@@ -101,4 +102,17 @@ pub fn run(command: SearchdCommand) -> Result<()> {
     let runtime = build_runtime(config)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     drive(runtime, shutdown)
+}
+
+fn rewind_semantic_cursor_for_bootstrap(state_root: &std::path::Path) -> Result<()> {
+    // The reference semantic adapter is still in-memory only. On restart, it
+    // must rebuild from the semantic WAL rather than resume from the last ack'd
+    // cursor, otherwise the reopened runtime has an empty semantic index while
+    // readiness truth still expects the sealed generation to exist.
+    let cursor_path = state_root.join("channel").join("semantic").join("cursor");
+    match fs::remove_file(&cursor_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::Error::from(err)),
+    }
 }

@@ -9,10 +9,10 @@ use quanta_index_channel::{
     BundleChannelPublisher, BundleChannelSubscriber, open_lexical_publisher,
     open_lexical_subscriber, open_semantic_publisher, open_semantic_subscriber,
 };
+use quanta_index_contract::channel::{ChannelSeq, LexicalChannelOp, SemanticChannelOp};
 use quanta_index_contract::{
-    ChannelSeq, ChunkId, DeleteChunk, EmbeddingId, LexicalChannelOp, LexicalFullBundle,
-    ManifestGeneration, RepoId, RevisionId, SemanticChannelOp, SemanticFullBundle, UpsertChunk,
-    UpsertEmbedding,
+    ChunkId, DeleteChunk, EmbeddingId, LexicalFullBundle, ManifestGeneration, RepoId, RevisionId,
+    SemanticFullBundle, UpsertChunk, UpsertEmbedding,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;

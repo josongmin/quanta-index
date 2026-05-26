@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use quanta_index_contract::ChunkRecord;
+use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord, compute_parse_tree_source_hash,
 };
@@ -10,7 +12,6 @@ use quanta_index_contract::{
     ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
 };
-use quanta_index_contract::{ChunkRecord, LexicalChannelOp};
 use quanta_index_core::CoreError;
 
 type SharedLedger = Arc<RwLock<Ledger>>;

@@ -167,6 +167,8 @@ rust-test-cli-smoke:
 rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_perf_chaos --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
 

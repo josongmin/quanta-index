@@ -1330,6 +1330,42 @@ fn structural_native_query_preserves_syntax() {
 }
 
 #[test]
+fn structural_sourcegraph_query_preserves_syntax() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .structural()
+            .query()
+            .sourcegraph(
+                r#"repo:repo-1 path:src/lib.rs lang:rust patterntype:structural "function_item""#
+            )
+            .pinned(sample_generation_pin())
+            .top_k(4)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
+    else {
+        panic!("expected Structural request, got {:?}", captured.payload);
+    };
+    assert_eq!(
+        req.text_query.syntax,
+        quanta_index_contract::TextQuerySyntax::Sourcegraph
+    );
+    assert_eq!(
+        req.text_query.query_text,
+        r#"repo:repo-1 path:src/lib.rs lang:rust patterntype:structural "function_item""#
+    );
+    assert_eq!(req.text_query.top_k, 4);
+}
+
+#[test]
 fn lexical_publish_propagates_ingest_error_as_typed_remote() {
     let ingest = Arc::new(StubIngestTransport::new(
         SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {

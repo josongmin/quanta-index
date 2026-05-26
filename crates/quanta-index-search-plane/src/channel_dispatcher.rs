@@ -14,7 +14,7 @@ use quanta_index_channel::{
     BundleChannelSubscriber, LexicalChannelEvent, LexicalWalSubscriber, SemanticChannelEvent,
     SemanticWalSubscriber,
 };
-use quanta_index_contract::{LexicalChannelOp, SemanticChannelOp};
+use quanta_index_contract::channel::{LexicalChannelOp, SemanticChannelOp};
 use quanta_index_core::{LexicalIndexBuildPort, SemanticIndexBuildPort};
 
 use crate::Ledger;
@@ -172,10 +172,18 @@ fn apply_sem(
     builder
         .build(&repo, &revision, generation, &ops)
         .map_err(|e| anyhow::anyhow!("semantic build: {e}"))?;
+    let mut guard = ledger
+        .write()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
     if matches!(event.op, SemanticChannelOp::Seal(_)) {
-        let mut guard = ledger
-            .write()
-            .map_err(|err| anyhow::anyhow!("ledger poisoned: {err}"))?;
+        guard.semantic_materialize(generation, None);
+        guard.record_track_materialized(
+            &repo,
+            &revision,
+            quanta_index_contract::SearchPlaneTrackKind::Semantic,
+            generation,
+            None,
+        );
         guard.semantic_seal(generation);
         guard.record_track_seal(
             &repo,
@@ -184,6 +192,7 @@ fn apply_sem(
             generation,
         );
     }
+    drop(guard);
     Ok(())
 }
 
@@ -495,6 +504,11 @@ mod tests {
         if guard.semantic_sealed() != Some(generation()) {
             return Err(format!("unexpected semantic seal: {:?}", guard.semantic_sealed()).into());
         }
+        if guard.track_materialized(&repo_id(), &revision_id(), SearchPlaneTrackKind::Semantic)
+            != Some(generation())
+        {
+            return Err("expected semantic track materialization after semantic replay".into());
+        }
         if guard.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural)
             != Some(generation())
         {
@@ -526,6 +540,62 @@ mod tests {
         if sem_calls.as_slice() != ["replace_semantic_scope", "seal"] {
             return Err(format!("unexpected semantic calls: {:?}", sem_calls.as_slice()).into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_track_is_not_ready_until_seal_replays() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let embedding_payload = encode_cbor(&(
+            BatchIngestMode::ReplaceGeneration,
+            None::<ManifestGeneration>,
+            model_contract(),
+            SemanticReplaceScope {
+                scope: scope_key(),
+                scope_digest: "scope:semantic".to_string(),
+                embeddings: vec![embedding_record()?],
+            },
+        ))?;
+        let sem_pub = open_semantic_publisher(dir.path())?;
+        let _sem_upsert_seq = sem_pub.publish(SemanticChannelOp::ReplaceSemanticScope(
+            ReplaceSemanticScope {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                payload: embedding_payload,
+            },
+        ))?;
+
+        let lex_port: Arc<dyn quanta_index_core::LexicalIndexBuildPort + Send + Sync> =
+            Arc::new(RecordingLexicalBuilder::default());
+        let sem_port: Arc<dyn quanta_index_core::SemanticIndexBuildPort + Send + Sync> =
+            Arc::new(RecordingSemanticBuilder::default());
+        let ledger = Arc::new(RwLock::new(Ledger::default()));
+        let mut dispatcher = ChannelDispatcher::new(
+            open_lexical_subscriber(dir.path())?,
+            open_semantic_subscriber(dir.path())?,
+            lex_port,
+            sem_port,
+            Arc::clone(&ledger),
+        );
+
+        if !dispatcher.poll_once()? {
+            return Err("expected poll_once() to replay semantic upsert".into());
+        }
+
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        if guard.semantic_sealed().is_some() {
+            return Err("semantic seal should stay absent before semantic Seal op".into());
+        }
+        if guard
+            .track_materialized(&repo_id(), &revision_id(), SearchPlaneTrackKind::Semantic)
+            .is_some()
+        {
+            return Err("semantic track materialized too early before semantic Seal".into());
+        }
+        drop(guard);
         Ok(())
     }
 }

@@ -23,9 +23,12 @@ Landed on the current tree:
 - history query authority now fails closed with exact typed codes:
   `HISTORY_GENERATION_NOT_READY`, `HISTORY_PRODUCER_UNAVAILABLE`,
   `HISTORY_SHARD_UNAVAILABLE`
-- `quanta-index-contract` root no longer re-exports `ChannelSeq`,
-  `LexicalChannelOp`, or `SemanticChannelOp`; `quanta-index-sdk` keeps generic
-  namespace and transport plumbing crate-internal
+- `quanta-index-sdk` keeps generic namespace and transport plumbing
+  crate-internal
+- `quanta-index-contract` legacy channel ops now stay under
+  `quanta_index_contract::channel::*`; contract-root re-exports for
+  `ChannelSeq`, `LexicalChannelOp`, and `SemanticChannelOp` are removed on the
+  current tree
 
 Current residue after the public-surface closure program:
 
@@ -34,8 +37,7 @@ Current residue after the public-surface closure program:
   door is closed, but the composition root is not channel-free
 - semantic/hybrid public query schema still preserves the current
   vector/handle contract; text-only public semantic ownership is deferred
-- broader lexical program residue remains open in `E2E-03`, `E2E-05`,
-  `E2E-06`, `E2E-07`, and `LXE-10`
+- broader lexical program residue remains open in `E2E-07` and `LXE-10`
 
 ## SEM-OWN entry criteria (2026-05-27 freeze)
 

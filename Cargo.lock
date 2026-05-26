@@ -1073,6 +1073,7 @@ dependencies = [
  "quanta-index-core",
  "quanta-index-lq-bridge",
  "quanta-index-lq-norm",
+ "quanta-index-lq-obs",
  "serde",
  "serde_json",
  "tempfile",

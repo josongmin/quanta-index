@@ -16,7 +16,7 @@ use std::fs::{File, OpenOptions, rename};
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
-use quanta_index_contract::ChannelSeq;
+use quanta_index_contract::channel::ChannelSeq;
 
 use crate::api::error::ChannelError;
 

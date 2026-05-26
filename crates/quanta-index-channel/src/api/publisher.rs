@@ -1,4 +1,5 @@
-use quanta_index_contract::{ChannelSeq, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::channel::ChannelSeq;
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 
 use super::error::ChannelError;
 
@@ -23,7 +24,7 @@ pub trait BundleChannelPublisher: Send + Sync {
     /// guarantees that all earlier published ops with the same generation are
     /// durably visible before this call returns.
     ///
-    /// [`Seal`]: quanta_index_contract::LexicalChannelOp::Seal
+    /// [`Seal`]: quanta_index_contract::channel::LexicalChannelOp::Seal
     fn seal(
         &self,
         repo: RepoId,

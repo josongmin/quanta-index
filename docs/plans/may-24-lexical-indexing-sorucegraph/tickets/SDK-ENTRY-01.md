@@ -1,11 +1,33 @@
 # SDK-ENTRY-01 — SDK-Only Entry + Source-Authority Ingest Cutover
 
-Status: `planning`
+Status: `partial-execution-live`
 
 Scope:
 - force every external producer / caller entrypoint through [`quanta-index-sdk`](../../../../crates/quanta-index-sdk/)
 - land the missing history / runtime-metadata / structural source-authority inputs through dedicated typed SDK namespaces and batches, not raw socket / channel entry shims
 - keep query-time evaluation local to `quanta-index`; no request-time git / source / tree-sitter / producer RPC
+
+## 0. Current source-truth status (2026-05-27)
+
+Landed on the current tree:
+
+- `searchctl` production query entry is SDK-only
+- public SDK happy-path proof now lives in `sdk_frontdoor` for lexical,
+  semantic, hybrid, explain, repo-map, history, runtime, and structural paths
+- dedicated typed SDK publish/query namespaces exist for history, runtime, and
+  structural authority alongside lexical/semantic/repomap
+- history source-authority query paths now fail closed with exact typed codes
+  and no lexical fallback
+
+Residue that keeps this ticket partial:
+
+- `searchd` composition still uses internal legacy channel publishers,
+  subscribers, and mirror paths
+- richer history/runtime/structural feature families in this ticket are not all
+  closed on the current tree
+- semantic/hybrid public query surface still preserves the current
+  vector/handle contract; the text-only semantic follow-on is deferred to
+  `SEM-OWN`
 
 Parent docs:
 - [../closeout-plan.md](../closeout-plan.md)

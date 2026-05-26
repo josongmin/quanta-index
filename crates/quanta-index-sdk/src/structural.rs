@@ -199,6 +199,13 @@ impl<'a> StructuralQueryBuilder<'a> {
     }
 
     #[must_use]
+    pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
+        self.state.syntax = TextQuerySyntax::Sourcegraph;
+        self.state.query_text = Some(query_text.into());
+        self
+    }
+
+    #[must_use]
     pub fn pinned(mut self, pin: GenerationPin) -> Self {
         self.state.selection = Some(GenerationSelector::Pinned(pin));
         self

@@ -37,18 +37,22 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
 use ciborium::into_writer;
-use quanta_index_channel::{BundleChannelPublisher, LexicalWalPublisher, open_lexical_publisher};
+use quanta_index_channel::{
+    BundleChannelPublisher, LexicalWalPublisher, SemanticWalPublisher, open_lexical_publisher,
+    open_semantic_publisher,
+};
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord,
     SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalChannelOp, ManifestGeneration,
-    RepoId, RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivateGenerationRequest,
+    ChunkId, ChunkRecord, DeleteChunk, EmbeddingId, EngineTouched, GenerationPin,
+    HybridQueryRequest, LexicalCandidate, LexicalChannelOp, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivateGenerationRequest,
     SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
-    StructuralQueryRequest, SymbolId, TextQueryRequest, TextQuerySyntax, UpsertChunk,
-    UpsertParseTree, UpsertSymbol,
+    SemanticChannelOp, SemanticFullBundle, SemanticQueryRequest, StructuralQueryRequest, SymbolId,
+    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding, UpsertParseTree, UpsertSymbol,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_search_plane::ActivationCatalog;
@@ -74,10 +78,12 @@ pub(super) struct E2eRuntime {
     /// Owned publisher kept alive during ingest. Dropped before the driver
     /// is started so the runtime can reacquire the WAL lock.
     publisher: Option<LexicalWalPublisher>,
+    semantic_publisher: Option<SemanticWalPublisher>,
     driver: Option<DriverState>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
     request_id_counter: AtomicU64,
     generation_counter: u64,
+    semantic_bundle_generation: Option<ManifestGeneration>,
 }
 
 struct DriverState {
@@ -99,7 +105,8 @@ struct DriverState {
 pub(super) struct E2eQueryResult {
     pub(super) candidates: Vec<LexicalCandidate>,
     pub(super) candidate_ids: Vec<String>,
-    pub(super) engines_touched: Vec<String>,
+    pub(super) engines_touched: Vec<EngineTouched>,
+    pub(super) explanation: Option<SearchExplanation>,
     pub(super) typed_error: Option<E2eTypedError>,
 }
 
@@ -133,10 +140,12 @@ impl E2eRuntime {
             tempdir: Some(tempdir),
             state_root,
             publisher: Some(publisher),
+            semantic_publisher: None,
             driver: None,
             chunk_ids_by_path: BTreeMap::new(),
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
+            semantic_bundle_generation: None,
         })
     }
 
@@ -165,6 +174,7 @@ impl E2eRuntime {
         if self.driver.is_none() {
             // Release publisher lock before booting the runtime.
             drop(self.publisher.take());
+            drop(self.semantic_publisher.take());
             let (socket, shutdown, join) = start_driver(&self.state_root)?;
             self.driver = Some(DriverState {
                 socket,
@@ -197,6 +207,13 @@ impl E2eRuntime {
     }
 
     pub(super) fn activate_last_sealed_generation(&self) -> AnyResult<()> {
+        self.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])
+    }
+
+    pub(super) fn activate_last_sealed_generation_with_tracks(
+        &self,
+        tracks: &[SearchPlaneTrackKind],
+    ) -> AnyResult<()> {
         let Some(pin) = self.last_sealed_pin() else {
             return Err(anyhow::anyhow!(
                 "e2e-harness: cannot activate before any generation has been sealed"
@@ -208,7 +225,7 @@ impl E2eRuntime {
             revision_id: pin.revision_id,
             manifest_generation: pin.manifest_generation,
             manifest_digest: "e2e-harness-activation".to_string(),
-            tracks: vec![SearchPlaneTrackKind::Lexical],
+            tracks: tracks.to_vec(),
         })?;
         Ok(())
     }
@@ -266,6 +283,43 @@ impl E2eRuntime {
         let _old = self
             .chunk_ids_by_path
             .insert(path.to_string(), record.chunk_id);
+        Ok(())
+    }
+
+    pub(super) fn ingest_semantic_embedding_for_path(
+        &mut self,
+        path: &str,
+        vector: &[f32],
+    ) -> AnyResult<()> {
+        if self.driver.is_some() {
+            self.stop_driver();
+        }
+        if self.semantic_publisher.is_none() {
+            self.semantic_publisher = Some(open_semantic_publisher(&self.state_root)?);
+        }
+        let publisher = self.semantic_publisher.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: semantic publisher missing after re-open")
+        })?;
+        let current_generation = self.current_generation();
+        if self.semantic_bundle_generation != Some(current_generation) {
+            let _seq = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: current_generation,
+                payload: Vec::new(),
+            }))?;
+            self.semantic_bundle_generation = Some(current_generation);
+        }
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for semantic path `{path}`")
+        })?;
+        let _seq = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation: current_generation,
+            embedding_id: EmbeddingId::new(chunk_id.as_str()),
+            payload: float_vec_to_bytes(vector)?,
+        }))?;
         Ok(())
     }
 
@@ -340,6 +394,29 @@ impl E2eRuntime {
         Ok(())
     }
 
+    pub(super) fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
+        if self.driver.is_some() {
+            self.stop_driver();
+        }
+        if self.publisher.is_none() {
+            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
+        }
+        let publisher = self
+            .publisher
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for tombstone path `{path}`")
+        })?;
+        let _seq = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
+            repo_id: self.repo(),
+            revision_id: self.revision(),
+            generation: self.current_generation(),
+            chunk_id,
+        }))?;
+        Ok(())
+    }
+
     pub(super) fn ingest_symbol(
         &mut self,
         _repo: &str,
@@ -397,18 +474,35 @@ impl E2eRuntime {
     /// then advances the harness's pin so subsequent ingests target the
     /// next generation.
     pub(super) fn seal(&mut self) -> AnyResult<ManifestGeneration> {
+        self.seal_tracks(&[SearchPlaneTrackKind::Lexical])
+    }
+
+    pub(super) fn seal_tracks(
+        &mut self,
+        tracks: &[SearchPlaneTrackKind],
+    ) -> AnyResult<ManifestGeneration> {
         if self.driver.is_some() {
             self.stop_driver();
         }
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing for seal"))?;
         let sealed = self.current_generation();
-        let _seq = publisher.seal(self.repo(), self.revision(), sealed)?;
+        if tracks.contains(&SearchPlaneTrackKind::Lexical) {
+            if self.publisher.is_none() {
+                self.publisher = Some(open_lexical_publisher(&self.state_root)?);
+            }
+            let publisher = self.publisher.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: lexical publisher missing for seal")
+            })?;
+            let _seq = publisher.seal(self.repo(), self.revision(), sealed)?;
+        }
+        if tracks.contains(&SearchPlaneTrackKind::Semantic) {
+            if self.semantic_publisher.is_none() {
+                self.semantic_publisher = Some(open_semantic_publisher(&self.state_root)?);
+            }
+            let publisher = self.semantic_publisher.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: semantic publisher missing for seal")
+            })?;
+            let _seq = publisher.seal(self.repo(), self.revision(), sealed)?;
+        }
         self.generation_counter = self.generation_counter.saturating_add(1);
         Ok(sealed)
     }
@@ -465,6 +559,7 @@ impl E2eRuntime {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
                     engines_touched: Vec::new(),
+                    explanation: None,
                     typed_error: Some(E2eTypedError {
                         code: "HARNESS_START".to_string(),
                         message: err.to_string(),
@@ -480,7 +575,9 @@ impl E2eRuntime {
         let readiness_reached = wait_until(READINESS_TIMEOUT, || {
             match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
                 Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Error(err) => {
+                        err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
+                    }
                     SearchPlaneQueryIpcResponse::Text(_)
                     | SearchPlaneQueryIpcResponse::Symbol(_)
                     | SearchPlaneQueryIpcResponse::Semantic(_)
@@ -499,22 +596,7 @@ impl E2eRuntime {
         });
         let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
             Ok(r) => r,
-            Err(err) => {
-                let message = if readiness_reached {
-                    err.to_string()
-                } else {
-                    format!("readiness timeout before IPC response: {err}")
-                };
-                return E2eQueryResult {
-                    candidates: Vec::new(),
-                    candidate_ids: Vec::new(),
-                    engines_touched: Vec::new(),
-                    typed_error: Some(E2eTypedError {
-                        code: "IPC_TRANSPORT".to_string(),
-                        message,
-                    }),
-                };
-            }
+            Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Text(text) => E2eQueryResult {
@@ -525,12 +607,14 @@ impl E2eRuntime {
                     .collect(),
                 candidates: text.results,
                 engines_touched: Vec::new(),
+                explanation: None,
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
                 engines_touched: Vec::new(),
+                explanation: None,
                 typed_error: Some(E2eTypedError {
                     code: err.code,
                     message: err.message,
@@ -577,6 +661,111 @@ impl E2eRuntime {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
                     engines_touched: Vec::new(),
+                    explanation: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => {
+                        err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
+                    }
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Structural(structural) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: structural
+                    .results
+                    .into_iter()
+                    .map(|candidate| candidate.candidate_id)
+                    .collect(),
+                engines_touched: Vec::new(),
+                explanation: None,
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: Vec::new(),
+                engines_touched: Vec::new(),
+                explanation: None,
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_response("RuntimeMetadata")
+            }
+        }
+    }
+
+    pub(super) fn query_semantic(
+        &mut self,
+        vector: &[f32],
+        top_k: u32,
+        lexical_scope: Option<(TextQuerySyntax, &str, u32)>,
+    ) -> E2eQueryResult {
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                query_text: Some(float_vec_to_query_text(vector)),
+                query_vector: None,
+                query_vector_ref: None,
+                generation: self.last_sealed_pin(),
+                generation_selector: None,
+                lexical_scope: lexical_scope.map(|(syntax, query_text, scope_top_k)| {
+                    TextQueryRequest {
+                        syntax,
+                        query_text: query_text.to_string(),
+                        generation: self.last_sealed_pin(),
+                        generation_selector: None,
+                        top_k: scope_top_k,
+                    }
+                }),
+                top_k,
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eQueryResult {
+                    candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
+                    engines_touched: Vec::new(),
+                    explanation: None,
                     typed_error: Some(E2eTypedError {
                         code: "HARNESS_START".to_string(),
                         message: err.to_string(),
@@ -606,38 +795,127 @@ impl E2eRuntime {
         });
         let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
             Ok(r) => r,
-            Err(err) => {
-                let message = if readiness_reached {
-                    err.to_string()
-                } else {
-                    format!("readiness timeout before IPC response: {err}")
-                };
-                return E2eQueryResult {
-                    candidates: Vec::new(),
-                    candidate_ids: Vec::new(),
-                    engines_touched: Vec::new(),
-                    typed_error: Some(E2eTypedError {
-                        code: "IPC_TRANSPORT".to_string(),
-                        message,
-                    }),
-                };
-            }
+            Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
         match response.payload {
-            SearchPlaneQueryIpcResponse::Structural(structural) => E2eQueryResult {
-                candidates: Vec::new(),
-                candidate_ids: structural
+            SearchPlaneQueryIpcResponse::Semantic(semantic) => E2eQueryResult {
+                candidate_ids: semantic
                     .results
-                    .into_iter()
-                    .map(|candidate| candidate.candidate_id)
+                    .iter()
+                    .map(|c| c.candidate_id.clone())
                     .collect(),
-                engines_touched: Vec::new(),
+                candidates: semantic.results,
+                engines_touched: semantic.explanation.engines_touched.clone(),
+                explanation: Some(semantic.explanation),
                 typed_error: None,
             },
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
                 engines_touched: Vec::new(),
+                explanation: None,
+                typed_error: Some(E2eTypedError {
+                    code: err.code,
+                    message: err.message,
+                }),
+            },
+            SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
+            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
+            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
+            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
+            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                unexpected_response("RuntimeMetadata")
+            }
+        }
+    }
+
+    pub(super) fn query_hybrid(
+        &mut self,
+        syntax: TextQuerySyntax,
+        text_query: &str,
+        vector: &[f32],
+        top_k: u32,
+    ) -> E2eQueryResult {
+        let pin = self.last_sealed_pin();
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax,
+                    query_text: text_query.to_string(),
+                    generation: pin.clone(),
+                    generation_selector: None,
+                    top_k: 50,
+                },
+                semantic_query_text: Some(float_vec_to_query_text(vector)),
+                semantic_vector: None,
+                semantic_vector_ref: None,
+                generation: pin,
+                generation_selector: None,
+                top_k,
+            }),
+        };
+        let socket = match self.ensure_driver() {
+            Ok(socket) => socket,
+            Err(err) => {
+                return E2eQueryResult {
+                    candidates: Vec::new(),
+                    candidate_ids: Vec::new(),
+                    engines_touched: Vec::new(),
+                    explanation: None,
+                    typed_error: Some(E2eTypedError {
+                        code: "HARNESS_START".to_string(),
+                        message: err.to_string(),
+                    }),
+                };
+            }
+        };
+        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
+                Ok(response) => match &response.payload {
+                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                    SearchPlaneQueryIpcResponse::Text(_)
+                    | SearchPlaneQueryIpcResponse::Symbol(_)
+                    | SearchPlaneQueryIpcResponse::Semantic(_)
+                    | SearchPlaneQueryIpcResponse::Hybrid(_)
+                    | SearchPlaneQueryIpcResponse::History(_)
+                    | SearchPlaneQueryIpcResponse::Structural(_)
+                    | SearchPlaneQueryIpcResponse::Bridge(_)
+                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+                    | SearchPlaneQueryIpcResponse::Explain(_)
+                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
+                        true
+                    }
+                },
+                Err(_transport_error) => false,
+            }
+        });
+        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+            Ok(r) => r,
+            Err(err) => return self.semantic_transport_error(readiness_reached, err),
+        };
+        match response.payload {
+            SearchPlaneQueryIpcResponse::Hybrid(hybrid) => E2eQueryResult {
+                candidate_ids: hybrid
+                    .results
+                    .iter()
+                    .map(|c| c.candidate_id.clone())
+                    .collect(),
+                candidates: hybrid.results,
+                engines_touched: hybrid.explanation.engines_touched.clone(),
+                explanation: Some(hybrid.explanation),
+                typed_error: None,
+            },
+            SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
+                candidates: Vec::new(),
+                candidate_ids: Vec::new(),
+                engines_touched: Vec::new(),
+                explanation: None,
                 typed_error: Some(E2eTypedError {
                     code: err.code,
                     message: err.message,
@@ -646,14 +924,60 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
-            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
                 unexpected_response("RuntimeMetadata")
             }
+        }
+    }
+
+    pub(super) fn candidate_id_for_path(&self, path: &str) -> AnyResult<String> {
+        self.chunk_ids_by_path
+            .get(path)
+            .map(|chunk_id| chunk_id.as_str().to_string())
+            .ok_or_else(|| anyhow::anyhow!("e2e-harness: no chunk id recorded for path `{path}`"))
+    }
+
+    fn semantic_transport_error(
+        &mut self,
+        readiness_reached: bool,
+        err: impl std::fmt::Display,
+    ) -> E2eQueryResult {
+        let mut message = if readiness_reached {
+            err.to_string()
+        } else {
+            format!("readiness timeout before IPC response: {err}")
+        };
+        if let Some(mut driver) = self.driver.take() {
+            driver.shutdown.store(true, Ordering::Release);
+            if let Some(join) = driver.join.take() {
+                match join.join() {
+                    Ok(Ok(())) => message.push_str("; driver exited cleanly before response"),
+                    Ok(Err(driver_err)) => {
+                        message.push_str("; driver exited with error: ");
+                        message.push_str(&driver_err.to_string());
+                    }
+                    Err(panic) => {
+                        let panic_message = format!("{panic:?}");
+                        message.push_str("; driver panicked: ");
+                        message.push_str(&panic_message);
+                    }
+                }
+            }
+        }
+        E2eQueryResult {
+            candidates: Vec::new(),
+            candidate_ids: Vec::new(),
+            engines_touched: Vec::new(),
+            explanation: None,
+            typed_error: Some(E2eTypedError {
+                code: "IPC_TRANSPORT".to_string(),
+                message,
+            }),
         }
     }
 
@@ -776,6 +1100,7 @@ impl Drop for E2eRuntime {
         self.stop_driver();
         // Drop publisher before tempdir so file locks release first.
         drop(self.publisher.take());
+        drop(self.semantic_publisher.take());
         drop(self.tempdir.take());
     }
 }
@@ -812,6 +1137,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
         candidates: Vec::new(),
         candidate_ids: Vec::new(),
         engines_touched: Vec::new(),
+        explanation: None,
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),
             message: format!("expected Text, got {kind}"),
@@ -854,4 +1180,19 @@ fn language_from_path(path: &str) -> &'static str {
         Some("md") => "markdown",
         Some(_) | None => "text",
     }
+}
+
+fn float_vec_to_bytes(vec: &[f32]) -> AnyResult<Vec<u8>> {
+    let owned: Vec<f32> = vec.to_vec();
+    let mut out = Vec::new();
+    ciborium::into_writer(&owned, &mut out)
+        .map_err(|err| anyhow::anyhow!("ciborium encode embedding: {err}"))?;
+    Ok(out)
+}
+
+fn float_vec_to_query_text(vec: &[f32]) -> String {
+    vec.iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }

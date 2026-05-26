@@ -16,9 +16,9 @@ use quanta_index_channel::{
     BundleChannelPublisher, BundleChannelSubscriber, ChannelError, open_lexical_publisher,
     open_lexical_subscriber,
 };
+use quanta_index_contract::channel::{ChannelSeq, LexicalChannelOp};
 use quanta_index_contract::{
-    ChannelSeq, ChunkId, DeleteChunk, LexicalChannelOp, LexicalFullBundle, ManifestGeneration,
-    RepoId, RevisionId, UpsertChunk,
+    ChunkId, DeleteChunk, LexicalFullBundle, ManifestGeneration, RepoId, RevisionId, UpsertChunk,
 };
 
 type BoxedErr = Box<dyn std::error::Error>;

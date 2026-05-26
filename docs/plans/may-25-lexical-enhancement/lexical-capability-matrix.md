@@ -9,8 +9,8 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
 - **Phase 1** — LXE-02 planner IR scaffold + LXE-09 structural domain + E2E-00 harness skeleton: DONE (10 tests pass)
 - **Phase 2** — LXE-04 regex/trigram + LXE-05 phrase + LXE-06 symbol planner scaffolds: DONE (15 new tests pass)
 - **Phase 3** — LXE-03 filter execution + LXE-05/06 planner-arm integration: DONE (12 new tests, total 31 lexical lib tests pass)
-- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE for the live lexical subset; remaining scope is `LXE-07`, `LXE-10`, and contract polish
-- **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, and the currently landed structural/history slice of `E2E-04`: DONE; `E2E-03`, `E2E-05`, `E2E-06`, `E2E-07` remain
+- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE for the live lexical subset; remaining scope is `LXE-10` and contract polish
+- **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, `E2E-03`, `E2E-05`, `E2E-06`, and the currently landed structural/history slice of `E2E-04`: DONE; `E2E-07` and the residual `LXE-10` metrics surface remain
 
 ## Current code-backed snapshot (2026-05-27)
 
@@ -35,8 +35,13 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
   - `cargo test -p quanta-index-core --test lexical_policy`
   - `cargo test -p quanta-index-search-plane`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --test e2e_dual_syntax_lowering_parity -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test end_to_end structural_sourcegraph_query_ -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
+  - `just rust-test-full-corpus`
 - Closeout rerun refresh (2026-05-27):
   - `cargo check -p quanta-index-contract`: green
   - `cargo check -p quanta-index-sdk`: green
@@ -44,8 +49,10 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
   - `cargo test -p quanta-index-sdk --lib`: green
   - `cargo test -p quanta-index-searchd-runtime`: green
   - this refresh re-proves current live-source closure for `E2E-01`,
-    `E2E-02`, and the currently-landed `E2E-04` structural/history rows, but
-    does not upgrade pending `E2E-03`/`E2E-05`/`E2E-06`/`E2E-07`
+    `E2E-02`, `E2E-03`, `E2E-05`, `E2E-06`, and the currently-landed
+    `E2E-04` structural/history rows; `E2E-07` now has a dedicated owner rail
+    on the same tree, but the broader ticket remains partial together with the
+    residual `LXE-10` metrics surface
 
 Source-backed truth table for the LQ DSL surface, Sourcegraph syntax, planner
 lowering, engine execution, response carriers, and proof coverage.
@@ -101,7 +108,7 @@ Defined at [lq-norm/src/ast.rs:306](../../../crates/quanta-index-lq-norm/src/ast
 | `Not(Box<LqExpr>)` | `executed[truthful-subset]` | live for the lexical subset admitted by planner/executor; unsupported predicate extensions stay typed-rejected |
 | `All(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
 | `Any(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
-| `SemanticVector { vector_ref, top_k }` | currently `NotImplemented` at [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130) (lexical adapter); routed via semantic engine | `pending[LXE-07]` |
+| `SemanticVector { vector_ref, top_k }` | lexical adapter remains intentionally `NotImplemented` at [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130); live execution is owned by semantic/hybrid routes in `search-plane/query_dispatcher.rs` | `executed[semantic-route]` |
 
 ## 4. LQ filters (`LqFilter`)
 
@@ -141,7 +148,7 @@ Defined at [lq-norm/src/ast.rs:322](../../../crates/quanta-index-lq-norm/src/ast
 
 | Directive | Status |
 | --- | --- |
-| `IntoCodeQl` | `pending[LXE-10]` (bridge packet export from executed candidates) |
+| `IntoCodeQl` | `executed` (bridge packet export from executed candidates is live; metrics residual stays in `LXE-10`) |
 | `ScopeResults` | `executed` (canonical default) |
 | `WithLexical` | `executed` (canonical default) |
 
@@ -159,13 +166,13 @@ Translator at [lq-bridge/src/translator.rs](../../../crates/quanta-index-lq-brid
 | `count:N` | `LqCountBound::Bounded` | `executed` |
 | `count:all` | `LqCountBound::All` | `executed` |
 | `type:file` / `type:symbol` / `type:commit` / `type:diff` | `LqFilter::Type` | `executed[truthful-subset]` (file live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth; commit/diff live on the dedicated history route with runtime proof) |
-| `select:file` / `select:content` / `select:symbol` | `LqFilter::Select` | `partial` (file/content live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier) |
+| `select:file` / `select:content` / `select:symbol` | `LqFilter::Select` | `executed[truthful-subset]` (file/content live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth) |
 | `patterntype:literal` | `LqPatternType::Literal` + `LqLeaf::RawString` | `executed` |
 | `patterntype:regexp` | `LqPatternType::Regexp` + `LqLeaf::Regex` | `executed` |
 | Boolean `or` | `LqExpr::Any` | `executed[truthful-subset]` |
 | Boolean `and` (implicit) | `LqExpr::All` | `executed[truthful-subset]` |
 | Negation `-term` / `NOT` | `LqExpr::Not` | `executed[truthful-subset]` |
-| Unsupported SG feature | typed translator/bridge error | `pending[LXE-10]` taxonomy |
+| Unsupported SG feature | typed translator/bridge error | `executed[truthful-subset]` (`BRIDGE_UNSUPPORTED_FILTER` / `BRIDGE_UNSUPPORTED_DIRECTIVE` are live; broader engine/prod-data taxonomy is tracked elsewhere) |
 
 ## 8. Result carriers (`results::*`)
 
@@ -191,17 +198,17 @@ Internal structural match carriers are intentionally not public result DTOs:
 
 ## 9. `SearchExplanation`
 
-Current shape at [contract/src/lex/explanation.rs](../../../crates/quanta-index-contract/src/lex/explanation.rs) carries `contributions`, `ranker_weights_hash`, `strategy`. Augmentation pending in LXE-01.
+Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-index-contract/src/results/explanation.rs) carries `planner_trace`, `engines_touched`, `early_stop_reason`, `summary`, `contributions`, `ranker_weights_hash`, and `strategy`.
 
 | Field | Status |
 | --- | --- |
 | `contributions` | `executed` |
 | `ranker_weights_hash` | `executed` |
 | `strategy` | `executed` |
-| `planner_trace` | `pending[LXE-01+LXE-02]` |
-| `engines_touched` | `pending[LXE-01]` |
-| `early_stop_reason` | `pending[LXE-01+LXE-10]` |
-| `summary` | `pending[LXE-01]` |
+| `planner_trace` | `executed` |
+| `engines_touched` | `executed` |
+| `early_stop_reason` | `executed[truthful-subset]` (`CountReached` is proved on bounded hybrid execution; non-early-stop paths remain `None`) |
+| `summary` | `executed` |
 
 ## 10. Fail-closed surfaces
 
@@ -219,16 +226,16 @@ Current shape at [contract/src/lex/explanation.rs](../../../crates/quanta-index-
 
 | Component | Location | Status |
 | --- | --- | --- |
-| Tempdir runtime harness | new `crates/quanta-index-searchd-runtime/tests/common/e2e_harness.rs` | `pending[E2E-00]` (skeleton landed in Phase 0e) |
-| Corpus fixtures | new `crates/quanta-index-searchd-runtime/tests/common/e2e_corpus.rs` | `pending[E2E-00]` |
-| Matrix inventory test | new `crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs` | `pending[LXE-00]` |
+| Tempdir runtime harness | `crates/quanta-index-searchd-runtime/tests/common/e2e_harness.rs` | `executed` |
+| Corpus fixtures | `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
+| Matrix inventory test | `crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs` | `executed` |
 | Lexical full-fidelity | `tests/e2e_lexical_full_fidelity.rs` | `executed[E2E-01]` |
 | Sourcegraph parity | `tests/e2e_dual_syntax_lowering_parity.rs` | `executed[E2E-02]` |
-| Semantic/hybrid | new `tests/e2e_semantic_hybrid.rs` | `pending[E2E-03]` |
+| Semantic/hybrid | existing `tests/end_to_end.rs` + `tests/dsl_scenarios.rs` + `tests/sdk_frontdoor.rs` | `executed[E2E-03]` |
 | History/structural | existing `tests/sdk_frontdoor.rs` + `tests/end_to_end.rs` plus structural parity rows in `tests/e2e_dual_syntax_lowering_parity.rs` | `partial[E2E-04]` |
-| Restart/replay | new `tests/e2e_restart_replay_determinism.rs` | `pending[E2E-05]` |
-| Full corpus rail | new `tests/e2e_full_corpus.rs` + `tests/fixtures/lexical_corpus/` | `pending[E2E-06]` |
-| Perf/chaos | new `tests/e2e_perf_chaos.rs` | `pending[E2E-07]` |
+| Restart/replay | `tests/e2e_restart_replay_determinism.rs` | `executed[E2E-05]` |
+| Full corpus rail | `tests/e2e_full_corpus.rs` + `tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
+| Perf/chaos | `tests/e2e_perf_chaos.rs` | `partial[E2E-07]` |
 
 ## 12. Risk register
 
@@ -242,8 +249,8 @@ Current shape at [contract/src/lex/explanation.rs](../../../crates/quanta-index-
   exact verify. Remaining risk is missing explain-grade prefilter counts and
   engine trace, not query-string escape.
 - **`SemanticVector` lexical adapter NotImplemented**: [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130)
-  — correct behavior (lexical adapter shouldn't execute vectors) but LXE-07
-  must confirm the routing to semantic engine is wired, not silently dropped.
+  — still correct behavior because lexical execution must not consume vectors
+  directly. Current live proof exists on the semantic/hybrid runtime routes.
 - **Type/select proof remainder**: `type:symbol` / `select:symbol` now have a
   distinct public carrier plus `symbol_kind` truth, and history-owned
   `type:commit` / `type:diff` now have public/runtime proof. `select:path` /

@@ -2535,6 +2535,125 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
 }
 
 #[test]
+fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+
+    {
+        let lex_pub = open_lexical_publisher(state_root)?;
+        for chunk_id in ["alpha", "beta"] {
+            let _ = lex_pub.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                chunk_id: ChunkId::new(chunk_id),
+                payload: chunk_payload("scope tie")?,
+            }))?;
+        }
+        let _ = lex_pub.seal(repo(), revision(), generation())?;
+    }
+    {
+        let sem_pub = open_semantic_publisher(state_root)?;
+        let _ = sem_pub.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            payload: Vec::new(),
+        }))?;
+        for embedding_id in ["alpha", "beta"] {
+            let _ = sem_pub.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                embedding_id: EmbeddingId::new(embedding_id),
+                payload: float_vec_to_bytes(&[1.0_f32, 0.0_f32])?,
+            }))?;
+        }
+        let _ = sem_pub.seal(repo(), revision(), generation())?;
+    }
+
+    let config = build_config(state_root);
+    let runtime = build_runtime(config)?;
+    let socket = runtime.query_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name("searchd-hybrid-tie-determinism-test".into())
+        .spawn(move || drive(runtime, shutdown_for_drive))?;
+
+    if !wait_until(Duration::from_secs(2), || socket.exists()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("socket never appeared".into());
+    }
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let request = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 46,
+        payload: SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "scope tie".to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                top_k: 50,
+            },
+            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
+            generation: Some(pin),
+            semantic_vector: None,
+            semantic_vector_ref: None,
+            generation_selector: None,
+            top_k: 2,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &request)
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("hybrid tie determinism query never became ready".into());
+    }
+
+    let query_ids =
+        |response: SearchPlaneQueryIpcResponseEnvelope| -> Result<Vec<String>, Box<dyn Error>> {
+            match response.payload {
+                SearchPlaneQueryIpcResponse::Hybrid(hybrid) => Ok(hybrid
+                    .results
+                    .into_iter()
+                    .map(|candidate| candidate.candidate_id)
+                    .collect()),
+                other => Err(format!("expected Hybrid, got {other:?}").into()),
+            }
+        };
+
+    let first_ids = query_ids(send_query_request(&socket, &request)?)?;
+    let second_ids = query_ids(send_query_request(&socket, &request)?)?;
+    if first_ids != second_ids {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "hybrid tie ordering drifted across repeated queries: first={first_ids:?} second={second_ids:?}"
+        )
+        .into());
+    }
+    if first_ids.len() != 2 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected 2 tied hybrid results, got {first_ids:?}").into());
+    }
+
+    shutdown.store(true, Ordering::Release);
+    match join.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(panic) => Err(format!("driver panic: {panic:?}").into()),
+    }
+}
+
+#[test]
 fn structural_query_returns_typed_generation_not_ready_error() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();

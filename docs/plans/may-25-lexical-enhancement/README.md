@@ -34,15 +34,23 @@ This is not a docs-only cleanup. The program is complete only when:
   - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`
   - `cargo test -p quanta-index-sdk --lib`
   - `cargo test -p quanta-index-searchd-runtime`
+- Additional owner-local proof rails on the same current tree are also green:
+  - `cargo test -p quanta-index-searchd-runtime --test explain -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test dsl_scenarios -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
+  - `just rust-test-full-corpus`
 - That rerun covers the active lexical/Sourcegraph/structural daemon rails now
   living under `searchd-runtime`, including `e2e_lexical_full_fidelity`,
-  `e2e_dual_syntax_lowering_parity`, `sdk_frontdoor`, and `repo_map_end_to_end`.
+  `e2e_dual_syntax_lowering_parity`, `e2e_perf_chaos`, `sdk_frontdoor`, and
+  `repo_map_end_to_end`.
 - The narrower `may-26-indexing-residue-tasks` structural/bridge pack is
   separately closed on the same current tree. The remaining status here is the
   broader whole-program queue, not a May-26 residue-pack reopen.
-- Program status remains `partial-execution-live`: `E2E-03`, `E2E-05`,
-  `E2E-06`, `E2E-07`, plus residual `LXE-10` scope are not closed by this
-  rerun.
+- Program status remains `partial-execution-live`: `E2E-07` and the residual
+  `LXE-10` metrics surface are not closed by this rerun.
 - This is a current live-source proof refresh, not a frozen-tree release claim.
 
 ## 1.6 Public-surface closure refresh (2026-05-27)

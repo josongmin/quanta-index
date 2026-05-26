@@ -20,6 +20,8 @@ use std::path::Path;
 pub use api::error::ChannelError;
 pub use api::publisher::BundleChannelPublisher;
 pub use api::subscriber::BundleChannelSubscriber;
+pub use backends::wal_mmap::codec::{OpCodec, SemanticCodec};
+pub use backends::wal_mmap::segment::{SegmentLayout, SegmentReader};
 pub use backends::wal_mmap::{
     LexicalChannelEvent, LexicalWalPublisher, LexicalWalSubscriber, SemanticChannelEvent,
     SemanticWalPublisher, SemanticWalSubscriber,

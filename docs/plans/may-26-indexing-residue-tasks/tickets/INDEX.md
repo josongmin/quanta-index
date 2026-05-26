@@ -47,11 +47,7 @@ Historical note:
 This ticket pack is closed on the current tree. Remaining closeout work is
 owned by `docs/plans/may-25-lexical-enhancement`, especially:
 
-- `LXE-08`
 - `LXE-10`
-- `E2E-03`
-- `E2E-05`
-- `E2E-06`
 - `E2E-07`
 
 `BRIDGE-03` stays marked as a shipped supported subset by design. That wording

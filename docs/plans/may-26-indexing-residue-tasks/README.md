@@ -89,10 +89,8 @@ The remaining closeout queue lives in `docs/plans/may-25-lexical-enhancement`,
 not here. As of the same `2026-05-27` live rerun, that broader queue still
 tracks:
 
-- `LXE-08` history live integration
 - `LXE-10` observability and bridge sink
-- `E2E-03` semantic/hybrid proof closure
-- `E2E-05`, `E2E-06`, `E2E-07`
+- `E2E-07` performance/chaos closeout
 - broader `may-25` matrix/ticket drift cleanup
 
 ## 5. Ticket pack

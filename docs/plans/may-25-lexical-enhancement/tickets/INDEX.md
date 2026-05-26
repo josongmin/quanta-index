@@ -76,8 +76,12 @@ cargo test -p quanta-index-searchd-runtime
 
 This refresh kept the active lexical/Sourcegraph/structural closeout rail
 green, including the current `e2e_dual_syntax_lowering_parity` owner test.
-It does not close `E2E-03` or `E2E-05`..`E2E-07`, and it is not a workspace-wide
-`clippy` / `cargo test --workspace` claim.
+Follow-on owner rails now also cover `E2E-03` semantic/hybrid runtime proof,
+`E2E-05` restart/replay, `E2E-06` full-corpus runtime execution, and the
+currently-landed `E2E-07` boundedness owner rail on the same current tree.
+The remaining open program-level queue is still `E2E-07` together with the
+residual `LXE-10` metrics surface; this is not yet a workspace-wide `clippy`
+/ `cargo test --workspace` claim.
 
 ## 6. Ticket quality bar
 

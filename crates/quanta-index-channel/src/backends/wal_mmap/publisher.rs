@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use fs2::FileExt;
-use quanta_index_contract::{ChannelSeq, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::channel::ChannelSeq;
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 
 use crate::api::error::ChannelError;
 use crate::api::publisher::BundleChannelPublisher;

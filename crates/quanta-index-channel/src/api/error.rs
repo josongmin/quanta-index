@@ -1,7 +1,7 @@
 use core::fmt;
 use std::io;
 
-use quanta_index_contract::ChannelSeq;
+use quanta_index_contract::channel::ChannelSeq;
 
 /// All channel surface errors.
 ///

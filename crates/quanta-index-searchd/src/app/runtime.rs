@@ -5,12 +5,16 @@ use std::{fs, path::Path};
 
 use anyhow::Result;
 use memchr::memchr_iter;
-use quanta_index_channel::{LexicalWalSubscriber, SemanticWalSubscriber};
+use quanta_index_channel::{
+    LexicalWalSubscriber, OpCodec, SegmentLayout, SegmentReader, SemanticCodec,
+    SemanticWalSubscriber,
+};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
     ManifestGeneration, RepoId, RevisionId, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
+    SemanticChannelOp,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -424,6 +428,7 @@ impl SearchdRuntime {
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         bootstrap_persisted_lexical_readiness(&ledger, config.state_root())?;
+        bootstrap_persisted_semantic_state(&ledger, config.state_root(), sem_build_port.as_ref())?;
         let dispatcher = ChannelDispatcher::new(
             lex_sub,
             sem_sub,
@@ -566,6 +571,65 @@ fn bootstrap_persisted_lexical_readiness(
     }
     if let Some(max_generation) = max_generation {
         guard.lexical_seal(max_generation);
+    }
+    drop(guard);
+    Ok(())
+}
+
+fn bootstrap_persisted_semantic_state(
+    ledger: &Arc<RwLock<Ledger>>,
+    state_root: &Path,
+    builder: &(dyn SemanticIndexBuildPort + Send + Sync),
+) -> Result<()> {
+    let semantic_root = state_root.join("channel").join("semantic");
+    let layout = SegmentLayout::new(semantic_root);
+    let segments = layout.list_segments()?;
+    if segments.is_empty() {
+        return Ok(());
+    }
+    for (seg_id, _path) in segments {
+        let mut reader = SegmentReader::open(&layout, seg_id)?;
+        reader.refresh_len()?;
+        while let Some((_seq, body)) = reader.read_next_frame()? {
+            let op = SemanticCodec::decode_op(&body)
+                .map_err(|err| anyhow::anyhow!("semantic bootstrap decode: {err}"))?;
+            replay_semantic_bootstrap_op(ledger, builder, &op)?;
+        }
+    }
+    Ok(())
+}
+
+fn replay_semantic_bootstrap_op(
+    ledger: &Arc<RwLock<Ledger>>,
+    builder: &(dyn SemanticIndexBuildPort + Send + Sync),
+    op: &SemanticChannelOp,
+) -> Result<()> {
+    let repo_id = op.repo_id().clone();
+    let revision_id = op.revision_id().clone();
+    let generation = op.generation();
+    let ops = [op.clone()];
+    builder
+        .build(&repo_id, &revision_id, generation, &ops)
+        .map_err(|err| anyhow::anyhow!("semantic bootstrap build: {err}"))?;
+    let mut guard = ledger
+        .write()
+        .map_err(|err| anyhow::anyhow!("ledger poisoned during semantic bootstrap: {err}"))?;
+    guard.semantic_materialize(generation, None);
+    guard.record_track_materialized(
+        &repo_id,
+        &revision_id,
+        SearchPlaneTrackKind::Semantic,
+        generation,
+        None,
+    );
+    if matches!(op, SemanticChannelOp::Seal(_)) {
+        guard.semantic_seal(generation);
+        guard.record_track_seal(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            generation,
+        );
     }
     drop(guard);
     Ok(())
