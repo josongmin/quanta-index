@@ -1,6 +1,6 @@
 # Lexical Capability Matrix
 
-Status: `partial-execution-live`
+Status: `completed`
 Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
 
 ## Phase status summary
@@ -9,31 +9,38 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
 - **Phase 1** — LXE-02 planner IR scaffold + LXE-09 structural domain + E2E-00 harness skeleton: DONE (10 tests pass)
 - **Phase 2** — LXE-04 regex/trigram + LXE-05 phrase + LXE-06 symbol planner scaffolds: DONE (15 new tests pass)
 - **Phase 3** — LXE-03 filter execution + LXE-05/06 planner-arm integration: DONE (12 new tests, total 31 lexical lib tests pass)
-- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE for the live lexical subset; remaining scope is `LXE-10` and contract polish
-- **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, `E2E-03`, `E2E-05`, `E2E-06`, and the currently landed structural/history slice of `E2E-04`: DONE; `E2E-07` and the residual `LXE-10` metrics surface remain
+- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE
+- **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, `E2E-03`, `E2E-04`, `E2E-05`, `E2E-06`, and `E2E-07`: DONE
 
 ## Current code-backed snapshot (2026-05-27)
 
 - Green on live rails:
+  - `LXE-01`: semantic/hybrid public request intake now uses the canonical
+    text-based carriers, and deleted request fields are fail-closed by
+    contract decode tests
   - `LXE-03`: repo/file/lang/case/count/select:file/select:repo/select:content and typed-unavailable producer-dependent filters
   - `LXE-04`: materialized trigram-prefilter + authoritative indexed-text exact verify, including SG/native `patterntype:regexp` parity
   - `LXE-05`: positions-backed exact-adjacent phrase hit and reversed-order phrase miss
-  - `LXE-06`: text-route `type:file`/`select:file`/`select:content` plus text-route/public-frontdoor `type:symbol` and `select:symbol` symbol-doc routing, distinct `SymbolQueryResponse`, and public `symbol_kind` truth
+  - `LXE-06`: text-route `type:file`/`select:file`/`select:path`/
+    `select:content`/`select:content.match` plus text-route/public-frontdoor
+    `type:symbol` and `select:symbol` symbol-doc routing, distinct
+    `SymbolQueryResponse`, and public `symbol_kind` truth
   - `LXE-09`: structural live subset on materialized parse-tree/chunk
     authority (`match { :[x] }`, `match { function_item }`,
     variadic sibling capture / wildcard skip, and `where` / `inside` /
     `outside` constraints), plus the dedicated Sourcegraph structural subset
-- Partial proof:
-  - `E2E-04` no longer depends on a nonexistent dedicated history/structural
-    test file; history positive rows live in `sdk_frontdoor.rs`, structural
-    positive and typed negative rows are split across `sdk_frontdoor.rs`,
-    `end_to_end.rs`, and structural SG/native parity rows in
+- Additional completed proof:
+  - `E2E-04` history/structural is complete on the current tree; history
+    positive and typed negative rows live in `sdk_frontdoor.rs` and
+    `end_to_end.rs`, and structural SG/native parity rows live in
     `e2e_dual_syntax_lowering_parity.rs`
 - Proof rails:
+  - `cargo test -p quanta-index-contract --test lxe_unified_surface`
   - `cargo test -p quanta-index-contract --test ipc_query_result_v2_contract`
   - `cargo test -p quanta-index-lexical --test tantivy_smoke`
   - `cargo test -p quanta-index-core --test lexical_policy`
   - `cargo test -p quanta-index-search-plane`
+  - `cargo test -p quanta-index-sdk --lib`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --test e2e_dual_syntax_lowering_parity -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
@@ -41,6 +48,7 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
   - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime`
   - `just rust-test-full-corpus`
 - Closeout rerun refresh (2026-05-27):
   - `cargo check -p quanta-index-contract`: green
@@ -49,10 +57,7 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
   - `cargo test -p quanta-index-sdk --lib`: green
   - `cargo test -p quanta-index-searchd-runtime`: green
   - this refresh re-proves current live-source closure for `E2E-01`,
-    `E2E-02`, `E2E-03`, `E2E-05`, `E2E-06`, and the currently-landed
-    `E2E-04` structural/history rows; `E2E-07` now has a dedicated owner rail
-    on the same tree, but the broader ticket remains partial together with the
-    residual `LXE-10` metrics surface
+    `E2E-02`, `E2E-03`, `E2E-04`, `E2E-05`, `E2E-06`, and `E2E-07`
 
 Source-backed truth table for the LQ DSL surface, Sourcegraph syntax, planner
 lowering, engine execution, response carriers, and proof coverage.
@@ -79,10 +84,10 @@ lowering, engine execution, response carriers, and proof coverage.
 | --- | --- | --- | --- |
 | Public syntax selector | `TextQuerySyntax { Native, Sourcegraph }` | [contract-base/src/query/syntax.rs:8](../../../crates/quanta-index-contract-base/src/query/syntax.rs#L8) | `executed` |
 | Lexical text request | `TextQueryRequest { syntax, query_text, generation, generation_selector, top_k }` | [contract-base/src/query/requests.rs:18](../../../crates/quanta-index-contract-base/src/query/requests.rs#L18) | `executed` |
-| Semantic lexical scope field | `lexical_scope: Option<TextQueryRequest>` | [LXE-01](tickets/LXE-01-active-contract-and-dead-route-cleanup.md) | `pending[LXE-01]` |
-| Hybrid lexical field | `lexical: TextQueryRequest` | [LXE-01](tickets/LXE-01-active-contract-and-dead-route-cleanup.md) | `pending[LXE-01]` |
-| Direct `LqQuery` request field absent | reflection test | [LXE-01](tickets/LXE-01-active-contract-and-dead-route-cleanup.md) | `pending[LXE-01]` |
-| Unknown-variant decode rejection | manual serde impls in [lq-norm/src/ast.rs:391+](../../../crates/quanta-index-lq-norm/src/ast.rs#L391) | [LXE-01](tickets/LXE-01-active-contract-and-dead-route-cleanup.md) | `pending[LXE-01]` |
+| Semantic lexical scope field | `lexical_scope: Option<TextQueryRequest>` | [contract/tests/lxe_unified_surface.rs:72](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L72), [contract/tests/ipc_query_result_v2_contract.rs:376](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L376) | `executed` |
+| Hybrid lexical field | `text_query: TextQueryRequest` | [contract/tests/lxe_unified_surface.rs:187](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L187), [contract/tests/ipc_query_result_v2_contract.rs:407](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L407) | `executed` |
+| Direct `LqQuery` request field absent | reflection + public builder tests | [contract/tests/lxe_unified_surface.rs:117](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L117), [sdk/src/tests.rs:541](../../../crates/quanta-index-sdk/src/tests.rs#L541) | `executed` |
+| Unknown-variant decode rejection | manual serde impls + legacy-field negative tests | [contract/tests/ipc_query_result_v2_contract.rs:591](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L591), [contract/tests/ipc_query_result_v2_contract.rs:610](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L610) | `executed` |
 
 ## 2. LQ leaves (`LqLeaf`)
 
@@ -121,16 +126,16 @@ Defined at [lq-norm/src/ast.rs:223](../../../crates/quanta-index-lq-norm/src/ast
 | `Lang { id }` | pre-candidate metadata constraint | live language metadata constraint on lexical text rail | `executed` |
 | `Rev { spec }` | history-domain constraint | typed fail-closed (`REV_UNAVAILABLE`) on lexical rail | `typed-rejected` |
 | `Type { kind }` | route selector → content/path/symbol/commit/diff/structural | doc-kind routing: `file/path -> text`, `symbol -> symbol route with distinct public `SymbolQueryResponse`, `commit/diff/repo -> typed unavailable on lexical rail`; public runtime witness exists for native/Sourcegraph `type:symbol` on the symbol frontdoor with `symbol_kind` truth | `executed[truthful-subset]` |
-| `Select { dim }` | result-surface selector | live repo/file/content projection on text rail; public runtime witness exists for native/Sourcegraph `select:symbol` on the symbol frontdoor with `SymbolCandidate`; `path/content.match` not yet separately proven | `partial` |
+| `Select { dim }` | result-surface selector | live repo/file/path/content/content.match projection on the text rail plus native/Sourcegraph `select:symbol` on the symbol frontdoor with `SymbolCandidate` | `executed` |
 | `Fork { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
 | `Archived { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
 | `Visibility { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
 | `Context { name }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
-| `Content { leaf }` | content engine | delegates to the active leaf execution path | `partial` |
+| `Content { leaf }` | content engine | delegates to the active lexical leaf execution path, including public `select:content.match` proof on the text frontdoor | `executed` |
 
 `type:` enum values from `LqType`: `File`, `Path`, `Symbol`, `Commit`, `Diff`, `Repo`. `File`/`Path`/`Symbol` have live route proof here. `Commit`/`Diff` execute on the dedicated history route with runtime proof under `LXE-08`, and `Repo` stays typed unavailable on the lexical rail.
 
-`select:` enum values from `LqSelect`: `Repo`, `File`, `Path`, `Symbol`, `Content`, `ContentMatch`. `Repo`/`File`/`Content`/`Symbol` have live proof; `Path` / `ContentMatch` are not yet separately proven in this matrix.
+`select:` enum values from `LqSelect`: `Repo`, `File`, `Path`, `Symbol`, `Content`, `ContentMatch`. All six have live proof on the current tree; `Symbol` uses the distinct public symbol carrier and the rest project on the text rail.
 
 ## 5. LQ options (`LqOptions`)
 
@@ -148,7 +153,7 @@ Defined at [lq-norm/src/ast.rs:322](../../../crates/quanta-index-lq-norm/src/ast
 
 | Directive | Status |
 | --- | --- |
-| `IntoCodeQl` | `executed` (bridge packet export from executed candidates is live; metrics residual stays in `LXE-10`) |
+| `IntoCodeQl` | `executed` (bridge packet export from executed candidates is live, and the closed-label metrics surface is now proved on the same current tree) |
 | `ScopeResults` | `executed` (canonical default) |
 | `WithLexical` | `executed` (canonical default) |
 
@@ -189,7 +194,7 @@ Most carrier types currently live in
 | `StructuralBinding` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L10) | `executed` |
 | `StructuralCandidate` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L93) | `executed` |
 | `BridgeTarget` | [contract-base/src/results/bridge.rs](../../../crates/quanta-index-contract-base/src/results/bridge.rs) | `executed` (CodeQl only) |
-| `BridgeCandidatePacket` | [lq-bridge/src/packet.rs](../../../crates/quanta-index-lq-bridge/src/packet.rs) | `executed`; LXE-10 hardens stable contract |
+| `BridgeCandidatePacket` | [lq-bridge/src/packet.rs](../../../crates/quanta-index-lq-bridge/src/packet.rs) | `executed` |
 
 Internal structural match carriers are intentionally not public result DTOs:
 `quanta-index-core` / `searchd` execute on `StructuralMatchBinding` /
@@ -232,10 +237,10 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 | Lexical full-fidelity | `tests/e2e_lexical_full_fidelity.rs` | `executed[E2E-01]` |
 | Sourcegraph parity | `tests/e2e_dual_syntax_lowering_parity.rs` | `executed[E2E-02]` |
 | Semantic/hybrid | existing `tests/end_to_end.rs` + `tests/dsl_scenarios.rs` + `tests/sdk_frontdoor.rs` | `executed[E2E-03]` |
-| History/structural | existing `tests/sdk_frontdoor.rs` + `tests/end_to_end.rs` plus structural parity rows in `tests/e2e_dual_syntax_lowering_parity.rs` | `partial[E2E-04]` |
+| History/structural | existing `tests/sdk_frontdoor.rs` + `tests/end_to_end.rs` plus structural parity rows in `tests/e2e_dual_syntax_lowering_parity.rs` | `executed[E2E-04]` |
 | Restart/replay | `tests/e2e_restart_replay_determinism.rs` | `executed[E2E-05]` |
 | Full corpus rail | `tests/e2e_full_corpus.rs` + `tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
-| Perf/chaos | `tests/e2e_perf_chaos.rs` | `partial[E2E-07]` |
+| Perf/chaos | `tests/e2e_perf_chaos.rs` | `executed[E2E-07]` |
 
 ## 12. Risk register
 
@@ -251,10 +256,11 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 - **`SemanticVector` lexical adapter NotImplemented**: [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130)
   — still correct behavior because lexical execution must not consume vectors
   directly. Current live proof exists on the semantic/hybrid runtime routes.
-- **Type/select proof remainder**: `type:symbol` / `select:symbol` now have a
-  distinct public carrier plus `symbol_kind` truth, and history-owned
-  `type:commit` / `type:diff` now have public/runtime proof. `select:path` /
-  `select:content.match` are still not separately proven.
+- **Type/select regression surface**: `type:symbol` / `select:symbol` keep a
+  distinct public carrier plus `symbol_kind` truth, history-owned
+  `type:commit` / `type:diff` keep public/runtime proof, and
+  `select:path` / `select:content.match` now have separate native/Sourcegraph
+  frontdoor proof.
 - **Structural live surface is still narrower than full public semantics**:
   the current authority-owned matcher now executes root-anchored tree-walk,
   variadic sibling capture / wildcard skip, and `where` / `inside` /

@@ -29,6 +29,16 @@ pub trait LexicalIndexBuildPort: Send + Sync {
     ) -> Result<(), CoreError>;
 }
 
+/// Build / replay a typed lexical ingest batch into a lexical index for a
+/// given generation.
+///
+/// This is the batch-native authority surface used by the direct ingest path.
+/// Implementations may internally lower into legacy op handlers, but callers
+/// do not construct or route channel ops on the hot path.
+pub trait LexicalBatchBuildPort: Send + Sync {
+    fn build_batch(&self, batch: &LexicalIngestBatch) -> Result<(), CoreError>;
+}
+
 /// Open an existing lexical index for query.
 pub trait LexicalIndexOpenPort: Send + Sync {
     fn open(
@@ -39,13 +49,12 @@ pub trait LexicalIndexOpenPort: Send + Sync {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
 }
 
-/// Ingest a typed lexical batch into the channel.
+/// Ingest a typed lexical batch into the direct authority path.
 ///
-/// QI-RT-01 splits the producer-facing surface from the channel adapter so the
-/// SDK can drop its direct dependency on `quanta-index-channel`.
-/// Implementations fan the batch out to one or more [`LexicalChannelOp`]
-/// writes and return the inclusive sequence range in
-/// [`BatchPublishReceipt`].
+/// QI-RT-01 splits the producer-facing surface from transport details so the
+/// SDK can route batches over typed ingest IPC while runtime ownership stays
+/// batch-native. Implementations commit the batch and return the accepted
+/// surface in [`BatchPublishReceipt`].
 pub trait LexicalIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }

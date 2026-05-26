@@ -381,16 +381,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "fs4"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,16 +816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quanta-index-channel"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "fs2",
- "quanta-index-contract",
- "tempfile",
-]
-
-[[package]]
 name = "quanta-index-conformance"
 version = "0.1.0"
 dependencies = [
@@ -891,6 +871,7 @@ dependencies = [
  "quanta-index-lq-positions",
  "quanta-index-lq-regex",
  "quanta-index-lq-trigram",
+ "serde",
  "tantivy",
  "tempfile",
 ]
@@ -1068,7 +1049,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ciborium",
- "quanta-index-channel",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lq-bridge",
@@ -1096,7 +1076,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "memchr",
- "quanta-index-channel",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
@@ -1111,13 +1090,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ciborium",
- "quanta-index-channel",
  "quanta-index-conformance",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
  "quanta-index-lexical",
  "quanta-index-lq-bridge",
+ "quanta-index-lq-obs",
  "quanta-index-repomap",
  "quanta-index-sdk",
  "quanta-index-search-plane",
@@ -1135,6 +1114,7 @@ dependencies = [
  "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "serde",
 ]
 
 [[package]]

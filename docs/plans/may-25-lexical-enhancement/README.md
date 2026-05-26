@@ -1,7 +1,7 @@
 # May 25 Lexical Enhancement Closeout
 
-Status: `partial-execution-live`
-Date: `2026-05-26`
+Status: `completed`
+Date: `2026-05-27`
 Scope: breaking-first closeout for lexical search, LQ DSL, Sourcegraph syntax,
 real-engine execution, and hard E2E proof.
 
@@ -47,10 +47,12 @@ This is not a docs-only cleanup. The program is complete only when:
   `e2e_dual_syntax_lowering_parity`, `e2e_perf_chaos`, `sdk_frontdoor`, and
   `repo_map_end_to_end`.
 - The narrower `may-26-indexing-residue-tasks` structural/bridge pack is
-  separately closed on the same current tree. The remaining status here is the
-  broader whole-program queue, not a May-26 residue-pack reopen.
-- Program status remains `partial-execution-live`: `E2E-07` and the residual
-  `LXE-10` metrics surface are not closed by this rerun.
+  separately closed on the same current tree, and this broader May-25 pack is
+  now also closed on the same current tree.
+- Program status is now `completed` on the current tree: the older matrix
+  residue around request-shape cleanup, `select:path` /
+  `select:content.match`, and the split `E2E-04` proof shape has been retired
+  by live reruns and ticket/matrix refresh in this closeout pass.
 - This is a current live-source proof refresh, not a frozen-tree release claim.
 
 ## 1.6 Public-surface closure refresh (2026-05-27)
@@ -68,23 +70,25 @@ Landed in the same current-tree window:
   `HISTORY_GENERATION_NOT_READY`, `HISTORY_PRODUCER_UNAVAILABLE`,
   `HISTORY_SHARD_UNAVAILABLE`
 
-This refresh closes public-surface residue around the SDK front door and
-history taxonomy. It does not close the broader engine/program residue tracked
-below.
+This refresh closes the public-surface residue around the SDK front door and
+history taxonomy, and the broader engine/program residue in this ticket pack is
+now also closed on the same current tree.
 
-## 2. Current truth to freeze first
+## 2. Current truth
 
-`LXE-00` produced the current executable matrix; any remaining ticket work must
-still be re-frozen against live source before new completion claims are made.
+`LXE-00` produced the current executable matrix, and the current tree now
+satisfies the pack exit criteria against live-source proof.
 
-Engine residue on the latest local review:
+Current live-source truth on the latest local review:
 
-- `crates/quanta-index-lexical/src/lib.rs` has filters that are ignored or
-  returned as `NotImplemented`.
-- regex no longer escapes through a generic query string; the remaining regex
-  risk is observability and large-corpus proof, not route correctness.
-- `crates/quanta-index-search-plane/src/lowering.rs` accepts a wider syntax
-  surface than the executor can currently prove.
+- lexical request intake is unified on `TextQuerySyntax` and
+  `TextQueryRequest`, with contract decode rejecting legacy semantic/hybrid
+  vector-ref fields and deleted dual-surface names.
+- semantic and hybrid search now consume text-based semantic query carriers and
+  materialized lexical scope instead of the older vector/handle request
+  contract.
+- regex/raw substring execute through materialized trigram/regex plans with
+  exact verify over authoritative indexed text.
 - `crates/quanta-index-search-plane/src/query_dispatcher.rs` now lowers one
   top-level structural leaf plus the executable `repo:` / `file:` / `lang:`
   filter subset into the live structural domain path instead of hard-closing
@@ -101,20 +105,12 @@ Engine residue on the latest local review:
   the search-plane response boundary.
 - structural shapes outside that subset, and structural queries with filters
   outside `repo:` / `file:` / `lang:`, remain typed `STR_INVALID_REQUEST`.
-- existing hard-case tests are useful but are not sufficient if they do not
-  write records into the real storage/index path and query the reopened index.
+- existing hard-case tests are counted only when they write records into the
+  real storage/index path, reopen through runtime APIs, and assert public
+  query responses; that proof bar is now met by the owner rails listed above.
 
-Public-surface residue that remains intentionally open:
-
-- semantic/hybrid still expose the current vector/handle request contract;
-  text-only semantic ownership is deferred to the separate `SEM-OWN` follow-on
-- internal `searchd-runtime` composition still uses legacy channel
-  publisher/subscriber wiring and mirror paths even though the public SDK front
-  door is closed
-
-Facts above are current guardrails, not blanket completion claims. Remaining
-tickets still need line-backed source and runtime proof before they can be
-marked implemented.
+Facts above are current live-source completion claims for this pack. They do
+not imply workspace-wide `clippy` or `cargo test --workspace`.
 
 ## 3. Execution waves
 
@@ -172,6 +168,8 @@ The program is complete only when all are true:
     reason, and summary for real executed queries.
 13. restart/replay E2E returns deterministic result IDs and ordering.
 14. CI has at least one full real-engine corpus rail, separate from unit tests.
+
+All items above are satisfied on the current tree.
 
 ## 6. Ticket pack
 

@@ -1,12 +1,25 @@
 # E2E-01 - Lexical Full-fidelity E2E
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-03](LXE-03-lexical-filter-execution.md), [LXE-04](LXE-04-regex-trigram-real-execution.md)
 
 ## Purpose
 
 Prove LQ DSL behavior against persisted lexical indexes.
+
+## Current live truth (2026-05-27)
+
+- `crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs`
+  is live and green on the current tree
+- the table-driven rail now covers content/path/repo/lang/boolean/case/count,
+  phrase, regex, raw substring, and type/select lexical happy-path or typed
+  error rows against persisted runtime data
+- public `select:path` / `select:content.match` proof is additionally covered
+  on the SDK front door
+- proof rails:
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
 
 ## Owner files
 

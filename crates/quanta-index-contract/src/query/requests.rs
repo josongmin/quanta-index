@@ -6,7 +6,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{BridgeTarget, LexicalCandidate, SemanticVectorRef};
+use crate::{BridgeTarget, LexicalCandidate};
 
 use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
 
@@ -21,13 +21,7 @@ use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax
 /// `top_k` (the candidate cap for the lexical leg).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticQueryRequest {
-    /// QI-QRY-01 phase 2: optional text fallback for callers that encode the
-    /// query vector as a space-separated decimal list (legacy CLI path).
-    /// SDK callers using `query_vector_ref` should pass `None` — the field
-    /// is no longer populated with `String::new()` as a filler.
-    pub query_text: Option<String>,
-    pub query_vector: Option<Vec<f32>>,
-    pub query_vector_ref: Option<SemanticVectorRef>,
+    pub query_text: String,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     /// LXE-01 §3: lexical pre-filter for the semantic recall set. Replaces
@@ -40,8 +34,6 @@ pub struct SemanticQueryRequest {
 
 const SEMANTIC_QUERY_REQUEST_FIELDS: &[&str] = &[
     "query_text",
-    "query_vector",
-    "query_vector_ref",
     "generation",
     "generation_selector",
     "lexical_scope",
@@ -55,10 +47,7 @@ macro_rules! impl_semantic_query_request_serde {
             where
                 S: Serializer,
             {
-                let mut field_count: usize = 1;
-                if self.query_text.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
+                let mut field_count: usize = 2;
                 if self.generation.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
@@ -68,22 +57,8 @@ macro_rules! impl_semantic_query_request_serde {
                 if self.lexical_scope.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
-                if self.query_vector.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
-                if self.query_vector_ref.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
                 let mut state = serializer.serialize_struct("SemanticQueryRequest", field_count)?;
-                if let Some(query_text) = &self.query_text {
-                    state.serialize_field("query_text", query_text)?;
-                }
-                if let Some(query_vector) = &self.query_vector {
-                    state.serialize_field("query_vector", query_vector)?;
-                }
-                if let Some(query_vector_ref) = &self.query_vector_ref {
-                    state.serialize_field("query_vector_ref", query_vector_ref)?;
-                }
+                state.serialize_field("query_text", &self.query_text)?;
                 if let Some(generation) = &self.generation {
                     state.serialize_field("generation", generation)?;
                 }
@@ -112,33 +87,22 @@ macro_rules! impl_semantic_query_request_serde {
                 A: MapAccess<'de>,
             {
                 let mut query_text: Option<String> = None;
-                let mut query_vector: Option<Vec<f32>> = None;
-                let mut query_vector_ref: Option<SemanticVectorRef> = None;
+                let mut query_text_seen = false;
                 let mut generation: Option<GenerationPin> = None;
                 let mut generation_seen = false;
                 let mut generation_selector: Option<GenerationSelector> = None;
                 let mut generation_selector_seen = false;
-                let mut lexical_scope: Option<Option<TextQueryRequest>> = None;
+                let mut lexical_scope: Option<TextQueryRequest> = None;
+                let mut lexical_scope_seen = false;
                 let mut top_k: Option<u32> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "query_text" => {
-                            if query_text.is_some() {
+                            if query_text_seen {
                                 return Err(de::Error::duplicate_field("query_text"));
                             }
+                            query_text_seen = true;
                             query_text = Some(map.next_value()?);
-                        }
-                        "query_vector" => {
-                            if query_vector.is_some() {
-                                return Err(de::Error::duplicate_field("query_vector"));
-                            }
-                            query_vector = Some(map.next_value()?);
-                        }
-                        "query_vector_ref" => {
-                            if query_vector_ref.is_some() {
-                                return Err(de::Error::duplicate_field("query_vector_ref"));
-                            }
-                            query_vector_ref = Some(map.next_value()?);
                         }
                         "generation" => {
                             if generation_seen {
@@ -155,10 +119,11 @@ macro_rules! impl_semantic_query_request_serde {
                             generation_selector = Some(map.next_value()?);
                         }
                         "lexical_scope" => {
-                            if lexical_scope.is_some() {
+                            if lexical_scope_seen {
                                 return Err(de::Error::duplicate_field("lexical_scope"));
                             }
-                            lexical_scope = Some(Some(map.next_value()?));
+                            lexical_scope_seen = true;
+                            lexical_scope = Some(map.next_value()?);
                         }
                         "top_k" => {
                             if top_k.is_some() {
@@ -172,12 +137,10 @@ macro_rules! impl_semantic_query_request_serde {
                     }
                 }
                 Ok(SemanticQueryRequest {
-                    query_text,
-                    query_vector,
-                    query_vector_ref,
+                    query_text: query_text.ok_or_else(|| de::Error::missing_field("query_text"))?,
                     generation,
                     generation_selector,
-                    lexical_scope: lexical_scope.unwrap_or(None),
+                    lexical_scope,
                     top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
                 })
             }
@@ -199,14 +162,7 @@ impl_semantic_query_request_serde!(SEMANTIC_QUERY_REQUEST_FIELDS, SemanticQueryR
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridQueryRequest {
     pub text_query: TextQueryRequest,
-    /// QI-QRY-01 phase 2: optional text fallback for the semantic leg of a
-    /// hybrid query (legacy CLI path that encodes the vector as a
-    /// space-separated decimal list). SDK callers using `semantic_vector_ref`
-    /// should pass `None` — the field is no longer populated with
-    /// `String::new()` as a filler.
-    pub semantic_query_text: Option<String>,
-    pub semantic_vector: Option<Vec<f32>>,
-    pub semantic_vector_ref: Option<SemanticVectorRef>,
+    pub semantic_query_text: String,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
     pub top_k: u32,
@@ -215,8 +171,6 @@ pub struct HybridQueryRequest {
 const HYBRID_QUERY_REQUEST_FIELDS: &[&str] = &[
     "text_query",
     "semantic_query_text",
-    "semantic_vector",
-    "semantic_vector_ref",
     "generation",
     "generation_selector",
     "top_k",
@@ -229,33 +183,16 @@ macro_rules! impl_hybrid_query_request_serde {
             where
                 S: Serializer,
             {
-                let mut field_count: usize = 2;
-                if self.semantic_query_text.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
+                let mut field_count: usize = 3;
                 if self.generation.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
                 if self.generation_selector.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
-                if self.semantic_vector.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
-                if self.semantic_vector_ref.is_some() {
-                    field_count = field_count.saturating_add(1);
-                }
                 let mut state = serializer.serialize_struct("HybridQueryRequest", field_count)?;
                 state.serialize_field("text_query", &self.text_query)?;
-                if let Some(semantic_query_text) = &self.semantic_query_text {
-                    state.serialize_field("semantic_query_text", semantic_query_text)?;
-                }
-                if let Some(semantic_vector) = &self.semantic_vector {
-                    state.serialize_field("semantic_vector", semantic_vector)?;
-                }
-                if let Some(semantic_vector_ref) = &self.semantic_vector_ref {
-                    state.serialize_field("semantic_vector_ref", semantic_vector_ref)?;
-                }
+                state.serialize_field("semantic_query_text", &self.semantic_query_text)?;
                 if let Some(generation) = &self.generation {
                     state.serialize_field("generation", generation)?;
                 }
@@ -282,8 +219,7 @@ macro_rules! impl_hybrid_query_request_serde {
             {
                 let mut text_query: Option<TextQueryRequest> = None;
                 let mut semantic_query_text: Option<String> = None;
-                let mut semantic_vector: Option<Vec<f32>> = None;
-                let mut semantic_vector_ref: Option<SemanticVectorRef> = None;
+                let mut semantic_query_text_seen = false;
                 let mut generation: Option<GenerationPin> = None;
                 let mut generation_seen = false;
                 let mut generation_selector: Option<GenerationSelector> = None;
@@ -298,22 +234,11 @@ macro_rules! impl_hybrid_query_request_serde {
                             text_query = Some(map.next_value()?);
                         }
                         "semantic_query_text" => {
-                            if semantic_query_text.is_some() {
+                            if semantic_query_text_seen {
                                 return Err(de::Error::duplicate_field("semantic_query_text"));
                             }
+                            semantic_query_text_seen = true;
                             semantic_query_text = Some(map.next_value()?);
-                        }
-                        "semantic_vector" => {
-                            if semantic_vector.is_some() {
-                                return Err(de::Error::duplicate_field("semantic_vector"));
-                            }
-                            semantic_vector = Some(map.next_value()?);
-                        }
-                        "semantic_vector_ref" => {
-                            if semantic_vector_ref.is_some() {
-                                return Err(de::Error::duplicate_field("semantic_vector_ref"));
-                            }
-                            semantic_vector_ref = Some(map.next_value()?);
                         }
                         "generation" => {
                             if generation_seen {
@@ -342,9 +267,8 @@ macro_rules! impl_hybrid_query_request_serde {
                 }
                 Ok(HybridQueryRequest {
                     text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
-                    semantic_query_text,
-                    semantic_vector,
-                    semantic_vector_ref,
+                    semantic_query_text: semantic_query_text
+                        .ok_or_else(|| de::Error::missing_field("semantic_query_text"))?,
                     generation,
                     generation_selector,
                     top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,

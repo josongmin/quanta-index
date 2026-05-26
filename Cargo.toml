@@ -3,7 +3,6 @@ members = [
     "crates/quanta-index-contract",
     "crates/quanta-index-contract-base",
     "crates/quanta-index-core",
-    "crates/quanta-index-channel",
     "crates/quanta-index-lexical",
     "crates/quanta-index-repomap",
     "crates/quanta-index-semantic",

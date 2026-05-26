@@ -4,6 +4,8 @@
 //!
 //! * `SemanticQueryRequest.lexical_scope: Option<TextQueryRequest>` —
 //!   the `SemanticCandidateScope` dual surface has been deleted.
+//! * `HybridQueryRequest.text_query: TextQueryRequest` —
+//!   hybrid lexical intake uses the same canonical text carrier.
 //! * `SearchExplanation` (canonical at
 //!   [`quanta_index_contract::results::SearchExplanation`], re-exported as
 //!   `lex::SearchExplanation`) carries `planner_trace` of typed
@@ -23,8 +25,8 @@ use quanta_index_contract::lex::{
     SearchExplanation, SearchExplanationBuilder, WeightsHashError,
 };
 use quanta_index_contract::{
-    GenerationPin, ManifestGeneration, RepoId, RevisionId, SemanticQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    GenerationPin, HybridQueryRequest, ManifestGeneration, RepoId, RevisionId,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -60,14 +62,16 @@ fn lexical_scope_text_query() -> TextQueryRequest {
     }
 }
 
+fn semantic_query_text() -> String {
+    "semantic meaning for SearchPlane".to_owned()
+}
+
 // --- LXE-01: SemanticQueryRequest carries lexical_scope, not scope ---------
 
 #[test]
 fn semantic_query_request_lexical_scope_round_trips() -> TestRes {
     let original = SemanticQueryRequest {
-        query_text: None,
-        query_vector: Some(vec![0.1, 0.2, 0.3]),
-        query_vector_ref: None,
+        query_text: semantic_query_text(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),
@@ -95,9 +99,7 @@ fn semantic_query_request_lexical_scope_round_trips() -> TestRes {
 #[test]
 fn semantic_query_request_none_lexical_scope_round_trips() -> TestRes {
     let original = SemanticQueryRequest {
-        query_text: None,
-        query_vector: Some(vec![1.0_f32]),
-        query_vector_ref: None,
+        query_text: semantic_query_text(),
         generation: None,
         generation_selector: None,
         lexical_scope: None,
@@ -117,9 +119,7 @@ fn semantic_query_request_rejects_legacy_scope_field() -> TestRes {
     // must reject it as an unknown field. This fences the dual-surface
     // deletion at the wire level.
     let original = SemanticQueryRequest {
-        query_text: None,
-        query_vector: None,
-        query_vector_ref: None,
+        query_text: semantic_query_text(),
         generation: None,
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),
@@ -157,9 +157,7 @@ fn semantic_query_request_wire_field_is_lexical_scope() -> TestRes {
     // literal below fails to compile; if the wire field is renamed, the
     // map-key assertion below catches the regression.
     let sentinel = SemanticQueryRequest {
-        query_text: None,
-        query_vector: None,
-        query_vector_ref: None,
+        query_text: semantic_query_text(),
         generation: None,
         generation_selector: None,
         lexical_scope: Some(lexical_scope_text_query()),
@@ -181,6 +179,60 @@ fn semantic_query_request_wire_field_is_lexical_scope() -> TestRes {
         .any(|(key, _)| matches!(key, ciborium::Value::Text(text) if text == "scope"));
     if saw_scope {
         return Err("wire map must not contain legacy `scope` field".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn hybrid_query_request_text_query_round_trips() -> TestRes {
+    let original = HybridQueryRequest {
+        text_query: lexical_scope_text_query(),
+        semantic_query_text: "hybrid semantic meaning".to_owned(),
+        generation: Some(generation_pin()),
+        generation_selector: None,
+        top_k: 11,
+    };
+    let bytes = encode(&original)?;
+    let decoded: HybridQueryRequest = decode(&bytes)?;
+    if decoded != original {
+        return Err(
+            format!("roundtrip mismatch: original={original:?} decoded={decoded:?}").into(),
+        );
+    }
+    if decoded.text_query.syntax != TextQuerySyntax::Sourcegraph {
+        return Err("hybrid text_query.syntax not preserved".into());
+    }
+    if decoded.text_query.top_k != 64 {
+        return Err("hybrid text_query.top_k not preserved".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn hybrid_query_request_wire_field_is_text_query() -> TestRes {
+    let sentinel = HybridQueryRequest {
+        text_query: lexical_scope_text_query(),
+        semantic_query_text: "hybrid semantic meaning".to_owned(),
+        generation: Some(generation_pin()),
+        generation_selector: None,
+        top_k: 11,
+    };
+    let bytes = encode(&sentinel)?;
+    let wire: ciborium::Value = decode(&bytes)?;
+    let ciborium::Value::Map(fields) = &wire else {
+        return Err("expected HybridQueryRequest to encode as a map".into());
+    };
+    let saw_text_query = fields
+        .iter()
+        .any(|(key, _)| matches!(key, ciborium::Value::Text(text) if text == "text_query"));
+    if !saw_text_query {
+        return Err("wire map missing `text_query` field".into());
+    }
+    let saw_legacy_lexical = fields
+        .iter()
+        .any(|(key, _)| matches!(key, ciborium::Value::Text(text) if text == "lexical"));
+    if saw_legacy_lexical {
+        return Err("wire map must not contain legacy `lexical` field".into());
     }
     Ok(())
 }

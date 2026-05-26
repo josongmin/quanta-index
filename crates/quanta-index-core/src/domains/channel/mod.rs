@@ -1,10 +1,8 @@
-//! Channel domain — owns the per-track event stream policy for searchd.
+//! Channel domain — owns validation policy for legacy op streams.
 //!
-//! This domain does NOT implement the WAL transport (that's in
-//! `quanta-index-channel::backends`). It defines the policy that
-//! `searchd::app::dispatcher` enforces on every event observed from a
-//! subscriber: sequence monotonicity, generation-scope validation, and seal
-//! ordering.
+//! This domain does not implement transport. It defines the sequence /
+//! generation / seal validation rules that legacy op-stream adapters must
+//! preserve when they are exercised in tests or offline tooling.
 
 mod outbound;
 mod service;

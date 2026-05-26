@@ -8,7 +8,7 @@ use quanta_index_contract::{
     TextQuerySyntax,
 };
 
-use crate::{QuantaIndex, SdkError, semantic::SemanticVector};
+use crate::{QuantaIndex, SdkError};
 
 pub(crate) struct TextQueryBuilderState {
     pub(crate) syntax: TextQuerySyntax,
@@ -51,7 +51,7 @@ impl TextQueryBuilderState {
 pub(crate) struct VectorQueryBuilderState {
     pub(crate) selection: Option<GenerationSelector>,
     pub(crate) top_k: Option<u32>,
-    pub(crate) vector: Option<SemanticVector>,
+    pub(crate) semantic_query_text: Option<String>,
     pub(crate) text_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_top_k: Option<u32>,
@@ -62,7 +62,7 @@ impl VectorQueryBuilderState {
         Self {
             selection: None,
             top_k: None,
-            vector: None,
+            semantic_query_text: None,
             text_leg: None,
             scope_leg: None,
             scope_top_k: None,
@@ -70,10 +70,9 @@ impl VectorQueryBuilderState {
     }
 
     pub(crate) fn build_semantic_request(self) -> Result<SemanticQueryRequest, SdkError> {
-        let vector_ref = self
-            .vector
-            .ok_or_else(|| SdkError::Usage("semantic vector is required".to_string()))?
-            .into_ref()?;
+        let query_text = self
+            .semantic_query_text
+            .ok_or_else(|| SdkError::Usage("semantic query text is required".to_string()))?;
         let selection = self.selection.ok_or_else(|| {
             SdkError::Usage("semantic generation selection is required".to_string())
         })?;
@@ -108,9 +107,7 @@ impl VectorQueryBuilderState {
             (None, None) => None,
         };
         Ok(SemanticQueryRequest {
-            query_text: None,
-            query_vector: None,
-            query_vector_ref: Some(vector_ref),
+            query_text,
             generation,
             generation_selector,
             lexical_scope,
@@ -122,10 +119,9 @@ impl VectorQueryBuilderState {
         let (syntax, query_text) = self
             .text_leg
             .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
-        let vector_ref = self
-            .vector
-            .ok_or_else(|| SdkError::Usage("hybrid semantic vector is required".to_string()))?
-            .into_ref()?;
+        let semantic_query_text = self
+            .semantic_query_text
+            .ok_or_else(|| SdkError::Usage("hybrid semantic query text is required".to_string()))?;
         let selection = self.selection.ok_or_else(|| {
             SdkError::Usage("hybrid generation selection is required".to_string())
         })?;
@@ -141,9 +137,7 @@ impl VectorQueryBuilderState {
                 generation_selector: generation_selector.clone(),
                 top_k,
             },
-            semantic_query_text: None,
-            semantic_vector: None,
-            semantic_vector_ref: Some(vector_ref),
+            semantic_query_text,
             generation,
             generation_selector,
             top_k,

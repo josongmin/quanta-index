@@ -6,7 +6,7 @@ mod service;
 
 pub use inbound::LexicalQueryPort;
 pub use outbound::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalReadiness,
-    LexicalSearcher,
+    LexicalBatchBuildPort, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort,
+    LexicalReadiness, LexicalSearcher,
 };
 pub use service::LexicalPolicy;

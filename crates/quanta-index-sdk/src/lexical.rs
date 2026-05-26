@@ -152,6 +152,7 @@ impl crate::NamespaceIngest for LexicalNs {
             manifest_digest: batch.manifest_digest.clone(),
             batch_digest: batch.batch_digest.clone(),
             mode: batch.mode.to_wire(),
+            bundle_payload: None,
             replace_scopes: batch.replace_scopes.clone(),
             tombstone_scopes: batch.tombstone_scopes.clone(),
             seal: batch.seal,

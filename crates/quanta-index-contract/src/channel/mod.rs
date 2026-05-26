@@ -1,9 +1,9 @@
-//! Channel transport ops.
+//! Legacy channel/op transport shapes.
 //!
-//! Producer code constructs [`LexicalChannelOp`] or [`SemanticChannelOp`] values and
-//! calls `BundleChannelPublisher::publish(op)` from the `quanta-index-channel` crate.
-//! Subscriber side receives the same values. Wire encoding lives in the channel
-//! adapter's backend modules and is not exposed here.
+//! These types remain the canonical wire records for persisted op streams and
+//! op-oriented adapter tests. The typed ingest front door is defined in
+//! [`crate::ipc::ingest`]; producers are no longer expected to publish these
+//! ops directly.
 
 mod ids;
 mod ops;

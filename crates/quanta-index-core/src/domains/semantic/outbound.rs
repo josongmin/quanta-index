@@ -8,8 +8,8 @@ use quanta_index_contract::{
 
 use crate::error::CoreError;
 
-/// Ingest a typed semantic batch into the channel. QI-RT-01 counterpart to
-/// [`crate::LexicalIngestPort`].
+/// Ingest a typed semantic batch into the direct authority path. QI-RT-01
+/// counterpart to [`crate::LexicalIngestPort`].
 pub trait SemanticIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }
@@ -28,6 +28,16 @@ pub trait SemanticIndexBuildPort: Send + Sync {
         generation: ManifestGeneration,
         ops: &[SemanticChannelOp],
     ) -> Result<(), CoreError>;
+}
+
+/// Build / replay a typed semantic ingest batch into a semantic index for a
+/// given generation.
+///
+/// This is the batch-native authority surface used by the direct ingest path.
+/// Implementations may internally lower into legacy op handlers, but callers
+/// do not construct or route channel ops on the hot path.
+pub trait SemanticBatchBuildPort: Send + Sync {
+    fn build_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError>;
 }
 
 pub trait SemanticIndexOpenPort: Send + Sync {

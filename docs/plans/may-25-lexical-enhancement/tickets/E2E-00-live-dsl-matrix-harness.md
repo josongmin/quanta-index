@@ -1,6 +1,6 @@
 # E2E-00 - Live DSL Matrix Harness
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: [LXE-00](LXE-00-truth-freeze-and-executable-matrix.md)
 
@@ -9,6 +9,19 @@ Depends on: [LXE-00](LXE-00-truth-freeze-and-executable-matrix.md)
 Create the E2E harness that writes records into real index/storage paths,
 opens the search runtime, issues public requests, and asserts responses. Parser
 or lowering tests do not satisfy this ticket.
+
+## Current live truth (2026-05-27)
+
+- `common/e2e_harness.rs` is the shared live harness used by `E2E-01` through
+  `E2E-07`
+- `e2e_matrix_inventory.rs` proves write -> seal -> reopen -> query and typed
+  invalid-request behavior against the real runtime boundary
+- later owner rails (`e2e_lexical_full_fidelity`, `e2e_dual_syntax_lowering_parity`,
+  `e2e_restart_replay_determinism`, `e2e_full_corpus`, `e2e_perf_chaos`) all
+  execute through this harness or its direct runtime sibling surfaces
+- proof rails:
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime -- --nocapture`
 
 ## Owner files
 

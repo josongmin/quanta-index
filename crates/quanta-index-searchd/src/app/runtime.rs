@@ -5,24 +5,19 @@ use std::{fs, path::Path};
 
 use anyhow::Result;
 use memchr::memchr_iter;
-use quanta_index_channel::{
-    LexicalWalSubscriber, OpCodec, SegmentLayout, SegmentReader, SemanticCodec,
-    SemanticWalSubscriber,
-};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
     ManifestGeneration, RepoId, RevisionId, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
-    SemanticChannelOp,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
+    LexicalBatchBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
     SemanticIngestPort, StructuralError, StructuralMatchBinding, StructuralMatchCandidate,
     StructuralReadiness,
 };
@@ -35,10 +30,11 @@ use quanta_index_lq_structural::{
     compile_authoritative_pattern,
 };
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelDispatcher, DirectHistoryMaterializer, DirectLexicalMaterializer,
-    DirectRuntimeMetadataMaterializer, DirectSemanticMaterializer, DirectStructuralMaterializer,
-    HistoryIngestPort, Ledger, RuntimeMetadataIngestPort, SearchPlaneControlDispatcher,
-    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, StructuralIngestPort,
+    ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DecimalQueryTextEmbedder,
+    DirectHistoryMaterializer, DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer,
+    DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort, Ledger,
+    QueryObsSink, RuntimeMetadataIngestPort, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
+    SearchPlaneIngestDispatcher, SemanticAuthorityStore, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -51,28 +47,16 @@ use crate::app::server::{
 };
 
 pub struct SearchdRuntimeParts {
-    pub lex_sub: LexicalWalSubscriber,
-    pub sem_sub: SemanticWalSubscriber,
-    pub lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync>,
+    pub lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
-    pub sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync>,
+    pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
-    /// QI-RT-01: typed lexical ingest path. Concrete adapter (channel-backed)
-    /// is wired here by the composition root; downstream code only sees the
-    /// `dyn LexicalIngestPort` shape.
-    pub lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync>,
-    /// QI-RT-01: typed semantic ingest path.
-    pub sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync>,
-    /// SDK-first source-authority history ingest.
-    pub history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync>,
-    /// SDK-first runtime dirty ingest.
-    pub runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
-    /// SDK-first structural parse-tree ingest.
-    pub structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync>,
     pub activation_catalog: Arc<ActivationCatalog>,
+    pub aux_authority_store: Arc<AuxiliaryAuthorityStore>,
+    pub semantic_authority_store: Arc<SemanticAuthorityStore>,
 }
 
 struct LedgerStructuralProducer {
@@ -346,6 +330,8 @@ fn project_structural_candidate(
         .collect::<Result<Vec<_>, StructuralError>>()?;
     Ok(StructuralMatchCandidate {
         candidate_id: chunk_id.as_str().to_string(),
+        pattern_start_byte: candidate.pattern_span.start(),
+        pattern_end_byte: candidate.pattern_span.end(),
         bindings,
     })
 }
@@ -390,10 +376,9 @@ fn count_line_breaks(text: &[u8]) -> u32 {
     u32::try_from(memchr_iter(b'\n', text).count()).map_or(u32::MAX, core::convert::identity)
 }
 
-/// Composed runtime: subscribers, adapters, ledger, dispatcher, query server.
+/// Composed runtime: direct-ingest adapters, ledger, and UDS servers.
 pub struct SearchdRuntime {
     pub config: SearchdConfig,
-    pub dispatcher: ChannelDispatcher,
     pub query_server: SearchPlaneQueryServer<
         dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
     >,
@@ -404,14 +389,13 @@ pub struct SearchdRuntime {
         dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
     >,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
+    pub query_obs_store: Arc<BoundedQueryObsStore>,
 }
 
 impl SearchdRuntime {
-    /// Assemble the runtime from externally-supplied subscribers and ports.
+    /// Assemble the runtime from externally-supplied ports.
     pub fn assemble(config: SearchdConfig, parts: SearchdRuntimeParts) -> Result<Self> {
         let SearchdRuntimeParts {
-            lex_sub,
-            sem_sub,
             lex_build_port,
             lex_open_port,
             sem_build_port,
@@ -419,52 +403,57 @@ impl SearchdRuntime {
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
-            lex_ingest_port,
-            sem_ingest_port,
-            history_ingest_port,
-            runtime_ingest_port,
-            structural_ingest_port,
             activation_catalog,
+            aux_authority_store,
+            semantic_authority_store,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        bootstrap_persisted_lexical_readiness(&ledger, config.state_root())?;
-        bootstrap_persisted_semantic_state(&ledger, config.state_root(), sem_build_port.as_ref())?;
-        let dispatcher = ChannelDispatcher::new(
-            lex_sub,
-            sem_sub,
-            Arc::clone(&lex_build_port),
-            Arc::clone(&sem_build_port),
-            Arc::clone(&ledger),
+        bootstrap_persisted_lexical_state(&ledger, config.state_root())?;
+        bootstrap_persisted_semantic_state(
+            &ledger,
+            semantic_authority_store.as_ref(),
+            sem_build_port.as_ref(),
+        )?;
+        {
+            let mut guard = ledger.write().map_err(|err| {
+                anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
+            })?;
+            aux_authority_store
+                .restore_into(&mut guard)
+                .map_err(anyhow::Error::from)?;
+        }
+        let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> = Arc::new(
+            DirectLexicalMaterializer::new(Arc::clone(&lex_build_port), Arc::clone(&ledger)),
         );
-        let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
-            Arc::new(DirectLexicalMaterializer::new(
-                lex_ingest_port,
-                Arc::clone(&lex_build_port),
-                Arc::clone(&ledger),
-            ));
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
             Arc::new(DirectSemanticMaterializer::new(
-                sem_ingest_port,
+                semantic_authority_store,
                 Arc::clone(&sem_build_port),
                 Arc::clone(&ledger),
             ));
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
-            DirectHistoryMaterializer::new(history_ingest_port, Arc::clone(&ledger)),
+            DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),
         );
-        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> = Arc::new(
-            DirectRuntimeMetadataMaterializer::new(runtime_ingest_port, Arc::clone(&ledger)),
-        );
+        let direct_runtime_ingest_port: Arc<dyn RuntimeMetadataIngestPort + Send + Sync> =
+            Arc::new(DirectRuntimeMetadataMaterializer::new(
+                aux_authority_store.clone(),
+                Arc::clone(&ledger),
+            ));
         let direct_structural_ingest_port: Arc<dyn StructuralIngestPort + Send + Sync> = Arc::new(
-            DirectStructuralMaterializer::new(structural_ingest_port, Arc::clone(&ledger)),
+            DirectStructuralMaterializer::new(aux_authority_store, Arc::clone(&ledger)),
         );
 
-        let query_dispatcher = Arc::new(SearchPlaneDispatcher::new(
+        let query_obs_store = Arc::new(BoundedQueryObsStore::default());
+        let query_obs_sink: Arc<dyn QueryObsSink + Send + Sync> = query_obs_store.clone();
+        let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
             lex_open_port,
             sem_open_port,
             Arc::clone(&repo_map_query_port),
             Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
             Arc::clone(&ledger),
             activation_catalog.clone(),
+            Arc::new(DecimalQueryTextEmbedder),
+            query_obs_sink,
         ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             repo_map_generation_activate_port,
@@ -509,19 +498,24 @@ impl SearchdRuntime {
 
         Ok(Self {
             config,
-            dispatcher,
             query_server,
             control_server,
             ingest_server,
             repo_map_query_port,
+            query_obs_store,
         })
     }
 }
 
-fn bootstrap_persisted_lexical_readiness(
+fn bootstrap_persisted_lexical_state(
     ledger: &Arc<RwLock<Ledger>>,
     state_root: &Path,
 ) -> Result<()> {
+    seed_persisted_lexical_readiness(ledger, state_root)?;
+    Ok(())
+}
+
+fn seed_persisted_lexical_readiness(ledger: &Arc<RwLock<Ledger>>, state_root: &Path) -> Result<()> {
     let lexical_root = state_root.join("indexes").join("lexical");
     if !lexical_root.exists() {
         return Ok(());
@@ -556,6 +550,13 @@ fn bootstrap_persisted_lexical_readiness(
                     continue;
                 };
                 let generation = ManifestGeneration::new(raw_generation);
+                guard.record_track_materialized(
+                    &repo_id,
+                    &revision_id,
+                    SearchPlaneTrackKind::Lexical,
+                    generation,
+                    None,
+                );
                 guard.record_track_seal(
                     &repo_id,
                     &revision_id,
@@ -570,6 +571,7 @@ fn bootstrap_persisted_lexical_readiness(
         }
     }
     if let Some(max_generation) = max_generation {
+        guard.lexical_materialize(max_generation, None);
         guard.lexical_seal(max_generation);
     }
     drop(guard);
@@ -578,59 +580,10 @@ fn bootstrap_persisted_lexical_readiness(
 
 fn bootstrap_persisted_semantic_state(
     ledger: &Arc<RwLock<Ledger>>,
-    state_root: &Path,
-    builder: &(dyn SemanticIndexBuildPort + Send + Sync),
+    authority_store: &SemanticAuthorityStore,
+    builder: &(dyn SemanticBatchBuildPort + Send + Sync),
 ) -> Result<()> {
-    let semantic_root = state_root.join("channel").join("semantic");
-    let layout = SegmentLayout::new(semantic_root);
-    let segments = layout.list_segments()?;
-    if segments.is_empty() {
-        return Ok(());
-    }
-    for (seg_id, _path) in segments {
-        let mut reader = SegmentReader::open(&layout, seg_id)?;
-        reader.refresh_len()?;
-        while let Some((_seq, body)) = reader.read_next_frame()? {
-            let op = SemanticCodec::decode_op(&body)
-                .map_err(|err| anyhow::anyhow!("semantic bootstrap decode: {err}"))?;
-            replay_semantic_bootstrap_op(ledger, builder, &op)?;
-        }
-    }
-    Ok(())
-}
-
-fn replay_semantic_bootstrap_op(
-    ledger: &Arc<RwLock<Ledger>>,
-    builder: &(dyn SemanticIndexBuildPort + Send + Sync),
-    op: &SemanticChannelOp,
-) -> Result<()> {
-    let repo_id = op.repo_id().clone();
-    let revision_id = op.revision_id().clone();
-    let generation = op.generation();
-    let ops = [op.clone()];
-    builder
-        .build(&repo_id, &revision_id, generation, &ops)
-        .map_err(|err| anyhow::anyhow!("semantic bootstrap build: {err}"))?;
-    let mut guard = ledger
-        .write()
-        .map_err(|err| anyhow::anyhow!("ledger poisoned during semantic bootstrap: {err}"))?;
-    guard.semantic_materialize(generation, None);
-    guard.record_track_materialized(
-        &repo_id,
-        &revision_id,
-        SearchPlaneTrackKind::Semantic,
-        generation,
-        None,
-    );
-    if matches!(op, SemanticChannelOp::Seal(_)) {
-        guard.semantic_seal(generation);
-        guard.record_track_seal(
-            &repo_id,
-            &revision_id,
-            SearchPlaneTrackKind::Semantic,
-            generation,
-        );
-    }
-    drop(guard);
-    Ok(())
+    authority_store
+        .replay_into(ledger, builder)
+        .map_err(anyhow::Error::from)
 }

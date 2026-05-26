@@ -2,9 +2,10 @@
 //!
 //! Producer / search-plane integration surface for batch publishes. The
 //! producer sends a [`SearchPlaneIngestIpcRequestEnvelope`] over UDS
-//! `ingest.sock`; searchd's ingest dispatcher fans the typed batch out to
-//! internal `LexicalChannelOp` / `SemanticChannelOp` / `RepoMap` bundle ingest
-//! streams. The producer never opens a channel publisher directly.
+//! `ingest.sock`; searchd's ingest dispatcher applies the typed batch through
+//! direct authority stores / builders and forwards repo-map bundles to the
+//! repo-map owner. The producer never opens an internal transport adapter
+//! directly.
 //!
 //! Wire shape: every DTO in this module implements `Serialize` /
 //! `Deserialize` manually. Workspace bans proc-macro serde derives
@@ -416,6 +417,7 @@ pub struct LexicalIngestBatch {
     pub manifest_digest: String,
     pub batch_digest: String,
     pub mode: BatchIngestMode,
+    pub bundle_payload: Option<Vec<u8>>,
     pub replace_scopes: Vec<LexicalReplaceScope>,
     pub tombstone_scopes: Vec<LexicalTombstoneScope>,
     pub seal: bool,
@@ -429,6 +431,7 @@ const LEXICAL_INGEST_BATCH_FIELDS: &[&str] = &[
     "manifest_digest",
     "batch_digest",
     "mode",
+    "bundle_payload",
     "replace_scopes",
     "tombstone_scopes",
     "seal",
@@ -439,7 +442,7 @@ impl Serialize for LexicalIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalIngestBatch", 10)?;
+        let mut state = serializer.serialize_struct("LexicalIngestBatch", 11)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -447,6 +450,7 @@ impl Serialize for LexicalIngestBatch {
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("mode", &self.mode)?;
+        state.serialize_field("bundle_payload", &self.bundle_payload)?;
         state.serialize_field("replace_scopes", &self.replace_scopes)?;
         state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
@@ -474,6 +478,7 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
         let mut manifest_digest: Option<String> = None;
         let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
+        let mut bundle_payload: Option<Option<Vec<u8>>> = None;
         let mut replace_scopes: Option<Vec<LexicalReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<LexicalTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
@@ -521,6 +526,12 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
                     }
                     mode = Some(map.next_value()?);
                 }
+                "bundle_payload" => {
+                    if bundle_payload.is_some() {
+                        return Err(de::Error::duplicate_field("bundle_payload"));
+                    }
+                    bundle_payload = Some(map.next_value()?);
+                }
                 "replace_scopes" => {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
@@ -554,6 +565,7 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
+            bundle_payload: bundle_payload.unwrap_or(None),
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
@@ -2949,6 +2961,7 @@ mod tests {
             manifest_digest: "manifest:feed".to_string(),
             batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
+            bundle_payload: None,
             replace_scopes: vec![LexicalReplaceScope {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),

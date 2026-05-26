@@ -1,6 +1,6 @@
 # LXE-01 - Active Contract and Dead-route Cleanup
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: [LXE-00](LXE-00-truth-freeze-and-executable-matrix.md)
 
@@ -8,6 +8,22 @@ Depends on: [LXE-00](LXE-00-truth-freeze-and-executable-matrix.md)
 
 Make the public query and result contract match the active runtime surface.
 Remove legacy routes instead of keeping compatibility shims.
+
+## Current live truth (2026-05-27)
+
+- semantic request wire shape is `SemanticQueryRequest { query_text,
+  generation, generation_selector, lexical_scope, top_k }`
+- hybrid request wire shape is `HybridQueryRequest { text_query,
+  semantic_query_text, generation, generation_selector, top_k }`
+- contract decode rejects deleted `scope`, `query_vector_ref`, and
+  `semantic_vector_ref` fields
+- public SDK and `searchctl` surfaces now expose text-based semantic/hybrid
+  query carriers instead of the removed vector/handle request contract
+- proof rails:
+  - `cargo test -p quanta-index-contract --test lxe_unified_surface -- --nocapture`
+  - `cargo test -p quanta-index-contract --test ipc_query_result_v2_contract -- --nocapture`
+  - `cargo test -p quanta-index-sdk --lib`
+  - `cargo test -p quanta-index-searchctl --tests`
 
 ## Owner files
 
@@ -49,7 +65,7 @@ Remove legacy routes instead of keeping compatibility shims.
 - Ensure lexical request intake is `TextQueryRequest { syntax, query_text,
   generation, generation_selector, top_k }`.
 - Ensure semantic request uses `lexical_scope: Option<TextQueryRequest>`.
-- Ensure hybrid request uses `lexical: TextQueryRequest`.
+- Ensure hybrid request uses `text_query: TextQueryRequest`.
 - Remove public `LqQuery` direct request fields from lexical/semantic/hybrid
   request structs.
 - Remove active legacy leaves and bypasses (any equivalent of `Custom` /

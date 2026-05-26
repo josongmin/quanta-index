@@ -202,6 +202,8 @@ mod tests {
     fn ready_returns_candidates() {
         let expected = vec![StructuralMatchCandidate {
             candidate_id: "chunk-1".to_string(),
+            pattern_start_byte: 0,
+            pattern_end_byte: 4,
             bindings: vec![StructuralMatchBinding {
                 metavariable: "$X".to_string(),
                 start_byte: 0,

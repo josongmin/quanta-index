@@ -5,28 +5,29 @@
 
 //! Application-layer search-plane orchestration.
 //!
-//! This crate owns readiness state, channel-driven materialization dispatch,
+//! This crate owns readiness state, direct authority materialization,
 //! lexical lowering, and the cross-domain query orchestration that sits
 //! between transport and the core domain ports.
 
-mod channel_dispatcher;
 mod control_dispatcher;
 mod ingest_dispatcher;
 mod lowering;
 mod query_dispatcher;
 mod readiness;
 
-pub use channel_dispatcher::ChannelDispatcher;
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
-    ChannelHistoryIngestAdapter, ChannelLexicalIngestAdapter, ChannelRuntimeMetadataIngestAdapter,
-    ChannelSemanticIngestAdapter, ChannelStructuralIngestAdapter, DirectHistoryMaterializer,
-    DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer, DirectSemanticMaterializer,
-    DirectStructuralMaterializer, HistoryIngestPort, RuntimeMetadataIngestPort,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    DirectHistoryMaterializer, DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer,
+    DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
+    RuntimeMetadataIngestPort, SearchPlaneIngestDispatcher, SemanticAuthorityStore,
+    StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
+pub use quanta_index_lq_obs::{MetricSample, ObsError};
 pub use query_dispatcher::{
+    BoundedQueryObsStore, DecimalQueryTextEmbedder, QueryObsSink, QueryTextEmbedderPort,
     SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService, make_pin,
 };
-pub use readiness::{ActivationCatalog, ActiveGenerationRecord, Ledger, TrackLedger};
+pub use readiness::{
+    ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger, TrackLedger,
+};

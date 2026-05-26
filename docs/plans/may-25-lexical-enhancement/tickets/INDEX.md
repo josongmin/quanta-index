@@ -79,9 +79,9 @@ green, including the current `e2e_dual_syntax_lowering_parity` owner test.
 Follow-on owner rails now also cover `E2E-03` semantic/hybrid runtime proof,
 `E2E-05` restart/replay, `E2E-06` full-corpus runtime execution, and the
 currently-landed `E2E-07` boundedness owner rail on the same current tree.
-The remaining open program-level queue is still `E2E-07` together with the
-residual `LXE-10` metrics surface; this is not yet a workspace-wide `clippy`
-/ `cargo test --workspace` claim.
+The broader matrix residue has now also been retired on the same current tree,
+so the May-25 pack is closed at the current live-source proof bar. This is not
+yet a workspace-wide `clippy` / `cargo test --workspace` claim.
 
 ## 6. Ticket quality bar
 

@@ -33,7 +33,7 @@ pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
 pub use search::{HybridQueryBuilder, SearchNamespace};
-pub use semantic::{SemanticBatch, SemanticNamespace, SemanticQueryBuilder, SemanticVector};
+pub use semantic::{SemanticBatch, SemanticNamespace, SemanticQueryBuilder};
 pub use structural::{StructuralBatch, StructuralNamespace, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
 pub(crate) use transport::{

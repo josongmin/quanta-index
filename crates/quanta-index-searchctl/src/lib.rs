@@ -14,8 +14,8 @@ use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
     RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, SemanticVectorRef, TextQueryRequest,
-    TextQueryResponse, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -320,8 +320,6 @@ fn parse_semantic(
 ) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut query_text: Option<String> = None;
-    let mut query_vector: Option<Vec<f32>> = None;
-    let mut query_vector_handle: Option<String> = None;
     let mut top_k: Option<u32> = None;
     let mut scope_query_text: Option<String> = None;
     let mut scope_syntax: Option<TextQuerySyntax> = None;
@@ -334,14 +332,6 @@ fn parse_semantic(
         |current, rest| match current {
             "--query-text" => {
                 query_text = Some(take_value(rest, "--query-text")?);
-                Ok(true)
-            }
-            "--query-vector" => {
-                query_vector = Some(parse_f32_vector_flag(rest, "--query-vector")?);
-                Ok(true)
-            }
-            "--query-vector-handle" => {
-                query_vector_handle = Some(take_value(rest, "--query-vector-handle")?);
                 Ok(true)
             }
             "--top-k" => {
@@ -398,18 +388,9 @@ fn parse_semantic(
             ));
         }
     };
-    let (query_text, query_vector_ref) = resolve_semantic_input(
-        query_text,
-        query_vector,
-        query_vector_handle,
-        "--query-text",
-        "--query-vector",
-        "--query-vector-handle",
-    )?;
     Ok(CliRequest::Semantic(SemanticQueryRequest {
-        query_text: (!query_text.is_empty()).then_some(query_text),
-        query_vector: None,
-        query_vector_ref,
+        query_text: query_text
+            .ok_or_else(|| CliError::usage("missing --query-text".to_string()))?,
         generation: Some(generation),
         generation_selector: None,
         lexical_scope,
@@ -422,8 +403,6 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
     let mut lexical_query_text: Option<String> = None;
     let mut lexical_syntax: Option<TextQuerySyntax> = None;
     let mut semantic_query_text: Option<String> = None;
-    let mut semantic_vector: Option<Vec<f32>> = None;
-    let mut semantic_vector_handle: Option<String> = None;
     let mut top_k: Option<u32> = None;
     parse_query_command_flags(
         common,
@@ -441,14 +420,6 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
             }
             "--semantic-query" => {
                 semantic_query_text = Some(take_value(rest, "--semantic-query")?);
-                Ok(true)
-            }
-            "--semantic-vector" => {
-                semantic_vector = Some(parse_f32_vector_flag(rest, "--semantic-vector")?);
-                Ok(true)
-            }
-            "--semantic-vector-handle" => {
-                semantic_vector_handle = Some(take_value(rest, "--semantic-vector-handle")?);
                 Ok(true)
             }
             "--top-k" => {
@@ -469,19 +440,10 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
         generation_selector: None,
         top_k: text_query_top_k,
     };
-    let (semantic_query_text, semantic_vector_ref) = resolve_semantic_input(
-        semantic_query_text,
-        semantic_vector,
-        semantic_vector_handle,
-        "--semantic-query",
-        "--semantic-vector",
-        "--semantic-vector-handle",
-    )?;
     Ok(CliRequest::Hybrid(HybridQueryRequest {
         text_query,
-        semantic_query_text: (!semantic_query_text.is_empty()).then_some(semantic_query_text),
-        semantic_vector: None,
-        semantic_vector_ref,
+        semantic_query_text: semantic_query_text
+            .ok_or_else(|| CliError::usage("missing --semantic-query".to_string()))?,
         generation: Some(generation),
         generation_selector: None,
         top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
@@ -650,112 +612,6 @@ fn parse_u64_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u64> {
             "{flag} requires an unsigned integer, got `{value}`: {err}"
         ))
     })
-}
-
-fn parse_f32_vector_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<Vec<f32>> {
-    let value = take_value(rest, flag)?;
-    parse_f32_vector(&value, flag)
-}
-
-fn parse_f32_vector(value: &str, flag: &str) -> CliResult<Vec<f32>> {
-    let trimmed = value.trim();
-    let vector = if trimmed.starts_with('[') {
-        serde_json::from_str::<Vec<f32>>(trimmed).map_err(|err| {
-            CliError::usage(format!(
-                "{flag} requires a JSON array or comma-separated f32 list, got `{value}`: {err}"
-            ))
-        })?
-    } else if trimmed.is_empty() {
-        Vec::new()
-    } else {
-        trimmed
-            .split(',')
-            .map(|token| {
-                let token = token.trim();
-                if token.is_empty() {
-                    return Err(CliError::usage(format!(
-                        "{flag} contains an empty vector component in `{value}`"
-                    )));
-                }
-                token.parse::<f32>().map_err(|err| {
-                    CliError::usage(format!(
-                        "{flag} requires finite f32 values, got component `{token}`: {err}"
-                    ))
-                })
-            })
-            .collect::<CliResult<Vec<f32>>>()?
-    };
-    validate_query_vector(&vector, flag)?;
-    Ok(vector)
-}
-
-fn validate_query_vector(vector: &[f32], flag: &str) -> CliResult<()> {
-    if vector.is_empty() {
-        return Err(CliError::usage(format!(
-            "{flag} requires at least one vector component"
-        )));
-    }
-    let mut non_zero = false;
-    for component in vector {
-        if !component.is_finite() {
-            return Err(CliError::usage(format!(
-                "{flag} requires finite f32 values, got `{component}`"
-            )));
-        }
-        if *component != 0.0 {
-            non_zero = true;
-        }
-    }
-    if !non_zero {
-        return Err(CliError::usage(format!(
-            "{flag} requires a non-zero vector"
-        )));
-    }
-    Ok(())
-}
-
-fn resolve_semantic_input(
-    text: Option<String>,
-    vector: Option<Vec<f32>>,
-    handle: Option<String>,
-    text_flag: &str,
-    vector_flag: &str,
-    handle_flag: &str,
-) -> CliResult<(String, Option<SemanticVectorRef>)> {
-    match (text, vector, handle) {
-        (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (None, Some(_), Some(_)) => {
-            Err(CliError::usage(format!(
-                "provide exactly one of {text_flag}, {vector_flag}, or {handle_flag}"
-            )))
-        }
-        (Some(text), None, None) => Ok((text, None)),
-        (None, Some(vector), None) => Ok((
-            encode_query_vector_text(&vector),
-            Some(SemanticVectorRef::Inline(vector)),
-        )),
-        (None, None, Some(handle)) => {
-            if handle.is_empty() {
-                return Err(CliError::usage(format!(
-                    "{handle_flag} requires a non-empty handle"
-                )));
-            }
-            Ok((
-                String::new(),
-                Some(SemanticVectorRef::Handle(handle.into_boxed_str())),
-            ))
-        }
-        (None, None, None) => Err(CliError::usage(format!(
-            "missing {text_flag}, {vector_flag}, or {handle_flag}"
-        ))),
-    }
-}
-
-fn encode_query_vector_text(vector: &[f32]) -> String {
-    vector
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
@@ -1152,8 +1008,8 @@ Global flags:
 
 Read-only subcommands:
   lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
-  semantic --repo-id ID --revision-id REV --manifest-generation N (--query-text TEXT | --query-vector CSV|JSON | --query-vector-handle ID) --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
-  hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph (--semantic-query TEXT | --semantic-vector CSV|JSON | --semantic-vector-handle ID) --top-k N
+  semantic --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
+  hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
   repomap  --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
 "
@@ -1242,7 +1098,7 @@ mod tests {
         clippy::panic,
         reason = "test asserts payload variant shape; panic isolates failure to this single test"
     )]
-    fn parses_semantic_query_vector_and_backfills_query_text() {
+    fn parses_semantic_query_text() {
         let parsed = ParsedCommand::parse([
             "semantic",
             "--repo-id",
@@ -1251,8 +1107,8 @@ mod tests {
             "rev",
             "--manifest-generation",
             "7",
-            "--query-vector",
-            "1.0,0.0,2.5",
+            "--query-text",
+            "1 0 2.5",
             "--top-k",
             "5",
         ]);
@@ -1263,12 +1119,7 @@ mod tests {
         let CliRequest::Semantic(request) = parsed.request else {
             panic!("expected semantic payload");
         };
-        assert_eq!(request.query_text, Some("1 0 2.5".to_string()));
-        assert_eq!(request.query_vector, None);
-        assert_eq!(
-            request.query_vector_ref,
-            Some(SemanticVectorRef::Inline(vec![1.0, 0.0, 2.5]))
-        );
+        assert_eq!(request.query_text, "1 0 2.5".to_string());
     }
 
     #[test]
@@ -1276,7 +1127,7 @@ mod tests {
         clippy::panic,
         reason = "test asserts payload variant shape; panic isolates failure to this single test"
     )]
-    fn parses_hybrid_semantic_vector_and_backfills_semantic_query() {
+    fn parses_hybrid_semantic_query_text() {
         let parsed = ParsedCommand::parse([
             "hybrid",
             "--repo-id",
@@ -1289,8 +1140,8 @@ mod tests {
             "needle",
             "--lexical-syntax",
             "native",
-            "--semantic-vector",
-            "[1.0, 0.0, 2.5]",
+            "--semantic-query",
+            "1 0 2.5",
             "--top-k",
             "5",
         ]);
@@ -1301,16 +1152,11 @@ mod tests {
         let CliRequest::Hybrid(request) = parsed.request else {
             panic!("expected hybrid payload");
         };
-        assert_eq!(request.semantic_query_text, Some("1 0 2.5".to_string()));
-        assert_eq!(request.semantic_vector, None);
-        assert_eq!(
-            request.semantic_vector_ref,
-            Some(SemanticVectorRef::Inline(vec![1.0, 0.0, 2.5]))
-        );
+        assert_eq!(request.semantic_query_text, "1 0 2.5".to_string());
     }
 
     #[test]
-    fn rejects_semantic_text_and_vector_together() {
+    fn rejects_legacy_semantic_query_vector_flag() {
         let parsed = ParsedCommand::parse([
             "semantic",
             "--repo-id",
@@ -1319,8 +1165,6 @@ mod tests {
             "rev",
             "--manifest-generation",
             "7",
-            "--query-text",
-            "1 2 3",
             "--query-vector",
             "1,2,3",
             "--top-k",
@@ -1331,7 +1175,6 @@ mod tests {
             return;
         };
         assert_eq!(error.exit_code, EXIT_USAGE);
-        assert!(error.message.contains("--query-text"));
         assert!(error.message.contains("--query-vector"));
     }
 
@@ -1340,7 +1183,7 @@ mod tests {
         clippy::panic,
         reason = "test asserts payload variant shape; panic isolates failure to this single test"
     )]
-    fn parses_semantic_query_handle_and_backfills_empty_query_text() {
+    fn rejects_legacy_semantic_query_handle_flag() {
         let parsed = ParsedCommand::parse([
             "semantic",
             "--repo-id",
@@ -1354,19 +1197,12 @@ mod tests {
             "--top-k",
             "5",
         ]);
-        assert!(parsed.is_ok());
-        let Ok(parsed) = parsed else {
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
             return;
         };
-        let CliRequest::Semantic(request) = parsed.request else {
-            panic!("expected semantic payload");
-        };
-        assert_eq!(request.query_text, None);
-        assert_eq!(request.query_vector, None);
-        assert_eq!(
-            request.query_vector_ref,
-            Some(SemanticVectorRef::Handle("emb-123".into()))
-        );
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--query-vector-handle"));
     }
 
     #[test]
@@ -1374,7 +1210,7 @@ mod tests {
         clippy::panic,
         reason = "test asserts payload variant shape; panic isolates failure to this single test"
     )]
-    fn parses_hybrid_handle_and_backfills_empty_semantic_query() {
+    fn rejects_legacy_hybrid_semantic_handle_flag() {
         let parsed = ParsedCommand::parse([
             "hybrid",
             "--repo-id",
@@ -1392,19 +1228,12 @@ mod tests {
             "--top-k",
             "5",
         ]);
-        assert!(parsed.is_ok());
-        let Ok(parsed) = parsed else {
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
             return;
         };
-        let CliRequest::Hybrid(request) = parsed.request else {
-            panic!("expected hybrid payload");
-        };
-        assert_eq!(request.semantic_query_text, None);
-        assert_eq!(request.semantic_vector, None);
-        assert_eq!(
-            request.semantic_vector_ref,
-            Some(SemanticVectorRef::Handle("emb-456".into()))
-        );
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--semantic-vector-handle"));
     }
 
     #[test]

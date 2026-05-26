@@ -18,18 +18,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
-use quanta_index_channel::{
-    BundleChannelPublisher, open_lexical_publisher, open_semantic_publisher,
-};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord, EarlyStopReason,
-    EmbeddingId, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
-    LexicalChannelOp, LexicalFullBundle, LqVisibility, ManifestGeneration, PlannerStage, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticChannelOp,
-    SemanticFullBundle, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax, UpsertChunk,
-    UpsertEmbedding,
+    BatchIngestMode, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId, ChunkRecord,
+    EarlyStopReason, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization,
+    EmbeddingRecord, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
+    LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration, OwnerDocKind,
+    PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
+    SemanticQueryRequest, SemanticReplaceScope, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_lq_bridge::TRANSLATOR_VERSION;
@@ -37,12 +37,14 @@ use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
+use std::collections::BTreeMap;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct RepoMetadataPayload<'a> {
     fork: bool,
@@ -77,29 +79,20 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(21)
 }
 
-fn chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    chunk_payload_with_metadata("", "", 0, 0, text)
+fn chunk_record(id: &str, text: &str) -> Result<ChunkRecord, Box<dyn Error>> {
+    chunk_record_with_metadata(id, "src/dsl.txt", "text", 0, 0, text)
 }
 
-fn chunk_payload_with_metadata(
+fn chunk_record_with_metadata(
+    id: &str,
     repo_relative_path: &str,
     language: &str,
     start_line: u32,
     end_line: u32,
     text: &str,
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    let repo_relative_path = if repo_relative_path.is_empty() {
-        "src/dsl.txt"
-    } else {
-        repo_relative_path
-    };
-    let language = if language.is_empty() {
-        "text"
-    } else {
-        language
-    };
-    let record = ChunkRecord {
-        chunk_id: ChunkId::new("payload-chunk"),
+) -> Result<ChunkRecord, Box<dyn Error>> {
+    Ok(ChunkRecord {
+        chunk_id: ChunkId::new(id),
         repo_relative_path: RepoRelativePath::new(repo_relative_path),
         language: LanguageCode::new(language)
             .map_err(|err| -> Box<dyn Error> { format!("invalid language code: {err}").into() })?,
@@ -115,11 +108,7 @@ fn chunk_payload_with_metadata(
         shape_digest: "shape:dsl".to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-    };
-    let mut buf = Vec::new();
-    ciborium::into_writer(&record, &mut buf)
-        .map_err(|err| -> Box<dyn Error> { format!("encode chunk: {err}").into() })?;
-    Ok(buf)
+    })
 }
 
 fn repo_metadata_payload(
@@ -140,7 +129,7 @@ fn repo_metadata_payload(
     Ok(buf)
 }
 
-fn unique_socket_paths() -> (PathBuf, PathBuf) {
+fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -149,20 +138,28 @@ fn unique_socket_paths() -> (PathBuf, PathBuf) {
     let query = std::env::temp_dir().join(format!("qi-dsl-query-{pid}-{nanos}-{sequence}.sock"));
     let control =
         std::env::temp_dir().join(format!("qi-dsl-control-{pid}-{nanos}-{sequence}.sock"));
-    (query, control)
+    let ingest = std::env::temp_dir().join(format!("qi-dsl-ingest-{pid}-{nanos}-{sequence}.sock"));
+    (query, control, ingest)
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
-    let (query_socket, control_socket) = unique_socket_paths();
+    let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    cfg
+    SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
 }
 
 fn send_query_request(
     socket: &Path,
     request: &SearchPlaneQueryIpcRequestEnvelope,
 ) -> Result<SearchPlaneQueryIpcResponseEnvelope, quanta_index_ipc::IpcError> {
+    send_request(socket, request)
+}
+
+fn send_ingest_request(
+    socket: &Path,
+    request: &SearchPlaneIngestIpcRequestEnvelope,
+) -> Result<SearchPlaneIngestIpcResponseEnvelope, quanta_index_ipc::IpcError> {
     send_request(socket, request)
 }
 
@@ -180,14 +177,6 @@ where
     false
 }
 
-fn float_vec_to_bytes(vec: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let owned: Vec<f32> = vec.to_vec();
-    let mut out: Vec<u8> = Vec::new();
-    ciborium::into_writer(&owned, &mut out)
-        .map_err(|err| -> Box<dyn Error> { format!("ciborium encode embedding: {err}").into() })?;
-    Ok(out)
-}
-
 fn float_vec_to_query_text(vec: &[f32]) -> String {
     vec.iter()
         .map(|value| format!("{value}"))
@@ -198,16 +187,29 @@ fn float_vec_to_query_text(vec: &[f32]) -> String {
 fn start_runtime(
     state_root: &Path,
     thread_name: &str,
-) -> Result<(PathBuf, Arc<AtomicBool>, DriverJoin), Box<dyn Error>> {
+) -> Result<(PathBuf, PathBuf, Arc<AtomicBool>, DriverJoin), Box<dyn Error>> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || drive(runtime, shutdown_for_drive))?;
-    Ok((socket, shutdown, join))
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "sockets never appeared query={} ingest={}",
+            query_socket.display(),
+            ingest_socket.display()
+        )
+        .into());
+    }
+    Ok((query_socket, ingest_socket, shutdown, join))
 }
 
 #[expect(
@@ -225,6 +227,200 @@ fn stop_runtime(shutdown: Arc<AtomicBool>, join: DriverJoin) -> TestResult {
 
 fn pin() -> GenerationPin {
     GenerationPin::new(repo(), revision(), generation())
+}
+
+fn scope_key(path: &str) -> SearchScopeKey {
+    SearchScopeKey {
+        doc_surface: SearchScopeSurface::Chunk,
+        repo_relative_path: RepoRelativePath::new(path),
+    }
+}
+
+fn semantic_model_contract(dimension: usize) -> Result<EmbeddingModelContract, Box<dyn Error>> {
+    let dimension = u32::try_from(dimension).map_err(|err| -> Box<dyn Error> {
+        format!("semantic dimension overflow: {err}").into()
+    })?;
+    if dimension == 0 {
+        return Err("semantic dimension must be non-zero".into());
+    }
+    Ok(EmbeddingModelContract {
+        model_id: "dsl-scenarios-model".to_string().into_boxed_str(),
+        model_version: None,
+        dimension,
+        normalization: EmbeddingNormalization::None,
+        distance_metric: EmbeddingDistanceMetric::Cosine,
+        policy_digest: "policy:dsl-scenarios".to_string().into_boxed_str(),
+        view_policy_digest: None,
+    })
+}
+
+fn semantic_embedding(chunk: &ChunkRecord, vector: Vec<f32>) -> EmbeddingRecord {
+    EmbeddingRecord {
+        embedding_id: quanta_index_contract::EmbeddingId::new(chunk.chunk_id.as_str()),
+        owner_kind: OwnerDocKind::Chunk,
+        owner_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
+        source_doc_id: chunk.chunk_id.as_str().to_string().into_boxed_str(),
+        repo_relative_path: chunk.repo_relative_path.clone(),
+        language: chunk.language.clone(),
+        symbol_kind: None,
+        start_byte: chunk.start_byte,
+        end_byte: chunk.end_byte,
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        snippet: chunk.snippet.clone(),
+        embedding_input_digest: format!("embed-in:{}", chunk.chunk_id.as_str()).into_boxed_str(),
+        vector_digest: format!("embed-vec:{vector:?}").into_boxed_str(),
+        view_kind: "raw_chunk".to_string().into_boxed_str(),
+        vector,
+    }
+}
+
+fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
+    let response = send_ingest_request(
+        socket,
+        &SearchPlaneIngestIpcRequestEnvelope {
+            request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
+            payload,
+        },
+    )?;
+    match response.payload {
+        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+        | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
+        SearchPlaneIngestIpcResponse::Error(err) => {
+            Err(format!("ingest failed code={} message={}", err.code, err.message).into())
+        }
+    }
+}
+
+fn publish_lexical_chunks(
+    socket: &Path,
+    chunks: Vec<ChunkRecord>,
+    bundle_payload: Option<Vec<u8>>,
+) -> TestResult {
+    let mut chunks_by_path: BTreeMap<String, Vec<ChunkRecord>> = BTreeMap::new();
+    for chunk in chunks {
+        chunks_by_path
+            .entry(chunk.repo_relative_path.as_str().to_string())
+            .or_default()
+            .push(chunk);
+    }
+    let replace_scopes = chunks_by_path
+        .into_iter()
+        .map(|(path, chunks)| LexicalReplaceScope {
+            scope: scope_key(&path),
+            scope_digest: format!("dsl-lex-scope:{path}"),
+            chunks,
+            symbols: Vec::new(),
+        })
+        .collect();
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            base_generation: None,
+            manifest_digest: format!("dsl-lex-manifest-{}", generation().get()),
+            batch_digest: format!(
+                "dsl-lex-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            mode: BatchIngestMode::Delta,
+            bundle_payload,
+            replace_scopes,
+            tombstone_scopes: Vec::new(),
+            seal: false,
+        }),
+    )
+}
+
+fn seal_lexical(socket: &Path) -> TestResult {
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            base_generation: None,
+            manifest_digest: format!("dsl-lex-seal-{}", generation().get()),
+            batch_digest: format!(
+                "dsl-lex-seal-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            mode: BatchIngestMode::Delta,
+            bundle_payload: None,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        }),
+    )
+}
+
+fn publish_semantic_embeddings(socket: &Path, embeddings: Vec<EmbeddingRecord>) -> TestResult {
+    let dimension = embeddings
+        .first()
+        .map(|embedding| embedding.vector.len())
+        .unwrap_or(1);
+    let mut embeddings_by_path: BTreeMap<String, Vec<EmbeddingRecord>> = BTreeMap::new();
+    for embedding in embeddings {
+        embeddings_by_path
+            .entry(embedding.repo_relative_path.as_str().to_string())
+            .or_default()
+            .push(embedding);
+    }
+    let replace_scopes = embeddings_by_path
+        .into_iter()
+        .map(|(path, embeddings)| SemanticReplaceScope {
+            scope: scope_key(&path),
+            scope_digest: format!("dsl-sem-scope:{path}"),
+            embeddings,
+        })
+        .collect();
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            base_generation: None,
+            manifest_digest: format!("dsl-sem-manifest-{}", generation().get()),
+            batch_digest: format!(
+                "dsl-sem-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            mode: BatchIngestMode::Delta,
+            model_contract: semantic_model_contract(dimension)?,
+            replace_scopes,
+            tombstone_scopes: Vec::new(),
+            seal: false,
+        }),
+    )
+}
+
+fn seal_semantic(socket: &Path, dimension: usize) -> TestResult {
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishSemanticBatch(SemanticIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            base_generation: None,
+            manifest_digest: format!("dsl-sem-seal-{}", generation().get()),
+            batch_digest: format!(
+                "dsl-sem-seal-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            mode: BatchIngestMode::Delta,
+            model_contract: semantic_model_contract(dimension)?,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        }),
+    )
 }
 
 fn lexical_request(
@@ -269,65 +465,30 @@ fn wait_for_non_error(socket: &Path, request: &SearchPlaneQueryIpcRequestEnvelop
 fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: repo_metadata_payload(
-                false,
-                false,
-                LqVisibility::Public,
-                &["global", "team-search"],
-            )?,
-        }))?;
-        for (id, path, language, start_line, end_line, payload) in [
-            (
-                "alpha",
-                "src/lib.rs",
-                "rust",
-                10_u32,
-                14_u32,
-                "needle rust alpha",
-            ),
-            (
-                "beta",
-                "src/main.rs",
-                "rust",
-                21_u32,
-                26_u32,
-                "needle rust beta",
-            ),
-            (
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "dsl-sg-metadata-filters")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 10, 14, "needle rust alpha")?,
+            chunk_record_with_metadata("beta", "src/main.rs", "rust", 21, 26, "needle rust beta")?,
+            chunk_record_with_metadata(
                 "gamma",
                 "src/lib.py",
                 "python",
-                30_u32,
-                35_u32,
+                30,
+                35,
                 "needle python gamma",
-            ),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload_with_metadata(
-                    path, language, start_line, end_line, payload,
-                )?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-metadata-filters")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+            )?,
+        ],
+        Some(repo_metadata_payload(
+            false,
+            false,
+            LqVisibility::Public,
+            &["global", "team-search"],
+        )?),
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let query_text = "repo:repo-dsl path:src/lib.rs lang:rust fork:no archived:no visibility:public context:global needle";
     let request = lexical_request(2, TextQuerySyntax::Sourcegraph, query_text);
@@ -416,38 +577,18 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
 fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: b"manifest".to_vec(),
-        }))?;
-        for (id, payload) in [
-            ("alpha", "sphinx alpha needle"),
-            ("beta", "beta needle"),
-            ("gamma", "sphinx gamma"),
-            ("delta", "beta needle forbidden"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-determinism")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-determinism")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "sphinx alpha needle")?,
+            chunk_record("beta", "beta needle")?,
+            chunk_record("gamma", "sphinx gamma")?,
+            chunk_record("delta", "beta needle forbidden")?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let query_text = "(sphinx OR beta) needle NOT forbidden";
     let request = lexical_request(1, TextQuerySyntax::Sourcegraph, query_text);
@@ -505,37 +646,18 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
 fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: b"manifest".to_vec(),
-        }))?;
-        for (id, path, payload) in [
-            ("alpha", "src/lib.rs", "needle alpha"),
-            ("beta", "src/main.rs", "needle beta"),
-            ("gamma", "docs/readme.md", "other text"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload_with_metadata(path, "rust", 1, 2, payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-repo-has-file")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "dsl-sg-repo-has-file")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 1, 2, "needle alpha")?,
+            chunk_record_with_metadata("beta", "src/main.rs", "rust", 1, 2, "needle beta")?,
+            chunk_record_with_metadata("gamma", "docs/readme.md", "rust", 1, 2, "other text")?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let request = lexical_request(
         13,
@@ -610,31 +732,17 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
 fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        for (id, payload) in [
-            ("alpha", "sphinx of quartz"),
-            ("beta", "riddle42"),
-            ("gamma", "sphinx of clay"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-sg-phrase-regex")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-phrase-regex")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "sphinx of quartz")?,
+            chunk_record("beta", "riddle42")?,
+            chunk_record("gamma", "sphinx of clay")?,
+        ],
+        None,
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let request = lexical_request(
         11,
@@ -731,31 +839,17 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
 fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        for (id, payload) in [
-            ("alpha", "sphinx of quartz"),
-            ("beta", "riddle42"),
-            ("gamma", "sphinx of clay"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-lq-phrase-regex")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-lq-phrase-regex")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "sphinx of quartz")?,
+            chunk_record("beta", "riddle42")?,
+            chunk_record("gamma", "sphinx of clay")?,
+        ],
+        None,
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let phrase_request = lexical_request(
         2,
@@ -828,63 +922,33 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
 fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        for (id, payload) in [
-            ("alpha", "scope alpha keep"),
-            ("beta", "scope beta keep"),
-            ("gamma", "scope alpha outsider"),
-            ("omega", "global outsider"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-    {
-        let publisher = open_semantic_publisher(state_root)?;
-        let _ = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: Vec::new(),
-        }))?;
-        for (id, vector) in [
-            ("alpha", vec![0.9_f32, 0.1_f32]),
-            ("beta", vec![0.8_f32, 0.2_f32]),
-            ("gamma", vec![0.99_f32, 0.01_f32]),
-            ("omega", vec![1.0_f32, 0.0_f32]),
-        ] {
-            let _ = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                embedding_id: EmbeddingId::new(id),
-                payload: float_vec_to_bytes(&vector)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-semantic-complex-scope")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "dsl-semantic-complex-scope")?;
+    let alpha = chunk_record("alpha", "scope alpha keep")?;
+    let beta = chunk_record("beta", "scope beta keep")?;
+    let gamma = chunk_record("gamma", "scope alpha outsider")?;
+    let omega = chunk_record("omega", "global outsider")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![alpha.clone(), beta.clone(), gamma.clone(), omega.clone()],
+        None,
+    )?;
+    publish_semantic_embeddings(
+        &ingest_socket,
+        vec![
+            semantic_embedding(&alpha, vec![0.9_f32, 0.1_f32]),
+            semantic_embedding(&beta, vec![0.8_f32, 0.2_f32]),
+            semantic_embedding(&gamma, vec![0.99_f32, 0.01_f32]),
+            semantic_embedding(&omega, vec![1.0_f32, 0.0_f32]),
+        ],
+    )?;
+    seal_lexical(&ingest_socket)?;
+    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 3,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
-            query_vector: None,
-            query_vector_ref: None,
+            query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             generation: Some(pin()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
@@ -980,56 +1044,28 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
 fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        for (id, payload) in [
-            ("alpha", "scope alpha keep"),
-            ("beta", "scope beta keep"),
-            ("gamma", "scope alpha outsider"),
-            ("omega", "global outsider"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-    {
-        let publisher = open_semantic_publisher(state_root)?;
-        let _ = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: Vec::new(),
-        }))?;
-        for (id, vector) in [
-            ("alpha", vec![0.9_f32, 0.1_f32]),
-            ("beta", vec![0.8_f32, 0.2_f32]),
-            ("gamma", vec![0.99_f32, 0.01_f32]),
-            ("omega", vec![1.0_f32, 0.0_f32]),
-        ] {
-            let _ = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                embedding_id: EmbeddingId::new(id),
-                payload: float_vec_to_bytes(&vector)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-hybrid-complex-scope")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "dsl-hybrid-complex-scope")?;
+    let alpha = chunk_record("alpha", "scope alpha keep")?;
+    let beta = chunk_record("beta", "scope beta keep")?;
+    let gamma = chunk_record("gamma", "scope alpha outsider")?;
+    let omega = chunk_record("omega", "global outsider")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![alpha.clone(), beta.clone(), gamma.clone(), omega.clone()],
+        None,
+    )?;
+    publish_semantic_embeddings(
+        &ingest_socket,
+        vec![
+            semantic_embedding(&alpha, vec![0.9_f32, 0.1_f32]),
+            semantic_embedding(&beta, vec![0.8_f32, 0.2_f32]),
+            semantic_embedding(&gamma, vec![0.99_f32, 0.01_f32]),
+            semantic_embedding(&omega, vec![1.0_f32, 0.0_f32]),
+        ],
+    )?;
+    seal_lexical(&ingest_socket)?;
+    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 4,
@@ -1041,9 +1077,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
-            semantic_vector: None,
-            semantic_vector_ref: None,
+            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             generation: Some(pin()),
             generation_selector: None,
             top_k: 2,
@@ -1134,54 +1168,26 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
 fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        for (id, payload) in [
-            ("alpha", "scope alpha keep"),
-            ("beta", "scope beta keep"),
-            ("gamma", "scope gamma keep"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-    {
-        let publisher = open_semantic_publisher(state_root)?;
-        let _ = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: Vec::new(),
-        }))?;
-        for (id, vector) in [
-            ("alpha", vec![1.0_f32, 0.0_f32]),
-            ("beta", vec![0.9_f32, 0.1_f32]),
-            ("gamma", vec![0.8_f32, 0.2_f32]),
-        ] {
-            let _ = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                embedding_id: EmbeddingId::new(id),
-                payload: float_vec_to_bytes(&vector)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-hybrid-count-reached")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "dsl-hybrid-count-reached")?;
+    let alpha = chunk_record("alpha", "scope alpha keep")?;
+    let beta = chunk_record("beta", "scope beta keep")?;
+    let gamma = chunk_record("gamma", "scope gamma keep")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![alpha.clone(), beta.clone(), gamma.clone()],
+        None,
+    )?;
+    publish_semantic_embeddings(
+        &ingest_socket,
+        vec![
+            semantic_embedding(&alpha, vec![1.0_f32, 0.0_f32]),
+            semantic_embedding(&beta, vec![0.9_f32, 0.1_f32]),
+            semantic_embedding(&gamma, vec![0.8_f32, 0.2_f32]),
+        ],
+    )?;
+    seal_lexical(&ingest_socket)?;
+    seal_semantic(&ingest_socket, 2)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 5,
@@ -1193,9 +1199,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
                 generation_selector: None,
                 top_k: 50,
             },
-            semantic_query_text: Some(float_vec_to_query_text(&[1.0_f32, 0.0_f32])),
-            semantic_vector: None,
-            semantic_vector_ref: None,
+            semantic_query_text: float_vec_to_query_text(&[1.0_f32, 0.0_f32]),
             generation: Some(pin()),
             generation_selector: None,
             top_k: 2,
@@ -1244,38 +1248,18 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
 fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        let _ = publisher.publish(LexicalChannelOp::FullBundle(LexicalFullBundle {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            payload: b"manifest".to_vec(),
-        }))?;
-        for (id, payload) in [
-            ("alpha", "sphinx alpha needle"),
-            ("beta", "beta needle"),
-            ("gamma", "sphinx gamma"),
-            ("delta", "beta needle forbidden"),
-        ] {
-            let _ = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                chunk_id: ChunkId::new(id),
-                payload: chunk_payload(payload)?,
-            }))?;
-        }
-        let _ = publisher.seal(repo(), revision(), generation())?;
-    }
-
-    let (socket, shutdown, join) = start_runtime(state_root, "dsl-bridge-metadata")?;
-    if !wait_until(Duration::from_secs(2), || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("socket never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-bridge-metadata")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "sphinx alpha needle")?,
+            chunk_record("beta", "beta needle")?,
+            chunk_record("gamma", "sphinx gamma")?,
+            chunk_record("delta", "beta needle forbidden")?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    seal_lexical(&ingest_socket)?;
 
     let query_text = "(sphinx OR beta) needle NOT forbidden";
     let lexical_probe = lexical_request(5, TextQuerySyntax::Sourcegraph, query_text);

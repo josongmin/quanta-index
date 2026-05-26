@@ -14,7 +14,7 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
     SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
-    SemanticVectorRef, TextQueryResponse, TextQuerySyntax,
+    TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
@@ -60,13 +60,13 @@ fn explain_pretty_roundtrip() {
 
 #[test]
 fn semantic_inline_vector_json_roundtrip() {
-    let result = semantic_inline_vector_json_roundtrip_impl();
+    let result = semantic_query_text_json_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn hybrid_vector_handle_pretty_roundtrip() {
-    let result = hybrid_vector_handle_pretty_roundtrip_impl();
+    let result = hybrid_query_text_pretty_roundtrip_impl();
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -173,7 +173,7 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn semantic_inline_vector_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+fn semantic_query_text_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::SemanticJson)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
@@ -188,8 +188,8 @@ fn semantic_inline_vector_json_roundtrip_impl() -> Result<(), Box<dyn std::error
         .arg("rev-1")
         .arg("--manifest-generation")
         .arg("11")
-        .arg("--query-vector")
-        .arg("[0.25,0.5,-0.75]")
+        .arg("--query-text")
+        .arg("0.25 0.5 -0.75")
         .arg("--top-k")
         .arg("10")
         .arg("--scope-query")
@@ -213,7 +213,7 @@ fn semantic_inline_vector_json_roundtrip_impl() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn hybrid_vector_handle_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
+fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::HybridPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
@@ -230,8 +230,8 @@ fn hybrid_vector_handle_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error
         .arg("symbol:RepoMapOwner")
         .arg("--lexical-syntax")
         .arg("sourcegraph")
-        .arg("--semantic-vector-handle")
-        .arg("vec-handle-9")
+        .arg("--semantic-query")
+        .arg("0.25 0.5 -0.75")
         .arg("--top-k")
         .arg("3")
         .output()?;
@@ -494,26 +494,11 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
             format!("unexpected semantic generation: {:?}", payload.generation),
         );
     }
-    if payload.query_text.as_deref() != Some("0.25 0.5 -0.75") {
+    if payload.query_text.as_str() != "0.25 0.5 -0.75" {
         return error_response(
             "TEST_BAD_QUERY_TEXT",
             format!("unexpected semantic query_text: {:?}", payload.query_text),
         );
-    }
-    if payload.query_vector.is_some() {
-        return error_response(
-            "TEST_LEGACY_VECTOR_FIELD",
-            "semantic request should not populate query_vector",
-        );
-    }
-    match payload.query_vector_ref.as_ref() {
-        Some(SemanticVectorRef::Inline(vector)) if vector == &vec![0.25, 0.5, -0.75] => {}
-        other => {
-            return error_response(
-                "TEST_BAD_VECTOR_REF",
-                format!("unexpected semantic vector ref: {other:?}"),
-            );
-        }
     }
     let Some(scope) = payload.lexical_scope.as_ref() else {
         return error_response(
@@ -568,23 +553,14 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
             format!("unexpected hybrid text query: {:?}", payload.text_query),
         );
     }
-    if payload.semantic_query_text.is_some() || payload.semantic_vector.is_some() {
+    if payload.semantic_query_text.as_str() != "0.25 0.5 -0.75" {
         return error_response(
-            "TEST_LEGACY_SEMANTIC_FIELDS",
+            "TEST_BAD_SEMANTIC_QUERY_TEXT",
             format!(
-                "hybrid request should not populate legacy semantic fields: {:?} {:?}",
-                payload.semantic_query_text, payload.semantic_vector
+                "unexpected hybrid semantic query text: {:?}",
+                payload.semantic_query_text
             ),
         );
-    }
-    match payload.semantic_vector_ref.as_ref() {
-        Some(SemanticVectorRef::Handle(handle)) if handle.as_ref() == "vec-handle-9" => {}
-        other => {
-            return error_response(
-                "TEST_BAD_VECTOR_HANDLE",
-                format!("unexpected hybrid semantic vector ref: {other:?}"),
-            );
-        }
     }
     if payload.top_k != 3 {
         return error_response(

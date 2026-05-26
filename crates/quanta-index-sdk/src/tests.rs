@@ -538,7 +538,7 @@ fn connect_options_from_state_root_resolve_default_sockets() {
 }
 
 #[test]
-fn semantic_query_builder_emits_active_selector_and_inline_vector_ref() {
+fn semantic_query_builder_emits_active_selector_and_query_text() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
             generation: sample_generation_pin(),
@@ -553,7 +553,7 @@ fn semantic_query_builder_emits_active_selector_and_inline_vector_ref() {
         .semantic()
         .query()
         .active(repo_id(), revision_id())
-        .vector(vec![0.1, 0.2, 0.3])
+        .text("0.1 0.2 0.3")
         .top_k(5)
         .execute();
     let _response = ok_or_fail!(response);
@@ -565,7 +565,7 @@ fn semantic_query_builder_emits_active_selector_and_inline_vector_ref() {
         );
     };
     assert_eq!(req.top_k, 5);
-    assert!(req.query_vector_ref.is_some());
+    assert_eq!(req.query_text.as_str(), "0.1 0.2 0.3");
     assert!(matches!(
         req.generation_selector,
         Some(GenerationSelector::Active { .. })
@@ -587,7 +587,7 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
             .semantic()
             .query()
             .active(repo_id(), revision_id())
-            .vector_handle("vec-handle-1")
+            .text("1.0 0.0")
             .scope_sourcegraph("repo:repo-1 file:lib.rs")
             .scope_top_k(8)
             .top_k(5)
@@ -702,7 +702,7 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
 }
 
 #[test]
-fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
+fn hybrid_search_builder_dispatches_hybrid_request_with_semantic_text() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
             generation: sample_generation_pin(),
@@ -716,7 +716,7 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
             .search()
             .hybrid()
             .native("scope text")
-            .vector_handle("handle-1")
+            .semantic_text("0.25 0.75")
             .active(repo_id(), revision_id())
             .top_k(7)
             .execute()
@@ -730,7 +730,7 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_vector_handle() {
     };
     assert_eq!(req.top_k, 7);
     assert_eq!(req.text_query.top_k, 7);
-    assert!(req.semantic_vector_ref.is_some());
+    assert_eq!(req.semantic_query_text.as_str(), "0.25 0.75");
 }
 
 #[test]
@@ -744,11 +744,7 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::SemanticQueryRequest {
-        query_text: Some("legacy semantic text".to_string()),
-        query_vector: Some(vec![0.1, 0.2, 0.3]),
-        query_vector_ref: Some(quanta_index_contract::SemanticVectorRef::Handle(
-            "vec-handle-1".to_string().into(),
-        )),
+        query_text: "legacy semantic text".to_string(),
         generation: None,
         generation_selector: Some(GenerationSelector::Active {
             repo_id: repo_id(),
@@ -789,11 +785,7 @@ fn hybrid_request_forwards_contract_dto_unchanged() {
             generation_selector: None,
             top_k: 11,
         },
-        semantic_query_text: Some("legacy hybrid semantic".to_string()),
-        semantic_vector: Some(vec![0.4, 0.5, 0.6]),
-        semantic_vector_ref: Some(quanta_index_contract::SemanticVectorRef::Handle(
-            "hybrid-handle-1".to_string().into(),
-        )),
+        semantic_query_text: "legacy hybrid semantic".to_string(),
         generation: None,
         generation_selector: Some(GenerationSelector::Active {
             repo_id: repo_id(),

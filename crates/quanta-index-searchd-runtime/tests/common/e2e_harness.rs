@@ -1,22 +1,11 @@
 //! E2E-00 — reusable tempdir-backed runtime harness.
 //!
 //! Parent harness for E2E-01..07. Owns a `TempDir` plus a lazily-started
-//! searchd driver thread so a single test can: write records through the
-//! real `LexicalChannelOp` publish path, seal a generation, drop+reopen
-//! the runtime, then issue public `TextQueryRequest`s through the IPC
-//! socket and read typed responses back. No in-memory shortcut: every
-//! byte goes through the same wire surface the production daemon uses.
-//!
-//! Lifecycle constraint:
-//!
-//! The lexical WAL publisher is a single-writer file lock. The running
-//! searchd runtime holds that lock for its entire lifetime. That means a
-//! test cannot publish chunks while the driver is running. The harness
-//! therefore keeps a single owned publisher alive across `ingest_text` /
-//! `seal` calls, and lazily starts the driver thread on the first
-//! `query_text` (releasing the publisher first). `reopen` tears the
-//! driver down, leaves the publisher dropped, restarts the driver against
-//! the same `state_root`.
+//! searchd driver thread so a single test can: publish typed ingest batches
+//! through the real ingest UDS frontdoor, seal a generation, drop+reopen
+//! the runtime, then issue public query IPC requests and read typed responses
+//! back. No in-memory shortcut: every byte goes through the same public daemon
+//! surfaces the production runtime exposes.
 //!
 //! The harness intentionally does not add any new public API to
 //! `quanta-index-searchd-runtime`. `reopen` is implemented by dropping
@@ -36,26 +25,25 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
-use ciborium::into_writer;
-use quanta_index_channel::{
-    BundleChannelPublisher, LexicalWalPublisher, SemanticWalPublisher, open_lexical_publisher,
-    open_semantic_publisher,
-};
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseTreeRecord, SymbolKindCode, SymbolKindFamily, SymbolRecord,
     SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, DeleteChunk, EmbeddingId, EngineTouched, GenerationPin,
-    HybridQueryRequest, LexicalCandidate, LexicalChannelOp, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivateGenerationRequest,
-    SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind,
-    SemanticChannelOp, SemanticFullBundle, SemanticQueryRequest, StructuralQueryRequest, SymbolId,
-    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertEmbedding, UpsertParseTree, UpsertSymbol,
+    BatchIngestMode, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, EngineTouched,
+    GenerationPin, HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope,
+    LexicalTombstoneScope, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
+    SearchExplanation, SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticIngestBatch,
+    SemanticQueryRequest, SemanticReplaceScope, StructuralIngestBatch, StructuralQueryRequest,
+    StructuralReplaceScope, StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_search_plane::ActivationCatalog;
+use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
@@ -75,19 +63,17 @@ type DriverJoin = thread::JoinHandle<AnyResult<()>>;
 pub(super) struct E2eRuntime {
     tempdir: Option<TempDir>,
     state_root: PathBuf,
-    /// Owned publisher kept alive during ingest. Dropped before the driver
-    /// is started so the runtime can reacquire the WAL lock.
-    publisher: Option<LexicalWalPublisher>,
-    semantic_publisher: Option<SemanticWalPublisher>,
     driver: Option<DriverState>,
+    query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
+    chunk_records_by_path: BTreeMap<String, ChunkRecord>,
     request_id_counter: AtomicU64,
     generation_counter: u64,
-    semantic_bundle_generation: Option<ManifestGeneration>,
 }
 
 struct DriverState {
-    socket: PathBuf,
+    query_socket: PathBuf,
+    ingest_socket: PathBuf,
     shutdown: Arc<AtomicBool>,
     join: Option<DriverJoin>,
 }
@@ -135,17 +121,15 @@ impl E2eRuntime {
     pub(super) fn boot() -> AnyResult<Self> {
         let tempdir = tempfile::tempdir()?;
         let state_root = tempdir.path().to_path_buf();
-        let publisher = open_lexical_publisher(&state_root)?;
         Ok(Self {
             tempdir: Some(tempdir),
             state_root,
-            publisher: Some(publisher),
-            semantic_publisher: None,
             driver: None,
+            query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
+            chunk_records_by_path: BTreeMap::new(),
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
-            semantic_bundle_generation: None,
         })
     }
 
@@ -155,9 +139,6 @@ impl E2eRuntime {
     /// Mirrors a process restart against persistent storage.
     pub(super) fn reopen(mut self) -> AnyResult<Self> {
         self.stop_driver();
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
         Ok(self)
     }
 
@@ -168,24 +149,35 @@ impl E2eRuntime {
                 drop(join.join());
             }
         }
+        self.query_obs_store = None;
     }
 
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
-            // Release publisher lock before booting the runtime.
-            drop(self.publisher.take());
-            drop(self.semantic_publisher.take());
-            let (socket, shutdown, join) = start_driver(&self.state_root)?;
+            let (query_socket, ingest_socket, shutdown, join, query_obs_store) =
+                start_driver(&self.state_root)?;
+            self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
-                socket,
+                query_socket,
+                ingest_socket,
                 shutdown,
                 join: Some(join),
             });
         }
         self.driver
             .as_ref()
-            .map(|driver| driver.socket.clone())
+            .map(|driver| driver.query_socket.clone())
             .ok_or_else(|| anyhow::anyhow!("e2e-harness: driver missing after ensure_driver"))
+    }
+
+    fn ensure_ingest_socket(&mut self) -> AnyResult<PathBuf> {
+        drop(self.ensure_driver()?);
+        self.driver
+            .as_ref()
+            .map(|driver| driver.ingest_socket.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: ingest socket missing after ensure_driver")
+            })
     }
 
     pub(super) fn repo(&self) -> RepoId {
@@ -204,6 +196,20 @@ impl E2eRuntime {
 
     pub(super) fn generation_pin(&self) -> GenerationPin {
         GenerationPin::new(self.repo(), self.revision(), self.current_generation())
+    }
+
+    pub(super) fn query_metrics_snapshot(&self) -> AnyResult<Vec<MetricSample>> {
+        let store = self.query_obs_store.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: query metrics unavailable before driver startup")
+        })?;
+        Ok(store.snapshot())
+    }
+
+    pub(super) fn query_metric_errors(&self) -> AnyResult<Vec<ObsError>> {
+        let store = self.query_obs_store.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: query metrics unavailable before driver startup")
+        })?;
+        Ok(store.errors())
     }
 
     pub(super) fn activate_last_sealed_generation(&self) -> AnyResult<()> {
@@ -230,25 +236,12 @@ impl E2eRuntime {
         Ok(())
     }
 
-    /// Ingest one chunk through the real `LexicalChannelOp` publish path.
+    /// Ingest one chunk through the typed ingest front door.
     ///
     /// `_repo` is informational metadata only — the publish itself goes
     /// against the harness's owning `repo()` so the matching query can
     /// pin to a stable triple.
-    ///
-    /// Requires the driver to be stopped (no concurrent WAL writer). If
-    /// the driver is running, this stops it first.
     pub(super) fn ingest_text(&mut self, _repo: &str, path: &str, content: &str) -> AnyResult<()> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
         let chunk_id = ChunkId::new(format!(
             "e2e-{}-{path}",
             self.request_id_counter.fetch_add(1, Ordering::Relaxed)
@@ -271,18 +264,33 @@ impl E2eRuntime {
             structural: None,
             parent_chunk_id: None,
         };
-        let mut buf: Vec<u8> = Vec::new();
-        into_writer(&record, &mut buf)?;
-        let _seq = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            chunk_id,
-            payload: buf,
-        }))?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
+            LexicalIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "lex-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                bundle_payload: None,
+                replace_scopes: vec![LexicalReplaceScope {
+                    scope: scope_key(path),
+                    scope_digest: format!("scope:{path}:{content}"),
+                    chunks: vec![record.clone()],
+                    symbols: Vec::new(),
+                }],
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
         let _old = self
             .chunk_ids_by_path
-            .insert(path.to_string(), record.chunk_id);
+            .insert(path.to_string(), record.chunk_id.clone());
+        let _old = self.chunk_records_by_path.insert(path.to_string(), record);
         Ok(())
     }
 
@@ -291,35 +299,58 @@ impl E2eRuntime {
         path: &str,
         vector: &[f32],
     ) -> AnyResult<()> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
-        if self.semantic_publisher.is_none() {
-            self.semantic_publisher = Some(open_semantic_publisher(&self.state_root)?);
-        }
-        let publisher = self.semantic_publisher.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("e2e-harness: semantic publisher missing after re-open")
-        })?;
-        let current_generation = self.current_generation();
-        if self.semantic_bundle_generation != Some(current_generation) {
-            let _seq = publisher.publish(SemanticChannelOp::FullBundle(SemanticFullBundle {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: current_generation,
-                payload: Vec::new(),
-            }))?;
-            self.semantic_bundle_generation = Some(current_generation);
-        }
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for semantic path `{path}`")
         })?;
-        let _seq = publisher.publish(SemanticChannelOp::UpsertEmbedding(UpsertEmbedding {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: current_generation,
-            embedding_id: EmbeddingId::new(chunk_id.as_str()),
-            payload: float_vec_to_bytes(vector)?,
-        }))?;
+        let chunk = self
+            .chunk_records_by_path
+            .get(path)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "e2e-harness: no lexical chunk payload recorded for semantic path `{path}`"
+                )
+            })?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
+            SemanticIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("sem:{path}:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "sem-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                model_contract: semantic_model_contract(vector.len())?,
+                replace_scopes: vec![SemanticReplaceScope {
+                    scope: scope_key(path),
+                    scope_digest: format!("sem-scope:{path}"),
+                    embeddings: vec![EmbeddingRecord {
+                        embedding_id: EmbeddingId::new(chunk_id.as_str()),
+                        owner_kind: OwnerDocKind::Chunk,
+                        owner_id: chunk_id.as_str().to_string().into_boxed_str(),
+                        source_doc_id: chunk_id.as_str().to_string().into_boxed_str(),
+                        repo_relative_path: RepoRelativePath::new(path),
+                        language: chunk.language,
+                        symbol_kind: None,
+                        start_byte: chunk.start_byte,
+                        end_byte: chunk.end_byte,
+                        start_line: chunk.start_line,
+                        end_line: chunk.end_line,
+                        snippet: chunk.snippet.clone(),
+                        embedding_input_digest: format!("embed-in:{path}:{vector:?}")
+                            .into_boxed_str(),
+                        vector_digest: format!("embed-vec:{path}:{vector:?}").into_boxed_str(),
+                        view_kind: "raw_chunk".to_string().into_boxed_str(),
+                        vector: vector.to_vec(),
+                    }],
+                }],
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
         Ok(())
     }
 
@@ -329,16 +360,6 @@ impl E2eRuntime {
         content: &str,
         identifier: &str,
     ) -> AnyResult<()> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
         })?;
@@ -382,38 +403,55 @@ impl E2eRuntime {
             role_tag_schema_version: 1,
             role_tags: Vec::new(),
         };
-        let mut buf: Vec<u8> = Vec::new();
-        into_writer(&tree, &mut buf)?;
-        let _seq = publisher.publish(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            chunk_id,
-            payload: buf,
-        }))?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
+            StructuralIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("struct:{path}:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "struct-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                replace_scopes: vec![StructuralReplaceScope {
+                    scope: scope_key(path),
+                    scope_digest: format!("struct-scope:{path}"),
+                    trees: vec![StructuralTreeRecord {
+                        chunk_id,
+                        record: tree,
+                    }],
+                }],
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
         Ok(())
     }
 
     pub(super) fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
-        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
-            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for tombstone path `{path}`")
-        })?;
-        let _seq = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            chunk_id,
-        }))?;
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
+            LexicalIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("lex-del:{path}:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "lex-del-batch:{path}:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                bundle_payload: None,
+                replace_scopes: Vec::new(),
+                tombstone_scopes: vec![LexicalTombstoneScope {
+                    scope: scope_key(path),
+                }],
+                seal: false,
+            },
+        ))?;
+        drop(self.chunk_records_by_path.remove(path));
         Ok(())
     }
 
@@ -424,16 +462,6 @@ impl E2eRuntime {
         symbol_id: &str,
         symbol_name: &str,
     ) -> AnyResult<()> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
-        if self.publisher.is_none() {
-            self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-        }
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("e2e-harness: publisher missing after re-open"))?;
         let record = SymbolRecord {
             symbol_id: SymbolId::new(symbol_id),
             repo_relative_path: RepoRelativePath::new(path),
@@ -458,15 +486,32 @@ impl E2eRuntime {
             container_qualified_name: Some("crate".to_string().into_boxed_str()),
             relationship: SymbolRelationship::Def,
         };
-        let mut buf: Vec<u8> = Vec::new();
-        into_writer(&record, &mut buf)?;
-        let _seq = publisher.publish(LexicalChannelOp::UpsertSymbol(UpsertSymbol {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            symbol_id: SymbolId::new(symbol_id),
-            payload: buf,
-        }))?;
+        let chunks = self
+            .chunk_records_by_path
+            .get(path)
+            .cloned()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
+            LexicalIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("lex-symbol:{path}:{}", self.current_generation().get()),
+                batch_digest: format!("lex-symbol-batch:{path}:{symbol_id}"),
+                mode: BatchIngestMode::Delta,
+                bundle_payload: None,
+                replace_scopes: vec![LexicalReplaceScope {
+                    scope: scope_key(path),
+                    scope_digest: format!("scope-symbol:{path}:{symbol_id}"),
+                    chunks,
+                    symbols: vec![record],
+                }],
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
         Ok(())
     }
 
@@ -481,27 +526,40 @@ impl E2eRuntime {
         &mut self,
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<ManifestGeneration> {
-        if self.driver.is_some() {
-            self.stop_driver();
-        }
         let sealed = self.current_generation();
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {
-            if self.publisher.is_none() {
-                self.publisher = Some(open_lexical_publisher(&self.state_root)?);
-            }
-            let publisher = self.publisher.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("e2e-harness: lexical publisher missing for seal")
-            })?;
-            let _seq = publisher.seal(self.repo(), self.revision(), sealed)?;
+            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
+                LexicalIngestBatch {
+                    repo_id: self.repo(),
+                    revision_id: self.revision(),
+                    generation: sealed,
+                    base_generation: None,
+                    manifest_digest: format!("lex-seal:{}", sealed.get()),
+                    batch_digest: format!("lex-seal-batch:{}", sealed.get()),
+                    mode: BatchIngestMode::Delta,
+                    bundle_payload: None,
+                    replace_scopes: Vec::new(),
+                    tombstone_scopes: Vec::new(),
+                    seal: true,
+                },
+            ))?;
         }
         if tracks.contains(&SearchPlaneTrackKind::Semantic) {
-            if self.semantic_publisher.is_none() {
-                self.semantic_publisher = Some(open_semantic_publisher(&self.state_root)?);
-            }
-            let publisher = self.semantic_publisher.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("e2e-harness: semantic publisher missing for seal")
-            })?;
-            let _seq = publisher.seal(self.repo(), self.revision(), sealed)?;
+            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSemanticBatch(
+                SemanticIngestBatch {
+                    repo_id: self.repo(),
+                    revision_id: self.revision(),
+                    generation: sealed,
+                    base_generation: None,
+                    manifest_digest: format!("sem-seal:{}", sealed.get()),
+                    batch_digest: format!("sem-seal-batch:{}", sealed.get()),
+                    mode: BatchIngestMode::Delta,
+                    model_contract: semantic_model_contract(1)?,
+                    replace_scopes: Vec::new(),
+                    tombstone_scopes: Vec::new(),
+                    seal: true,
+                },
+            ))?;
         }
         self.generation_counter = self.generation_counter.saturating_add(1);
         Ok(sealed)
@@ -741,9 +799,7 @@ impl E2eRuntime {
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: Some(float_vec_to_query_text(vector)),
-                query_vector: None,
-                query_vector_ref: None,
+                query_text: float_vec_to_query_text(vector),
                 generation: self.last_sealed_pin(),
                 generation_selector: None,
                 lexical_scope: lexical_scope.map(|(syntax, query_text, scope_top_k)| {
@@ -852,9 +908,7 @@ impl E2eRuntime {
                     generation_selector: None,
                     top_k: 50,
                 },
-                semantic_query_text: Some(float_vec_to_query_text(vector)),
-                semantic_vector: None,
-                semantic_vector_ref: None,
+                semantic_query_text: float_vec_to_query_text(vector),
                 generation: pin,
                 generation_selector: None,
                 top_k,
@@ -1083,6 +1137,29 @@ impl E2eRuntime {
             ))
         }
     }
+
+    fn dispatch_ingest(&mut self, payload: SearchPlaneIngestIpcRequest) -> AnyResult<()> {
+        let socket = self.ensure_ingest_socket()?;
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let response: SearchPlaneIngestIpcResponseEnvelope = send_request(&socket, &envelope)?;
+        match response.payload {
+            SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::SemanticReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
+            SearchPlaneIngestIpcResponse::Error(err) => Err(anyhow::anyhow!(
+                "e2e-harness ingest failed code={} message={}",
+                err.code,
+                err.message
+            )),
+        }
+    }
 }
 
 fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
@@ -1098,38 +1175,48 @@ fn unexpected_explain_response(kind: &str) -> E2eExplainResult {
 impl Drop for E2eRuntime {
     fn drop(&mut self) {
         self.stop_driver();
-        // Drop publisher before tempdir so file locks release first.
-        drop(self.publisher.take());
-        drop(self.semantic_publisher.take());
         drop(self.tempdir.take());
     }
 }
 
-fn start_driver(state_root: &Path) -> AnyResult<(PathBuf, Arc<AtomicBool>, DriverJoin)> {
+fn start_driver(
+    state_root: &Path,
+) -> AnyResult<(
+    PathBuf,
+    PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+    Arc<BoundedQueryObsStore>,
+)> {
     let config = build_config(state_root);
     let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let query_obs_store = Arc::clone(&runtime.query_obs_store);
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_for_drive = Arc::clone(&shutdown);
     let join = thread::Builder::new()
         .name("e2e-harness-driver".into())
         .spawn(move || drive(runtime, shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || socket.exists()) {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(anyhow::anyhow!(
-            "e2e-harness: socket {} never appeared",
-            socket.display()
+            "e2e-harness: sockets never appeared query={} ingest={}",
+            query_socket.display(),
+            ingest_socket.display()
         ));
     }
-    Ok((socket, shutdown, join))
+    Ok((query_socket, ingest_socket, shutdown, join, query_obs_store))
 }
 
 fn build_config(state_root: &Path) -> SearchdConfig {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
-    let (query_socket, control_socket) = unique_socket_paths();
+    let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    cfg
+    SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {
@@ -1145,7 +1232,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
     }
 }
 
-fn unique_socket_paths() -> (PathBuf, PathBuf) {
+fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1154,7 +1241,8 @@ fn unique_socket_paths() -> (PathBuf, PathBuf) {
     let query = std::env::temp_dir().join(format!("qi-e2e-query-{pid}-{nanos}-{sequence}.sock"));
     let control =
         std::env::temp_dir().join(format!("qi-e2e-control-{pid}-{nanos}-{sequence}.sock"));
-    (query, control)
+    let ingest = std::env::temp_dir().join(format!("qi-e2e-ingest-{pid}-{nanos}-{sequence}.sock"));
+    (query, control, ingest)
 }
 
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
@@ -1180,6 +1268,34 @@ fn language_from_path(path: &str) -> &'static str {
         Some("md") => "markdown",
         Some(_) | None => "text",
     }
+}
+
+fn scope_key(path: &str) -> quanta_index_contract::SearchScopeKey {
+    quanta_index_contract::SearchScopeKey {
+        doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
+        repo_relative_path: RepoRelativePath::new(path),
+    }
+}
+
+fn semantic_model_contract(
+    dimension: usize,
+) -> AnyResult<quanta_index_contract::EmbeddingModelContract> {
+    let dimension = u32::try_from(dimension)
+        .map_err(|err| anyhow::anyhow!("semantic model contract dimension overflow: {err}"))?;
+    if dimension == 0 {
+        return Err(anyhow::anyhow!(
+            "semantic model contract dimension must be non-zero"
+        ));
+    }
+    Ok(quanta_index_contract::EmbeddingModelContract {
+        model_id: "e2e-harness-model".to_string().into_boxed_str(),
+        model_version: None,
+        dimension,
+        normalization: quanta_index_contract::EmbeddingNormalization::None,
+        distance_metric: quanta_index_contract::EmbeddingDistanceMetric::Cosine,
+        policy_digest: "policy:e2e-harness".to_string().into_boxed_str(),
+        view_policy_digest: None,
+    })
 }
 
 fn float_vec_to_bytes(vec: &[f32]) -> AnyResult<Vec<u8>> {

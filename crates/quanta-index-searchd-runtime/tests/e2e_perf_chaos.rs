@@ -12,29 +12,11 @@
 mod e2e_harness;
 
 use anyhow::Result as AnyResult;
-use quanta_index_channel::{BundleChannelPublisher, open_lexical_publisher};
-use quanta_index_contract::lex::{
-    LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
-};
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, DeleteChunk, EarlyStopReason, EngineTouched, GenerationPin,
-    LexicalChannelOp, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, StructuralQueryRequest,
-    TextQueryRequest, TextQuerySyntax, UpsertChunk, UpsertParseTree,
+    EarlyStopReason, EngineTouched, SearchPlaneTrackKind, TextQuerySyntax,
 };
-use quanta_index_ipc::send_request;
-use quanta_index_searchd::{SearchdConfig, drive};
-use quanta_index_searchd_runtime::build_runtime;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
 
 use crate::e2e_harness::{E2eRuntime, E2eTypedError};
-
-const STRUCTURAL_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
-const STRUCTURAL_SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn require_no_typed_error(error: Option<E2eTypedError>, context: &str) -> AnyResult<()> {
     if let Some(error) = error {
@@ -96,27 +78,61 @@ fn oversized_raw_substring_query() -> String {
     "abcdefghijklmnopq".repeat(1024)
 }
 
-fn structural_repo() -> RepoId {
-    RepoId::new("repo-e2e")
-}
+fn trigram_limit_raw_substring_query() -> String {
+    fn de_bruijn_symbols(alphabet: &[u8], order: usize) -> Vec<u8> {
+        let k = alphabet.len();
+        let mut a = vec![0usize; k.saturating_mul(order).saturating_add(1)];
+        let mut sequence = Vec::<usize>::new();
 
-fn structural_revision() -> RevisionId {
-    RevisionId::new("rev-e2e")
-}
-
-fn structural_generation() -> ManifestGeneration {
-    ManifestGeneration::new(1)
-}
-
-fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if predicate() {
-            return true;
+        fn build(
+            t: usize,
+            p: usize,
+            k: usize,
+            order: usize,
+            a: &mut [usize],
+            sequence: &mut Vec<usize>,
+        ) {
+            if t > order {
+                if order.is_multiple_of(p) {
+                    sequence.extend_from_slice(&a[1..=p]);
+                }
+                return;
+            }
+            a[t] = a[t - p];
+            build(t + 1, p, k, order, a, sequence);
+            for j in (a[t - p] + 1)..k {
+                a[t] = j;
+                build(t + 1, t, k, order, a, sequence);
+            }
         }
-        thread::sleep(Duration::from_millis(25));
+
+        build(1, 1, k, order, &mut a, &mut sequence);
+
+        let mut out = sequence
+            .into_iter()
+            .map(|idx| alphabet[idx])
+            .collect::<Vec<_>>();
+        out.extend_from_slice(&alphabet[..order.saturating_sub(1)]);
+        out
     }
-    false
+
+    String::from_utf8(de_bruijn_symbols(b"0123456789abcdefg", 3))
+        .unwrap_or_else(|err| panic!("trigram limit query bytes stay utf-8: {err}"))
+}
+
+fn trigram_plan_limit_raw_substring_query() -> String {
+    let alphabet = *b"abcdefghijklmnopq";
+    let mut out = String::with_capacity(alphabet.len() * alphabet.len() * alphabet.len() * 3);
+    for a in alphabet {
+        for b in alphabet {
+            for c in alphabet {
+                out.push(char::from(a));
+                out.push(char::from(b));
+                out.push(char::from(c));
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -216,6 +232,88 @@ fn oversized_raw_substring_query_fails_parse_and_does_not_poison_next_query() ->
 }
 
 #[test]
+fn raw_substring_trigram_plan_limit_is_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_regex_fixture(&mut rt)?;
+
+    let query = format!("'{}'", trigram_plan_limit_raw_substring_query());
+    let limited = rt.query_text(TextQuerySyntax::Native, &query, 10);
+    let error = limited.typed_error.ok_or_else(|| {
+        anyhow::anyhow!(
+            "expected trigram plan-limit rejection, observed success ids={:?}",
+            limited.candidate_ids
+        )
+    })?;
+    if error.code != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
+        return Err(anyhow::anyhow!(
+            "expected LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("distinct trigrams") {
+        return Err(anyhow::anyhow!(
+            "trigram plan-limit rejection lost distinct-trigram detail: {}",
+            error.message
+        ));
+    }
+
+    let exact_id = rt.candidate_id_for_path("src/exact.txt")?;
+    let follow_up = rt.query_text(TextQuerySyntax::Native, "needle_x", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up lexical query after trigram plan-limit reject",
+    )?;
+    if follow_up.candidate_ids != vec![exact_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up lexical query diverged after trigram plan-limit reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn trigram_plan_limit_query_fails_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_regex_fixture(&mut rt)?;
+
+    let query = format!("'{}'", trigram_limit_raw_substring_query());
+    let limited = rt.query_text(TextQuerySyntax::Native, &query, 10);
+    let error = limited.typed_error.ok_or_else(|| {
+        anyhow::anyhow!(
+            "expected trigram plan-limit rejection, observed success ids={:?}",
+            limited.candidate_ids
+        )
+    })?;
+    if error.code != "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED" {
+        return Err(anyhow::anyhow!(
+            "expected LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("dimension=trigram-set") {
+        return Err(anyhow::anyhow!(
+            "trigram plan-limit rejection lost dimension detail: {}",
+            error.message
+        ));
+    }
+
+    let exact_id = rt.candidate_id_for_path("src/exact.txt")?;
+    let follow_up = rt.query_text(TextQuerySyntax::Native, "needle_x", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up lexical query after trigram plan-limit reject",
+    )?;
+    if follow_up.candidate_ids != vec![exact_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up lexical query diverged after trigram plan-limit reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn hybrid_count_cap_surfaces_truthful_early_stop_reason() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_hybrid_count_fixture(&mut rt)?;
@@ -248,6 +346,76 @@ fn hybrid_count_cap_surfaces_truthful_early_stop_reason() -> AnyResult<()> {
             "hybrid count-cap summary missing fused-count detail: {}",
             explanation.summary
         ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hybrid_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_hybrid_count_fixture(&mut rt)?;
+
+    let result = rt.query_hybrid(TextQuerySyntax::Native, "scope", &[1.0, 0.0], 2);
+    require_no_typed_error(result.typed_error, "hybrid runtime metrics query")?;
+
+    let errors = rt.query_metric_errors()?;
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "unexpected runtime metric errors: {errors:?}"
+        ));
+    }
+    let samples = rt.query_metrics_snapshot()?;
+    let names = samples
+        .iter()
+        .map(|sample| sample.name.as_ref().to_string())
+        .collect::<Vec<_>>();
+    let expected_success_suffix = vec![
+        "lq_query_intake_total".to_string(),
+        "lq_planner_total".to_string(),
+        "lq_engine_fanout_count".to_string(),
+        "lq_merge_result_count".to_string(),
+        "lq_early_stop_total".to_string(),
+    ];
+    let allowed = [
+        "lq_query_intake_total",
+        "lq_typed_error_not_ready_total",
+        "lq_planner_total",
+        "lq_engine_fanout_count",
+        "lq_merge_result_count",
+        "lq_early_stop_total",
+    ];
+    if names.iter().any(|name| !allowed.contains(&name.as_str())) {
+        return Err(anyhow::anyhow!(
+            "runtime metric names escaped closed set: {names:?}"
+        ));
+    }
+    let success_suffix = names
+        .get(names.len().saturating_sub(expected_success_suffix.len())..)
+        .unwrap_or_default()
+        .to_vec();
+    if success_suffix != expected_success_suffix {
+        return Err(anyhow::anyhow!(
+            "unexpected runtime metric names: {names:?}"
+        ));
+    }
+    for sample in &samples {
+        if sample.dimensions.ticket_id.as_ref() != "LXE-10"
+            || sample.dimensions.wave_id.as_ref() != "8"
+            || sample.dimensions.tenant_id.as_ref() != "local"
+            || sample.dimensions.repo_id.as_ref() != "repo-e2e"
+            || sample.dimensions.generation_id != 1
+        {
+            return Err(anyhow::anyhow!(
+                "unexpected runtime metric dimensions: {:?}",
+                sample.dimensions
+            ));
+        }
+        if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
+            return Err(anyhow::anyhow!(
+                "runtime metric leaked query content in name={}",
+                sample.name
+            ));
+        }
     }
     Ok(())
 }
@@ -291,152 +459,51 @@ fn hybrid_large_tied_result_set_keeps_order_stable() -> AnyResult<()> {
 }
 
 #[test]
-fn structural_orphan_chunk_authority_fails_typed_generation_not_ready() -> AnyResult<()> {
-    let dir = tempfile::tempdir()?;
-    let state_root = dir.path();
+fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo-e2e", "src/tree.rs", "fn orphaned() {}")?;
+    _ = rt.seal_tracks(&[SearchPlaneTrackKind::Lexical])?;
+    rt.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])?;
+
+    let result = rt.query_structural(TextQuerySyntax::Native, "match { :[x] }", 10);
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed structural readiness error"))?;
+    if error.code != "STR_GENERATION_NOT_READY" {
+        return Err(anyhow::anyhow!(
+            "expected STR_GENERATION_NOT_READY, got {}",
+            error.code
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let path = "src/tree.rs";
     let content = "fn orphaned() {}";
-    {
-        let publisher = open_lexical_publisher(state_root)?;
-        let chunk_id = ChunkId::new("chunk-tree");
-        let chunk = ChunkRecord {
-            chunk_id: chunk_id.clone(),
-            repo_relative_path: RepoRelativePath::new("src/tree.rs"),
-            language: LanguageCode::new("rust")
-                .map_err(|err| anyhow::anyhow!("invalid structural test language: {err}"))?,
-            start_byte: 0,
-            end_byte: u32::try_from(content.len())
-                .map_err(|err| anyhow::anyhow!("structural test content overflow: {err}"))?,
-            start_line: 1,
-            end_line: 1,
-            snippet: content.to_string().into_boxed_str(),
-            indexed_text: content.to_string().into_boxed_str(),
-            text_digest: "text:tree".to_string().into_boxed_str(),
-            shape_digest: "shape:tree".to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-        };
-        let mut chunk_payload = Vec::new();
-        ciborium::into_writer(&chunk, &mut chunk_payload)?;
-        let _seq = publisher.publish(LexicalChannelOp::UpsertChunk(UpsertChunk {
-            repo_id: structural_repo(),
-            revision_id: structural_revision(),
-            generation: structural_generation(),
-            chunk_id: chunk_id.clone(),
-            payload: chunk_payload,
-        }))?;
-        let tree = ParseTreeRecord {
-            wire_version: 1,
-            lang: LanguageCode::new("rust")
-                .map_err(|err| anyhow::anyhow!("invalid structural test language: {err}"))?,
-            root: ParseNode {
-                kind: "function_item".to_string().into_boxed_str(),
-                byte_start: 0,
-                byte_end: u32::try_from(content.len())
-                    .map_err(|err| anyhow::anyhow!("structural test content overflow: {err}"))?,
-                children: vec![ParseNode {
-                    kind: "identifier".to_string().into_boxed_str(),
-                    byte_start: 3,
-                    byte_end: 11,
-                    children: Vec::new(),
-                }],
-            },
-            source_hash: compute_parse_tree_source_hash(content),
-            role_tag_schema_version: 1,
-            role_tags: Vec::new(),
-        };
-        let mut tree_payload = Vec::new();
-        ciborium::into_writer(&tree, &mut tree_payload)?;
-        let _seq = publisher.publish(LexicalChannelOp::UpsertParseTree(UpsertParseTree {
-            repo_id: structural_repo(),
-            revision_id: structural_revision(),
-            generation: structural_generation(),
-            chunk_id: chunk_id.clone(),
-            payload: tree_payload,
-        }))?;
-        let _seq = publisher.publish(LexicalChannelOp::DeleteChunk(DeleteChunk {
-            repo_id: structural_repo(),
-            revision_id: structural_revision(),
-            generation: structural_generation(),
-            chunk_id,
-        }))?;
-        _ = publisher.seal(
-            structural_repo(),
-            structural_revision(),
-            structural_generation(),
-        )?;
-    }
+    rt.ingest_text("repo-e2e", path, content)?;
+    rt.ingest_structural_function_tree(path, content, "orphaned")?;
+    rt.delete_chunk_for_path(path)?;
+    _ = rt.seal_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
 
-    let runtime = build_runtime(SearchdConfig::from_state_root(state_root.to_path_buf()))?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("e2e-perf-chaos-structural-shard".into())
-        .spawn(move || drive(runtime, shutdown_for_drive))?;
-    if !wait_until(STRUCTURAL_SOCKET_TIMEOUT, || socket.exists()) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
+    let result = rt.query_structural(TextQuerySyntax::Native, "match { :[x] }", 10);
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed structural shard-unavailable error"))?;
+    if error.code != "STR_SHARD_UNAVAILABLE" {
         return Err(anyhow::anyhow!(
-            "structural shard-unavailable socket never appeared"
+            "expected STR_SHARD_UNAVAILABLE, got {}",
+            error.code
         ));
     }
-
-    let request = SearchPlaneQueryIpcRequestEnvelope {
-        request_id: 77,
-        payload: SearchPlaneQueryIpcRequest::Structural(StructuralQueryRequest {
-            text_query: TextQueryRequest {
-                syntax: TextQuerySyntax::Native,
-                query_text: "match { :[x] }".to_string(),
-                generation: Some(GenerationPin::new(
-                    structural_repo(),
-                    structural_revision(),
-                    structural_generation(),
-                )),
-                generation_selector: None,
-                top_k: 10,
-            },
-        }),
-    };
-    let mut observed: Option<String> = None;
-    let saw_expected = wait_until(STRUCTURAL_READINESS_TIMEOUT, || {
-        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &request) {
-            Ok(response) => match response.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => {
-                    observed = Some(err.code.clone());
-                    err.code == "STR_GENERATION_NOT_READY"
-                }
-                other @ (SearchPlaneQueryIpcResponse::Text(_)
-                | SearchPlaneQueryIpcResponse::Symbol(_)
-                | SearchPlaneQueryIpcResponse::Semantic(_)
-                | SearchPlaneQueryIpcResponse::Hybrid(_)
-                | SearchPlaneQueryIpcResponse::History(_)
-                | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-                | SearchPlaneQueryIpcResponse::Structural(_)
-                | SearchPlaneQueryIpcResponse::Bridge(_)
-                | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                | SearchPlaneQueryIpcResponse::Explain(_)) => {
-                    observed = Some(format!("{other:?}"));
-                    false
-                }
-            },
-            Err(err) => {
-                observed = Some(err.to_string());
-                false
-            }
-        }
-    });
-    shutdown.store(true, Ordering::Release);
-    let join_result = match join.join() {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err),
-        Err(panic) => Err(anyhow::anyhow!("driver panic: {panic:?}")),
-    };
-    if !saw_expected {
-        join_result?;
-        return Err(anyhow::anyhow!(
-            "expected STR_GENERATION_NOT_READY after orphaning structural chunk authority, observed {observed:?}"
-        ));
-    }
-    join_result?;
     Ok(())
 }

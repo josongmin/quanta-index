@@ -1,6 +1,6 @@
 # LXE-10 - Observability and Bridge Sink
 
-Status: `partial`
+Status: `completed`
 Priority: `P1`
 Depends on: [LXE-02](LXE-02-planner-authority-ir.md), [LXE-07](LXE-07-semantic-hybrid-planner-provenance.md)
 
@@ -21,16 +21,15 @@ Already landed and green on current source:
   parser AST state.
 - truthful non-`None` `early_stop_reason` is now proved on bounded hybrid
   execution via `CountReached`.
+- bounded-label metrics now exist in `query_dispatcher.rs`; emitted names are
+  closed to a fixed taxonomy and runtime dimensions stay cardinality-guarded.
+- the closed metrics taxonomy is unit-proved in
+  `classify_error_metric_name_uses_closed_taxonomy`, and runtime no-leakage is
+  proved on the live `e2e_perf_chaos` rail.
 - restart/replay proof lives in `E2E-05` and asserts stable result IDs plus
   stable explanation equality across lexical reopen, semantic scoped reopen,
   and lexical fresh replay, plus stable hybrid ID and high-level explanation
   truth across fresh replay.
-
-Still open:
-
-- no established bounded-label metrics surface exists in the current tree, so
-  the metrics part of this ticket remains a documented residual rather than a
-  speculative new subsystem.
 
 ## Owner files
 
@@ -42,6 +41,7 @@ Still open:
 - `crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`
 - `crates/quanta-index-searchd-runtime/tests/explain.rs`
 - new `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`
+- `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`
 
 ## File-level work breakdown
 
@@ -93,9 +93,11 @@ Still open:
 - bridge packet round-trip tests.
 - tests proving Sourcegraph translation does not imply bridge export.
 - live current-tree proof on:
+  - `cargo test -p quanta-index-search-plane query_dispatcher -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test explain -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test dsl_scenarios -- --nocapture`
   - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
 
 ## E2E plan
 
@@ -107,6 +109,8 @@ Covered by `E2E-02`, `E2E-05`, and `E2E-06`:
 - full corpus CI exports failure artifacts with typed reasons.
 
 ## DoD
+
+Current status: satisfied on the current tree.
 
 - no explanation response uses the prior summary-only shape.
 - bridge candidate packets are emitted from result candidates, not parser AST.

@@ -15,7 +15,6 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-quanta-index-channel = { version = "0.1.0", path = "../quanta-index-channel" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
@@ -29,6 +28,7 @@ ciborium = { workspace = true }
 quanta-index-conformance = { version = "0.1.0", path = "../quanta-index-conformance" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
+quanta-index-lq-obs = { version = "0.1.0", path = "../quanta-index-lq-obs" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 serde = { workspace = true }
 tempfile.workspace = true

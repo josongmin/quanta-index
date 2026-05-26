@@ -1,8 +1,8 @@
 //! Search-plane query orchestration using the in-memory readiness ledger as the
 //! source of truth.
 
-use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     ActivationCatalog, Ledger, lower_lexical_text_query,
@@ -21,8 +21,8 @@ use quanta_index_contract::{
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticQueryResponse, SemanticVectorRef, StructuralQueryRequest, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -35,7 +35,10 @@ use quanta_index_core::{
     StructuralService,
 };
 use quanta_index_lq_bridge::export_bridge_candidate_packet;
-use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
+use quanta_index_lq_obs::{
+    CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
+    validate_dimensions,
+};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -46,7 +49,7 @@ const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
 const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
 const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
 
-trait QueryObsSink {
+pub trait QueryObsSink {
     fn emit(&self, sample: MetricSample);
 }
 
@@ -54,6 +57,89 @@ struct NoopQueryObsSink;
 
 impl QueryObsSink for NoopQueryObsSink {
     fn emit(&self, _sample: MetricSample) {}
+}
+
+#[derive(Default)]
+pub struct BoundedQueryObsStore {
+    guard: Mutex<CardinalityGuard>,
+    samples: Mutex<Vec<MetricSample>>,
+    errors: Mutex<Vec<ObsError>>,
+}
+
+impl BoundedQueryObsStore {
+    fn record_error(&self, err: ObsError) {
+        let mut guard = lock_or_recover(&self.errors);
+        guard.push(err);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<MetricSample> {
+        lock_or_recover(&self.samples).clone()
+    }
+
+    #[must_use]
+    pub fn errors(&self) -> Vec<ObsError> {
+        lock_or_recover(&self.errors).clone()
+    }
+}
+
+impl QueryObsSink for BoundedQueryObsStore {
+    fn emit(&self, sample: MetricSample) {
+        if let Err(err) = validate_dimensions(&sample.dimensions) {
+            self.record_error(err);
+            return;
+        }
+        let sample = {
+            let mut guard = lock_or_recover(&self.guard);
+            match guard.observe(&sample.dimensions) {
+                Ok(()) => sample,
+                Err(err) => {
+                    self.record_error(err.clone());
+                    overflow_bucket_sample(sample, &err)
+                }
+            }
+        };
+        let mut samples = lock_or_recover(&self.samples);
+        samples.push(sample);
+    }
+}
+
+pub trait QueryTextEmbedderPort {
+    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
+}
+
+pub struct DecimalQueryTextEmbedder;
+
+impl QueryTextEmbedderPort for DecimalQueryTextEmbedder {
+    fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
+        decode_query_text_as_vector(query_text)
+    }
+}
+
+fn overflow_bucket_sample(mut sample: MetricSample, err: &ObsError) -> MetricSample {
+    match err.dim_overflow.as_deref() {
+        Some("tenant_id") => {
+            sample.dimensions.tenant_id = OBS_OVERFLOW_LABEL.into();
+        }
+        Some("repo_id") => {
+            sample.dimensions.repo_id = OBS_OVERFLOW_LABEL.into();
+        }
+        Some("ticket_id") => {
+            sample.dimensions.ticket_id = OBS_OVERFLOW_LABEL.into();
+        }
+        Some("wave_id") => {
+            sample.dimensions.wave_id = OBS_OVERFLOW_LABEL.into();
+        }
+        Some(_) | None => {}
+    }
+    sample
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    }
 }
 
 fn classify_error_metric_name(err: &CoreError) -> &'static str {
@@ -98,6 +184,7 @@ pub struct SearchPlaneDispatcher {
     structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     activation_catalog: Arc<ActivationCatalog>,
+    query_embedder: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
 }
 
@@ -121,17 +208,19 @@ impl SearchPlaneDispatcher {
             structural_producer,
             ledger,
             activation_catalog,
+            Arc::new(DecimalQueryTextEmbedder),
             Arc::new(NoopQueryObsSink),
         )
     }
 
-    fn new_with_obs(
+    pub fn new_with_obs(
         lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
         sem_opener: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
         repo_map_query: Arc<dyn RepoMapQueryPort + Send + Sync>,
         structural_producer: Arc<dyn StructuralProducerPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         activation_catalog: Arc<ActivationCatalog>,
+        query_embedder: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
         obs_sink: Arc<dyn QueryObsSink + Send + Sync>,
     ) -> Self {
         Self {
@@ -141,6 +230,7 @@ impl SearchPlaneDispatcher {
             structural_producer,
             ledger,
             activation_catalog,
+            query_embedder,
             obs_sink,
         }
     }
@@ -229,15 +319,10 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let query_vector = resolve_query_vector(
-            request.query_vector_ref.as_ref(),
-            request.query_vector.as_deref(),
-            request.query_text.as_deref(),
-            "semantic",
-            "query_vector_ref",
-            "query_vector",
-            searcher.as_ref(),
-        )?;
+        let query_vector = self
+            .query_embedder
+            .embed_query(request.query_text.as_str())
+            .map_err(|err| prefix_semantic_query_error("semantic", err))?;
         let results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
             searcher.search_scoped(&query_vector, scope_ids, request.top_k)?
         } else {
@@ -290,15 +375,10 @@ impl SearchPlaneDispatcher {
             .iter()
             .map(|candidate| candidate.candidate_id.clone())
             .collect::<BTreeSet<_>>();
-        let query_vector = resolve_query_vector(
-            request.semantic_vector_ref.as_ref(),
-            request.semantic_vector.as_deref(),
-            request.semantic_query_text.as_deref(),
-            "hybrid",
-            "semantic_vector_ref",
-            "semantic_vector",
-            sem_searcher.as_ref(),
-        )?;
+        let query_vector = self
+            .query_embedder
+            .embed_query(request.semantic_query_text.as_str())
+            .map_err(|err| prefix_semantic_query_error("hybrid", err))?;
         let mut sem_results =
             sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
         stabilize_ranked_candidates(&mut sem_results);
@@ -418,17 +498,26 @@ impl SearchPlaneDispatcher {
         &self,
         request: &StructuralQueryRequest,
     ) -> Result<SearchPlaneStructuralQueryResponse, CoreError> {
-        let (pin, domain_request) =
+        let (pin, lowered) =
             lower_structural_query_request(self.activation_catalog.as_ref(), request)?;
         let service = StructuralService::new(Arc::clone(&self.structural_producer));
-        let mut results = service
-            .query(&domain_request)
-            .map_err(|err| map_structural_error(&err))?
-            .candidates;
+        let requested_lang = extract_structural_requested_lang(&lowered.expr)?;
+        let (requested_lang, executable_filters) =
+            extract_structural_filters(&lowered, requested_lang.as_deref())?;
+        let candidates = evaluate_structural_expr(
+            &service,
+            &pin,
+            &lowered.expr,
+            requested_lang.as_deref(),
+            &executable_filters,
+            &lowered.options,
+            None,
+        )?;
+        let mut results = project_structural_query_results(candidates);
         results.truncate(top_k_limit(request.text_query.top_k));
         Ok(SearchPlaneStructuralQueryResponse {
             generation: pin,
-            results: project_structural_query_results(results),
+            results,
         })
     }
 
@@ -644,35 +733,112 @@ impl SearchPlaneDispatcher {
     }
 
     fn dispatch_history(&self, request: &HistoryQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(self.history(request), SearchPlaneQueryIpcResponse::History)
+        let requested_pin = request.text_query.generation.as_ref();
+        self.emit_intake_metric(requested_pin);
+        match self.history(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                self.emit_merge_count_metric(
+                    &response.generation,
+                    response.commits.len().saturating_add(response.diffs.len()),
+                );
+                SearchPlaneQueryIpcResponse::History(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin, &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_structural(&self, request: &StructuralQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.structural(request),
-            SearchPlaneQueryIpcResponse::Structural,
-        )
+        let requested_pin = request.text_query.generation.as_ref();
+        self.emit_intake_metric(requested_pin);
+        match self.structural(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                self.emit_merge_count_metric(&response.generation, response.results.len());
+                SearchPlaneQueryIpcResponse::Structural(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin, &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_bridge(&self, request: &BridgeQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(self.bridge(request), SearchPlaneQueryIpcResponse::Bridge)
+        let requested_pin = request.text_query.generation.as_ref();
+        self.emit_intake_metric(requested_pin);
+        match self.bridge(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                self.emit_merge_count_metric(
+                    &response.generation,
+                    response.packet.candidates.len(),
+                );
+                SearchPlaneQueryIpcResponse::Bridge(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin, &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_repo_map(&self, request: RepoMapQueryRequest) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.repo_map(request),
-            SearchPlaneQueryIpcResponse::RepoMapQuery,
-        )
+        let requested_pin = GenerationPin::new(
+            request.repo_id.clone(),
+            request.revision_id.clone(),
+            request.manifest_generation,
+        );
+        self.emit_intake_metric(Some(&requested_pin));
+        match self.repo_map(request) {
+            Ok(response) => {
+                let response_pin = GenerationPin::new(
+                    response.repo_id.clone(),
+                    response.revision_id.clone(),
+                    response.manifest_generation,
+                );
+                self.emit_planner_metric(&response_pin);
+                self.emit_engine_fanout_metric(&response_pin, 1);
+                self.emit_merge_count_metric(&response_pin, response.entries.len());
+                SearchPlaneQueryIpcResponse::RepoMapQuery(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(Some(&requested_pin), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn dispatch_explain(
         &self,
         request: SearchPlaneExplainQueryRequest,
     ) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.explain_query(request),
-            SearchPlaneQueryIpcResponse::Explain,
-        )
+        let requested_pin = request.generation.clone();
+        self.emit_intake_metric(Some(&requested_pin));
+        match self.explain_query(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(
+                    &response.generation,
+                    response.explanation.engines_touched.len(),
+                );
+                self.emit_early_stop_metric(
+                    &response.generation,
+                    response.explanation.early_stop_reason,
+                );
+                SearchPlaneQueryIpcResponse::Explain(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(Some(&requested_pin), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     // QI-RT-02 (in-flight): runtime-metadata query path is defined in the
@@ -682,10 +848,20 @@ impl SearchPlaneDispatcher {
         &self,
         request: &RuntimeMetadataQueryRequest,
     ) -> SearchPlaneQueryIpcResponse {
-        dispatch_query_result(
-            self.runtime_metadata(request),
-            SearchPlaneQueryIpcResponse::RuntimeMetadata,
-        )
+        let requested_pin = request.text_query.generation.as_ref();
+        self.emit_intake_metric(requested_pin);
+        match self.runtime_metadata(request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(&response.generation, 1);
+                self.emit_merge_count_metric(&response.generation, response.results.len());
+                SearchPlaneQueryIpcResponse::RuntimeMetadata(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin, &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
     }
 
     fn snapshot_lex_materialized(
@@ -843,16 +1019,6 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
         CoreError::Storage(msg) => (ERR_INTERNAL.to_string(), msg),
     };
     SearchPlaneIpcError { code, message }
-}
-
-fn dispatch_query_result<T>(
-    result: Result<T, CoreError>,
-    ok: impl FnOnce(T) -> SearchPlaneQueryIpcResponse,
-) -> SearchPlaneQueryIpcResponse {
-    match result {
-        Ok(resp) => ok(resp),
-        Err(err) => SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err)),
-    }
 }
 
 const fn default_top_k() -> u32 {
@@ -1104,7 +1270,7 @@ fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {
 fn lower_structural_query_request(
     activation_catalog: &ActivationCatalog,
     request: &StructuralQueryRequest,
-) -> Result<(GenerationPin, DomainStructuralQueryRequest), CoreError> {
+) -> Result<(GenerationPin, LqQuery), CoreError> {
     let lowered = match request.text_query.syntax {
         TextQuerySyntax::Native => lower_lexical_text_query(&request.text_query)?,
         TextQuerySyntax::Sourcegraph => {
@@ -1117,36 +1283,348 @@ fn lower_structural_query_request(
         SearchPlaneTrackKind::Structural,
         "structural",
     )?;
-    let pattern = extract_structural_block(&lowered)?;
-    let requested_lang = pattern.lang.clone();
-    let (requested_lang, filters) =
-        extract_structural_filters(&lowered, requested_lang.as_deref())?;
-    Ok((
-        pin.clone(),
-        DomainStructuralQueryRequest {
-            pattern,
-            requested_lang,
-            filters,
-            options: lowered.options,
-            generation: GenerationSelector::Pinned(pin),
-        },
-    ))
+    Ok((pin, lowered))
 }
 
-fn extract_structural_block(query: &LqQuery) -> Result<LqStructuralBlock, CoreError> {
-    match &query.expr {
-        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => Ok(block.clone()),
+type StructuralCandidateBuckets = BTreeMap<String, Vec<StructuralMatchCandidate>>;
+
+fn extract_structural_requested_lang(expr: &LqExpr) -> Result<Option<String>, CoreError> {
+    let mut requested_lang = None;
+    collect_structural_requested_lang(expr, &mut requested_lang)?;
+    Ok(requested_lang)
+}
+
+fn collect_structural_requested_lang(
+    expr: &LqExpr,
+    requested_lang: &mut Option<String>,
+) -> Result<(), CoreError> {
+    match expr {
         LqExpr::Empty => Err(structural_invalid_request(
-            "query must include exactly one `match { ... }` structural leaf",
+            "query must include at least one structural `match { ... }` leaf",
         )),
-        LqExpr::Leaf(_)
-        | LqExpr::Not(_)
-        | LqExpr::All(_)
-        | LqExpr::Any(_)
-        | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
-            "query must lower to exactly one top-level structural block leaf",
+        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+            merge_structural_requested_lang(requested_lang, block.lang.as_deref())
+        }
+        LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
+            "query must lower to a structural-only boolean tree of `match { ... }` leaves",
         )),
+        LqExpr::Not(inner) => collect_structural_requested_lang(inner, requested_lang),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            if children.is_empty() {
+                return Err(structural_invalid_request(
+                    "query must include at least one structural `match { ... }` leaf",
+                ));
+            }
+            for child in children {
+                collect_structural_requested_lang(child, requested_lang)?;
+            }
+            Ok(())
+        }
     }
+}
+
+fn merge_structural_requested_lang(
+    requested_lang: &mut Option<String>,
+    candidate_lang: Option<&str>,
+) -> Result<(), CoreError> {
+    let candidate_lang = candidate_lang
+        .map(str::trim)
+        .filter(|lang| !lang.is_empty())
+        .map(str::to_string);
+    match (requested_lang.as_deref(), candidate_lang.as_deref()) {
+        (_, None) => Ok(()),
+        (None, Some(lang)) => {
+            *requested_lang = Some(lang.to_string());
+            Ok(())
+        }
+        (Some(current), Some(lang)) if current == lang => Ok(()),
+        (Some(current), Some(lang)) => Err(structural_invalid_request(format!(
+            "conflicting structural lang requirements `{current}` and `{lang}` are not allowed"
+        ))),
+    }
+}
+
+fn evaluate_structural_expr(
+    service: &StructuralService,
+    pin: &GenerationPin,
+    expr: &LqExpr,
+    requested_lang: Option<&str>,
+    filters: &[StructuralExecutableFilter],
+    options: &LqOptions,
+    seed: Option<&StructuralCandidateBuckets>,
+) -> Result<StructuralCandidateBuckets, CoreError> {
+    match expr {
+        LqExpr::Empty => Err(structural_invalid_request(
+            "query must include at least one structural `match { ... }` leaf",
+        )),
+        LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+            execute_structural_block(service, pin, block, requested_lang, filters, options)
+        }
+        LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
+            "query must lower to a structural-only boolean tree of `match { ... }` leaves",
+        )),
+        LqExpr::Not(inner) => {
+            let Some(seed) = seed else {
+                return Err(structural_invalid_request(
+                    "pure-negative structural boolean queries are not executable; add a positive structural leaf before `NOT`",
+                ));
+            };
+            let blocked = evaluate_structural_expr(
+                service,
+                pin,
+                inner,
+                requested_lang,
+                filters,
+                options,
+                Some(seed),
+            )?;
+            Ok(subtract_structural_buckets(seed, &blocked))
+        }
+        LqExpr::All(children) => {
+            if children.is_empty() {
+                return Err(structural_invalid_request(
+                    "query must include at least one structural `match { ... }` leaf",
+                ));
+            }
+            let mut positives = children
+                .iter()
+                .filter(|child| !matches!(child, LqExpr::Not(_)));
+            let mut current = if let Some(first_positive) = positives.next() {
+                let mut current = evaluate_structural_expr(
+                    service,
+                    pin,
+                    first_positive,
+                    requested_lang,
+                    filters,
+                    options,
+                    seed,
+                )?;
+                for child in positives {
+                    let next = evaluate_structural_expr(
+                        service,
+                        pin,
+                        child,
+                        requested_lang,
+                        filters,
+                        options,
+                        seed,
+                    )?;
+                    current = intersect_structural_buckets(&current, &next);
+                    if current.is_empty() {
+                        return Ok(current);
+                    }
+                }
+                current
+            } else if let Some(seed) = seed {
+                seed.clone()
+            } else {
+                return Err(structural_invalid_request(
+                    "pure-negative structural boolean queries are not executable; add a positive structural leaf before `NOT`",
+                ));
+            };
+            for child in children {
+                if matches!(child, LqExpr::Not(_)) {
+                    current = evaluate_structural_expr(
+                        service,
+                        pin,
+                        child,
+                        requested_lang,
+                        filters,
+                        options,
+                        Some(&current),
+                    )?;
+                    if current.is_empty() {
+                        return Ok(current);
+                    }
+                }
+            }
+            Ok(current)
+        }
+        LqExpr::Any(children) => {
+            if children.is_empty() {
+                return Err(structural_invalid_request(
+                    "query must include at least one structural `match { ... }` leaf",
+                ));
+            }
+            let mut union = StructuralCandidateBuckets::new();
+            for child in children {
+                let child_matches = evaluate_structural_expr(
+                    service,
+                    pin,
+                    child,
+                    requested_lang,
+                    filters,
+                    options,
+                    seed,
+                )?;
+                union = union_structural_buckets(union, child_matches);
+            }
+            Ok(union)
+        }
+    }
+}
+
+fn execute_structural_block(
+    service: &StructuralService,
+    pin: &GenerationPin,
+    block: &LqStructuralBlock,
+    requested_lang: Option<&str>,
+    filters: &[StructuralExecutableFilter],
+    options: &LqOptions,
+) -> Result<StructuralCandidateBuckets, CoreError> {
+    let response = service
+        .query(&DomainStructuralQueryRequest {
+            pattern: block.clone(),
+            requested_lang: requested_lang.map(str::to_string),
+            filters: filters.to_vec(),
+            options: options.clone(),
+            generation: GenerationSelector::Pinned(pin.clone()),
+        })
+        .map_err(|err| map_structural_error(&err))?;
+    Ok(bucket_structural_matches(response.candidates))
+}
+
+fn bucket_structural_matches(
+    candidates: Vec<StructuralMatchCandidate>,
+) -> StructuralCandidateBuckets {
+    let mut buckets = StructuralCandidateBuckets::new();
+    for mut candidate in candidates {
+        normalize_structural_match_candidate(&mut candidate);
+        buckets
+            .entry(candidate.candidate_id.clone())
+            .or_default()
+            .push(candidate);
+    }
+    for bucket in buckets.values_mut() {
+        normalize_structural_match_bucket(bucket);
+    }
+    buckets
+}
+
+fn union_structural_buckets(
+    mut left: StructuralCandidateBuckets,
+    right: StructuralCandidateBuckets,
+) -> StructuralCandidateBuckets {
+    for (candidate_id, mut matches) in right {
+        left.entry(candidate_id).or_default().append(&mut matches);
+    }
+    for bucket in left.values_mut() {
+        normalize_structural_match_bucket(bucket);
+    }
+    left
+}
+
+fn intersect_structural_buckets(
+    left: &StructuralCandidateBuckets,
+    right: &StructuralCandidateBuckets,
+) -> StructuralCandidateBuckets {
+    let mut merged = StructuralCandidateBuckets::new();
+    for (candidate_id, left_matches) in left {
+        let Some(right_matches) = right.get(candidate_id) else {
+            continue;
+        };
+        let combined = merge_structural_match_sets(candidate_id, left_matches, right_matches);
+        if !combined.is_empty() {
+            let _prior = merged.insert(candidate_id.clone(), combined);
+        }
+    }
+    merged
+}
+
+fn subtract_structural_buckets(
+    base: &StructuralCandidateBuckets,
+    blocked: &StructuralCandidateBuckets,
+) -> StructuralCandidateBuckets {
+    let mut remaining = StructuralCandidateBuckets::new();
+    for (candidate_id, base_matches) in base {
+        let next_matches = if let Some(blocked_matches) = blocked.get(candidate_id) {
+            base_matches
+                .iter()
+                .filter(|candidate| {
+                    !blocked_matches.iter().any(|blocked_candidate| {
+                        structural_match_candidates_consistent(candidate, blocked_candidate)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            base_matches.clone()
+        };
+        if !next_matches.is_empty() {
+            let _prior = remaining.insert(candidate_id.clone(), next_matches);
+        }
+    }
+    remaining
+}
+
+fn merge_structural_match_sets(
+    candidate_id: &str,
+    left: &[StructuralMatchCandidate],
+    right: &[StructuralMatchCandidate],
+) -> Vec<StructuralMatchCandidate> {
+    let mut merged = Vec::new();
+    for left_candidate in left {
+        for right_candidate in right {
+            if !structural_match_candidates_consistent(left_candidate, right_candidate) {
+                continue;
+            }
+            let mut bindings = left_candidate.bindings.clone();
+            for binding in &right_candidate.bindings {
+                if !bindings.iter().any(|existing| existing == binding) {
+                    bindings.push(binding.clone());
+                }
+            }
+            bindings.sort_by(compare_structural_bindings);
+            let (pattern_start_byte, pattern_end_byte) = std::cmp::min(
+                (
+                    left_candidate.pattern_start_byte,
+                    left_candidate.pattern_end_byte,
+                ),
+                (
+                    right_candidate.pattern_start_byte,
+                    right_candidate.pattern_end_byte,
+                ),
+            );
+            merged.push(StructuralMatchCandidate {
+                candidate_id: candidate_id.to_string(),
+                pattern_start_byte,
+                pattern_end_byte,
+                bindings,
+            });
+        }
+    }
+    normalize_structural_match_bucket(&mut merged);
+    merged
+}
+
+fn structural_match_candidates_consistent(
+    left: &StructuralMatchCandidate,
+    right: &StructuralMatchCandidate,
+) -> bool {
+    left.bindings.iter().all(|left_binding| {
+        right.bindings.iter().all(|right_binding| {
+            left_binding.metavariable != right_binding.metavariable
+                || compare_structural_bindings(left_binding, right_binding).is_eq()
+        })
+    })
+}
+
+fn normalize_structural_match_bucket(bucket: &mut Vec<StructuralMatchCandidate>) {
+    for candidate in bucket.iter_mut() {
+        normalize_structural_match_candidate(candidate);
+    }
+    bucket.sort_by(compare_structural_match_candidates);
+    bucket.dedup_by(|left, right| {
+        left.candidate_id == right.candidate_id
+            && left.pattern_start_byte == right.pattern_start_byte
+            && left.pattern_end_byte == right.pattern_end_byte
+            && left.bindings == right.bindings
+    });
+}
+
+fn normalize_structural_match_candidate(candidate: &mut StructuralMatchCandidate) {
+    candidate.bindings.sort_by(compare_structural_bindings);
+    candidate.bindings.dedup_by(|left, right| left == right);
 }
 
 fn extract_structural_filters(
@@ -1232,10 +1710,15 @@ fn structural_invalid_request(message: impl Into<String>) -> CoreError {
 }
 
 fn project_structural_query_results(
-    candidates: Vec<StructuralMatchCandidate>,
+    candidates: StructuralCandidateBuckets,
 ) -> Vec<quanta_index_contract::StructuralCandidate> {
     candidates
         .into_iter()
+        .filter_map(|(_, bucket)| {
+            bucket
+                .into_iter()
+                .min_by(compare_structural_match_candidates)
+        })
         .map(project_structural_query_candidate)
         .collect()
 }
@@ -1263,6 +1746,43 @@ fn project_structural_query_binding(
         start_line: binding.start_line,
         end_line: binding.end_line,
     }
+}
+
+fn compare_structural_match_candidates(
+    left: &StructuralMatchCandidate,
+    right: &StructuralMatchCandidate,
+) -> std::cmp::Ordering {
+    left.pattern_start_byte
+        .cmp(&right.pattern_start_byte)
+        .then_with(|| left.pattern_end_byte.cmp(&right.pattern_end_byte))
+        .then_with(|| compare_structural_binding_lists(&left.bindings, &right.bindings))
+        .then_with(|| left.candidate_id.as_str().cmp(right.candidate_id.as_str()))
+}
+
+fn compare_structural_binding_lists(
+    left: &[StructuralMatchBinding],
+    right: &[StructuralMatchBinding],
+) -> std::cmp::Ordering {
+    for (left_binding, right_binding) in left.iter().zip(right.iter()) {
+        let ordering = compare_structural_bindings(left_binding, right_binding);
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn compare_structural_bindings(
+    left: &StructuralMatchBinding,
+    right: &StructuralMatchBinding,
+) -> std::cmp::Ordering {
+    left.metavariable
+        .as_str()
+        .cmp(right.metavariable.as_str())
+        .then_with(|| left.start_byte.cmp(&right.start_byte))
+        .then_with(|| left.end_byte.cmp(&right.end_byte))
+        .then_with(|| left.start_line.cmp(&right.start_line))
+        .then_with(|| left.end_line.cmp(&right.end_line))
 }
 
 fn map_structural_error(
@@ -1940,56 +2460,13 @@ fn build_hybrid_response_explanation(
     }
 }
 
-fn resolve_query_vector(
-    explicit_ref: Option<&SemanticVectorRef>,
-    explicit_legacy: Option<&[f32]>,
-    encoded: Option<&str>,
-    plane: &str,
-    ref_field: &str,
-    legacy_field: &str,
-    searcher: &dyn quanta_index_core::domains::semantic::SemanticSearcher,
-) -> Result<Vec<f32>, CoreError> {
-    if explicit_ref.is_some() && explicit_legacy.is_some() {
-        return Err(CoreError::InvalidContract(format!(
-            "{plane}: `{ref_field}` and `{legacy_field}` are mutually exclusive"
-        )));
-    }
-    match explicit_ref {
-        Some(SemanticVectorRef::Inline(query_vector)) => {
-            SemanticPolicy::validate_query_vector(query_vector)?;
-            Ok(query_vector.clone())
-        }
-        Some(SemanticVectorRef::Handle(handle)) => searcher.resolve_handle(handle),
-        None => match explicit_legacy {
-            Some(query_vector) => {
-                SemanticPolicy::validate_query_vector(query_vector)?;
-                Ok(query_vector.to_vec())
-            }
-            None => encoded.map_or_else(
-                || {
-                    // QI-QRY-01 phase 2: no text fallback available. Caller
-                    // must supply `{ref_field}`, `{legacy_field}`, or an
-                    // encoded text vector. Fail-closed per CLAUDE.md safety
-                    // rules.
-                    Err(CoreError::InvalidContract(format!(
-                        "{plane}: must supply `{ref_field}`, `{legacy_field}`, or text-encoded vector"
-                    )))
-                },
-                |text| {
-                    decode_query_text_as_vector(text).map_err(|err| match err {
-                        CoreError::Typed { code, message } => CoreError::Typed {
-                            code,
-                            message: format!("{plane}: {message}"),
-                        },
-                        err @ (CoreError::InvalidContract(_)
-                        | CoreError::NotReady(_)
-                        | CoreError::NotImplemented(_)
-                        | CoreError::NotFound(_)
-                        | CoreError::Storage(_)) => err,
-                    })
-                },
-            ),
+fn prefix_semantic_query_error(plane: &str, err: CoreError) -> CoreError {
+    match err {
+        CoreError::Typed { code, message } => CoreError::Typed {
+            code,
+            message: format!("{plane}: {message}"),
         },
+        other => other,
     }
 }
 
@@ -2032,78 +2509,31 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
-        ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
-        ERR_HISTORY_SHARD_UNAVAILABLE, FailClosedStructuralProducer, QueryObsSink,
-        SearchPlaneDispatcher, make_pin,
+        BoundedQueryObsStore, DecimalQueryTextEmbedder, ERR_HISTORY_GENERATION_NOT_READY,
+        ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_NOT_IMPLEMENTED,
+        FailClosedStructuralProducer, QueryObsSink, SearchPlaneDispatcher,
+        classify_error_metric_name, make_pin,
     };
     use crate::{ActivationCatalog, Ledger};
+    use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
         BridgeQueryRequest, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
-        LexicalCandidate, LexicalChannelOp, ManifestGeneration, RepoId, RepoMapDocType,
-        RepoMapEntryDto, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
-        RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapQueryResponse,
-        RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId,
-        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
-        SemanticVectorRef, SymbolCandidate, TextQueryRequest, TextQuerySyntax, UpsertCommit,
+        LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto,
+        RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+        RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
+        RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcResponse, SemanticQueryRequest, SymbolCandidate, TextQueryRequest,
+        TextQuerySyntax, UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
         SemanticSearcher,
     };
     use quanta_index_lq_bridge::BridgeErrorCode;
-    use quanta_index_lq_obs::{CardinalityGuard, MetricSample, validate_dimensions};
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    #[derive(Default)]
-    struct RecordingObsSink {
-        guard: Mutex<CardinalityGuard>,
-        samples: Mutex<Vec<MetricSample>>,
-    }
-
-    impl QueryObsSink for RecordingObsSink {
-        fn emit(&self, sample: MetricSample) {
-            if let Err(err) = validate_dimensions(&sample.dimensions) {
-                panic!("obs dimensions must stay valid: {err}");
-            }
-            let mut guard = match self.guard.lock() {
-                Ok(guard) => guard,
-                Err(err) => panic!("obs guard poisoned: {err}"),
-            };
-            if let Err(err) = guard.observe(&sample.dimensions) {
-                panic!("obs dimensions must stay within guard bounds: {err}");
-            }
-            drop(guard);
-            let mut samples = match self.samples.lock() {
-                Ok(samples) => samples,
-                Err(err) => panic!("obs samples poisoned: {err}"),
-            };
-            samples.push(sample);
-        }
-    }
-
-    impl RecordingObsSink {
-        fn names(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-            let samples = self
-                .samples
-                .lock()
-                .map_err(|err| format!("obs samples poisoned: {err}"))?;
-            Ok(samples
-                .iter()
-                .map(|sample| sample.name.to_string())
-                .collect())
-        }
-
-        fn samples(&self) -> Result<Vec<MetricSample>, Box<dyn std::error::Error>> {
-            let samples = self
-                .samples
-                .lock()
-                .map_err(|err| format!("obs samples poisoned: {err}"))?;
-            Ok(samples.clone())
-        }
-    }
 
     fn encode_cbor<T: serde::Serialize>(
         value: &T,
@@ -2831,7 +3261,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_dispatch_prefers_explicit_query_vector_over_query_text() -> TestResult {
+    fn semantic_dispatch_embeds_query_text() -> TestResult {
         let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let dispatcher = SearchPlaneDispatcher::new(
             Arc::new(RejectLexicalOpener),
@@ -2846,9 +3276,7 @@ mod tests {
 
         let response =
             dispatcher.dispatch(SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-                query_text: Some("definitely not a float vector".to_string()),
-                query_vector: None,
-                query_vector_ref: Some(SemanticVectorRef::Inline(vec![1.0, 0.0, 2.0])),
+                query_text: "1.0 0.0 2.0".to_string(),
                 generation: Some(GenerationPin::new(
                     RepoId::new("repo-map-ipc"),
                     RevisionId::new("rev-map-ipc"),
@@ -2899,7 +3327,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_dispatch_prefers_explicit_semantic_vector_over_query_text() -> TestResult {
+    fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let dispatcher = SearchPlaneDispatcher::new(
             Arc::new(StubLexicalOpener {
@@ -2928,9 +3356,7 @@ mod tests {
                     generation_selector: None,
                     top_k: 2,
                 },
-                semantic_query_text: Some("not numeric".to_string()),
-                semantic_vector: None,
-                semantic_vector_ref: Some(SemanticVectorRef::Inline(vec![0.25, 0.75])),
+                semantic_query_text: "0.25 0.75".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
                 top_k: 2,
@@ -3062,6 +3488,65 @@ mod tests {
         }
     }
 
+    struct PatternRoutingStructuralProducer {
+        readiness_calls: AtomicUsize,
+        execute_calls: AtomicUsize,
+    }
+
+    impl PatternRoutingStructuralProducer {
+        fn new() -> Self {
+            Self {
+                readiness_calls: AtomicUsize::new(0),
+                execute_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl StructuralProducerPort for PatternRoutingStructuralProducer {
+        fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
+            let _prev: usize = self.readiness_calls.fetch_add(1, Ordering::SeqCst);
+            StructuralReadiness::Ready
+        }
+
+        fn execute(
+            &self,
+            request: &StructuralQueryRequest,
+        ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+            let _prev: usize = self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            match structural_pattern_key(&request.pattern) {
+                Some("alpha") => Ok(vec![
+                    structural_match_candidate_with_binding("chunk-a", 10, 15, "x", 10, 15),
+                    structural_match_candidate_with_binding("chunk-shared", 20, 25, "x", 20, 25),
+                    structural_match_candidate_with_binding("chunk-shared", 5, 10, "x", 5, 10),
+                ]),
+                Some("beta") => Ok(vec![structural_match_candidate_with_binding(
+                    "chunk-shared",
+                    30,
+                    35,
+                    "y",
+                    30,
+                    35,
+                )]),
+                Some("gamma") => Ok(vec![structural_match_candidate_with_binding(
+                    "chunk-a", 40, 45, "z", 40, 45,
+                )]),
+                Some(other) => Err(StructuralError::InvalidRequest(format!(
+                    "unexpected structural pattern key `{other}` in test producer"
+                ))),
+                None => Err(StructuralError::InvalidRequest(
+                    "missing structural pattern key in test producer".to_string(),
+                )),
+            }
+        }
+    }
+
+    fn structural_pattern_key(pattern: &quanta_index_contract::LqStructuralBlock) -> Option<&str> {
+        match pattern.nodes.first() {
+            Some(quanta_index_contract::LqStructuralNode::Literal(text)) => Some(text.trim()),
+            _ => None,
+        }
+    }
+
     fn structural_dispatcher_with_producer<P>(
         producer: Arc<P>,
     ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>>
@@ -3090,6 +3575,7 @@ mod tests {
             Arc::new(FailClosedStructuralProducer),
             ready_ledger(),
             test_activation_catalog()?,
+            Arc::new(DecimalQueryTextEmbedder),
             obs_sink,
         ))
     }
@@ -3122,7 +3608,7 @@ mod tests {
 
     #[test]
     fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
-        let obs_sink = Arc::new(RecordingObsSink::default());
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
         let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let dispatcher = dispatcher_with_obs(
             Arc::new(StubLexicalOpener {
@@ -3143,16 +3629,21 @@ mod tests {
                     generation_selector: None,
                     top_k: 1,
                 },
-                semantic_query_text: Some("1.0 0.0".to_string()),
-                semantic_vector: None,
-                semantic_vector_ref: None,
+                semantic_query_text: "1.0 0.0".to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 1,
             }));
         match response {
             SearchPlaneQueryIpcResponse::Hybrid(_) => {}
             other => return Err(format!("expected Hybrid response, got {other:?}").into()),
         }
 
-        let names = obs_sink.names()?;
+        let names = obs_sink
+            .snapshot()
+            .into_iter()
+            .map(|sample| sample.name.into_string())
+            .collect::<Vec<_>>();
         let expected = vec![
             "lq_query_intake_total".to_string(),
             "lq_planner_total".to_string(),
@@ -3163,7 +3654,11 @@ mod tests {
         if names != expected {
             return Err(format!("unexpected obs metric names: {names:?}").into());
         }
-        let samples = obs_sink.samples()?;
+        let errors = obs_sink.errors();
+        if !errors.is_empty() {
+            return Err(format!("unexpected obs errors: {errors:?}").into());
+        }
+        let samples = obs_sink.snapshot();
         for sample in &samples {
             if sample.dimensions.ticket_id.as_ref() != "LXE-10"
                 || sample.dimensions.wave_id.as_ref() != "8"
@@ -3182,7 +3677,7 @@ mod tests {
 
     #[test]
     fn text_dispatch_parse_error_emits_closed_obs_metric() -> TestResult {
-        let obs_sink = Arc::new(RecordingObsSink::default());
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
         let dispatcher = dispatcher_with_obs(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
@@ -3201,7 +3696,11 @@ mod tests {
         if code != "PARSE_FAIL" {
             return Err(format!("expected PARSE_FAIL, got {code}").into());
         }
-        let names = obs_sink.names()?;
+        let names = obs_sink
+            .snapshot()
+            .into_iter()
+            .map(|sample| sample.name.into_string())
+            .collect::<Vec<_>>();
         let expected = vec![
             "lq_query_intake_total".to_string(),
             "lq_typed_error_parse_total".to_string(),
@@ -3209,16 +3708,191 @@ mod tests {
         if names != expected {
             return Err(format!("unexpected parse-error obs metric names: {names:?}").into());
         }
+        let errors = obs_sink.errors();
+        if !errors.is_empty() {
+            return Err(format!("unexpected parse-error obs errors: {errors:?}").into());
+        }
         Ok(())
     }
 
+    #[test]
+    fn repo_map_dispatch_emits_closed_obs_metrics() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            Arc::new(RwLock::new(Ledger::default())),
+            test_activation_catalog()?,
+            Arc::new(DecimalQueryTextEmbedder),
+            obs_sink.clone(),
+        );
+
+        let response =
+            dispatcher.dispatch(SearchPlaneQueryIpcRequest::RepoMapQuery(repo_map_request()));
+        match response {
+            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {}
+            other => return Err(format!("expected RepoMapQuery response, got {other:?}").into()),
+        }
+
+        let names = obs_sink
+            .snapshot()
+            .into_iter()
+            .map(|sample| sample.name.into_string())
+            .collect::<Vec<_>>();
+        let expected = vec![
+            "lq_query_intake_total".to_string(),
+            "lq_planner_total".to_string(),
+            "lq_engine_fanout_count".to_string(),
+            "lq_merge_result_count".to_string(),
+        ];
+        if names != expected {
+            return Err(format!("unexpected repo-map obs metric names: {names:?}").into());
+        }
+        let errors = obs_sink.errors();
+        if !errors.is_empty() {
+            return Err(format!("unexpected repo-map obs errors: {errors:?}").into());
+        }
+        let samples = obs_sink.snapshot();
+        for sample in &samples {
+            if sample.dimensions.ticket_id.as_ref() != "LXE-10"
+                || sample.dimensions.wave_id.as_ref() != "8"
+                || sample.dimensions.tenant_id.as_ref() != "local"
+                || sample.dimensions.repo_id.as_ref() != "repo-map-ipc"
+                || sample.dimensions.generation_id != 9
+            {
+                return Err(format!(
+                    "unexpected repo-map obs dimensions: {:?}",
+                    sample.dimensions
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_dispatch_unavailable_emits_closed_obs_metric() -> TestResult {
+        let obs_sink = Arc::new(BoundedQueryObsStore::default());
+        let dispatcher = dispatcher_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            obs_sink.clone(),
+        )?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::RuntimeMetadata(
+            RuntimeMetadataQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "dirty:no runtime".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 5,
+                },
+            },
+        ));
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_NOT_IMPLEMENTED {
+            return Err(format!("expected {ERR_NOT_IMPLEMENTED}, got {code}").into());
+        }
+        let names = obs_sink
+            .snapshot()
+            .into_iter()
+            .map(|sample| sample.name.into_string())
+            .collect::<Vec<_>>();
+        let expected = vec![
+            "lq_query_intake_total".to_string(),
+            "lq_typed_error_unavailable_total".to_string(),
+        ];
+        if names != expected {
+            return Err(format!("unexpected runtime-metadata obs metric names: {names:?}").into());
+        }
+        let errors = obs_sink.errors();
+        if !errors.is_empty() {
+            return Err(format!("unexpected runtime-metadata obs errors: {errors:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_error_metric_name_uses_closed_taxonomy() {
+        let cases = [
+            (
+                CoreError::Typed {
+                    code: "PARSE_FAIL".to_string(),
+                    message: "parse".to_string(),
+                },
+                "lq_typed_error_parse_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "HISTORY_PRODUCER_UNAVAILABLE".to_string(),
+                    message: "history".to_string(),
+                },
+                "lq_typed_error_unavailable_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED".to_string(),
+                    message: "plan".to_string(),
+                },
+                "lq_typed_error_plan_limit_total",
+            ),
+            (
+                CoreError::NotReady("replay".to_string()),
+                "lq_typed_error_not_ready_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "STR_GENERATION_NOT_READY".to_string(),
+                    message: "structural".to_string(),
+                },
+                "lq_typed_error_not_ready_total",
+            ),
+            (
+                CoreError::Storage("disk".to_string()),
+                "lq_typed_error_internal_total",
+            ),
+            (
+                CoreError::InvalidContract("wire".to_string()),
+                "lq_typed_error_invalid_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: "SEM_EXECUTION_ODDITY".to_string(),
+                    message: "other".to_string(),
+                },
+                "lq_typed_error_other_total",
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(classify_error_metric_name(&err), expected);
+        }
+    }
+
     fn structural_match_candidate(id: &str) -> StructuralMatchCandidate {
+        structural_match_candidate_with_binding(id, 0, 10, "x", 0, 10)
+    }
+
+    fn structural_match_candidate_with_binding(
+        id: &str,
+        pattern_start_byte: u32,
+        pattern_end_byte: u32,
+        metavariable: &str,
+        start_byte: u32,
+        end_byte: u32,
+    ) -> StructuralMatchCandidate {
         StructuralMatchCandidate {
             candidate_id: id.to_string(),
+            pattern_start_byte,
+            pattern_end_byte,
             bindings: vec![StructuralMatchBinding {
-                metavariable: "x".to_string(),
-                start_byte: 0,
-                end_byte: 10,
+                metavariable: metavariable.to_string(),
+                start_byte,
+                end_byte,
                 start_line: 1,
                 end_line: 1,
             }],
@@ -3832,6 +4506,217 @@ mod tests {
         }
         if producer.execute_calls.load(Ordering::SeqCst) != 1 {
             return Err("producer execute must run for SG structural subset".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_executes_structural_boolean_and_with_canonical_projection() -> TestResult
+    {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { alpha } AND match { beta }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                if results.results.len() != 1 {
+                    return Err(format!(
+                        "expected 1 structural candidate from boolean AND, got {}",
+                        results.results.len()
+                    )
+                    .into());
+                }
+                let candidate = &results.results[0];
+                if candidate.candidate_id != "chunk-shared" {
+                    return Err(format!("expected chunk-shared, got {candidate:?}").into());
+                }
+                let start_bytes: Vec<u32> = candidate
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.start_byte)
+                    .collect();
+                if start_bytes != vec![5, 30] {
+                    return Err(format!(
+                        "expected canonical merged bindings [5, 30], got {start_bytes:?}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
+        }
+
+        if producer.readiness_calls.load(Ordering::SeqCst) != 2 {
+            return Err("boolean AND should consult readiness once per structural leaf".into());
+        }
+        if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+            return Err("boolean AND should execute once per structural leaf".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_executes_structural_boolean_or() -> TestResult {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { alpha } OR match { beta }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                let ids: Vec<&str> = results
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    .collect();
+                if ids != vec!["chunk-a", "chunk-shared"] {
+                    return Err(
+                        format!("expected OR ids [chunk-a, chunk-shared], got {ids:?}").into(),
+                    );
+                }
+            }
+            other => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
+        }
+
+        if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+            return Err("boolean OR should execute once per structural leaf".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_executes_bounded_not() -> TestResult {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "match { alpha } AND NOT match { gamma }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                let ids: Vec<&str> = results
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    .collect();
+                if ids != vec!["chunk-shared"] {
+                    return Err(format!(
+                        "expected bounded NOT to retain only chunk-shared, got {ids:?}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
+        }
+
+        if producer.execute_calls.load(Ordering::SeqCst) != 2 {
+            return Err("bounded NOT should execute once per structural leaf".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_rejects_mixed_lexical_and_structural_boolean_before_execution()
+    -> TestResult {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "needle AND match { alpha }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_INVALID_REQUEST" {
+            return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
+        }
+        if !message.contains("structural-only boolean tree") {
+            return Err(format!("unexpected mixed-tree message: {message}").into());
+        }
+        if producer.readiness_calls.load(Ordering::SeqCst) != 0
+            || producer.execute_calls.load(Ordering::SeqCst) != 0
+        {
+            return Err(
+                "mixed lexical/structural boolean must fail before producer execution".into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structural_dispatch_rejects_pure_negative_boolean_before_execution() -> TestResult {
+        let producer = Arc::new(PatternRoutingStructuralProducer::new());
+        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
+            quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "NOT match { alpha }".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k: 10,
+                },
+            },
+        ));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != "STR_INVALID_REQUEST" {
+            return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
+        }
+        if !message.contains("pure-negative structural boolean queries are not executable") {
+            return Err(format!("unexpected pure-negative message: {message}").into());
+        }
+        if producer.readiness_calls.load(Ordering::SeqCst) != 0
+            || producer.execute_calls.load(Ordering::SeqCst) != 0
+        {
+            return Err(
+                "pure-negative structural boolean must fail before producer execution".into(),
+            );
         }
         Ok(())
     }

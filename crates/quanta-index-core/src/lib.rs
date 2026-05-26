@@ -4,8 +4,8 @@
 #![deny(clippy::map_err_ignore)]
 
 //! Application core for the search-plane. Defines domain ports + policies. Driven
-//! adapters (`quanta-index-channel`, `quanta-index-lexical`, `quanta-index-semantic`,
-//! `quanta-index-ipc`) implement these ports; the composition root in
+//! adapters (`quanta-index-lexical`, `quanta-index-semantic`, `quanta-index-ipc`,
+//! repo-map/storage backends) implement these ports; the composition root in
 //! `quanta-index-searchd` wires them together.
 
 pub mod domains;
@@ -16,16 +16,16 @@ pub use error::CoreError;
 pub use domains::channel::{ChannelDispatchPolicy, ChannelObserver};
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalPolicy,
-    LexicalQueryPort, LexicalReadiness, LexicalSearcher,
+    LexicalBatchBuildPort, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort,
+    LexicalPolicy, LexicalQueryPort, LexicalReadiness, LexicalSearcher,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,
     RepoMapService,
 };
 pub use domains::semantic::{
-    SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
-    SemanticQueryPort, SemanticReadiness, SemanticSearcher,
+    SemanticBatchBuildPort, SemanticIndexBuildPort, SemanticIndexOpenPort, SemanticIngestPort,
+    SemanticPolicy, SemanticQueryPort, SemanticReadiness, SemanticSearcher,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

@@ -9,7 +9,7 @@ use quanta_index_contract::{
     DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
     LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse, SemanticVectorRef,
+    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse,
     StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
 };
 
@@ -190,9 +190,7 @@ fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
 
 fn semantic_request() -> SemanticQueryRequest {
     SemanticQueryRequest {
-        query_text: Some("1.0 0.0".to_owned()),
-        query_vector: None,
-        query_vector_ref: None,
+        query_text: "1.0 0.0".to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(semantic_scope()),
@@ -203,20 +201,16 @@ fn semantic_request() -> SemanticQueryRequest {
 fn hybrid_request() -> HybridQueryRequest {
     HybridQueryRequest {
         text_query: lexical_request(),
-        semantic_query_text: Some("0.0 1.0".to_owned()),
-        semantic_vector: None,
-        semantic_vector_ref: None,
+        semantic_query_text: "0.0 1.0".to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 50,
     }
 }
 
-fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQueryRequest {
+fn semantic_request_with_query_text(query_text: &str) -> SemanticQueryRequest {
     SemanticQueryRequest {
-        query_text: Some("semantic-explicit-vector".to_owned()),
-        query_vector: None,
-        query_vector_ref: Some(vector_ref),
+        query_text: query_text.to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
         lexical_scope: Some(semantic_scope()),
@@ -224,12 +218,10 @@ fn semantic_request_with_vector_ref(vector_ref: SemanticVectorRef) -> SemanticQu
     }
 }
 
-fn hybrid_request_with_vector_ref(vector_ref: SemanticVectorRef) -> HybridQueryRequest {
+fn hybrid_request_with_query_text(query_text: &str) -> HybridQueryRequest {
     HybridQueryRequest {
         text_query: lexical_request(),
-        semantic_query_text: Some("hybrid-explicit-vector".to_owned()),
-        semantic_vector: None,
-        semantic_vector_ref: Some(vector_ref),
+        semantic_query_text: query_text.to_owned(),
         generation: Some(generation_pin()),
         generation_selector: None,
         top_k: 50,
@@ -382,9 +374,8 @@ fn search_plane_ipc_request_v2_bridge_roundtrips_sourcegraph_syntax() -> TestRes
 
 #[test]
 fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> TestRes {
-    let request = SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_vector_ref(
-        SemanticVectorRef::Inline(vec![1.0, 0.0, -1.0]),
-    ));
+    let request =
+        SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_query_text("1.0 0.0 -1.0"));
 
     roundtrip_eq(&request)?;
 
@@ -403,12 +394,8 @@ fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> Tes
         if inner.top_k != 25 {
             return Err(format!("expected top_k=25, got {}", inner.top_k).into());
         }
-        if inner.query_vector_ref != Some(SemanticVectorRef::Inline(vec![1.0, 0.0, -1.0])) {
-            return Err(format!(
-                "unexpected semantic query_vector_ref: {:?}",
-                inner.query_vector_ref
-            )
-            .into());
+        if inner.query_text.as_str() != "1.0 0.0 -1.0" {
+            return Err(format!("unexpected semantic query_text: {:?}", inner.query_text).into());
         }
         Ok(())
     } else {
@@ -418,9 +405,8 @@ fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> Tes
 
 #[test]
 fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
-    let request = SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_vector_ref(
-        SemanticVectorRef::Handle("vec-handle-1".into()),
-    ));
+    let request =
+        SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_query_text("vec-handle-1"));
 
     roundtrip_eq(&request)?;
 
@@ -436,10 +422,10 @@ fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
         if inner.top_k != 50 {
             return Err(format!("expected top_k=50, got {}", inner.top_k).into());
         }
-        if inner.semantic_vector_ref != Some(SemanticVectorRef::Handle("vec-handle-1".into())) {
+        if inner.semantic_query_text.as_str() != "vec-handle-1" {
             return Err(format!(
-                "unexpected hybrid semantic_vector_ref: {:?}",
-                inner.semantic_vector_ref
+                "unexpected hybrid semantic_query_text: {:?}",
+                inner.semantic_query_text
             )
             .into());
         }
@@ -516,11 +502,11 @@ fn search_plane_ipc_request_v2_sourcegraph_roundtrips_structural_variant() -> Te
 }
 
 #[test]
-fn search_plane_query_ipc_request_envelope_semantic_roundtrips_inline_vector_ref() -> TestRes {
+fn search_plane_query_ipc_request_envelope_semantic_roundtrips_query_text() -> TestRes {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
-        payload: SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_vector_ref(
-            SemanticVectorRef::Inline(vec![0.5, 0.25, -0.75]),
+        payload: SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_query_text(
+            "0.5 0.25 -0.75",
         )),
     };
 
@@ -528,10 +514,10 @@ fn search_plane_query_ipc_request_envelope_semantic_roundtrips_inline_vector_ref
 
     let decoded: SearchPlaneQueryIpcRequestEnvelope = decode(&encode(&request)?)?;
     if let SearchPlaneQueryIpcRequest::Semantic(inner) = decoded.payload {
-        if inner.query_vector_ref != Some(SemanticVectorRef::Inline(vec![0.5, 0.25, -0.75])) {
+        if inner.query_text.as_str() != "0.5 0.25 -0.75" {
             return Err(format!(
-                "unexpected semantic query envelope query_vector_ref: {:?}",
-                inner.query_vector_ref
+                "unexpected semantic query envelope query_text: {:?}",
+                inner.query_text
             )
             .into());
         }
@@ -542,11 +528,11 @@ fn search_plane_query_ipc_request_envelope_semantic_roundtrips_inline_vector_ref
 }
 
 #[test]
-fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_handle_vector_ref() -> TestRes {
+fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_semantic_text() -> TestRes {
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
-        payload: SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_vector_ref(
-            SemanticVectorRef::Handle("vec-handle-query".into()),
+        payload: SearchPlaneQueryIpcRequest::Hybrid(hybrid_request_with_query_text(
+            "vec-handle-query",
         )),
     };
 
@@ -554,10 +540,10 @@ fn search_plane_query_ipc_request_envelope_hybrid_roundtrips_handle_vector_ref()
 
     let decoded: SearchPlaneQueryIpcRequestEnvelope = decode(&encode(&request)?)?;
     if let SearchPlaneQueryIpcRequest::Hybrid(inner) = decoded.payload {
-        if inner.semantic_vector_ref != Some(SemanticVectorRef::Handle("vec-handle-query".into())) {
+        if inner.semantic_query_text.as_str() != "vec-handle-query" {
             return Err(format!(
-                "unexpected hybrid query envelope semantic_vector_ref: {:?}",
-                inner.semantic_vector_ref
+                "unexpected hybrid query envelope semantic_query_text: {:?}",
+                inner.semantic_query_text
             )
             .into());
         }
@@ -599,6 +585,44 @@ fn search_plane_ipc_request_v2_hybrid_rejects_duplicate_top_k() -> TestRes {
     )?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "top_k")
+}
+
+#[test]
+fn search_plane_ipc_request_v2_semantic_rejects_legacy_query_vector_ref_field() -> TestRes {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Semantic(semantic_request()),
+        |wire| {
+            let request_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(request_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            payload_fields.push((
+                ciborium::Value::Text("query_vector_ref".to_owned()),
+                ciborium::Value::Text("legacy-inline-vector".to_owned()),
+            ));
+            Ok(())
+        },
+    )?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "query_vector_ref")
+}
+
+#[test]
+fn search_plane_ipc_request_v2_hybrid_rejects_legacy_semantic_vector_ref_field() -> TestRes {
+    let bytes = mutate_ipc_request_wire(
+        &SearchPlaneQueryIpcRequest::Hybrid(hybrid_request()),
+        |wire| {
+            let request_fields = map_fields_mut(wire)?;
+            let payload = field_value_mut(request_fields, "payload")?;
+            let payload_fields = map_fields_mut(payload)?;
+            payload_fields.push((
+                ciborium::Value::Text("semantic_vector_ref".to_owned()),
+                ciborium::Value::Text("legacy-handle".to_owned()),
+            ));
+            Ok(())
+        },
+    )?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "semantic_vector_ref")
 }
 
 #[test]

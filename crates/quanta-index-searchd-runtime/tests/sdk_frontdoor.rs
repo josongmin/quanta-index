@@ -6,6 +6,7 @@
     reason = "integration polling uses explicit Result fallback checks"
 )]
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,8 +25,8 @@ use quanta_index_contract::{
     RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
     RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoMapSymbolNode, RevisionId,
-    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticVectorRef, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest, SymbolId,
+    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
@@ -1116,6 +1117,130 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         return Err(format!("unexpected lexical response: {lexical:?}").into());
     }
 
+    let lexical_select_path = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("select:path sphinx")
+                .active(repo(), revision())
+                .top_k(5)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 2,
+    )?;
+    let lexical_select_path_paths = lexical_select_path
+        .results
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    if lexical_select_path.generation != pin()
+        || lexical_select_path_paths
+            != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected select:path lexical response: {lexical_select_path:?}").into(),
+        );
+    }
+
+    let lexical_select_content_match = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("select:content.match sphinx")
+                .active(repo(), revision())
+                .top_k(5)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 2,
+    )?;
+    let lexical_select_content_match_paths = lexical_select_content_match
+        .results
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    if lexical_select_content_match.generation != pin()
+        || lexical_select_content_match_paths
+            != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
+        || lexical_select_content_match
+            .results
+            .iter()
+            .any(|candidate| !candidate.snippet.contains("sphinx"))
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected select:content.match lexical response: {lexical_select_content_match:?}"
+        )
+        .into());
+    }
+
+    let lexical_native_select_path = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("select:path sphinx")
+                .active(repo(), revision())
+                .top_k(5)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 2,
+    )?;
+    let lexical_native_select_path_paths = lexical_native_select_path
+        .results
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    if lexical_native_select_path.generation != pin()
+        || lexical_native_select_path_paths
+            != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected native select:path lexical response: {lexical_native_select_path:?}"
+        )
+        .into());
+    }
+
+    let lexical_native_select_content_match = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("select:content.match sphinx")
+                .active(repo(), revision())
+                .top_k(5)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 2,
+    )?;
+    let lexical_native_select_content_match_paths = lexical_native_select_content_match
+        .results
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    if lexical_native_select_content_match.generation != pin()
+        || lexical_native_select_content_match_paths
+            != BTreeSet::from(["src/alpha.rs".to_string(), "src/beta.rs".to_string()])
+        || lexical_native_select_content_match
+            .results
+            .iter()
+            .any(|candidate| !candidate.snippet.contains("sphinx"))
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected native select:content.match lexical response: \
+             {lexical_native_select_content_match:?}"
+        )
+        .into());
+    }
+
     let explain = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client.search().explain(pin(), lexical_candidate.clone())
     })?;
@@ -1133,7 +1258,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             client
                 .semantic()
                 .query()
-                .vector_handle("alpha")
+                .text("1.0 0.0")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
@@ -1159,7 +1284,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
                 .search()
                 .hybrid()
                 .sourcegraph("sphinx")
-                .vector_handle("alpha")
+                .semantic_text("1.0 0.0")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
@@ -1512,6 +1637,40 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         return Err(format!(
             "unexpected structural root-kind+capture binding: \
              {structural_root_kind_capture_binding:?}"
+        )
+        .into());
+    }
+
+    let structural_boolean_and = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item } AND match { function_item :[x] }")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let structural_boolean_and_candidate = structural_boolean_and
+        .results
+        .first()
+        .ok_or_else(|| "missing structural boolean AND candidate".to_string())?;
+    let structural_boolean_and_binding = structural_boolean_and_candidate
+        .bindings
+        .first()
+        .ok_or_else(|| "missing structural boolean AND binding".to_string())?;
+    if structural_boolean_and_candidate.candidate_id != "chunk-tree"
+        || structural_boolean_and_binding.metavariable != "x"
+        || structural_boolean_and_binding.start_byte != 0
+        || structural_boolean_and_binding.end_byte != 10
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected structural boolean AND candidate/binding: \
+             {structural_boolean_and_candidate:?}"
         )
         .into());
     }
@@ -2011,9 +2170,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     assert_single_symbol_candidate(&symbol)?;
 
     let semantic_request = SemanticQueryRequest {
-        query_text: None,
-        query_vector: None,
-        query_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
+        query_text: "1.0 0.0".to_string(),
         generation: None,
         generation_selector: Some(active_selector()),
         lexical_scope: Some(TextQueryRequest {
@@ -2050,9 +2207,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             generation_selector: Some(active_selector()),
             top_k: 2,
         },
-        semantic_query_text: None,
-        semantic_vector: None,
-        semantic_vector_ref: Some(SemanticVectorRef::Handle("alpha".into())),
+        semantic_query_text: "1.0 0.0".to_string(),
         generation: None,
         generation_selector: Some(active_selector()),
         top_k: 2,
@@ -2283,7 +2438,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
             client
                 .semantic()
                 .query()
-                .vector(vec![1.0, 0.0])
+                .text("1.0 0.0")
                 .scope_native("sphinx")
                 .scope_top_k(2)
                 .pinned(pin())
@@ -2313,7 +2468,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
                 .search()
                 .hybrid()
                 .native("sphinx")
-                .vector(vec![1.0, 0.0])
+                .semantic_text("1.0 0.0")
                 .pinned(pin())
                 .top_k(2)
                 .execute()
@@ -2417,7 +2572,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             client
                 .semantic()
                 .query()
-                .vector_handle("gamma")
+                .text("0.7 0.7")
                 .pinned(pin_two())
                 .top_k(2)
                 .execute()
@@ -2528,7 +2683,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             client
                 .semantic()
                 .query()
-                .vector_handle("gamma")
+                .text("0.7 0.7")
                 .pinned(pin_two())
                 .top_k(2)
                 .execute()
@@ -2550,20 +2705,33 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         .into());
     }
 
-    let structural_pinned_v2_after_restart = expect_sdk_error(
-        client
-            .structural()
-            .query()
-            .native("match { function_item }")
-            .pinned(pin_two())
-            .top_k(2)
-            .execute(),
-        "structural pinned v2 after restart",
+    let structural_pinned_v2_after_restart = wait_for_sdk_observation(
+        complex_timeout,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item }")
+                .pinned(pin_two())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin_two() && response.results.len() == 1,
     )?;
-    expect_remote_code(
-        structural_pinned_v2_after_restart,
-        "STR_GENERATION_NOT_READY",
-    )?;
+    let structural_pinned_v2_after_restart_candidate = structural_pinned_v2_after_restart
+        .results
+        .first()
+        .ok_or_else(|| "missing restarted pinned v2 structural candidate".to_string())?;
+    if structural_pinned_v2_after_restart.generation != pin_two()
+        || structural_pinned_v2_after_restart_candidate.candidate_id != "chunk-tree-v2"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected restarted pinned v2 structural response: \
+             {structural_pinned_v2_after_restart:?}"
+        )
+        .into());
+    }
 
     let _activation_v2 = wait_for_sdk_ready(complex_timeout, || {
         client
@@ -2664,7 +2832,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
         client
             .semantic()
             .query()
-            .vector_handle("alpha")
+            .text("1.0 0.0")
             .active(repo(), revision())
             .top_k(2)
             .scope_sourcegraph("sphinx")
@@ -2676,7 +2844,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
         client
             .semantic()
             .query()
-            .vector_handle("alpha")
+            .text("1.0 0.0")
             .active(repo(), revision())
             .top_k(2)
             .scope_top_k(1)
@@ -2692,7 +2860,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
             .active(repo(), revision())
             .top_k(2)
             .execute(),
-        "hybrid semantic vector is required",
+        "hybrid semantic query text is required",
     )?;
 
     expect_usage_error_contains(

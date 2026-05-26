@@ -37,15 +37,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ciborium::Value as CborValue;
+use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily, SymbolRecord};
 use quanta_index_contract::{
-    BatchIngestMode, ChunkRecord, LexicalCandidate, LexicalChannelOp, LqExpr, LqFileScope,
-    LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType,
-    LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SymbolCandidate,
+    BatchIngestMode, ChunkRecord, LexicalCandidate, LexicalFullBundle, LexicalIngestBatch,
+    LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
+    LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
+    RepoId, RepoRelativePath, RevisionId, SymbolCandidate, TombstoneLexicalScope,
 };
 use quanta_index_core::{
-    CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
+    CoreError, LexicalBatchBuildPort, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher,
     domains::lexical::LexicalPolicy,
 };
 use quanta_index_lq_positions::{
@@ -344,6 +345,16 @@ fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
 fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
     ciborium::from_reader::<SymbolRecord, _>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
+}
+
+fn encode_cbor<T>(value: &T, label: &str) -> Result<Vec<u8>, CoreError>
+where
+    T: serde::Serialize,
+{
+    let mut payload = Vec::new();
+    ciborium::into_writer(value, &mut payload)
+        .map_err(|err| CoreError::InvalidContract(format!("lexical: encode {label}: {err}")))?;
+    Ok(payload)
 }
 
 fn decode_replace_scope_payload(
@@ -1527,6 +1538,71 @@ fn op_touches_text_authority(op: &LexicalChannelOp) -> bool {
             | LexicalChannelOp::ReplaceLexicalScope(_)
             | LexicalChannelOp::TombstoneLexicalScope(_)
     )
+}
+
+fn legacy_ops_for_batch(
+    batch: &LexicalIngestBatch,
+    include_seal: bool,
+) -> Result<Vec<LexicalChannelOp>, CoreError> {
+    let op_capacity = batch
+        .bundle_payload
+        .as_ref()
+        .map_or(0usize, |_payload| 1usize)
+        .saturating_add(
+            batch
+                .replace_scopes
+                .len()
+                .saturating_add(batch.tombstone_scopes.len())
+                .saturating_add(usize::from(include_seal)),
+        );
+    let mut ops = Vec::with_capacity(op_capacity);
+    if let Some(payload) = batch.bundle_payload.as_ref() {
+        ops.push(LexicalChannelOp::FullBundle(LexicalFullBundle {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            payload: payload.clone(),
+        }));
+    }
+    for scope in &batch.replace_scopes {
+        ops.push(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            payload: encode_cbor(
+                &(batch.mode, batch.base_generation, scope.clone()),
+                "replace lexical scope payload",
+            )?,
+        }));
+    }
+    for scope in &batch.tombstone_scopes {
+        ops.push(LexicalChannelOp::TombstoneLexicalScope(
+            TombstoneLexicalScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(
+                    &(batch.mode, batch.base_generation, scope.clone()),
+                    "tombstone lexical scope payload",
+                )?,
+            },
+        ));
+    }
+    if include_seal {
+        ops.push(LexicalChannelOp::Seal(LexicalSeal {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        }));
+    }
+    Ok(ops)
+}
+
+impl LexicalBatchBuildPort for LexicalAdapter {
+    fn build_batch(&self, batch: &LexicalIngestBatch) -> Result<(), CoreError> {
+        let ops = legacy_ops_for_batch(batch, batch.seal)?;
+        self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)
+    }
 }
 
 impl LexicalIndexBuildPort for LexicalAdapter {

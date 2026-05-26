@@ -3,14 +3,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
+
 use quanta_index_contract::ChunkRecord;
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, ParseTreeRecord, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, GenerationPin, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
+    ChunkId, DirtyIngestBatch, DirtyMutation, GenerationPin, HistoryIngestBatch,
+    HistoryRefMutation, LexicalIngestBatch, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
 
@@ -78,7 +81,7 @@ impl TrackLedger {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 struct TrackAuthorityState {
     materialized: Option<ManifestGeneration>,
     sealed: Option<ManifestGeneration>,
@@ -115,7 +118,7 @@ impl TrackAuthorityState {
     }
 }
 
-/// Shared in-memory readiness ledger for query/readiness gating and channel replay.
+/// Shared in-memory readiness ledger for query/readiness gating and direct authority recovery.
 #[derive(Debug, Default)]
 pub struct Ledger {
     lexical: TrackLedger,
@@ -412,6 +415,170 @@ impl Ledger {
     ) {
         self.structural_state_mut(repo_id, revision_id, generation)
             .request_seal();
+    }
+
+    pub fn apply_lexical_batch(&mut self, batch: &LexicalIngestBatch) -> Result<(), CoreError> {
+        let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
+        for scope in &batch.replace_scopes {
+            state.chunks.retain(|_chunk_id, chunk| {
+                chunk.repo_relative_path != scope.scope.repo_relative_path
+            });
+            for chunk in &scope.chunks {
+                let _previous = state.chunks.insert(chunk.chunk_id.clone(), chunk.clone());
+            }
+        }
+        for scope in &batch.tombstone_scopes {
+            state.chunks.retain(|_chunk_id, chunk| {
+                chunk.repo_relative_path != scope.scope.repo_relative_path
+            });
+        }
+        Ok(())
+    }
+
+    pub fn apply_history_batch(&mut self, batch: &HistoryIngestBatch) -> Result<(), CoreError> {
+        let state = self.history_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
+        for record in &batch.commits {
+            state.note_commits_materialized();
+            for parent in &record.parents {
+                if !state.commits.contains_key(parent) {
+                    return Err(CoreError::Typed {
+                        code: "HISTORY_COMMIT_PARENT_UNKNOWN".to_string(),
+                        message: format!(
+                            "history ingest: parent {} missing before child {}",
+                            parent, record.sha
+                        ),
+                    });
+                }
+            }
+            let _previous = state.commits.insert(record.sha, record.clone());
+        }
+        for mutation in &batch.refs {
+            state.note_refs_materialized();
+            match mutation {
+                HistoryRefMutation::Upsert(payload) => {
+                    if !state.commits.contains_key(&payload.sha) {
+                        return Err(CoreError::Typed {
+                            code: "HISTORY_REF_NOT_FOUND".to_string(),
+                            message: format!(
+                                "history ingest: ref `{}` points to unknown commit {}",
+                                payload.name, payload.sha
+                            ),
+                        });
+                    }
+                    let _previous = state.refs.insert(payload.name.clone(), payload.sha);
+                }
+                HistoryRefMutation::Delete(payload) => {
+                    let _removed = state.refs.remove(payload.name.as_ref());
+                }
+            }
+        }
+        for mutation in &batch.tags {
+            state.note_tags_materialized();
+            match mutation {
+                HistoryRefMutation::Upsert(payload) => {
+                    if !state.commits.contains_key(&payload.sha) {
+                        return Err(CoreError::Typed {
+                            code: "HISTORY_REF_NOT_FOUND".to_string(),
+                            message: format!(
+                                "history ingest: tag `{}` points to unknown commit {}",
+                                payload.name, payload.sha
+                            ),
+                        });
+                    }
+                    let _previous = state.tags.insert(payload.name.clone(), payload.sha);
+                }
+                HistoryRefMutation::Delete(payload) => {
+                    let _removed = state.tags.remove(payload.name.as_ref());
+                }
+            }
+        }
+        for hunk in &batch.diff_hunks {
+            state.note_diff_hunks_materialized();
+            if !state.commits.contains_key(&hunk.commit_sha) {
+                return Err(CoreError::Typed {
+                    code: "HISTORY_REF_NOT_FOUND".to_string(),
+                    message: format!(
+                        "history ingest: diff hunk for unknown commit {}",
+                        hunk.commit_sha
+                    ),
+                });
+            }
+            let _previous = state.diff_hunks.insert(
+                HistoryDiffKey {
+                    commit_sha: hunk.commit_sha,
+                    file_path: hunk.file_path.clone(),
+                },
+                hunk.record.clone(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn apply_runtime_batch(&mut self, batch: &DirtyIngestBatch) {
+        let state = self.runtime_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
+        for entry in &batch.entries {
+            match entry {
+                DirtyMutation::Upsert(record) => {
+                    let _previous = state.dirty_docs.insert(
+                        record.doc_id.clone(),
+                        DirtyDocState {
+                            applied_at_ms: record.applied_at_ms,
+                            payload_hash: record.payload_hash,
+                        },
+                    );
+                }
+                DirtyMutation::Delete(payload) => {
+                    let _removed = state.dirty_docs.remove(&payload.doc_id);
+                }
+            }
+        }
+    }
+
+    pub fn apply_structural_batch(
+        &mut self,
+        batch: &StructuralIngestBatch,
+    ) -> Result<(), CoreError> {
+        let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
+        for scope in &batch.replace_scopes {
+            let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
+                .chunks
+                .iter()
+                .filter(|(_chunk_id, chunk)| {
+                    chunk.repo_relative_path == scope.scope.repo_relative_path
+                })
+                .map(|(chunk_id, _chunk)| chunk_id.clone())
+                .collect();
+            for tree in &scope.trees {
+                verify_parse_tree_against_chunk(
+                    state,
+                    &tree.chunk_id,
+                    &tree.record,
+                    Some(scope.scope.repo_relative_path.as_str()),
+                )?;
+            }
+            state
+                .parse_trees
+                .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
+            for tree in &scope.trees {
+                let _previous = state
+                    .parse_trees
+                    .insert(tree.chunk_id.clone(), tree.record.clone());
+            }
+        }
+        for scope in &batch.tombstone_scopes {
+            let allowed_chunk_ids: std::collections::BTreeSet<ChunkId> = state
+                .chunks
+                .iter()
+                .filter(|(_chunk_id, chunk)| {
+                    chunk.repo_relative_path == scope.scope.repo_relative_path
+                })
+                .map(|(chunk_id, _chunk)| chunk_id.clone())
+                .collect();
+            state
+                .parse_trees
+                .retain(|chunk_id, _tree| !allowed_chunk_ids.contains(chunk_id));
+        }
+        Ok(())
     }
 
     pub fn apply_lexical_authority_op(&mut self, op: &LexicalChannelOp) -> Result<(), CoreError> {
@@ -769,14 +936,14 @@ fn verify_parse_tree_against_chunk(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct AuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct TrackAuthorityKey {
     repo_id: RepoId,
     revision_id: RevisionId,
@@ -787,7 +954,7 @@ struct TrackAuthorityKey {
     clippy::struct_excessive_bools,
     reason = "history authority tracks four independently materialized shard families"
 )]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HistoryAuthorityState {
     commits: BTreeMap<CommitSha, CommitRecord>,
     refs: BTreeMap<Box<str>, CommitSha>,
@@ -857,7 +1024,7 @@ impl HistoryAuthorityState {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct HistoryDiffKey {
     commit_sha: CommitSha,
     file_path: Box<str>,
@@ -875,7 +1042,7 @@ impl HistoryDiffKey {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DirtyDocState {
     applied_at_ms: u64,
     payload_hash: [u8; 32],
@@ -893,7 +1060,7 @@ impl DirtyDocState {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RuntimeMetadataState {
     dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
 }
@@ -905,7 +1072,7 @@ impl RuntimeMetadataState {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StructuralAuthorityState {
     chunks: BTreeMap<ChunkId, ChunkRecord>,
     parse_trees: BTreeMap<ChunkId, ParseTreeRecord>,
@@ -930,6 +1097,144 @@ impl StructuralAuthorityState {
 
     pub fn request_seal(&mut self) {
         self.seal_requested = true;
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct HistoryAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, HistoryAuthorityState>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct RuntimeAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, RuntimeMetadataState>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct StructuralAuthoritySnapshot {
+    entries: BTreeMap<AuthorityKey, StructuralAuthorityState>,
+    tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
+}
+
+#[derive(Debug)]
+pub struct AuxiliaryAuthorityStore {
+    history_path: PathBuf,
+    runtime_path: PathBuf,
+    structural_path: PathBuf,
+}
+
+impl AuxiliaryAuthorityStore {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let root = root.as_ref();
+        let history_dir = root.join("history");
+        let runtime_dir = root.join("runtime");
+        let structural_dir = root.join("structural");
+        for dir in [&history_dir, &runtime_dir, &structural_dir] {
+            fs::create_dir_all(dir).map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-plane authority store: create {}: {err}",
+                    dir.display()
+                ))
+            })?;
+        }
+        Ok(Self {
+            history_path: history_dir.join("state.cbor"),
+            runtime_path: runtime_dir.join("state.cbor"),
+            structural_path: structural_dir.join("state.cbor"),
+        })
+    }
+
+    pub fn persist_from_ledger(&self, ledger: &Ledger) -> Result<(), CoreError> {
+        let history = HistoryAuthoritySnapshot {
+            entries: ledger.history.clone(),
+        };
+        self.write_cbor(&self.history_path, &history, "history")?;
+
+        let runtime = RuntimeAuthoritySnapshot {
+            entries: ledger.runtime_metadata.clone(),
+        };
+        self.write_cbor(&self.runtime_path, &runtime, "runtime metadata")?;
+
+        let structural = StructuralAuthoritySnapshot {
+            entries: ledger.structural.clone(),
+            tracks: ledger
+                .search_tracks
+                .iter()
+                .filter(|(key, _state)| key.track == SearchPlaneTrackKind::Structural)
+                .map(|(key, state)| (key.clone(), state.clone()))
+                .collect(),
+        };
+        self.write_cbor(&self.structural_path, &structural, "structural")?;
+        Ok(())
+    }
+
+    pub fn restore_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
+        if let Some(history) =
+            self.read_cbor::<HistoryAuthoritySnapshot>(&self.history_path, "history")?
+        {
+            ledger.history = history.entries;
+        }
+        if let Some(runtime) =
+            self.read_cbor::<RuntimeAuthoritySnapshot>(&self.runtime_path, "runtime metadata")?
+        {
+            ledger.runtime_metadata = runtime.entries;
+        }
+        if let Some(structural) =
+            self.read_cbor::<StructuralAuthoritySnapshot>(&self.structural_path, "structural")?
+        {
+            ledger.structural = structural.entries;
+            ledger
+                .search_tracks
+                .retain(|key, _state| key.track != SearchPlaneTrackKind::Structural);
+            ledger.search_tracks.extend(structural.tracks);
+        }
+        Ok(())
+    }
+
+    fn write_cbor<T: Serialize>(
+        &self,
+        path: &Path,
+        value: &T,
+        label: &str,
+    ) -> Result<(), CoreError> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(value, &mut bytes).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-plane authority store: encode {label} {}: {err}",
+                path.display()
+            ))
+        })?;
+        fs::write(path, bytes).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-plane authority store: write {label} {}: {err}",
+                path.display()
+            ))
+        })
+    }
+
+    fn read_cbor<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &Path,
+        label: &str,
+    ) -> Result<Option<T>, CoreError> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(CoreError::Storage(format!(
+                    "search-plane authority store: read {label} {}: {err}",
+                    path.display()
+                )));
+            }
+        };
+        ciborium::from_reader(bytes.as_slice())
+            .map(Some)
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-plane authority store: decode {label} {}: {err}",
+                    path.display()
+                ))
+            })
     }
 }
 
@@ -1196,18 +1501,19 @@ fn hex_char(nibble: u8) -> char {
 mod tests {
     use tempfile::tempdir;
 
+    use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{
         LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
     };
     use quanta_index_contract::{
-        BatchIngestMode, ChunkId, ChunkRecord, LexicalChannelOp, LexicalReplaceScope,
-        ManifestGeneration, ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath,
-        RevisionId, SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SearchScopeKey,
+        BatchIngestMode, ChunkId, ChunkRecord, LexicalReplaceScope, ManifestGeneration,
+        ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId,
+        SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SearchScopeKey,
         SearchScopeSurface, StructuralReplaceScope, StructuralTreeRecord, UpsertParseTree,
     };
     use quanta_index_core::CoreError;
 
-    use super::{ActivationCatalog, Ledger};
+    use super::{ActivationCatalog, AuxiliaryAuthorityStore, Ledger};
 
     #[test]
     fn seals_are_monotonic_per_track() {
@@ -1382,6 +1688,72 @@ mod tests {
         assert_eq!(
             reopened_pin.manifest_generation,
             ManifestGeneration::new(17)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auxiliary_authority_store_roundtrips_history_runtime_and_structural_state() -> TestResult {
+        let dir = tempdir()?;
+        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let mut ledger = Ledger::default();
+
+        ledger
+            .history_state_mut(&repo_id(), &revision_id(), generation())
+            .note_commits_materialized();
+        let _previous = ledger
+            .runtime_state_mut(&repo_id(), &revision_id(), generation())
+            .dirty_docs
+            .insert(
+                ChunkId::new("dirty-1"),
+                super::DirtyDocState {
+                    applied_at_ms: 42,
+                    payload_hash: [7_u8; 32],
+                },
+            );
+        install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
+        ledger.request_structural_seal(&repo_id(), &revision_id(), generation());
+        ledger.record_track_materialized(
+            &repo_id(),
+            &revision_id(),
+            SearchPlaneTrackKind::Structural,
+            generation(),
+            Some("digest-17"),
+        );
+        ledger.record_track_seal_with_digest(
+            &repo_id(),
+            &revision_id(),
+            SearchPlaneTrackKind::Structural,
+            generation(),
+            "digest-17",
+        );
+
+        store.persist_from_ledger(&ledger)?;
+
+        let mut restored = Ledger::default();
+        store.restore_into(&mut restored)?;
+
+        assert!(
+            restored
+                .history_state(&repo_id(), &revision_id(), generation())
+                .is_some_and(|state| state.commits_materialized())
+        );
+        assert_eq!(
+            restored
+                .runtime_state(&repo_id(), &revision_id(), generation())
+                .and_then(|state| state.dirty_docs().get(&ChunkId::new("dirty-1")))
+                .map(|state| state.applied_at_ms()),
+            Some(42)
+        );
+        assert_eq!(
+            restored
+                .structural_state(&repo_id(), &revision_id(), generation())
+                .map(|state| state.chunks().len()),
+            Some(1)
+        );
+        assert_eq!(
+            restored.track_sealed(&repo_id(), &revision_id(), SearchPlaneTrackKind::Structural,),
+            Some(generation())
         );
         Ok(())
     }

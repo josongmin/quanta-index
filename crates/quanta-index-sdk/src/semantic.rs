@@ -2,42 +2,13 @@ use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingRecord, GenerationSelector, ManifestGeneration, RepoId,
     RevisionId, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchScopeKey,
     SemanticIngestBatch, SemanticQueryRequest, SemanticQueryResponse, SemanticReplaceScope,
-    SemanticTombstoneScope, SemanticVectorRef,
+    SemanticTombstoneScope,
 };
 
 use crate::{
     BatchMode, BatchReceipt, QuantaIndex, SdkError, TextQuerySyntax,
     text_query_builder::VectorQueryBuilderState,
 };
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum SemanticVector {
-    Inline(Vec<f32>),
-    Handle(String),
-}
-
-impl SemanticVector {
-    pub(super) fn into_ref(self) -> Result<SemanticVectorRef, SdkError> {
-        match self {
-            Self::Inline(vector) => {
-                if vector.is_empty() {
-                    return Err(SdkError::Usage(
-                        "semantic vector must not be empty".to_string(),
-                    ));
-                }
-                Ok(SemanticVectorRef::Inline(vector))
-            }
-            Self::Handle(handle) => {
-                if handle.is_empty() {
-                    return Err(SdkError::Usage(
-                        "semantic vector handle must not be empty".to_string(),
-                    ));
-                }
-                Ok(SemanticVectorRef::Handle(handle.into()))
-            }
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticBatch {
@@ -225,14 +196,8 @@ impl<'a> SemanticQueryBuilder<'a> {
     }
 
     #[must_use]
-    pub fn vector(mut self, vector: Vec<f32>) -> Self {
-        self.state.vector = Some(SemanticVector::Inline(vector));
-        self
-    }
-
-    #[must_use]
-    pub fn vector_handle(mut self, handle: impl Into<String>) -> Self {
-        self.state.vector = Some(SemanticVector::Handle(handle.into()));
+    pub fn text(mut self, query_text: impl Into<String>) -> Self {
+        self.state.semantic_query_text = Some(query_text.into());
         self
     }
 

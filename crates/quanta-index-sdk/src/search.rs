@@ -3,7 +3,7 @@ use quanta_index_contract::{
     RepoId, RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
 };
 
-use crate::{QuantaIndex, SdkError, SemanticVector, text_query_builder::VectorQueryBuilderState};
+use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
 
 pub struct SearchNamespace<'a> {
     client: &'a QuantaIndex,
@@ -88,14 +88,8 @@ impl<'a> HybridQueryBuilder<'a> {
     }
 
     #[must_use]
-    pub fn vector(mut self, vector: Vec<f32>) -> Self {
-        self.state.vector = Some(SemanticVector::Inline(vector));
-        self
-    }
-
-    #[must_use]
-    pub fn vector_handle(mut self, handle: impl Into<String>) -> Self {
-        self.state.vector = Some(SemanticVector::Handle(handle.into()));
+    pub fn semantic_text(mut self, query_text: impl Into<String>) -> Self {
+        self.state.semantic_query_text = Some(query_text.into());
         self
     }
 

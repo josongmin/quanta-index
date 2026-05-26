@@ -73,26 +73,26 @@ pub quanta_index_contract::channel::LexicalChannelOp::UpsertParseTree(quanta_ind
 pub quanta_index_contract::channel::LexicalChannelOp::UpsertRef(quanta_index_contract::UpsertRef)
 pub quanta_index_contract::channel::LexicalChannelOp::UpsertSymbol(quanta_index_contract::UpsertSymbol)
 pub quanta_index_contract::channel::LexicalChannelOp::UpsertTag(quanta_index_contract::UpsertTag)
-impl quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
-pub fn quanta_index_contract::LexicalChannelOp::is_seal(&self) -> bool
-pub fn quanta_index_contract::LexicalChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
-pub fn quanta_index_contract::LexicalChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::clone(&self) -> quanta_index_contract::LexicalChannelOp
-impl core::cmp::Eq for quanta_index_contract::LexicalChannelOp
-impl core::cmp::PartialEq for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::eq(&self, other: &quanta_index_contract::LexicalChannelOp) -> bool
-impl core::fmt::Debug for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::LexicalChannelOp
-impl core::marker::Freeze for quanta_index_contract::LexicalChannelOp
-impl core::marker::Send for quanta_index_contract::LexicalChannelOp
-impl core::marker::Sync for quanta_index_contract::LexicalChannelOp
-impl core::marker::Unpin for quanta_index_contract::LexicalChannelOp
-impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalChannelOp
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalChannelOp
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalChannelOp
+impl quanta_index_contract::channel::LexicalChannelOp
+pub fn quanta_index_contract::channel::LexicalChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
+pub fn quanta_index_contract::channel::LexicalChannelOp::is_seal(&self) -> bool
+pub fn quanta_index_contract::channel::LexicalChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
+pub fn quanta_index_contract::channel::LexicalChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
+impl core::clone::Clone for quanta_index_contract::channel::LexicalChannelOp
+pub fn quanta_index_contract::channel::LexicalChannelOp::clone(&self) -> quanta_index_contract::channel::LexicalChannelOp
+impl core::cmp::Eq for quanta_index_contract::channel::LexicalChannelOp
+impl core::cmp::PartialEq for quanta_index_contract::channel::LexicalChannelOp
+pub fn quanta_index_contract::channel::LexicalChannelOp::eq(&self, other: &quanta_index_contract::channel::LexicalChannelOp) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::LexicalChannelOp
+pub fn quanta_index_contract::channel::LexicalChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::LexicalChannelOp
+impl core::marker::Freeze for quanta_index_contract::channel::LexicalChannelOp
+impl core::marker::Send for quanta_index_contract::channel::LexicalChannelOp
+impl core::marker::Sync for quanta_index_contract::channel::LexicalChannelOp
+impl core::marker::Unpin for quanta_index_contract::channel::LexicalChannelOp
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::LexicalChannelOp
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::LexicalChannelOp
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::LexicalChannelOp
 pub enum quanta_index_contract::channel::OwnerDocKind
 pub quanta_index_contract::channel::OwnerDocKind::Callsite
 pub quanta_index_contract::channel::OwnerDocKind::Chunk
@@ -143,61 +143,61 @@ pub quanta_index_contract::channel::SemanticChannelOp::ReplaceSemanticScope(quan
 pub quanta_index_contract::channel::SemanticChannelOp::Seal(quanta_index_contract::SemanticSeal)
 pub quanta_index_contract::channel::SemanticChannelOp::TombstoneSemanticScope(quanta_index_contract::TombstoneSemanticScope)
 pub quanta_index_contract::channel::SemanticChannelOp::UpsertEmbedding(quanta_index_contract::UpsertEmbedding)
-impl quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
-pub fn quanta_index_contract::SemanticChannelOp::is_seal(&self) -> bool
-pub fn quanta_index_contract::SemanticChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
-pub fn quanta_index_contract::SemanticChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::clone(&self) -> quanta_index_contract::SemanticChannelOp
-impl core::cmp::Eq for quanta_index_contract::SemanticChannelOp
-impl core::cmp::PartialEq for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::eq(&self, other: &quanta_index_contract::SemanticChannelOp) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticChannelOp
-impl core::marker::Freeze for quanta_index_contract::SemanticChannelOp
-impl core::marker::Send for quanta_index_contract::SemanticChannelOp
-impl core::marker::Sync for quanta_index_contract::SemanticChannelOp
-impl core::marker::Unpin for quanta_index_contract::SemanticChannelOp
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticChannelOp
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticChannelOp
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticChannelOp
+impl quanta_index_contract::channel::SemanticChannelOp
+pub fn quanta_index_contract::channel::SemanticChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
+pub fn quanta_index_contract::channel::SemanticChannelOp::is_seal(&self) -> bool
+pub fn quanta_index_contract::channel::SemanticChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
+pub fn quanta_index_contract::channel::SemanticChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
+impl core::clone::Clone for quanta_index_contract::channel::SemanticChannelOp
+pub fn quanta_index_contract::channel::SemanticChannelOp::clone(&self) -> quanta_index_contract::channel::SemanticChannelOp
+impl core::cmp::Eq for quanta_index_contract::channel::SemanticChannelOp
+impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticChannelOp
+pub fn quanta_index_contract::channel::SemanticChannelOp::eq(&self, other: &quanta_index_contract::channel::SemanticChannelOp) -> bool
+impl core::fmt::Debug for quanta_index_contract::channel::SemanticChannelOp
+pub fn quanta_index_contract::channel::SemanticChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticChannelOp
+impl core::marker::Freeze for quanta_index_contract::channel::SemanticChannelOp
+impl core::marker::Send for quanta_index_contract::channel::SemanticChannelOp
+impl core::marker::Sync for quanta_index_contract::channel::SemanticChannelOp
+impl core::marker::Unpin for quanta_index_contract::channel::SemanticChannelOp
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticChannelOp
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticChannelOp
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticChannelOp
 pub struct quanta_index_contract::channel::ChannelSeq(_)
-impl quanta_index_contract::ChannelSeq
-pub const quanta_index_contract::ChannelSeq::ZERO: Self
-pub const fn quanta_index_contract::ChannelSeq::get(self) -> u64
-pub const fn quanta_index_contract::ChannelSeq::new(value: u64) -> Self
-impl quanta_index_contract::ChannelSeq
-pub const fn quanta_index_contract::ChannelSeq::next(self) -> Self
-impl core::clone::Clone for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::clone(&self) -> quanta_index_contract::ChannelSeq
-impl core::cmp::Eq for quanta_index_contract::ChannelSeq
-impl core::cmp::Ord for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::cmp(&self, other: &quanta_index_contract::ChannelSeq) -> core::cmp::Ordering
-impl core::cmp::PartialEq for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::eq(&self, other: &quanta_index_contract::ChannelSeq) -> bool
-impl core::cmp::PartialOrd for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::partial_cmp(&self, other: &quanta_index_contract::ChannelSeq) -> core::option::Option<core::cmp::Ordering>
-impl core::default::Default for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::default() -> quanta_index_contract::ChannelSeq
-impl core::fmt::Debug for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-impl core::marker::Copy for quanta_index_contract::ChannelSeq
-impl core::marker::StructuralPartialEq for quanta_index_contract::ChannelSeq
-impl serde_core::ser::Serialize for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::ChannelSeq
-impl core::marker::Send for quanta_index_contract::ChannelSeq
-impl core::marker::Sync for quanta_index_contract::ChannelSeq
-impl core::marker::Unpin for quanta_index_contract::ChannelSeq
-impl core::marker::UnsafeUnpin for quanta_index_contract::ChannelSeq
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ChannelSeq
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ChannelSeq
+impl quanta_index_contract::channel::ChannelSeq
+pub const quanta_index_contract::channel::ChannelSeq::ZERO: Self
+pub const fn quanta_index_contract::channel::ChannelSeq::get(self) -> u64
+pub const fn quanta_index_contract::channel::ChannelSeq::new(value: u64) -> Self
+impl quanta_index_contract::channel::ChannelSeq
+pub const fn quanta_index_contract::channel::ChannelSeq::next(self) -> Self
+impl core::clone::Clone for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::clone(&self) -> quanta_index_contract::channel::ChannelSeq
+impl core::cmp::Eq for quanta_index_contract::channel::ChannelSeq
+impl core::cmp::Ord for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::cmp(&self, other: &quanta_index_contract::channel::ChannelSeq) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::eq(&self, other: &quanta_index_contract::channel::ChannelSeq) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::partial_cmp(&self, other: &quanta_index_contract::channel::ChannelSeq) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::default() -> quanta_index_contract::channel::ChannelSeq
+impl core::fmt::Debug for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::channel::ChannelSeq
+impl core::marker::StructuralPartialEq for quanta_index_contract::channel::ChannelSeq
+impl serde_core::ser::Serialize for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::channel::ChannelSeq
+pub fn quanta_index_contract::channel::ChannelSeq::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::channel::ChannelSeq
+impl core::marker::Send for quanta_index_contract::channel::ChannelSeq
+impl core::marker::Sync for quanta_index_contract::channel::ChannelSeq
+impl core::marker::Unpin for quanta_index_contract::channel::ChannelSeq
+impl core::marker::UnsafeUnpin for quanta_index_contract::channel::ChannelSeq
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::ChannelSeq
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::ChannelSeq
 pub struct quanta_index_contract::channel::ChunkId(_)
 impl quanta_index_contract::ChunkId
 pub fn quanta_index_contract::ChunkId::as_str(&self) -> &str
@@ -5091,47 +5091,6 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefMutation
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefMutation
-pub enum quanta_index_contract::LexicalChannelOp
-pub quanta_index_contract::LexicalChannelOp::DeleteChunk(quanta_index_contract::DeleteChunk)
-pub quanta_index_contract::LexicalChannelOp::DeleteParseTree(quanta_index_contract::DeleteParseTree)
-pub quanta_index_contract::LexicalChannelOp::DeleteRef(quanta_index_contract::DeleteRef)
-pub quanta_index_contract::LexicalChannelOp::DeleteSymbol(quanta_index_contract::DeleteSymbol)
-pub quanta_index_contract::LexicalChannelOp::DeleteTag(quanta_index_contract::DeleteTag)
-pub quanta_index_contract::LexicalChannelOp::EvictDirty(quanta_index_contract::EvictDirty)
-pub quanta_index_contract::LexicalChannelOp::FullBundle(quanta_index_contract::LexicalFullBundle)
-pub quanta_index_contract::LexicalChannelOp::ReplaceLexicalScope(quanta_index_contract::ReplaceLexicalScope)
-pub quanta_index_contract::LexicalChannelOp::ReplaceStructuralScope(quanta_index_contract::ReplaceStructuralScope)
-pub quanta_index_contract::LexicalChannelOp::Seal(quanta_index_contract::LexicalSeal)
-pub quanta_index_contract::LexicalChannelOp::TombstoneLexicalScope(quanta_index_contract::TombstoneLexicalScope)
-pub quanta_index_contract::LexicalChannelOp::TombstoneStructuralScope(quanta_index_contract::TombstoneStructuralScope)
-pub quanta_index_contract::LexicalChannelOp::UpsertChunk(quanta_index_contract::UpsertChunk)
-pub quanta_index_contract::LexicalChannelOp::UpsertCommit(quanta_index_contract::UpsertCommit)
-pub quanta_index_contract::LexicalChannelOp::UpsertDiffHunk(quanta_index_contract::UpsertDiffHunk)
-pub quanta_index_contract::LexicalChannelOp::UpsertDirty(quanta_index_contract::UpsertDirty)
-pub quanta_index_contract::LexicalChannelOp::UpsertParseTree(quanta_index_contract::UpsertParseTree)
-pub quanta_index_contract::LexicalChannelOp::UpsertRef(quanta_index_contract::UpsertRef)
-pub quanta_index_contract::LexicalChannelOp::UpsertSymbol(quanta_index_contract::UpsertSymbol)
-pub quanta_index_contract::LexicalChannelOp::UpsertTag(quanta_index_contract::UpsertTag)
-impl quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
-pub fn quanta_index_contract::LexicalChannelOp::is_seal(&self) -> bool
-pub fn quanta_index_contract::LexicalChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
-pub fn quanta_index_contract::LexicalChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::clone(&self) -> quanta_index_contract::LexicalChannelOp
-impl core::cmp::Eq for quanta_index_contract::LexicalChannelOp
-impl core::cmp::PartialEq for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::eq(&self, other: &quanta_index_contract::LexicalChannelOp) -> bool
-impl core::fmt::Debug for quanta_index_contract::LexicalChannelOp
-pub fn quanta_index_contract::LexicalChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::LexicalChannelOp
-impl core::marker::Freeze for quanta_index_contract::LexicalChannelOp
-impl core::marker::Send for quanta_index_contract::LexicalChannelOp
-impl core::marker::Sync for quanta_index_contract::LexicalChannelOp
-impl core::marker::Unpin for quanta_index_contract::LexicalChannelOp
-impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalChannelOp
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalChannelOp
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalChannelOp
 pub enum quanta_index_contract::OwnerDocKind
 pub quanta_index_contract::OwnerDocKind::Callsite
 pub quanta_index_contract::OwnerDocKind::Chunk
@@ -5727,33 +5686,6 @@ impl core::marker::Unpin for quanta_index_contract::SearchScopeSurface
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchScopeSurface
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchScopeSurface
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchScopeSurface
-pub enum quanta_index_contract::SemanticChannelOp
-pub quanta_index_contract::SemanticChannelOp::DeleteEmbedding(quanta_index_contract::DeleteEmbedding)
-pub quanta_index_contract::SemanticChannelOp::FullBundle(quanta_index_contract::SemanticFullBundle)
-pub quanta_index_contract::SemanticChannelOp::ReplaceSemanticScope(quanta_index_contract::ReplaceSemanticScope)
-pub quanta_index_contract::SemanticChannelOp::Seal(quanta_index_contract::SemanticSeal)
-pub quanta_index_contract::SemanticChannelOp::TombstoneSemanticScope(quanta_index_contract::TombstoneSemanticScope)
-pub quanta_index_contract::SemanticChannelOp::UpsertEmbedding(quanta_index_contract::UpsertEmbedding)
-impl quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
-pub fn quanta_index_contract::SemanticChannelOp::is_seal(&self) -> bool
-pub fn quanta_index_contract::SemanticChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
-pub fn quanta_index_contract::SemanticChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::clone(&self) -> quanta_index_contract::SemanticChannelOp
-impl core::cmp::Eq for quanta_index_contract::SemanticChannelOp
-impl core::cmp::PartialEq for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::eq(&self, other: &quanta_index_contract::SemanticChannelOp) -> bool
-impl core::fmt::Debug for quanta_index_contract::SemanticChannelOp
-pub fn quanta_index_contract::SemanticChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticChannelOp
-impl core::marker::Freeze for quanta_index_contract::SemanticChannelOp
-impl core::marker::Send for quanta_index_contract::SemanticChannelOp
-impl core::marker::Sync for quanta_index_contract::SemanticChannelOp
-impl core::marker::Unpin for quanta_index_contract::SemanticChannelOp
-impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticChannelOp
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticChannelOp
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticChannelOp
 pub struct quanta_index_contract::BatchPublishReceipt
 pub quanta_index_contract::BatchPublishReceipt::accepted_replace_scopes: u32
 pub quanta_index_contract::BatchPublishReceipt::accepted_tombstone_scopes: u32
@@ -5808,41 +5740,6 @@ impl core::marker::Unpin for quanta_index_contract::BridgeQueryRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::BridgeQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BridgeQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BridgeQueryRequest
-pub struct quanta_index_contract::ChannelSeq(_)
-impl quanta_index_contract::ChannelSeq
-pub const quanta_index_contract::ChannelSeq::ZERO: Self
-pub const fn quanta_index_contract::ChannelSeq::get(self) -> u64
-pub const fn quanta_index_contract::ChannelSeq::new(value: u64) -> Self
-impl quanta_index_contract::ChannelSeq
-pub const fn quanta_index_contract::ChannelSeq::next(self) -> Self
-impl core::clone::Clone for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::clone(&self) -> quanta_index_contract::ChannelSeq
-impl core::cmp::Eq for quanta_index_contract::ChannelSeq
-impl core::cmp::Ord for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::cmp(&self, other: &quanta_index_contract::ChannelSeq) -> core::cmp::Ordering
-impl core::cmp::PartialEq for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::eq(&self, other: &quanta_index_contract::ChannelSeq) -> bool
-impl core::cmp::PartialOrd for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::partial_cmp(&self, other: &quanta_index_contract::ChannelSeq) -> core::option::Option<core::cmp::Ordering>
-impl core::default::Default for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::default() -> quanta_index_contract::ChannelSeq
-impl core::fmt::Debug for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-impl core::marker::Copy for quanta_index_contract::ChannelSeq
-impl core::marker::StructuralPartialEq for quanta_index_contract::ChannelSeq
-impl serde_core::ser::Serialize for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::ChannelSeq
-pub fn quanta_index_contract::ChannelSeq::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::ChannelSeq
-impl core::marker::Send for quanta_index_contract::ChannelSeq
-impl core::marker::Sync for quanta_index_contract::ChannelSeq
-impl core::marker::Unpin for quanta_index_contract::ChannelSeq
-impl core::marker::UnsafeUnpin for quanta_index_contract::ChannelSeq
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ChannelSeq
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ChannelSeq
 pub struct quanta_index_contract::ChunkId(_)
 impl quanta_index_contract::ChunkId
 pub fn quanta_index_contract::ChunkId::as_str(&self) -> &str

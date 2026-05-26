@@ -11,25 +11,16 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::{fs, io};
 
 use anyhow::Result;
-use quanta_index_channel::{
-    BundleChannelPublisher, open_lexical_publisher, open_lexical_subscriber,
-    open_semantic_publisher, open_semantic_subscriber,
-};
-use quanta_index_contract::channel::{LexicalChannelOp, SemanticChannelOp};
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
-    SemanticIngestPort,
+    LexicalBatchBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::{
-    ActivationCatalog, ChannelHistoryIngestAdapter, ChannelLexicalIngestAdapter,
-    ChannelRuntimeMetadataIngestAdapter, ChannelSemanticIngestAdapter,
-    ChannelStructuralIngestAdapter,
+    ActivationCatalog, AuxiliaryAuthorityStore, SemanticAuthorityStore,
 };
 use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
@@ -37,14 +28,6 @@ use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let state_root = config.state_root().to_path_buf();
-    rewind_semantic_cursor_for_bootstrap(&state_root)?;
-    let lex_sub = open_lexical_subscriber(&state_root)?;
-    let sem_sub = open_semantic_subscriber(&state_root)?;
-    let lex_publisher: Arc<dyn BundleChannelPublisher<Op = LexicalChannelOp> + Send + Sync> =
-        Arc::new(open_lexical_publisher(&state_root)?);
-    let sem_publisher: Arc<dyn BundleChannelPublisher<Op = SemanticChannelOp> + Send + Sync> =
-        Arc::new(open_semantic_publisher(&state_root)?);
-
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
     ));
@@ -54,21 +37,16 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             .map_err(anyhow::Error::from)?,
     );
     let activation_catalog = Arc::new(ActivationCatalog::open(state_root.join("activations"))?);
+    let aux_authority_store = Arc::new(AuxiliaryAuthorityStore::open(
+        state_root.join("authorities"),
+    )?);
+    let semantic_authority_store =
+        Arc::new(SemanticAuthorityStore::open(state_root.join("semantic"))?);
 
-    let lex_build_port: Arc<dyn LexicalIndexBuildPort + Send + Sync> = lex_adapter.clone();
+    let lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync> = lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter;
-    let lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
-        Arc::new(ChannelLexicalIngestAdapter::new(Arc::clone(&lex_publisher)));
-    let sem_build_port: Arc<dyn SemanticIndexBuildPort + Send + Sync> = sem_adapter.clone();
+    let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
-    let sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
-        Arc::new(ChannelSemanticIngestAdapter::new(sem_publisher));
-    let history_ingest_port =
-        Arc::new(ChannelHistoryIngestAdapter::new(Arc::clone(&lex_publisher)));
-    let runtime_ingest_port = Arc::new(ChannelRuntimeMetadataIngestAdapter::new(Arc::clone(
-        &lex_publisher,
-    )));
-    let structural_ingest_port = Arc::new(ChannelStructuralIngestAdapter::new(lex_publisher));
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
         repo_map_store.clone();
@@ -78,21 +56,16 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     SearchdRuntime::assemble(
         config,
         SearchdRuntimeParts {
-            lex_sub,
-            sem_sub,
             lex_build_port,
             lex_open_port,
-            lex_ingest_port,
             sem_build_port,
             sem_open_port,
-            sem_ingest_port,
-            history_ingest_port,
-            runtime_ingest_port,
-            structural_ingest_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,
             repo_map_generation_activate_port,
             activation_catalog,
+            aux_authority_store,
+            semantic_authority_store,
         },
     )
 }
@@ -102,17 +75,4 @@ pub fn run(command: SearchdCommand) -> Result<()> {
     let runtime = build_runtime(config)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     drive(runtime, shutdown)
-}
-
-fn rewind_semantic_cursor_for_bootstrap(state_root: &std::path::Path) -> Result<()> {
-    // The reference semantic adapter is still in-memory only. On restart, it
-    // must rebuild from the semantic WAL rather than resume from the last ack'd
-    // cursor, otherwise the reopened runtime has an empty semantic index while
-    // readiness truth still expects the sealed generation to exist.
-    let cursor_path = state_root.join("channel").join("semantic").join("cursor");
-    match fs::remove_file(&cursor_path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(anyhow::Error::from(err)),
-    }
 }

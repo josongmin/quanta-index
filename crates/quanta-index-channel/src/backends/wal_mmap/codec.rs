@@ -5,14 +5,14 @@
 //! [`SemanticCodec`]. Each codec is a zero-sized type so the publisher /
 //! subscriber generic does not require a value-bearing parameter.
 
+use quanta_index_contract::channel::{ChannelSeq, LexicalChannelOp, SemanticChannelOp};
 use quanta_index_contract::{
-    ChannelSeq, ChunkId, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef, DeleteSymbol,
-    DeleteTag, EmbeddingId, EvictDirty, LexicalChannelOp, LexicalFullBundle, LexicalSeal,
-    ManifestGeneration, ReplaceLexicalScope, ReplaceSemanticScope, ReplaceStructuralScope, RepoId,
-    RevisionId, SemanticChannelOp, SemanticFullBundle, SemanticSeal, SymbolId,
-    TombstoneLexicalScope, TombstoneSemanticScope, TombstoneStructuralScope, UpsertChunk,
-    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef,
-    UpsertSymbol, UpsertTag,
+    ChunkId, DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag,
+    EmbeddingId, EvictDirty, LexicalFullBundle, LexicalSeal, ManifestGeneration,
+    ReplaceLexicalScope, ReplaceSemanticScope, ReplaceStructuralScope, RepoId, RevisionId,
+    SemanticFullBundle, SemanticSeal, SymbolId, TombstoneLexicalScope, TombstoneSemanticScope,
+    TombstoneStructuralScope, UpsertChunk, UpsertCommit, UpsertDiffHunk, UpsertDirty,
+    UpsertEmbedding, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
 
 use crate::api::error::ChannelError;

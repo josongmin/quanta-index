@@ -24,5 +24,7 @@ pub struct StructuralMatchBinding {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuralMatchCandidate {
     pub candidate_id: String,
+    pub pattern_start_byte: u32,
+    pub pattern_end_byte: u32,
     pub bindings: Vec<StructuralMatchBinding>,
 }

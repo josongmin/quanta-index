@@ -1,6 +1,6 @@
 # LXE-02 - Planner Authority IR
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md)
 
@@ -9,6 +9,19 @@ Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md)
 Move lexical engine selection into the lexical domain. `search-plane` may
 parse, normalize, and dispatch, but it must not encode engine-specific lexical
 semantics.
+
+## Current live truth (2026-05-27)
+
+- lexical engine selection is planner-owned on the current tree; live query
+  execution goes through the lexical planner boundary rather than ad hoc
+  search-plane engine branching
+- `SearchExplanation` runtime traces and `engines_touched` now come from the
+  executed plan surface that the runtime owner rails assert
+- proof rails:
+  - `cargo check -p quanta-index-search-plane --tests`
+  - `cargo test -p quanta-index-searchd-runtime --test explain -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity -- --nocapture`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
 
 ## Owner files
 

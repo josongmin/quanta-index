@@ -3,7 +3,7 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
-//! Semantic adapter — channel-fed in-memory HNSW vector index.
+//! Semantic adapter — direct-ingest in-memory HNSW vector index.
 //!
 //! Implements [`SemanticIndexBuildPort`] and [`SemanticIndexOpenPort`] from
 //! `quanta-index-core::domains::semantic`. Embedding payloads on the channel
@@ -16,13 +16,15 @@ mod hnsw;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use quanta_index_contract::channel::SemanticChannelOp;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingModelContract, EmbeddingRecord, LexicalCandidate, ManifestGeneration,
-    RepoId, RepoRelativePath, RevisionId, SemanticChannelOp,
+    ReplaceSemanticScope, RepoId, RepoRelativePath, RevisionId, SemanticIngestBatch, SemanticSeal,
+    TombstoneSemanticScope,
 };
 use quanta_index_core::{
-    CoreError, SemanticIndexBuildPort, SemanticIndexOpenPort,
+    CoreError, SemanticBatchBuildPort, SemanticIndexBuildPort, SemanticIndexOpenPort,
     domains::semantic::{SemanticPolicy, SemanticSearcher},
 };
 
@@ -189,6 +191,72 @@ fn remove_scope_entries(bucket: &mut GenBucket, repo_relative_path: &RepoRelativ
     }
 }
 
+fn encode_cbor<T>(value: &T, label: &str) -> Result<Vec<u8>, CoreError>
+where
+    T: serde::Serialize,
+{
+    let mut payload = Vec::new();
+    ciborium::into_writer(value, &mut payload)
+        .map_err(|err| CoreError::InvalidContract(format!("semantic: encode {label}: {err}")))?;
+    Ok(payload)
+}
+
+fn legacy_ops_for_batch(
+    batch: &SemanticIngestBatch,
+    include_seal: bool,
+) -> Result<Vec<SemanticChannelOp>, CoreError> {
+    let op_capacity = batch
+        .replace_scopes
+        .len()
+        .saturating_add(batch.tombstone_scopes.len())
+        .saturating_add(usize::from(include_seal));
+    let mut ops = Vec::with_capacity(op_capacity);
+    for scope in &batch.replace_scopes {
+        ops.push(SemanticChannelOp::ReplaceSemanticScope(
+            ReplaceSemanticScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(
+                    &(
+                        batch.mode,
+                        batch.base_generation,
+                        batch.model_contract.clone(),
+                        scope.clone(),
+                    ),
+                    "replace semantic scope payload",
+                )?,
+            },
+        ));
+    }
+    for scope in &batch.tombstone_scopes {
+        ops.push(SemanticChannelOp::TombstoneSemanticScope(
+            TombstoneSemanticScope {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                payload: encode_cbor(
+                    &(
+                        batch.mode,
+                        batch.base_generation,
+                        batch.model_contract.clone(),
+                        scope.clone(),
+                    ),
+                    "tombstone semantic scope payload",
+                )?,
+            },
+        ));
+    }
+    if include_seal {
+        ops.push(SemanticChannelOp::Seal(SemanticSeal {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        }));
+    }
+    Ok(ops)
+}
+
 fn decode_replace_scope_payload(
     bytes: &[u8],
 ) -> Result<
@@ -285,6 +353,13 @@ impl SemanticAdapter {
 impl Default for SemanticAdapter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl SemanticBatchBuildPort for SemanticAdapter {
+    fn build_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
+        let ops = legacy_ops_for_batch(batch, batch.seal)?;
+        self.apply_all(&ops)
     }
 }
 

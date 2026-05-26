@@ -1,6 +1,6 @@
 # LXE-00 - Truth Freeze and Executable Matrix
 
-Status: `proposed`
+Status: `completed`
 Priority: `P0`
 Depends on: none
 
@@ -10,6 +10,19 @@ Create the source-backed truth table for lexical DSL, Sourcegraph syntax,
 planner lowering, engine execution, response shape, and proof coverage.
 
 No later ticket may claim completion from docs or parser coverage alone.
+
+## Current live truth (2026-05-27)
+
+- `lexical-capability-matrix.md` exists and is now closed against live-source
+  proof rather than parser-only inventory.
+- `crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs` proves
+  the harness-backed write -> seal -> reopen -> query path and typed invalid
+  request behavior.
+- contract- and SDK-surface regressions are fenced by:
+  - `cargo test -p quanta-index-contract --test lxe_unified_surface -- --nocapture`
+  - `cargo test -p quanta-index-contract --test ipc_query_result_v2_contract -- --nocapture`
+  - `cargo test -p quanta-index-sdk --lib`
+  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
 
 ## Owner files
 
