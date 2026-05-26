@@ -323,37 +323,9 @@ impl LqVisibility {
     }
 }
 
-/// Carrier for a semantic vector input.
-///
-/// Either an inline embedding or a server-side handle to a stored vector.
-/// Wire shape is a tagged map (manual serde, per D18):
-/// `{ "tag": "inline" | "handle", "v": <Vec<f32> | String> }`.
-///
-/// HNSW handle storage model for [`Self::Handle`]:
-///   The `Box<str>` opaque id refers to a server-side stored vector. The
-///   storage model (`LanceDB` blob vs in-memory HNSW vs other) is an adapter
-///   concern and is intentionally NOT pinned here. The handle MUST be
-///   resolvable by the same search-plane generation that the query targets;
-///   the generation pin lives on the surrounding request envelope, not on
-///   the ref.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SemanticVectorRef {
-    /// Inline raw embedding. Dimensionality is a producer-side concern; the
-    /// reference adapter accepts dim ≤ 1024.
-    Inline(Vec<f32>),
-    /// Opaque server-side vector handle. See doc-comment for the storage-model
-    /// note.
-    Handle(Box<str>),
-}
-
 /// Boolean expression tree. n-ary `All` / `Any` post-normalize collapse.
 /// `Empty` is the inert AST emitted when the input contained zero expression
 /// atoms (still legal at parser layer per dsl.md §5.5).
-///
-/// `SemanticVector` is a programmatic-only leaf (no DSL string form in v1
-/// per dsl.md): producers construct it directly via the AST builder. It is
-/// inert through parser / normalizer (pass-through) but participates in the
-/// canonical CBOR hash so downstream caches discriminate by vector content.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LqExpr {
     Empty,
@@ -361,12 +333,6 @@ pub enum LqExpr {
     Not(Box<LqExpr>),
     All(Vec<LqExpr>),
     Any(Vec<LqExpr>),
-    /// Top-K semantic-vector leaf. `top_k` is the per-leaf cap; the surrounding
-    /// request envelope owns the overall cap.
-    SemanticVector {
-        vector_ref: SemanticVectorRef,
-        top_k: u32,
-    },
 }
 
 /// Directive node per dsl.md §9.
@@ -403,9 +369,8 @@ impl LqOptions {
 
 /// Canonical query: the only shape PRE-NORM emits. Inputs to the hasher.
 ///
-/// `Eq`/`Hash` are intentionally not derived: [`LqExpr::SemanticVector`]
-/// carries `Vec<f32>` (no `Eq`/`Hash`). Equality at the query layer is
-/// `PartialEq`-based; cache keys go through [`crate::hasher::canonical_hash`].
+/// Equality at the query layer is `PartialEq`-based; cache keys go through
+/// [`crate::hasher::canonical_hash`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct LqNormalizedQuery {
     pub lq_version: &'static str,
@@ -1618,137 +1583,6 @@ impl<'de> serde::Deserialize<'de> for LqLeaf {
     }
 }
 
-impl serde::Serialize for SemanticVectorRef {
-    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(2))?;
-        match self {
-            Self::Inline(vector) => {
-                m.serialize_entry("tag", "inline")?;
-                m.serialize_entry("v", vector)?;
-            }
-            Self::Handle(handle) => {
-                m.serialize_entry("tag", "handle")?;
-                m.serialize_entry("v", handle.as_ref())?;
-            }
-        }
-        m.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SemanticVectorRef {
-    fn deserialize<D>(de: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = SemanticVectorRef;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("SemanticVectorRef map")
-            }
-            fn visit_map<A>(self, mut map: A) -> Result<SemanticVectorRef, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                use serde::de::Error as _;
-                let mut tag: Option<String> = None;
-                let mut buffered: Option<ciborium::value::Value> = None;
-                while let Some(k) = map.next_key::<String>()? {
-                    match k.as_str() {
-                        "tag" => tag = Some(map.next_value()?),
-                        "v" => buffered = Some(map.next_value()?),
-                        _ => {
-                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
-                        }
-                    }
-                }
-                let tag = tag.ok_or_else(|| A::Error::missing_field("tag"))?;
-                let v = buffered.ok_or_else(|| A::Error::missing_field("v"))?;
-                match tag.as_str() {
-                    "inline" => {
-                        let vector: Vec<f32> = v
-                            .deserialized()
-                            .map_err(|e| A::Error::custom(format!("inline payload: {e}")))?;
-                        Ok(SemanticVectorRef::Inline(vector))
-                    }
-                    "handle" => {
-                        let handle: String = v
-                            .deserialized()
-                            .map_err(|e| A::Error::custom(format!("handle payload: {e}")))?;
-                        Ok(SemanticVectorRef::Handle(handle.into_boxed_str()))
-                    }
-                    other => Err(A::Error::unknown_variant(other, &["inline", "handle"])),
-                }
-            }
-        }
-        de.deserialize_map(V)
-    }
-}
-
-struct SemanticVectorPayload<'a> {
-    vector_ref: &'a SemanticVectorRef,
-    top_k: &'a u32,
-}
-
-impl serde::Serialize for SemanticVectorPayload<'_> {
-    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(2))?;
-        m.serialize_entry("vector_ref", self.vector_ref)?;
-        m.serialize_entry("top_k", self.top_k)?;
-        m.end()
-    }
-}
-
-struct SemanticVectorPayloadOwned {
-    vector_ref: SemanticVectorRef,
-    top_k: u32,
-}
-
-impl<'de> serde::Deserialize<'de> for SemanticVectorPayloadOwned {
-    fn deserialize<D>(de: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = SemanticVectorPayloadOwned;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("SemanticVectorPayload map")
-            }
-            fn visit_map<A>(self, mut map: A) -> Result<SemanticVectorPayloadOwned, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut vector_ref: Option<SemanticVectorRef> = None;
-                let mut top_k: Option<u32> = None;
-                while let Some(k) = map.next_key::<String>()? {
-                    match k.as_str() {
-                        "vector_ref" => vector_ref = Some(map.next_value()?),
-                        "top_k" => top_k = Some(map.next_value()?),
-                        _ => {
-                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
-                        }
-                    }
-                }
-                Ok(SemanticVectorPayloadOwned {
-                    vector_ref: vector_ref
-                        .ok_or_else(|| serde::de::Error::missing_field("vector_ref"))?,
-                    top_k: top_k.ok_or_else(|| serde::de::Error::missing_field("top_k"))?,
-                })
-            }
-        }
-        de.deserialize_map(V)
-    }
-}
-
 impl serde::Serialize for LqExpr {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
@@ -1777,11 +1611,6 @@ impl serde::Serialize for LqExpr {
             Self::Any(children) => {
                 m.serialize_entry("tag", "any")?;
                 m.serialize_entry("v", children)?;
-            }
-            Self::SemanticVector { vector_ref, top_k } => {
-                m.serialize_entry("tag", "semantic_vector")?;
-                let payload = SemanticVectorPayload { vector_ref, top_k };
-                m.serialize_entry("v", &payload)?;
             }
         }
         m.end()
@@ -1846,19 +1675,9 @@ impl<'de> serde::Deserialize<'de> for LqExpr {
                             .map_err(|e| A::Error::custom(format!("any payload: {e}")))?;
                         Ok(LqExpr::Any(kids))
                     }
-                    "semantic_vector" => {
-                        let payload: SemanticVectorPayloadOwned =
-                            buffered_value.deserialized().map_err(|e| {
-                                A::Error::custom(format!("semantic_vector payload: {e}"))
-                            })?;
-                        Ok(LqExpr::SemanticVector {
-                            vector_ref: payload.vector_ref,
-                            top_k: payload.top_k,
-                        })
-                    }
                     other => Err(A::Error::unknown_variant(
                         other,
-                        &["empty", "leaf", "not", "all", "any", "semantic_vector"],
+                        &["empty", "leaf", "not", "all", "any"],
                     )),
                 }
             }

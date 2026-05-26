@@ -20,6 +20,7 @@ Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
     contract decode tests
   - `LXE-03`: repo/file/lang/case/count/select:file/select:repo/select:content and typed-unavailable producer-dependent filters
   - `LXE-04`: materialized trigram-prefilter + authoritative indexed-text exact verify, including SG/native `patterntype:regexp` parity
+    and regex-backed `timeout:` fail-closed as `QUERY_TIMEOUT`
   - `LXE-05`: positions-backed exact-adjacent phrase hit and reversed-order phrase miss
   - `LXE-06`: text-route `type:file`/`select:file`/`select:path`/
     `select:content`/`select:content.match` plus text-route/public-frontdoor
@@ -99,7 +100,7 @@ Defined at [lq-norm/src/ast.rs:196](../../../crates/quanta-index-lq-norm/src/ast
 | `Phrase(String)` | lq-norm/parser | search-plane/lowering | [phrase.rs::plan_phrase](../../../crates/quanta-index-lexical/src/phrase.rs) → `PlanLeaf::Phrase { plan }` | live lexical rail executes through materialized `lq-positions` sidecars | `LexicalCandidate` | planner phrase tests + `tantivy_smoke` indexed-text/case proof | E2E-01 rows green | `executed` |
 | `RawString(String)` | lq-norm/parser | search-plane/lowering | [trigram_plan.rs::plan_raw_substring](../../../crates/quanta-index-lexical/src/trigram_plan.rs) → `PlanLeaf::RawSubstring { plan }` | live lexical rail executes through materialized trigram sidecars + exact verify over authoritative indexed text | `LexicalCandidate` | `planner::tests::raw_substring_plans_ok_on_minimum_needle` + `raw_substring_too_short_is_rejected_typed` | E2E-01 raw-substring row green | `executed` |
 | `Regex(String)` | lq-norm/parser + [regex_guard.rs](../../../crates/quanta-index-lq-norm/src/regex_guard.rs) | search-plane/lowering | [regex.rs::plan_regex](../../../crates/quanta-index-lexical/src/regex.rs) → `PlanLeaf::Regex { plan }` with `extract_required_literals` + `dialect_filter` | live lexical rail executes through materialized trigram sidecars + exact verify over authoritative indexed text | `LexicalCandidate` | `planner::tests::regex_leaf_with_extractable_literal_plans_ok` + `regex_leaf_with_lookbehind_is_rejected_typed` + `tantivy_smoke` authority proof | E2E-01 + E2E-07 rows green | `executed` |
-| `StructuralBlock(LqStructuralBlock)` | lq-norm/parser | [search-plane/query_dispatcher.rs:792](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L792) lowers one top-level structural leaf plus executable `repo:` / `file:` / `lang:` filters | [search-plane/query_dispatcher.rs:362](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L362) routes through `StructuralService` | [lq-structural/src/matcher.rs:177](../../../crates/quanta-index-lq-structural/src/matcher.rs#L177) truthful authority subset over parse-tree/chunk authority | internal `StructuralMatchBinding` / `StructuralMatchCandidate` -> projected `StructuralBinding` / `StructuralCandidate` | `quanta-index-lq-structural` authority tests + search-plane structural tests | [sdk_frontdoor.rs:552](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L552), [sdk_frontdoor.rs:590](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L590), [sdk_frontdoor.rs:623](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L623), [end_to_end.rs:2239](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2239) | `executed[truthful-subset]` — root-kind exact, root capture, root-kind plus capture, ordered child tree-walk, variadic sibling capture / wildcard skip, and `where` / `inside` / `outside`; structural boolean composition and filters outside `repo:` / `file:` / `lang:` stay typed fail-closed |
+| `StructuralBlock(LqStructuralBlock)` | lq-norm/parser | search-plane lowers structural-only boolean trees over `match { ... }` leaves plus executable `repo:` / `file:` / `lang:` filters | routes through `StructuralService` with candidate-scope pruning, bounded `NOT`, and deterministic projection | truthful authority subset over parse-tree/chunk authority | internal `StructuralMatchBinding` / `StructuralMatchCandidate` -> projected `StructuralBinding` / `StructuralCandidate` | `quanta-index-lq-structural` authority tests + search-plane structural tests | `sdk_frontdoor.rs`, `end_to_end.rs`, `e2e_dual_syntax_lowering_parity.rs` | `executed[truthful-subset]` — root-kind exact, root capture, root-kind plus capture, ordered child tree-walk, variadic sibling capture / wildcard skip, `where` / `inside` / `outside`, structural-only boolean composition, and typed holes `expr|stmt|item|type`; filters outside `repo:` / `file:` / `lang:` stay typed fail-closed |
 | `Predicate { name, args }` | lq-norm/parser | committed predicate lowering (`lower_bridge_predicate` in search-plane + core/lexical) converts supported predicate forms into filters/plans before reaching the planner | `repo.has.file(path:...)` lowers to repo-gate execution on the lexical rail; `symbol.has.name(...)` lowers to `symbol::plan_symbol` → `PlanLeaf::Symbol { plan }`; unsupported names/arg shapes return `LexicalPlannerError::Unimplemented { owner_ticket: "LXE-03-predicate-extensions" }` | per-predicate route | varies | `planner::tests::predicate_symbol_has_name_plans_through_symbol_route` + lexical/runtime predicate proofs | E2E-01 + E2E-02 predicate rows green | `executed[truthful-subset]` |
 
 ## 3. LQ boolean tree (`LqExpr`)
@@ -113,7 +114,7 @@ Defined at [lq-norm/src/ast.rs:306](../../../crates/quanta-index-lq-norm/src/ast
 | `Not(Box<LqExpr>)` | `executed[truthful-subset]` | live for the lexical subset admitted by planner/executor; unsupported predicate extensions stay typed-rejected |
 | `All(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
 | `Any(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
-| `SemanticVector { vector_ref, top_k }` | lexical adapter remains intentionally `NotImplemented` at [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130); live execution is owned by semantic/hybrid routes in `search-plane/query_dispatcher.rs` | `executed[semantic-route]` |
+| retired semantic-vector leaf | removed from the canonical query AST; semantic/hybrid entry is now text-only and query embedding is search-owned before semantic execution | historical only |
 
 ## 4. LQ filters (`LqFilter`)
 
@@ -146,6 +147,7 @@ Defined at [lq-norm/src/ast.rs:333](../../../crates/quanta-index-lq-norm/src/ast
 | `pattern_type` | `Literal`, `Keyword`, `Standard`, `Regexp`, `Structural` | `executed[truthful-subset]` (literal/keyword/standard/regexp live on the lexical rail; structural executes on the dedicated structural route and is typed-rejected on the lexical SG route) |
 | `case` | `Sensitive`, `Insensitive` | `executed` |
 | `count` | `Bounded(u32)`, `All` | `executed` |
+| `timeout_ms` | `Option<u64>` | `executed[truthful-subset]` (native/Sourcegraph lexical surfaces lower `timeout:` into canonical options for regex-backed execution; structural/history/runtime keep timeout typed fail-closed) |
 
 ## 6. LQ directives (`LqDirective`)
 
@@ -170,6 +172,7 @@ Translator at [lq-bridge/src/translator.rs](../../../crates/quanta-index-lq-brid
 | `case:yes/no` | `LqCase` | `executed` |
 | `count:N` | `LqCountBound::Bounded` | `executed` |
 | `count:all` | `LqCountBound::All` | `executed` |
+| `timeout:<duration>` | `LqOptions.timeout_ms` | `executed[truthful-subset]` (native/Sourcegraph lexical regex-backed execution only; unsupported routes stay typed fail-closed) |
 | `type:file` / `type:symbol` / `type:commit` / `type:diff` | `LqFilter::Type` | `executed[truthful-subset]` (file live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth; commit/diff live on the dedicated history route with runtime proof) |
 | `select:file` / `select:content` / `select:symbol` | `LqFilter::Select` | `executed[truthful-subset]` (file/content live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth) |
 | `patterntype:literal` | `LqPatternType::Literal` + `LqLeaf::RawString` | `executed` |
@@ -222,6 +225,7 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 | History generation not materialized | `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:823](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L823), [end_to_end.rs:632](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L632) | `executed` |
 | History producer-specific unavailable taxonomy | `HISTORY_PRODUCER_UNAVAILABLE`, `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:815](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L815), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:675](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L675) | `executed` |
 | History shard unavailable | `HISTORY_SHARD_UNAVAILABLE` | [query_dispatcher.rs:888](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L888), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:742](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L742) | `executed[truthful-subset]` — proven for required shard materialization absence; deeper authority-corruption taxonomy is not yet modeled |
+| Lexical regex timeout | `QUERY_TIMEOUT` | `e2e_perf_chaos.rs` timeout row + search-plane closed-metric taxonomy proof | `executed[truthful-subset]` — regex-backed lexical timeout is live; non-executable routes reject timeout before execution |
 | Structural unsupported lang | `STR_LANG_NOT_SUPPORTED` | [sdk_frontdoor.rs:656](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L656) | `executed` |
 | Structural generation not ready | `STR_GENERATION_NOT_READY` | [end_to_end.rs:2239](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2239) | `executed` |
 | Structural shard unavailable | `STR_SHARD_UNAVAILABLE` | [end_to_end.rs:2305](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2305) | `executed` |
@@ -253,9 +257,10 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 - **Regex observability**: regex now routes through materialized trigram +
   exact verify. Remaining risk is missing explain-grade prefilter counts and
   engine trace, not query-string escape.
-- **`SemanticVector` lexical adapter NotImplemented**: [lexical/src/lib.rs:1130](../../../crates/quanta-index-lexical/src/lib.rs#L1130)
-  — still correct behavior because lexical execution must not consume vectors
-  directly. Current live proof exists on the semantic/hybrid runtime routes.
+- **Retired semantic-vector lexical row**: this packet no longer treats
+  `SemanticVector` as a live lexical capability row because the AST/public
+  query surface is text-only; semantic execution remains owned by semantic and
+  hybrid routes after search-owned query embedding.
 - **Type/select regression surface**: `type:symbol` / `select:symbol` keep a
   distinct public carrier plus `symbol_kind` truth, history-owned
   `type:commit` / `type:diff` keep public/runtime proof, and

@@ -19,14 +19,15 @@ use quanta_index_contract::lex::{
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, GenerationSelector, HybridQueryRequest,
-    ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapChunkExactness,
-    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary,
-    RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge,
-    RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle, RepoMapSymbolNode, RevisionId,
-    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest, SymbolId,
-    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    ChunkId, ChunkRecord, GenerationPin, GenerationSelector, HistoryQueryRequest,
+    HybridQueryRequest, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge,
+    RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
+    RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
+    RepoMapSymbolNode, RevisionId, RuntimeMetadataQueryRequest,
+    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest,
+    StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
@@ -710,6 +711,58 @@ fn expect_sdk_error<T>(
         Ok(_) => Err(format!("{context}: unexpectedly succeeded").into()),
         Err(err) => Ok(err),
     }
+}
+
+fn publish_sdk_lexical_and_structural_ready(client: &QuantaIndex) -> TestResult {
+    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:sdk-structural-ready")
+            .tracks([
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Structural,
+            ])
+            .commit()
+    })?;
+    Ok(())
+}
+
+fn assert_structural_single_binding(
+    response: &quanta_index_contract::SearchPlaneStructuralQueryResponse,
+    expected_generation: &GenerationPin,
+    expected_candidate_id: &str,
+    expected_metavariable: &str,
+    expected_start_byte: u32,
+    expected_end_byte: u32,
+    context: &str,
+) -> TestResult {
+    if response.generation != *expected_generation || response.results.len() != 1 {
+        return Err(format!("{context}: unexpected structural response: {response:?}").into());
+    }
+    let candidate = response
+        .results
+        .first()
+        .ok_or_else(|| format!("{context}: missing structural candidate"))?;
+    let binding = candidate
+        .bindings
+        .first()
+        .ok_or_else(|| format!("{context}: missing structural binding"))?;
+    if candidate.candidate_id != expected_candidate_id
+        || binding.metavariable != expected_metavariable
+        || binding.start_byte != expected_start_byte
+        || binding.end_byte != expected_end_byte
+    {
+        return Err(
+            format!("{context}: unexpected structural candidate/binding: {candidate:?}").into(),
+        );
+    }
+    Ok(())
 }
 
 fn expect_usage_error_contains<T>(
@@ -2151,11 +2204,299 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
 }
 
 #[test]
+fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() -> TestResult {
+    let (_dir, client, shutdown, join) =
+        start_sdk_frontdoor_runtime("sdk-frontdoor-structural-sourcegraph-v2")?;
+
+    publish_sdk_lexical_and_structural_ready(&client)?;
+
+    let typed_expr = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .sourcegraph(r#"patterntype:structural "function_item { { :[name.expr] } }""#)
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    assert_structural_single_binding(
+        &typed_expr,
+        &pin(),
+        "chunk-tree",
+        "name",
+        3,
+        7,
+        "sdk structural Sourcegraph typed expr",
+    )?;
+
+    let boolean_or = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .sourcegraph(
+                    r#"patterntype:structural "function_item { { identifier :[name] } }" OR "trait_item""#,
+                )
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    assert_structural_single_binding(
+        &boolean_or,
+        &pin(),
+        "chunk-tree",
+        "name",
+        3,
+        7,
+        "sdk structural Sourcegraph boolean OR",
+    )?;
+
+    let boolean_not = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .sourcegraph(
+                    r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT "trait_item""#,
+                )
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    assert_structural_single_binding(
+        &boolean_not,
+        &pin(),
+        "chunk-tree",
+        "name",
+        3,
+        7,
+        "sdk structural Sourcegraph boolean NOT",
+    )?;
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
+    let (_dir, client, shutdown, join) =
+        start_sdk_frontdoor_runtime("sdk-frontdoor-dsl-fail-closed")?;
+
+    publish_sdk_lexical_and_structural_ready(&client)?;
+
+    let lexical_timeout = expect_sdk_error(
+        client
+            .lexical()
+            .query()
+            .sourcegraph(r"timeout:0ms /todo!/")
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "Sourcegraph lexical timeout must fail closed",
+    )?;
+    match lexical_timeout {
+        SdkError::Remote { code, message }
+            if code == "QUERY_TIMEOUT"
+                && (message.contains("timeout") || message.contains("timed out")) => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected lexical timeout error: {other:?}").into());
+        }
+    }
+
+    let lexical_follow_up = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("todo")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let lexical_follow_up_candidate = lexical_follow_up
+        .results
+        .first()
+        .ok_or_else(|| "missing lexical follow-up candidate".to_string())?;
+    if lexical_follow_up.generation != pin()
+        || lexical_follow_up_candidate.candidate_id != "chunk-dirty"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected lexical follow-up after timeout: {lexical_follow_up:?}").into(),
+        );
+    }
+
+    let structural_timeout = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .sourcegraph(r#"timeout:0ms patterntype:structural "function_item""#)
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "Sourcegraph structural timeout must fail closed",
+    )?;
+    match structural_timeout {
+        SdkError::Remote { code, message }
+            if code == "STR_INVALID_REQUEST" && message.contains("timeout option") => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected structural timeout error: {other:?}").into());
+        }
+    }
+
+    let typed_hole = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .native("match { function_item { { :[name.lambda] } } }")
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "unsupported typed hole must fail closed",
+    )?;
+    match typed_hole {
+        SdkError::Remote { code, message }
+            if code == "STR_HOLE_KIND_UNSUPPORTED"
+                && message.contains("typed hole kind `lambda`") => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected typed-hole error: {other:?}").into());
+        }
+    }
+
+    let mixed_boolean = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .native("todo OR match { :[x] }")
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "mixed lexical/structural boolean must fail closed",
+    )?;
+    match mixed_boolean {
+        SdkError::Remote { code, message }
+            if code == "STR_INVALID_REQUEST"
+                && message.contains("structural-only boolean tree") => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected mixed-boolean error: {other:?}").into());
+        }
+    }
+
+    let pure_negative = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .native("NOT match { function_item }")
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "pure-negative structural boolean must fail closed",
+    )?;
+    match pure_negative {
+        SdkError::Remote { code, message }
+            if code == "STR_INVALID_REQUEST"
+                && message
+                    .contains("pure-negative structural boolean queries are not executable") => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected pure-negative error: {other:?}").into());
+        }
+    }
+
+    let missing_patterntype = expect_sdk_error(
+        client
+            .structural()
+            .query()
+            .sourcegraph(r#""function_item""#)
+            .active(repo(), revision())
+            .top_k(2)
+            .execute(),
+        "Sourcegraph structural route requires patterntype:structural",
+    )?;
+    match missing_patterntype {
+        SdkError::Remote { code, message }
+            if code == "BRIDGE_TRANSLATE_FAIL" && message.contains("patterntype:structural") => {}
+        other @ (SdkError::Usage(_)
+        | SdkError::Protocol(_)
+        | SdkError::Serialization(_)
+        | SdkError::Transport(_)
+        | SdkError::Remote { .. }) => {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!("unexpected patterntype error: {other:?}").into());
+        }
+    }
+
+    let structural_follow_up = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("match { function_item { { :[name.expr] } } }")
+                .active(repo(), revision())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    assert_structural_single_binding(
+        &structural_follow_up,
+        &pin(),
+        "chunk-tree",
+        "name",
+        3,
+        7,
+        "sdk structural follow-up after typed errors",
+    )?;
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
 fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
 
     let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _history_receipt = client.history().publish(&history_batch())?;
+    let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
             .generations()
@@ -2167,6 +2508,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
+                SearchPlaneTrackKind::Structural,
             ])
             .commit()
     })?;
@@ -2206,6 +2548,95 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         client.symbol().query_request(symbol_request.clone())
     })?;
     assert_single_symbol_candidate(&symbol)?;
+
+    let history_request = HistoryQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "type:commit rev:refs/heads/main author:alice fix".to_string(),
+            generation: None,
+            generation_selector: Some(active_selector()),
+            top_k: 5,
+        },
+    };
+    let history = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.history().query_request(history_request.clone()),
+        |response| response.generation == pin() && response.commits.len() == 1,
+    )?;
+    let history_commit = history
+        .commits
+        .first()
+        .ok_or_else(|| "missing contract-exact history candidate".to_string())?;
+    if history.generation != pin()
+        || history_commit.author != "alice"
+        || history_commit.message != "fix: sample"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected contract-exact history response: {history:?}").into());
+    }
+
+    let runtime_request = RuntimeMetadataQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "dirty:yes todo".to_string(),
+            generation: None,
+            generation_selector: Some(active_selector()),
+            top_k: 3,
+        },
+    };
+    let runtime = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || client.runtime().query_request(runtime_request.clone()),
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let runtime_top = runtime
+        .results
+        .first()
+        .ok_or_else(|| "missing contract-exact runtime candidate".to_string())?;
+    if runtime.generation != pin() || runtime_top.candidate_id != "chunk-dirty" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected contract-exact runtime response: {runtime:?}").into());
+    }
+
+    let structural_request = StructuralQueryRequest {
+        text_query: TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text:
+                r#"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural "function_item { { :[name.expr] } }""#
+                    .to_string(),
+            generation: None,
+            generation_selector: Some(active_selector()),
+            top_k: 2,
+        },
+    };
+    let structural = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query_request(structural_request.clone())
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let structural_top = structural
+        .results
+        .first()
+        .ok_or_else(|| "missing contract-exact structural candidate".to_string())?;
+    let structural_binding = structural_top
+        .bindings
+        .first()
+        .ok_or_else(|| "missing contract-exact structural binding".to_string())?;
+    if structural.generation != pin()
+        || structural_top.candidate_id != "chunk-tree"
+        || structural_binding.metavariable != "name"
+        || structural_binding.start_byte != 3
+        || structural_binding.end_byte != 7
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(
+            format!("unexpected contract-exact structural response: {structural:?}").into(),
+        );
+    }
 
     let semantic_request = SemanticQueryRequest {
         query_text: "quartz".to_string(),

@@ -152,16 +152,6 @@ impl HnswIndex {
         }
     }
 
-    #[must_use]
-    pub(crate) fn resolve_handle(&self, id: &str) -> Option<&[f32]> {
-        let idx = self.id_to_idx.get(id).copied()?;
-        let node = self.nodes.get(idx)?;
-        if node.deleted {
-            return None;
-        }
-        Some(node.vector.as_slice())
-    }
-
     /// Returns `(id, cosine_similarity)` tuples sorted descending by score.
     #[must_use]
     pub(crate) fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {

@@ -1378,8 +1378,7 @@ fn reject_typed_structural_holes_in_expr(expr: &LqExpr) -> Result<(), CoreError>
             | LqLeaf::RawString(_)
             | LqLeaf::Regex(_)
             | LqLeaf::Predicate { .. },
-        )
-        | LqExpr::SemanticVector { .. } => Ok(()),
+        ) => Ok(()),
         LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
             reject_typed_structural_holes_in_block(block)
         }
@@ -1530,7 +1529,7 @@ fn collect_structural_requested_lang(
         LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
             merge_structural_requested_lang(requested_lang, block.lang.as_deref())
         }
-        LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
+        LqExpr::Leaf(_) => Err(structural_invalid_request(
             "query must lower to a structural-only boolean tree of `match { ... }` leaves",
         )),
         LqExpr::Not(inner) => collect_structural_requested_lang(inner, requested_lang),
@@ -1593,7 +1592,7 @@ fn evaluate_structural_expr(
             options,
             seed,
         ),
-        LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => Err(structural_invalid_request(
+        LqExpr::Leaf(_) => Err(structural_invalid_request(
             "query must lower to a structural-only boolean tree of `match { ... }` leaves",
         )),
         LqExpr::Not(inner) => {
@@ -2067,9 +2066,6 @@ fn validate_executable_text_surface(expr: &LqExpr, plane: &str) -> Result<(), Co
             }
             Ok(())
         }
-        LqExpr::SemanticVector { .. } => Err(CoreError::NotImplemented(format!(
-            "{plane}: semantic-vector leaves are not executable on this route"
-        ))),
     }
 }
 
@@ -2352,9 +2348,6 @@ where
             }
             Ok(false)
         }
-        LqExpr::SemanticVector { .. } => Err(CoreError::NotImplemented(
-            "semantic-vector leaves are not executable on this route".to_string(),
-        )),
     }
 }
 
@@ -3181,16 +3174,6 @@ mod tests {
                 .scoped_vectors
                 .push(query_vector.to_vec());
             Ok(vec![candidate("semantic-scoped", 1.0)])
-        }
-
-        fn resolve_handle(&self, handle: &str) -> Result<Vec<f32>, CoreError> {
-            match handle {
-                "semantic-handle" => Ok(vec![0.5, 0.5]),
-                other => Err(CoreError::Typed {
-                    code: "SEM_HANDLE_NOT_FOUND".to_string(),
-                    message: format!("semantic: handle `{other}` not found"),
-                }),
-            }
         }
     }
 

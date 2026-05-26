@@ -74,6 +74,15 @@ impl<'a> RuntimeNamespace<'a> {
     pub fn publish_dirty(&self, batch: &DirtyBatch) -> Result<BatchReceipt, SdkError> {
         <RuntimeNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
+
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(
+        &self,
+        request: RuntimeMetadataQueryRequest,
+    ) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
+        dispatch_runtime_query_request_v1(self.client, request)
+    }
 }
 
 struct RuntimeNs;
@@ -174,26 +183,29 @@ impl<'a> RuntimeQueryBuilder<'a> {
 
     pub fn execute(self) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
         let text_query = self.state.build_request("runtime")?;
-        let response = self
-            .client
-            .dispatch_query(SearchPlaneQueryIpcRequest::RuntimeMetadata(
-                RuntimeMetadataQueryRequest { text_query },
-            ))?;
-        match response {
-            SearchPlaneQueryIpcResponse::RuntimeMetadata(results) => Ok(results),
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "runtime response",
-                QuantaIndex::query_response_kind(&other),
-            )),
-        }
+        dispatch_runtime_query_request_v1(self.client, RuntimeMetadataQueryRequest { text_query })
+    }
+}
+
+fn dispatch_runtime_query_request_v1(
+    client: &QuantaIndex,
+    request: RuntimeMetadataQueryRequest,
+) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
+    let response = client.dispatch_query(SearchPlaneQueryIpcRequest::RuntimeMetadata(request))?;
+    match response {
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(results) => Ok(results),
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+            "runtime response",
+            QuantaIndex::query_response_kind(&other),
+        )),
     }
 }

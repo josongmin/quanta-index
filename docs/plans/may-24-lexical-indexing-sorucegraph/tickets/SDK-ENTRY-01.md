@@ -1,6 +1,6 @@
 # SDK-ENTRY-01 — SDK-Only Entry + Source-Authority Ingest Cutover
 
-Status: `partial-execution-live`
+Status: `repo-local-closeout-complete`
 
 Scope:
 - force every external producer / caller entrypoint through [`quanta-index-sdk`](../../../../crates/quanta-index-sdk/)
@@ -14,20 +14,28 @@ Landed on the current tree:
 - `searchctl` production query entry is SDK-only
 - public SDK happy-path proof now lives in `sdk_frontdoor` for lexical,
   semantic, hybrid, explain, repo-map, history, runtime, and structural paths
+- contract-exact SDK query replay surfaces now exist for history, runtime, and
+  structural alongside lexical / symbol / semantic / hybrid
 - dedicated typed SDK publish/query namespaces exist for history, runtime, and
   structural authority alongside lexical/semantic/repomap
 - history source-authority query paths now fail closed with exact typed codes
   and no lexical fallback
+- legacy semantic channel-op surface is removed from `quanta-index-contract`;
+  public semantic authority does not enter through channel ops on the current
+  tree
 
-Residue that keeps this ticket partial:
+Repo-local closeout state on the current tree:
 
-- `searchd` composition still uses internal legacy channel publishers and
-  persisted mirror paths
-- richer history/runtime/structural feature families in this ticket are not all
-  closed on the current tree
-- `SEM-OWN` still remains deferred because the full internal derivation worker
-  / manifest / seal-proof packet has not landed, even though the public
-  semantic/hybrid query surface is already text-only on the current tree
+- no open repo-local SDK / ingest residue remains in this ticket
+- `searchd` public ingest truth is typed batch UDS intake routed to owner
+  materializer ports; any legacy persistence mirror is an internal runtime
+  durability detail, not an external entry or public-surface blocker
+- broader external producer adoption proof remains cross-repo in
+  `semantica-codegraph-v2`
+- `SEM-OWN` still remains a separate deferred packet because the full internal
+  derivation worker / manifest / seal-proof program has not landed, even
+  though the public semantic/hybrid query surface is already text-only on the
+  current tree
 
 Parent docs:
 - [../closeout-plan.md](../closeout-plan.md)

@@ -34,8 +34,8 @@ struct GenKey {
     generation: ManifestGeneration,
 }
 
-/// Per-generation HNSW index. Lazily constructed at the first
-/// `UpsertEmbedding` so the embedding dimension is determined by data.
+/// Per-generation HNSW index. Lazily constructed at the first embedding
+/// record in a batch so the embedding dimension is determined by data.
 struct GenBucket {
     index: Option<HnswIndex>,
     metadata: BTreeMap<String, EmbeddingMetadata>,
@@ -171,32 +171,11 @@ impl Default for SemanticAdapter {
 
 impl SemanticBatchBuildPort for SemanticAdapter {
     fn build_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
-        let ops = legacy_ops_for_batch(batch, batch.seal)?;
-        self.apply_all(&ops)
-    }
-}
-
-impl SemanticIndexBuildPort for SemanticAdapter {
-    fn build(
-        &self,
-        _repo: &RepoId,
-        _revision: &RevisionId,
-        _generation: ManifestGeneration,
-        ops: &[SemanticChannelOp],
-    ) -> Result<(), CoreError> {
-        self.apply_all(ops)
-    }
-}
-
-impl SemanticAdapter {
-    fn apply_all(&self, ops: &[SemanticChannelOp]) -> Result<(), CoreError> {
         let mut store = self
             .store
             .write()
             .map_err(|err| CoreError::Storage(format!("semantic store poisoned: {err}")))?;
-        for op in ops {
-            store.apply(op)?;
-        }
+        store.apply_batch(batch)?;
         drop(store);
         Ok(())
     }
@@ -291,33 +270,6 @@ impl SemanticSearcher for SnapshotSemanticSearcher {
         }
         Ok(out)
     }
-
-    fn resolve_handle(&self, handle: &str) -> Result<Vec<f32>, CoreError> {
-        let key = GenKey {
-            repo_id: self.repo_id.clone(),
-            revision_id: self.revision_id.clone(),
-            generation: self.generation,
-        };
-        let vector: Option<Vec<f32>> = {
-            let store = self
-                .store
-                .read()
-                .map_err(|err| CoreError::Storage(format!("semantic store poisoned: {err}")))?;
-            store
-                .rows
-                .get(&key)
-                .and_then(|bucket| bucket.index.as_ref())
-                .and_then(|index| index.resolve_handle(handle))
-                .map(<[f32]>::to_vec)
-        };
-        vector.ok_or_else(|| CoreError::Typed {
-            code: "SEM_HANDLE_NOT_FOUND".to_string(),
-            message: format!(
-                "semantic: handle `{handle}` not found for generation {}",
-                self.generation.get()
-            ),
-        })
-    }
 }
 
 impl SnapshotSemanticSearcher {
@@ -368,9 +320,12 @@ impl SnapshotSemanticSearcher {
         // would let a query with the wrong embedder model claim "no matches"
         // when the real issue is a shape disagreement between producer and
         // searcher.
-        let Some(bucket) = store.rows.get(&key) else {
-            return Ok(Vec::new());
-        };
+        let bucket = store.rows.get(&key).ok_or_else(|| {
+            CoreError::Storage(format!(
+                "semantic generation {} bucket missing",
+                self.generation.get()
+            ))
+        })?;
         let Some(index) = bucket.index.as_ref() else {
             return Ok(Vec::new());
         };
@@ -405,9 +360,12 @@ impl SnapshotSemanticSearcher {
             revision_id: self.revision_id.clone(),
             generation: self.generation,
         };
-        let Some(bucket) = store.rows.get(&key) else {
-            return Ok(Vec::new());
-        };
+        let bucket = store.rows.get(&key).ok_or_else(|| {
+            CoreError::Storage(format!(
+                "semantic generation {} bucket missing",
+                self.generation.get()
+            ))
+        })?;
         let Some(index) = bucket.index.as_ref() else {
             return Ok(Vec::new());
         };
@@ -425,5 +383,306 @@ impl SnapshotSemanticSearcher {
         let hits = index.search_scoped(query_vector, allowed_ids, limit);
         drop(store);
         Ok(hits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SemanticAdapter;
+    use quanta_index_contract::{
+        BatchIngestMode, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
+        EmbeddingNormalization, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
+        RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
+        SemanticReplaceScope, SemanticTombstoneScope, lex::LanguageCode,
+    };
+    use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn repo_id() -> RepoId {
+        RepoId::new("repo-sem")
+    }
+
+    fn revision_id() -> RevisionId {
+        RevisionId::new("rev-sem")
+    }
+
+    fn generation() -> ManifestGeneration {
+        ManifestGeneration::new(7)
+    }
+
+    fn model_contract(dimension: u32) -> EmbeddingModelContract {
+        EmbeddingModelContract {
+            model_id: "text-embed".to_string().into_boxed_str(),
+            model_version: Some("1".to_string().into_boxed_str()),
+            dimension,
+            normalization: EmbeddingNormalization::L2Unit,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            policy_digest: "policy:feed".to_string().into_boxed_str(),
+            view_policy_digest: Some("view:feed".to_string().into_boxed_str()),
+        }
+    }
+
+    fn scope(path: &str) -> SearchScopeKey {
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new(path),
+        }
+    }
+
+    fn embedding_record(
+        id: &str,
+        path: &str,
+        vector: Vec<f32>,
+    ) -> Result<EmbeddingRecord, Box<dyn std::error::Error>> {
+        let language = LanguageCode::new("rust").map_err(|err| {
+            format!("fixture language `rust` must stay valid for semantic adapter tests: {err}")
+        })?;
+        Ok(EmbeddingRecord {
+            embedding_id: EmbeddingId::new(id),
+            owner_kind: OwnerDocKind::Chunk,
+            owner_id: format!("owner-{id}").into_boxed_str(),
+            source_doc_id: format!("doc-{id}").into_boxed_str(),
+            repo_relative_path: RepoRelativePath::new(path),
+            language,
+            symbol_kind: None,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 3,
+            snippet: format!("fn {id}() {{}}").into_boxed_str(),
+            embedding_input_digest: format!("input:{id}").into_boxed_str(),
+            vector_digest: format!("vector:{id}").into_boxed_str(),
+            view_kind: "raw_chunk".to_string().into_boxed_str(),
+            vector,
+        })
+    }
+
+    fn batch_for_embeddings(
+        generation: ManifestGeneration,
+        path: &str,
+        embeddings: Vec<EmbeddingRecord>,
+        contract_dimension: u32,
+    ) -> SemanticIngestBatch {
+        SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:feed".to_string(),
+            batch_digest: format!("batch:{}:{path}", generation.get()),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(contract_dimension),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope(path),
+                scope_digest: format!("scope:{path}"),
+                embeddings,
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts semantic adapter search results via assert macros"
+    )]
+    fn build_batch_directly_indexes_embeddings() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let batch = batch_for_embeddings(
+            generation(),
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        );
+
+        adapter.build_batch(&batch)?;
+        let searcher = adapter.open(&repo_id(), &revision_id(), generation())?;
+        let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
+        let Some(hit) = hits.first() else {
+            return Err("semantic search must return one hit for identical vector".into());
+        };
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hit.candidate_id.as_str(), "emb-1");
+        assert_eq!(hit.repo_relative_path.as_str(), "src/main.rs");
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts replacement semantic adapter search result via assert macros"
+    )]
+    fn build_batch_replace_scope_overwrites_same_path_entries() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let first = batch_for_embeddings(
+            generation(),
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        );
+        let second = batch_for_embeddings(
+            generation(),
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-2",
+                "src/main.rs",
+                vec![0.0, 1.0, 0.0],
+            )?],
+            3,
+        );
+
+        adapter.build_batch(&first)?;
+        adapter.build_batch(&second)?;
+        let searcher = adapter.open(&repo_id(), &revision_id(), generation())?;
+        let hits = searcher.search(&[0.0, 1.0, 0.0], 1)?;
+        let Some(hit) = hits.first() else {
+            return Err("replacement semantic search must return one hit".into());
+        };
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hit.candidate_id.as_str(), "emb-2");
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts exact invalid-contract message via assert macros"
+    )]
+    fn build_batch_rejects_contract_dimension_mismatch() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let batch = batch_for_embeddings(
+            generation(),
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            2,
+        );
+
+        let err = match adapter.build_batch(&batch) {
+            Ok(()) => return Err("contract dimension mismatch must fail closed".into()),
+            Err(err) => err,
+        };
+        match err {
+            CoreError::InvalidContract(message) => {
+                assert!(message.contains("embedding emb-1 dim 3 != contract dim 2"));
+            }
+            other @ (CoreError::Typed { .. }
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => {
+                return Err(format!("expected invalid-contract error, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts tombstone search empties the semantic scope"
+    )]
+    fn build_batch_tombstone_scope_removes_existing_entries() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let initial = batch_for_embeddings(
+            generation(),
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        );
+        let tombstone = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            base_generation: Some(generation()),
+            manifest_digest: "manifest:feed".to_string(),
+            batch_digest: "batch:tombstone".to_string(),
+            mode: BatchIngestMode::Delta,
+            model_contract: model_contract(3),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![SemanticTombstoneScope {
+                scope: scope("src/main.rs"),
+            }],
+            seal: true,
+        };
+
+        adapter.build_batch(&initial)?;
+        adapter.build_batch(&tombstone)?;
+        let searcher = adapter.open(&repo_id(), &revision_id(), generation())?;
+        let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
+        assert!(hits.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts exact storage error surface via assert macros"
+    )]
+    fn missing_generation_bucket_fails_closed_on_search() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let searcher = adapter.open(&repo_id(), &revision_id(), generation())?;
+
+        let Err(err) = searcher.search(&[1.0, 0.0, 0.0], 1) else {
+            return Err("missing generation bucket must fail closed".into());
+        };
+        match err {
+            CoreError::Storage(message) => {
+                assert!(message.contains("semantic generation 7 bucket missing"));
+            }
+            other @ (CoreError::InvalidContract(_)
+            | CoreError::Typed { .. }
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)) => {
+                return Err(format!("expected storage error, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts sealed empty generation returns no hits"
+    )]
+    fn sealed_empty_generation_returns_empty_hits() -> TestResult {
+        let adapter = SemanticAdapter::new();
+        let empty = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            base_generation: None,
+            manifest_digest: "manifest:feed".to_string(),
+            batch_digest: "batch:empty".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(3),
+            replace_scopes: Vec::new(),
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+
+        adapter.build_batch(&empty)?;
+        let searcher = adapter.open(&repo_id(), &revision_id(), generation())?;
+        let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
+        assert!(hits.is_empty());
+        Ok(())
     }
 }

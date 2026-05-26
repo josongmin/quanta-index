@@ -27,10 +27,10 @@ owner proof.
 
 ## Remaining Closeout
 
-- normalize the active packet prose so it matches the current owner proof
-- do not reopen rows that already have source-backed proof
-- if a row cannot be backed by a concrete owner rail, move it out of the matrix
-  instead of marking it partial
+- repo-local residue is closed on the current tree
+- active packet prose and the legacy capability matrix are now aligned with the
+  current owner proof
+- any further row work would be new surface, not unclosed matrix drift
 
 ## Guardrails
 

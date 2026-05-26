@@ -61,7 +61,7 @@ impl LexicalPolicy {
 
 fn expr_contains_structural(expr: &LqExpr) -> bool {
     match expr {
-        LqExpr::Empty | LqExpr::SemanticVector { .. } => false,
+        LqExpr::Empty => false,
         LqExpr::Leaf(leaf) => leaf_contains_structural(leaf),
         LqExpr::Not(inner) => expr_contains_structural(inner),
         LqExpr::All(children) | LqExpr::Any(children) => {
@@ -119,7 +119,7 @@ fn query_contains_timeout_executable_surface(query: &LqQuery) -> bool {
 
 fn expr_contains_timeout_executable_surface(expr: &LqExpr, pattern_type: LqPatternType) -> bool {
     match expr {
-        LqExpr::Empty | LqExpr::SemanticVector { .. } => false,
+        LqExpr::Empty => false,
         LqExpr::Leaf(leaf) => leaf_contains_timeout_executable_surface(leaf, pattern_type),
         LqExpr::Not(inner) => expr_contains_timeout_executable_surface(inner, pattern_type),
         LqExpr::All(children) | LqExpr::Any(children) => children

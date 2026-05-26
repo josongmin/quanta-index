@@ -132,6 +132,15 @@ impl<'a> StructuralNamespace<'a> {
     pub fn publish(&self, batch: &StructuralBatch) -> Result<BatchReceipt, SdkError> {
         <StructuralNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
+
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(
+        &self,
+        request: StructuralQueryRequest,
+    ) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
+        dispatch_structural_query_request_v1(self.client, request)
+    }
 }
 
 struct StructuralNs;
@@ -227,26 +236,29 @@ impl<'a> StructuralQueryBuilder<'a> {
 
     pub fn execute(self) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
         let text_query = self.state.build_request("structural")?;
-        let response = self
-            .client
-            .dispatch_query(SearchPlaneQueryIpcRequest::Structural(
-                StructuralQueryRequest { text_query },
-            ))?;
-        match response {
-            SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "structural response",
-                QuantaIndex::query_response_kind(&other),
-            )),
-        }
+        dispatch_structural_query_request_v1(self.client, StructuralQueryRequest { text_query })
+    }
+}
+
+fn dispatch_structural_query_request_v1(
+    client: &QuantaIndex,
+    request: StructuralQueryRequest,
+) -> Result<SearchPlaneStructuralQueryResponse, SdkError> {
+    let response = client.dispatch_query(SearchPlaneQueryIpcRequest::Structural(request))?;
+    match response {
+        SearchPlaneQueryIpcResponse::Structural(results) => Ok(results),
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+            "structural response",
+            QuantaIndex::query_response_kind(&other),
+        )),
     }
 }

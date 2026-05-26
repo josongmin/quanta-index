@@ -11,11 +11,9 @@ mod records;
 
 pub use ids::{ChannelSeq, ChunkId, EmbeddingId, SymbolId};
 pub use ops::{
-    DeleteChunk, DeleteEmbedding, DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag, EvictDirty,
-    LexicalChannelOp, LexicalFullBundle, LexicalSeal, ReplaceLexicalScope, ReplaceSemanticScope,
-    ReplaceStructuralScope, SemanticChannelOp, SemanticFullBundle, SemanticSeal,
-    TombstoneLexicalScope, TombstoneSemanticScope, TombstoneStructuralScope, UpsertChunk,
-    UpsertCommit, UpsertDiffHunk, UpsertDirty, UpsertEmbedding, UpsertParseTree, UpsertRef,
-    UpsertSymbol, UpsertTag,
+    DeleteChunk, DeleteParseTree, DeleteRef, DeleteSymbol, DeleteTag, EvictDirty, LexicalChannelOp,
+    LexicalFullBundle, LexicalSeal, ReplaceLexicalScope, ReplaceStructuralScope,
+    TombstoneLexicalScope, TombstoneStructuralScope, UpsertChunk, UpsertCommit, UpsertDiffHunk,
+    UpsertDirty, UpsertParseTree, UpsertRef, UpsertSymbol, UpsertTag,
 };
 pub use records::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};

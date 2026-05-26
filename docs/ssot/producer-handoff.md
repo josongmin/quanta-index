@@ -559,7 +559,7 @@ Typed codes the search side raises against producer-emitted ops. Per [channel-ar
 
 | Code | Cause | Site |
 |---|---|---|
-| `SEM_HANDLE_NOT_FOUND{handle}` | `LqExprExt::SemanticVector { vector_ref: SemanticVectorRef::Handle(h), .. }` resolves against an active-generation embedding store that contains no entry for `h`; handle storage model is governed by [ADR-026](../plans/may-24-lexical-indexing-sorucegraph/implementation-plan.md) (recommendation: handle == `embedding_id` per Option B, resolved against the active HNSW index) | query path — semantic resolver before HNSW search. Surfaces on the observability rail; query returns typed error, no fallback to empty result. |
+| retired | semantic-vector handle resolution was removed with the text-only semantic/hybrid public surface; search-side query embedding is now search-owned and no public handle lookup route remains | historical ADR note only; not part of the live query/error surface |
 
 ### 6.6 Channel-level (existing)
 

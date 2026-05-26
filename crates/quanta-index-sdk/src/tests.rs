@@ -17,16 +17,17 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchPublishReceipt, ChunkId, ChunkRecord, DiffHunkSide, GenerationSelector,
-    HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId,
-    RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
+    HistoryQueryRequest, HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry,
+    RepoId, RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
-    RevisionId, SearchExplanation, SearchPlaneActivationAck, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponseEnvelope, SearchPlaneHistoryQueryResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneActivationAck,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse, SearchScopeKey,
-    SearchScopeSurface, SemanticQueryResponse, SymbolId, TextQueryResponse,
+    SearchScopeSurface, SemanticQueryResponse, StructuralQueryRequest, SymbolId, TextQueryResponse,
 };
 
 use crate::{
@@ -1156,6 +1157,36 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
 }
 
 #[test]
+fn history_query_request_forwards_contract_dto_unchanged() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            generation: sample_generation_pin(),
+            commits: vec![],
+            diffs: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = HistoryQueryRequest {
+        text_query: quanta_index_contract::TextQueryRequest {
+            syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+            query_text: "type:commit author:alice".to_string(),
+            generation: None,
+            generation_selector: Some(GenerationSelector::Active {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+            }),
+            top_k: 5,
+        },
+    };
+    let _response = ok_or_fail!(client.history().query_request(request.clone()));
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert_eq!(
+        captured.payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::History(request)
+    );
+}
+
+#[test]
 fn runtime_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
@@ -1189,6 +1220,32 @@ fn runtime_query_routes_through_typed_query_variant() {
 }
 
 #[test]
+fn runtime_query_request_forwards_contract_dto_unchanged() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![sample_hit()],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = RuntimeMetadataQueryRequest {
+        text_query: quanta_index_contract::TextQueryRequest {
+            syntax: quanta_index_contract::TextQuerySyntax::Native,
+            query_text: "dirty:yes".to_string(),
+            generation: Some(sample_generation_pin()),
+            generation_selector: None,
+            top_k: 3,
+        },
+    };
+    let _response = ok_or_fail!(client.runtime().query_request(request.clone()));
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert_eq!(
+        captured.payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(request)
+    );
+}
+
+#[test]
 fn structural_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
@@ -1213,6 +1270,35 @@ fn structural_query_routes_through_typed_query_variant() {
         panic!("expected Structural request, got {:?}", captured.payload);
     };
     assert_eq!(req.text_query.query_text, "match { :[x] }");
+}
+
+#[test]
+fn structural_query_request_forwards_contract_dto_unchanged() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![],
+        }),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = StructuralQueryRequest {
+        text_query: quanta_index_contract::TextQueryRequest {
+            syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+            query_text: r#"patterntype:structural "function_item""#.to_string(),
+            generation: None,
+            generation_selector: Some(GenerationSelector::Active {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+            }),
+            top_k: 4,
+        },
+    };
+    let _response = ok_or_fail!(client.structural().query_request(request.clone()));
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert_eq!(
+        captured.payload,
+        quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(request)
+    );
 }
 
 #[test]

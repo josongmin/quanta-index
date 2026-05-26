@@ -27,6 +27,10 @@ target design for the later `SEM-OWN` wave.
   subscriber replay loop
 - low-level raw semantic ingress is removed from the public IPC surface;
   semantic batches remain an internal materialization/replay datatype
+- legacy semantic channel ops are removed from `quanta-index-contract`; there
+  is no remaining public semantic channel-op surface on the current tree
+- `quanta-index-semantic` fails closed when a selected semantic generation has
+  no backing bucket; only an explicit sealed-empty bucket may return empty hits
 
 ## 2. Target decision if `SEM-OWN` starts
 

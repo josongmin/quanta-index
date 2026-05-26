@@ -132,6 +132,15 @@ impl<'a> HistoryNamespace<'a> {
     pub fn publish(&self, batch: &HistoryBatch) -> Result<BatchReceipt, SdkError> {
         <HistoryNs as crate::NamespaceIngest>::publish(self.client, batch)
     }
+
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(
+        &self,
+        request: HistoryQueryRequest,
+    ) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
+        dispatch_history_query_request_v1(self.client, request)
+    }
 }
 
 struct HistoryNs;
@@ -250,26 +259,29 @@ impl<'a> HistoryQueryBuilder<'a> {
 
     pub fn execute(self) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
         let text_query = self.state.build_request("history")?;
-        let response = self
-            .client
-            .dispatch_query(SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
-                text_query,
-            }))?;
-        match response {
-            SearchPlaneQueryIpcResponse::History(results) => Ok(results),
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-                "history response",
-                QuantaIndex::query_response_kind(&other),
-            )),
-        }
+        dispatch_history_query_request_v1(self.client, HistoryQueryRequest { text_query })
+    }
+}
+
+fn dispatch_history_query_request_v1(
+    client: &QuantaIndex,
+    request: HistoryQueryRequest,
+) -> Result<SearchPlaneHistoryQueryResponse, SdkError> {
+    let response = client.dispatch_query(SearchPlaneQueryIpcRequest::History(request))?;
+    match response {
+        SearchPlaneQueryIpcResponse::History(results) => Ok(results),
+        other @ (SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::Bridge(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+            "history response",
+            QuantaIndex::query_response_kind(&other),
+        )),
     }
 }

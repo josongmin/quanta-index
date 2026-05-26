@@ -39,7 +39,6 @@ pub use quanta_index_contract::ManifestGeneration
 pub use quanta_index_contract::RepoId
 pub use quanta_index_contract::RepoRelativePath
 pub use quanta_index_contract::RevisionId
-pub use quanta_index_contract::SemanticVectorRef
 pub use quanta_index_contract::StructuralBinding
 pub use quanta_index_contract::StructuralCandidate
 pub use quanta_index_contract::TextQueryRequest
@@ -129,33 +128,6 @@ impl core::marker::Unpin for quanta_index_contract::OwnerDocKind
 impl core::marker::UnsafeUnpin for quanta_index_contract::OwnerDocKind
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::OwnerDocKind
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::OwnerDocKind
-pub enum quanta_index_contract::channel::SemanticChannelOp
-pub quanta_index_contract::channel::SemanticChannelOp::DeleteEmbedding(quanta_index_contract::DeleteEmbedding)
-pub quanta_index_contract::channel::SemanticChannelOp::FullBundle(quanta_index_contract::channel::SemanticFullBundle)
-pub quanta_index_contract::channel::SemanticChannelOp::ReplaceSemanticScope(quanta_index_contract::channel::ReplaceSemanticScope)
-pub quanta_index_contract::channel::SemanticChannelOp::Seal(quanta_index_contract::channel::SemanticSeal)
-pub quanta_index_contract::channel::SemanticChannelOp::TombstoneSemanticScope(quanta_index_contract::channel::TombstoneSemanticScope)
-pub quanta_index_contract::channel::SemanticChannelOp::UpsertEmbedding(quanta_index_contract::UpsertEmbedding)
-impl quanta_index_contract::channel::SemanticChannelOp
-pub fn quanta_index_contract::channel::SemanticChannelOp::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
-pub fn quanta_index_contract::channel::SemanticChannelOp::is_seal(&self) -> bool
-pub fn quanta_index_contract::channel::SemanticChannelOp::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
-pub fn quanta_index_contract::channel::SemanticChannelOp::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::channel::SemanticChannelOp
-pub fn quanta_index_contract::channel::SemanticChannelOp::clone(&self) -> quanta_index_contract::channel::SemanticChannelOp
-impl core::cmp::Eq for quanta_index_contract::channel::SemanticChannelOp
-impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticChannelOp
-pub fn quanta_index_contract::channel::SemanticChannelOp::eq(&self, other: &quanta_index_contract::channel::SemanticChannelOp) -> bool
-impl core::fmt::Debug for quanta_index_contract::channel::SemanticChannelOp
-pub fn quanta_index_contract::channel::SemanticChannelOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticChannelOp
-impl core::marker::Freeze for quanta_index_contract::channel::SemanticChannelOp
-impl core::marker::Send for quanta_index_contract::channel::SemanticChannelOp
-impl core::marker::Sync for quanta_index_contract::channel::SemanticChannelOp
-impl core::marker::Unpin for quanta_index_contract::channel::SemanticChannelOp
-impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticChannelOp
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticChannelOp
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticChannelOp
 pub struct quanta_index_contract::channel::ChannelSeq(_)
 impl quanta_index_contract::channel::ChannelSeq
 pub const quanta_index_contract::channel::ChannelSeq::ZERO: Self
@@ -305,26 +277,6 @@ impl core::marker::Unpin for quanta_index_contract::DeleteChunk
 impl core::marker::UnsafeUnpin for quanta_index_contract::DeleteChunk
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::DeleteChunk
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::DeleteChunk
-pub struct quanta_index_contract::channel::DeleteEmbedding
-pub quanta_index_contract::channel::DeleteEmbedding::embedding_id: quanta_index_contract::EmbeddingId
-pub quanta_index_contract::channel::DeleteEmbedding::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::DeleteEmbedding::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::DeleteEmbedding::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::clone(&self) -> quanta_index_contract::DeleteEmbedding
-impl core::cmp::Eq for quanta_index_contract::DeleteEmbedding
-impl core::cmp::PartialEq for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::eq(&self, other: &quanta_index_contract::DeleteEmbedding) -> bool
-impl core::fmt::Debug for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::DeleteEmbedding
-impl core::marker::Freeze for quanta_index_contract::DeleteEmbedding
-impl core::marker::Send for quanta_index_contract::DeleteEmbedding
-impl core::marker::Sync for quanta_index_contract::DeleteEmbedding
-impl core::marker::Unpin for quanta_index_contract::DeleteEmbedding
-impl core::marker::UnsafeUnpin for quanta_index_contract::DeleteEmbedding
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::DeleteEmbedding
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::DeleteEmbedding
 pub struct quanta_index_contract::channel::DeleteParseTree
 pub quanta_index_contract::channel::DeleteParseTree::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::channel::DeleteParseTree::generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -565,26 +517,6 @@ impl core::marker::Unpin for quanta_index_contract::ReplaceLexicalScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::ReplaceLexicalScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ReplaceLexicalScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ReplaceLexicalScope
-pub struct quanta_index_contract::channel::ReplaceSemanticScope
-pub quanta_index_contract::channel::ReplaceSemanticScope::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::ReplaceSemanticScope::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::channel::ReplaceSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::ReplaceSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::channel::ReplaceSemanticScope
-pub fn quanta_index_contract::channel::ReplaceSemanticScope::clone(&self) -> quanta_index_contract::channel::ReplaceSemanticScope
-impl core::cmp::Eq for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::channel::ReplaceSemanticScope
-pub fn quanta_index_contract::channel::ReplaceSemanticScope::eq(&self, other: &quanta_index_contract::channel::ReplaceSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::channel::ReplaceSemanticScope
-pub fn quanta_index_contract::channel::ReplaceSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::marker::Freeze for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::marker::Send for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::marker::Sync for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::marker::Unpin for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::ReplaceSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::ReplaceSemanticScope
 pub struct quanta_index_contract::channel::ReplaceStructuralScope
 pub quanta_index_contract::channel::ReplaceStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::channel::ReplaceStructuralScope::payload: alloc::vec::Vec<u8>
@@ -605,45 +537,6 @@ impl core::marker::Unpin for quanta_index_contract::ReplaceStructuralScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::ReplaceStructuralScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::ReplaceStructuralScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::ReplaceStructuralScope
-pub struct quanta_index_contract::channel::SemanticFullBundle
-pub quanta_index_contract::channel::SemanticFullBundle::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::SemanticFullBundle::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::channel::SemanticFullBundle::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::SemanticFullBundle::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::channel::SemanticFullBundle
-pub fn quanta_index_contract::channel::SemanticFullBundle::clone(&self) -> quanta_index_contract::channel::SemanticFullBundle
-impl core::cmp::Eq for quanta_index_contract::channel::SemanticFullBundle
-impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticFullBundle
-pub fn quanta_index_contract::channel::SemanticFullBundle::eq(&self, other: &quanta_index_contract::channel::SemanticFullBundle) -> bool
-impl core::fmt::Debug for quanta_index_contract::channel::SemanticFullBundle
-pub fn quanta_index_contract::channel::SemanticFullBundle::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticFullBundle
-impl core::marker::Freeze for quanta_index_contract::channel::SemanticFullBundle
-impl core::marker::Send for quanta_index_contract::channel::SemanticFullBundle
-impl core::marker::Sync for quanta_index_contract::channel::SemanticFullBundle
-impl core::marker::Unpin for quanta_index_contract::channel::SemanticFullBundle
-impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticFullBundle
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticFullBundle
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticFullBundle
-pub struct quanta_index_contract::channel::SemanticSeal
-pub quanta_index_contract::channel::SemanticSeal::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::SemanticSeal::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::SemanticSeal::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::channel::SemanticSeal
-pub fn quanta_index_contract::channel::SemanticSeal::clone(&self) -> quanta_index_contract::channel::SemanticSeal
-impl core::cmp::Eq for quanta_index_contract::channel::SemanticSeal
-impl core::cmp::PartialEq for quanta_index_contract::channel::SemanticSeal
-pub fn quanta_index_contract::channel::SemanticSeal::eq(&self, other: &quanta_index_contract::channel::SemanticSeal) -> bool
-impl core::fmt::Debug for quanta_index_contract::channel::SemanticSeal
-pub fn quanta_index_contract::channel::SemanticSeal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::channel::SemanticSeal
-impl core::marker::Freeze for quanta_index_contract::channel::SemanticSeal
-impl core::marker::Send for quanta_index_contract::channel::SemanticSeal
-impl core::marker::Sync for quanta_index_contract::channel::SemanticSeal
-impl core::marker::Unpin for quanta_index_contract::channel::SemanticSeal
-impl core::marker::UnsafeUnpin for quanta_index_contract::channel::SemanticSeal
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::SemanticSeal
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::SemanticSeal
 pub struct quanta_index_contract::channel::SymbolId(_)
 impl quanta_index_contract::SymbolId
 pub fn quanta_index_contract::SymbolId::as_str(&self) -> &str
@@ -694,26 +587,6 @@ impl core::marker::Unpin for quanta_index_contract::TombstoneLexicalScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::TombstoneLexicalScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::TombstoneLexicalScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::TombstoneLexicalScope
-pub struct quanta_index_contract::channel::TombstoneSemanticScope
-pub quanta_index_contract::channel::TombstoneSemanticScope::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::TombstoneSemanticScope::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::channel::TombstoneSemanticScope::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::TombstoneSemanticScope::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::channel::TombstoneSemanticScope
-pub fn quanta_index_contract::channel::TombstoneSemanticScope::clone(&self) -> quanta_index_contract::channel::TombstoneSemanticScope
-impl core::cmp::Eq for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::cmp::PartialEq for quanta_index_contract::channel::TombstoneSemanticScope
-pub fn quanta_index_contract::channel::TombstoneSemanticScope::eq(&self, other: &quanta_index_contract::channel::TombstoneSemanticScope) -> bool
-impl core::fmt::Debug for quanta_index_contract::channel::TombstoneSemanticScope
-pub fn quanta_index_contract::channel::TombstoneSemanticScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::marker::Freeze for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::marker::Send for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::marker::Sync for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::marker::Unpin for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::marker::UnsafeUnpin for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::channel::TombstoneSemanticScope
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::channel::TombstoneSemanticScope
 pub struct quanta_index_contract::channel::TombstoneStructuralScope
 pub quanta_index_contract::channel::TombstoneStructuralScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::channel::TombstoneStructuralScope::payload: alloc::vec::Vec<u8>
@@ -831,27 +704,6 @@ impl core::marker::Unpin for quanta_index_contract::UpsertDirty
 impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertDirty
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertDirty
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertDirty
-pub struct quanta_index_contract::channel::UpsertEmbedding
-pub quanta_index_contract::channel::UpsertEmbedding::embedding_id: quanta_index_contract::EmbeddingId
-pub quanta_index_contract::channel::UpsertEmbedding::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::channel::UpsertEmbedding::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::channel::UpsertEmbedding::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::channel::UpsertEmbedding::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::clone(&self) -> quanta_index_contract::UpsertEmbedding
-impl core::cmp::Eq for quanta_index_contract::UpsertEmbedding
-impl core::cmp::PartialEq for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::eq(&self, other: &quanta_index_contract::UpsertEmbedding) -> bool
-impl core::fmt::Debug for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::UpsertEmbedding
-impl core::marker::Freeze for quanta_index_contract::UpsertEmbedding
-impl core::marker::Send for quanta_index_contract::UpsertEmbedding
-impl core::marker::Sync for quanta_index_contract::UpsertEmbedding
-impl core::marker::Unpin for quanta_index_contract::UpsertEmbedding
-impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertEmbedding
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertEmbedding
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertEmbedding
 pub struct quanta_index_contract::channel::UpsertParseTree
 pub quanta_index_contract::channel::UpsertParseTree::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::channel::UpsertParseTree::generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -3457,7 +3309,6 @@ pub use quanta_index_contract::query::LqStructuralNode
 pub use quanta_index_contract::query::LqType
 pub use quanta_index_contract::query::LqVisibility
 pub use quanta_index_contract::query::LqYesNoOnly
-pub use quanta_index_contract::query::SemanticVectorRef
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
 pub struct quanta_index_contract::query::BridgeQueryRequest
@@ -5895,26 +5746,6 @@ impl core::marker::Unpin for quanta_index_contract::DeleteChunk
 impl core::marker::UnsafeUnpin for quanta_index_contract::DeleteChunk
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::DeleteChunk
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::DeleteChunk
-pub struct quanta_index_contract::DeleteEmbedding
-pub quanta_index_contract::DeleteEmbedding::embedding_id: quanta_index_contract::EmbeddingId
-pub quanta_index_contract::DeleteEmbedding::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::DeleteEmbedding::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::DeleteEmbedding::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::clone(&self) -> quanta_index_contract::DeleteEmbedding
-impl core::cmp::Eq for quanta_index_contract::DeleteEmbedding
-impl core::cmp::PartialEq for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::eq(&self, other: &quanta_index_contract::DeleteEmbedding) -> bool
-impl core::fmt::Debug for quanta_index_contract::DeleteEmbedding
-pub fn quanta_index_contract::DeleteEmbedding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::DeleteEmbedding
-impl core::marker::Freeze for quanta_index_contract::DeleteEmbedding
-impl core::marker::Send for quanta_index_contract::DeleteEmbedding
-impl core::marker::Sync for quanta_index_contract::DeleteEmbedding
-impl core::marker::Unpin for quanta_index_contract::DeleteEmbedding
-impl core::marker::UnsafeUnpin for quanta_index_contract::DeleteEmbedding
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::DeleteEmbedding
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::DeleteEmbedding
 pub struct quanta_index_contract::DeleteParseTree
 pub quanta_index_contract::DeleteParseTree::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::DeleteParseTree::generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -8043,27 +7874,6 @@ impl core::marker::Unpin for quanta_index_contract::UpsertDirty
 impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertDirty
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertDirty
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertDirty
-pub struct quanta_index_contract::UpsertEmbedding
-pub quanta_index_contract::UpsertEmbedding::embedding_id: quanta_index_contract::EmbeddingId
-pub quanta_index_contract::UpsertEmbedding::generation: quanta_index_contract_base::ids::ManifestGeneration
-pub quanta_index_contract::UpsertEmbedding::payload: alloc::vec::Vec<u8>
-pub quanta_index_contract::UpsertEmbedding::repo_id: quanta_index_contract_base::ids::RepoId
-pub quanta_index_contract::UpsertEmbedding::revision_id: quanta_index_contract_base::ids::RevisionId
-impl core::clone::Clone for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::clone(&self) -> quanta_index_contract::UpsertEmbedding
-impl core::cmp::Eq for quanta_index_contract::UpsertEmbedding
-impl core::cmp::PartialEq for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::eq(&self, other: &quanta_index_contract::UpsertEmbedding) -> bool
-impl core::fmt::Debug for quanta_index_contract::UpsertEmbedding
-pub fn quanta_index_contract::UpsertEmbedding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::UpsertEmbedding
-impl core::marker::Freeze for quanta_index_contract::UpsertEmbedding
-impl core::marker::Send for quanta_index_contract::UpsertEmbedding
-impl core::marker::Sync for quanta_index_contract::UpsertEmbedding
-impl core::marker::Unpin for quanta_index_contract::UpsertEmbedding
-impl core::marker::UnsafeUnpin for quanta_index_contract::UpsertEmbedding
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::UpsertEmbedding
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::UpsertEmbedding
 pub struct quanta_index_contract::UpsertParseTree
 pub quanta_index_contract::UpsertParseTree::chunk_id: quanta_index_contract::ChunkId
 pub quanta_index_contract::UpsertParseTree::generation: quanta_index_contract_base::ids::ManifestGeneration

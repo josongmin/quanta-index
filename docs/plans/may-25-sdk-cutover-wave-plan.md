@@ -8,7 +8,12 @@ Cross-repo proof for semantica is tracked separately as `SM-VRF-01` in the seman
 
 Follow-on packet:
 - [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sorucegraph/tickets/SDK-ENTRY-01.md)
-- purpose: after the baseline SDK / ingest IPC cutover below, force the remaining history / runtime / structural source-authority entry through `quanta-index-sdk` only. That follow-on keeps one external SDK front door, but uses dedicated typed namespaces and batches (`history`, `runtime`, `structural`) instead of overloading `LexicalBatch`.
+- purpose: after the baseline SDK / ingest IPC cutover below, freeze the
+  remaining history / runtime / structural source-authority entry to
+  `quanta-index-sdk` only. That repo-local follow-on is now landed on the
+  current tree and keeps one external SDK front door while using dedicated
+  typed namespaces and batches (`history`, `runtime`, `structural`) instead of
+  overloading `LexicalBatch`.
 
 ## Current source-truth status (2026-05-27)
 
@@ -25,24 +30,28 @@ Landed on the current tree:
   `HISTORY_SHARD_UNAVAILABLE`
 - `quanta-index-sdk` keeps generic namespace and transport plumbing
   crate-internal
-- `quanta-index-contract` legacy channel ops now stay under
-  `quanta_index_contract::channel::*`; contract-root re-exports for
-  `ChannelSeq`, `LexicalChannelOp`, `SemanticChannelOp`, and the semantic
-  legacy payload carriers are removed on the current tree
+- `quanta-index-contract` no longer exposes legacy semantic channel ops on the
+  current tree; the remaining legacy channel surface is lexical/history/
+  structural only
 - lexical ingest always derives search-owned semantic authority on the current
   tree; query-embedder mode no longer disables semantic derivation or accepts
   numeric query text as an internal vector-compat path
+- `quanta-index-semantic` now fails closed if a semantic generation is marked
+  ready upstream but the backing generation bucket is missing; sealed empty
+  generations remain explicit empty buckets
 - the retired `quanta-index-channel` workspace crate is no longer part of the
   live verification inventory; de-channelized authority lives in
   `search-plane` / `searchd` runtime code, not a channel backend crate
 
-Current residue after the public-surface closure program:
+Current residual scope after the public-surface closure program:
 
-- search-owned semantic derivation is still a deferred follow-on; current
-  public semantic/hybrid query contracts are already text-only on the current
-  tree
-- the broader May-25 lexical program pack is already closed on the current
-  tree; remaining follow-on work is outside this packet
+- no open repo-local SDK / ingest cutover residue remains in this packet on the
+  current tree
+- external producer adoption proof remains cross-repo and is tracked outside
+  this repo packet
+- search-owned semantic derivation is still a separate deferred follow-on;
+  current public semantic/hybrid query contracts are already text-only on the
+  current tree
 
 ## SEM-OWN entry criteria (2026-05-27 freeze)
 
@@ -127,13 +136,16 @@ Add `SearchPlaneIngestIpcRequest/Response` and the `ingest.sock` surface to the 
 
 ### QI-RT-01 | quanta-index | searchd Ingest Dispatcher
 
-`SearchdConfig` gains `ingest_socket`. The daemon receives typed batches and fans them out to internal channel publishers.
+`SearchdConfig` gains `ingest_socket`. The daemon receives typed batches and
+routes them to owner materializer ports; runtime-private durability mirrors may
+exist behind that surface, but channel row-op fanout is no longer the public
+ingest truth.
 
 **Owner files**
 - [crates/quanta-index-searchd/src/app/config.rs](../../crates/quanta-index-searchd/src/app/config.rs) (add `ingest_socket`, extend `with_socket_overrides` signature)
 - [crates/quanta-index-searchd/src/app/server.rs](../../crates/quanta-index-searchd/src/app/server.rs) (bind ingest listener)
 - [crates/quanta-index-searchd/src/app/ipc_dispatcher.rs](../../crates/quanta-index-searchd/src/app/ipc_dispatcher.rs) (ingest routing)
-- [crates/quanta-index-searchd/src/app/runtime.rs](../../crates/quanta-index-searchd/src/app/runtime.rs) (composition root wires concrete channel publishers; do not expose to SDK)
+- [crates/quanta-index-searchd/src/app/runtime.rs](../../crates/quanta-index-searchd/src/app/runtime.rs) (composition root wires concrete owner materializers and any runtime-private mirrors; do not expose to SDK)
 - new `crates/quanta-index-searchd-runtime/tests/ingest_end_to_end.rs`
 - [crates/quanta-index-searchd-runtime/tests/explain.rs](../../crates/quanta-index-searchd-runtime/tests/explain.rs) plus other `with_socket_overrides` call sites — update together
 

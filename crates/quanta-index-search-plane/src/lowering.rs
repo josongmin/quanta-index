@@ -233,8 +233,7 @@ fn rewrite_sourcegraph_structural_expr(
         ))),
         LqExpr::Leaf(
             LqLeaf::RawString(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. },
-        )
-        | LqExpr::SemanticVector { .. } => Err(CoreError::Typed {
+        ) => Err(CoreError::Typed {
             code: BridgeErrorCode::BridgeTranslateFail
                 .as_code_str()
                 .to_string(),
@@ -638,11 +637,7 @@ mod tests {
                     }
                 }
             }
-            other @ (LqExpr::Empty
-            | LqExpr::Leaf(_)
-            | LqExpr::Not(_)
-            | LqExpr::All(_)
-            | LqExpr::SemanticVector { .. }) => {
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
                 return Err(format!("expected Any structural tree, got {other:?}").into());
             }
         }
@@ -678,8 +673,7 @@ mod tests {
                     | LqExpr::Leaf(_)
                     | LqExpr::Not(_)
                     | LqExpr::All(_)
-                    | LqExpr::Any(_)
-                    | LqExpr::SemanticVector { .. }) => {
+                    | LqExpr::Any(_)) => {
                         return Err(format!(
                             "expected structural NOT branch after SG lowering, got {other:?}"
                         )
@@ -687,11 +681,7 @@ mod tests {
                     }
                 }
             }
-            other @ (LqExpr::Empty
-            | LqExpr::Leaf(_)
-            | LqExpr::Not(_)
-            | LqExpr::Any(_)
-            | LqExpr::SemanticVector { .. }) => {
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
                 return Err(format!(
                     "expected boolean structural tree after SG NOT lowering, got {other:?}"
                 )
@@ -731,11 +721,7 @@ mod tests {
                     return Err(format!("expected structural second leaf, got {second:?}").into());
                 }
             }
-            other @ (LqExpr::Empty
-            | LqExpr::Leaf(_)
-            | LqExpr::Not(_)
-            | LqExpr::All(_)
-            | LqExpr::SemanticVector { .. }) => {
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
                 return Err(format!("expected structural OR tree, got {other:?}").into());
             }
         }

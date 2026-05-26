@@ -10,7 +10,7 @@
 
 use crate::{ManifestGeneration, RepoId, RevisionId};
 
-use super::ids::{ChunkId, EmbeddingId, SymbolId};
+use super::ids::{ChunkId, SymbolId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LexicalFullBundle {
@@ -314,111 +314,6 @@ impl LexicalChannelOp {
             Self::ReplaceStructuralScope(op) => op.generation,
             Self::TombstoneStructuralScope(op) => op.generation,
             Self::UpsertDiffHunk(op) => op.generation,
-        }
-    }
-
-    #[must_use]
-    pub fn is_seal(&self) -> bool {
-        matches!(self, Self::Seal(_))
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SemanticFullBundle {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    /// Opaque manifest blob reserved for producer-side bookkeeping; not
-    /// consumed by the reference adapters.
-    pub payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpsertEmbedding {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    pub embedding_id: EmbeddingId,
-    /// CBOR-encoded `Vec<f32>` embedding vector. The reference semantic
-    /// adapter decodes via `ciborium`.
-    pub payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeleteEmbedding {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    pub embedding_id: EmbeddingId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SemanticSeal {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReplaceSemanticScope {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TombstoneSemanticScope {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SemanticChannelOp {
-    FullBundle(SemanticFullBundle),
-    UpsertEmbedding(UpsertEmbedding),
-    DeleteEmbedding(DeleteEmbedding),
-    ReplaceSemanticScope(ReplaceSemanticScope),
-    TombstoneSemanticScope(TombstoneSemanticScope),
-    Seal(SemanticSeal),
-}
-
-impl SemanticChannelOp {
-    #[must_use]
-    pub fn repo_id(&self) -> &RepoId {
-        match self {
-            Self::FullBundle(op) => &op.repo_id,
-            Self::UpsertEmbedding(op) => &op.repo_id,
-            Self::DeleteEmbedding(op) => &op.repo_id,
-            Self::ReplaceSemanticScope(op) => &op.repo_id,
-            Self::TombstoneSemanticScope(op) => &op.repo_id,
-            Self::Seal(op) => &op.repo_id,
-        }
-    }
-
-    #[must_use]
-    pub fn revision_id(&self) -> &RevisionId {
-        match self {
-            Self::FullBundle(op) => &op.revision_id,
-            Self::UpsertEmbedding(op) => &op.revision_id,
-            Self::DeleteEmbedding(op) => &op.revision_id,
-            Self::ReplaceSemanticScope(op) => &op.revision_id,
-            Self::TombstoneSemanticScope(op) => &op.revision_id,
-            Self::Seal(op) => &op.revision_id,
-        }
-    }
-
-    #[must_use]
-    pub fn generation(&self) -> ManifestGeneration {
-        match self {
-            Self::FullBundle(op) => op.generation,
-            Self::UpsertEmbedding(op) => op.generation,
-            Self::DeleteEmbedding(op) => op.generation,
-            Self::ReplaceSemanticScope(op) => op.generation,
-            Self::TombstoneSemanticScope(op) => op.generation,
-            Self::Seal(op) => op.generation,
         }
     }
 

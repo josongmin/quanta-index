@@ -34,6 +34,6 @@ pub use ast::{
     LqMetaVar, LqNormalizedQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect,
     LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
     LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode, LqType, LqVisibility,
-    LqYesNoOnly, SemanticVectorRef,
+    LqYesNoOnly,
 };
 pub use errors::{LqParseError, LqParseErrorCode, LqSpan};

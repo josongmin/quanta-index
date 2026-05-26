@@ -1,6 +1,6 @@
 # May 27 DSL Master Closeout + Structural V2
 
-Status: `active-master-packet`
+Status: `repo-local-closeout-complete`
 Date: `2026-05-27`
 Scope: current-source closeout packet for the remaining DSL whole-program work.
 
@@ -55,14 +55,12 @@ Current source-backed state, not stale packet prose:
 - native and Sourcegraph lexical surfaces now lower `timeout:` into canonical
   query options for regex-backed execution; structural / history / runtime
   routes keep timeout typed fail-closed where no executable semantics exist
-- `select:path` and `select:content.match` already have owner proof; remaining
-  work is matrix re-anchoring rather than executor bring-up
-
-This packet therefore treats the remaining work as:
-
-- new behavior where source truly lacks it
-- proof, surface normalization, and ownership correction where source already
-  moved ahead of docs
+- `select:path` and `select:content.match` already have owner proof, and the
+  capability matrix is now re-anchored to the current source
+- repo-local DSL behavior, proof, and packet prose are now aligned on the
+  current tree
+- residual follow-on outside this packet is either historical evidence or
+  external producer / broader contract scope, not an open repo-local DSL seam
 
 ## 3. Direction
 

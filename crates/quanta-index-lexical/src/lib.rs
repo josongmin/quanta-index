@@ -2373,7 +2373,7 @@ impl TantivySearcher {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
                 self.lower_predicate_for_boolean_scope(name, args)
             }
-            LqExpr::Empty | LqExpr::SemanticVector { .. } | LqExpr::Leaf(_) => Ok(expr.clone()),
+            LqExpr::Empty | LqExpr::Leaf(_) => Ok(expr.clone()),
             LqExpr::All(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
@@ -2418,9 +2418,7 @@ impl TantivySearcher {
                     ),
                 }),
             },
-            LqExpr::Leaf(_) | LqExpr::SemanticVector { .. } => {
-                Ok((expr.clone(), Vec::new(), Vec::new()))
-            }
+            LqExpr::Leaf(_) => Ok((expr.clone(), Vec::new(), Vec::new())),
             LqExpr::All(parts) => {
                 let mut exprs: Vec<LqExpr> = Vec::new();
                 let mut repo_predicates: Vec<RepoHasFileConstraint> = Vec::new();
@@ -2818,16 +2816,6 @@ impl TantivySearcher {
                     vec![(Occur::Must, Box::new(AllQuery)), (Occur::MustNot, inner_q)];
                 Ok(Box::new(BooleanQuery::new(clauses)))
             }
-            // Semantic-vector leaves are owned by the semantic engine, not
-            // the lexical adapter. Surface as typed so the dispatcher can
-            // route the failure deterministically rather than treating it as
-            // a transient `NotImplemented`.
-            LqExpr::SemanticVector { .. } => Err(CoreError::Typed {
-                code: "LEX_LEAF_SEMANTIC_VECTOR_NOT_OWNED".to_string(),
-                message:
-                    "lexical: SemanticVector is owned by the semantic engine; lexical adapter must not be asked to execute it"
-                        .to_string(),
-            }),
         }
     }
 

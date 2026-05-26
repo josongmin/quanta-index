@@ -52,9 +52,4 @@ pub trait SemanticSearcher: Send + Sync {
         allowed_ids: &BTreeSet<String>,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError>;
-
-    /// Resolve a server-side semantic-vector handle to the concrete vector for
-    /// the opened generation. Implementations must fail closed when the handle
-    /// is absent rather than degrading to an empty result.
-    fn resolve_handle(&self, handle: &str) -> Result<Vec<f32>, CoreError>;
 }

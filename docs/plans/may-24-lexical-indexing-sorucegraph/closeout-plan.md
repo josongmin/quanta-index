@@ -19,10 +19,14 @@ Current truth:
 - the active query contract is versioned / typed, and the legacy `Custom` escape hatches are removed from the live wire
 - [`crates/quanta-index-search-plane`](../../../crates/quanta-index-search-plane/) routes lexical / semantic / hybrid requests through the closed repo-first intake path; `searchd` is the transport/runtime shell around that path, and the workspace proof rails are green
 - hard DSL scenario coverage lives in [`crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`](../../../crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs)
-- history live success remains producer-gated, while structural now has a live
-  truthful root-only path over producer parse-tree authority; broader
-  structural semantics still remain deferred
-- external producer / caller entry is not yet fully frozen to SDK-only for the remaining history / runtime / structural cutover; follow-on is tracked in [tickets/SDK-ENTRY-01.md](tickets/SDK-ENTRY-01.md)
+- history live success remains producer-gated, while structural now ships the
+  truthful producer-authority subset including structural-only boolean trees,
+  typed holes, and Sourcegraph regex bodies; broader non-executable filter
+  breadth remains typed fail-closed
+- external producer / caller entry is now frozen to SDK-only for the repo-local
+  history / runtime / structural surfaces; broader external producer proof
+  remains cross-repo and is tracked historically in
+  [tickets/SDK-ENTRY-01.md](tickets/SDK-ENTRY-01.md)
 - real-engine conformance CI, deployment-side observability, and the bridge downstream sink remain open integration tasks
 
 The remaining value of this packet is the dependency history and the boundary between landed repo work and external cutover work.

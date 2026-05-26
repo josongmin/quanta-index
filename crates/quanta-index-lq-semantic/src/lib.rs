@@ -70,7 +70,6 @@
 
 pub mod cosine;
 pub mod errors;
-pub mod handle;
 pub mod hnsw;
 pub mod index;
 pub mod query;
@@ -79,7 +78,6 @@ pub mod types;
 
 pub use cosine::cosine_similarity;
 pub use errors::{LimitDimension, SemanticError, SemanticErrorCode};
-pub use handle::{SemanticHandleResolver, SemanticIndexHandleResolver};
 pub use hnsw::{
     HnswIndex, HnswIndexBuilder, HnswNode, HnswParams, MAX_EF as HNSW_MAX_EF,
     MAX_LEVEL as HNSW_MAX_LEVEL, MAX_M as HNSW_MAX_M, MIN_M as HNSW_MIN_M, query_hnsw,

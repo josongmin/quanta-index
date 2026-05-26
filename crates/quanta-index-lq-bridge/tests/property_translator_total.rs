@@ -124,8 +124,7 @@ fn well_formed(query: &LqQuery) -> bool {
                 | LqLeaf::Regex(_)
                 | LqLeaf::StructuralBlock(_)
                 | LqLeaf::Predicate { .. },
-            )
-            | LqExpr::SemanticVector { .. } => true,
+            ) => true,
             LqExpr::Not(inner) => walk(inner, next),
             LqExpr::All(xs) | LqExpr::Any(xs) => xs.iter().all(|x| walk(x, next)),
         }

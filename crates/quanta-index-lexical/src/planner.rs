@@ -148,10 +148,6 @@ impl LexicalPlanner {
                 let (nodes, traces, engines) = Self::plan_children(query, children)?;
                 Ok((PlanNode::Any(nodes), PlanTraceNode::Any(traces), engines))
             }
-            LqExpr::SemanticVector { .. } => Err(LexicalPlannerError::Unimplemented {
-                node: "semantic_vector",
-                owner_ticket: "LXE-07",
-            }),
         }
     }
 
@@ -356,7 +352,6 @@ fn describe_leaf(leaf: &PlanLeaf) -> String {
         PlanLeaf::RawSubstring { needle, .. } => format!("raw:{needle}"),
         PlanLeaf::Phrase { phrase, .. } => format!("phrase:{phrase}"),
         PlanLeaf::StructuralRef { handle } => format!("structural:{handle}"),
-        PlanLeaf::SemanticVectorRef { handle } => format!("semantic:{handle}"),
     }
 }
 

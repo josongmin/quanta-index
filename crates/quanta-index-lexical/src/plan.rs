@@ -92,8 +92,6 @@ pub enum PlanLeaf {
     Phrase { phrase: String, plan: PhrasePlan },
     /// Structural-pattern reference (resolved by the structural adapter).
     StructuralRef { handle: String },
-    /// Semantic-vector reference (resolved by the semantic adapter).
-    SemanticVectorRef { handle: String },
 }
 
 impl PlanLeaf {
@@ -106,14 +104,9 @@ impl PlanLeaf {
             Self::RawSubstring { .. } => EngineKind::Trigram,
             Self::Phrase { .. } => EngineKind::Positions,
             Self::StructuralRef { .. } => EngineKind::Structural,
-            // Content, Path, and SemanticVectorRef all currently flow through
-            // the Tantivy reader (content/path as schema fields, semantic via
-            // a Tantivy-side stored handle). A future split lands when the
-            // semantic adapter takes over its own route.
-            Self::Content { .. }
-            | Self::Path { .. }
-            | Self::Predicate { .. }
-            | Self::SemanticVectorRef { .. } => EngineKind::Tantivy,
+            Self::Content { .. } | Self::Path { .. } | Self::Predicate { .. } => {
+                EngineKind::Tantivy
+            }
         }
     }
 }
