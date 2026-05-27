@@ -127,7 +127,7 @@ fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let content = "fn chaos_structural_alpha() {}";
     rt.ingest_text("repo-e2e", path, content)?;
     rt.ingest_structural_function_tree(path, content, "chaos_structural_alpha")?;
-    _ = rt.seal_tracks(&[
+    _ = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
@@ -813,7 +813,7 @@ fn hybrid_large_tied_result_set_keeps_order_stable() -> AnyResult<()> {
 fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text("repo-e2e", "src/tree.rs", "fn orphaned() {}")?;
-    _ = rt.seal_tracks(&[SearchPlaneTrackKind::Lexical])?;
+    _ = rt.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])?;
     rt.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])?;
 
     let result = rt.query_structural(TextQuerySyntax::Native, "match { :[x] }", 10);
@@ -842,7 +842,7 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     rt.ingest_text("repo-e2e", path, content)?;
     rt.ingest_structural_function_tree(path, content, "orphaned")?;
     rt.delete_chunk_for_path(path)?;
-    _ = rt.seal_tracks(&[
+    _ = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;

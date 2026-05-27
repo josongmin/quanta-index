@@ -248,8 +248,8 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 
 The full-corpus fixture is now route-aware: rows declare `runtime_route =
 text|structural|history`, and the shared fixture can carry repo metadata,
-structural parse trees, and history shards. Parser-only / deferred rows are no
-longer parked in `runtime_rows.toml`.
+structural parse trees, and history shards. Parser-only / typed-unavailable /
+deferred rows are no longer parked in `runtime_rows.toml`.
 
 ## 12. Risk register
 

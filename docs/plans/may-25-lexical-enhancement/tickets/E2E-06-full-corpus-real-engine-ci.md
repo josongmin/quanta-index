@@ -70,9 +70,10 @@ separate lower gate.
   - `SearchExplanation`
 
 The current live rail executes text, structural, and history rows through the
-real daemon harness. Parser-only and deferred-producer gaps were retired from
-this runtime closeout corpus; future incomplete rows must live in the separate
-conformance or owner-local proof rails instead of this file.
+real daemon harness. Parser-only, typed-unavailable, and
+deferred-producer gaps were retired from this runtime closeout corpus; future
+incomplete rows must live in the separate conformance or owner-local proof
+rails instead of this file.
 
 ## Test plan
 

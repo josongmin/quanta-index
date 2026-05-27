@@ -396,7 +396,8 @@ pub fn resolve_result_surface(filters: &[LqFilter]) -> Result<ResultSurface, Sym
 #[cfg(test)]
 mod tests {
     use super::{
-        ResultSurface, SymbolPlannerError, SymbolPolicy, plan_symbol, resolve_result_surface,
+        ResultSurface, SymbolKindFilter, SymbolPlannerError, SymbolPolicy, plan_symbol,
+        resolve_result_surface,
     };
     use quanta_index_contract::{LqFilter, LqSelect, LqType};
 
@@ -483,6 +484,31 @@ mod tests {
             assert!(
                 trace.surface_unavailable,
                 "Commit surface must be flagged unavailable in trace"
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_kind_filter_stays_in_lockstep_with_contract_v1_wire_codes() {
+        let planner_codes = [
+            SymbolKindFilter::Function.as_str(),
+            SymbolKindFilter::Method.as_str(),
+            SymbolKindFilter::Class.as_str(),
+            SymbolKindFilter::Struct.as_str(),
+            SymbolKindFilter::Enum.as_str(),
+            SymbolKindFilter::Trait.as_str(),
+            SymbolKindFilter::Interface.as_str(),
+            SymbolKindFilter::Variable.as_str(),
+            SymbolKindFilter::Constant.as_str(),
+            SymbolKindFilter::Module.as_str(),
+            SymbolKindFilter::Macro.as_str(),
+            SymbolKindFilter::TypeAlias.as_str(),
+        ];
+        assert_eq!(planner_codes.len(), 12);
+        for code in planner_codes {
+            assert!(
+                quanta_index_contract::lex::SymbolKindCode::new(code).is_ok(),
+                "planner code `{code}` must remain valid in the contract v1 wire set"
             );
         }
     }

@@ -682,19 +682,27 @@ impl E2eRuntime {
     /// then advances the harness's pin so subsequent ingests target the
     /// next generation.
     pub(super) fn seal(&mut self) -> AnyResult<ManifestGeneration> {
-        self.seal_tracks(&[SearchPlaneTrackKind::Lexical])
+        self.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])
     }
 
-    pub(super) fn seal_tracks(
+    /// Seal the current generation through the lexical ingest surface.
+    ///
+    /// There is no separate structural or semantic seal IPC. Those tracks
+    /// become ready only after their authority has been ingested and the
+    /// lexical track for the same generation has been sealed/activated.
+    pub(super) fn seal_lexical_generation_for_tracks(
         &mut self,
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<ManifestGeneration> {
         let sealed = self.current_generation();
-        if tracks.contains(&SearchPlaneTrackKind::Semantic)
-            && !tracks.contains(&SearchPlaneTrackKind::Lexical)
-        {
+        if tracks.is_empty() {
             return Err(anyhow::anyhow!(
-                "e2e-harness: semantic-only seal helper was removed; derive semantic authority from lexical ingest first"
+                "e2e-harness: seal helper requires at least the lexical track"
+            ));
+        }
+        if !tracks.contains(&SearchPlaneTrackKind::Lexical) {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: structural/semantic readiness piggybacks on lexical seal; include SearchPlaneTrackKind::Lexical"
             ));
         }
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {

@@ -179,7 +179,7 @@ fn repo_map_bundle() -> Result<RepoMapSourceBundle, Box<dyn Error>> {
             owner_path: RepoRelativePath::new("src/service/mod.rs"),
             local_name: "Beta".to_string(),
             qualified_name: "src::service::Beta".to_string(),
-            symbol_kind: symbol_kind("service")?,
+            symbol_kind: symbol_kind("struct")?,
         },
     ))
     .with_node(RepoMapNode::Chunk(

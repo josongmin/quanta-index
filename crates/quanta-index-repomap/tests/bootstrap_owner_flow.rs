@@ -67,7 +67,7 @@ fn sample_bundle() -> RepoMapSourceBundle {
             owner_path: RepoRelativePath::new("src/lib.rs"),
             local_name: "OwnerAlpha".to_string(),
             qualified_name: "src::lib::OwnerAlpha".to_string(),
-            symbol_kind: symbol_kind("service"),
+            symbol_kind: symbol_kind("struct"),
         },
     ))
     .with_node(RepoMapNode::Symbol(

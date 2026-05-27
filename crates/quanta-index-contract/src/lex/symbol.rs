@@ -19,6 +19,21 @@ use crate::{RepoRelativePath, SymbolId};
 pub struct SymbolKindCode(Box<str>);
 
 impl SymbolKindCode {
+    const ALL_V1: &'static [&'static str] = &[
+        "function",
+        "method",
+        "class",
+        "struct",
+        "enum",
+        "trait",
+        "interface",
+        "variable",
+        "constant",
+        "module",
+        "macro",
+        "type_alias",
+    ];
+
     #[must_use]
     pub fn from_code_str(value: &str) -> Option<Self> {
         Self::new(value).into_iter().next()
@@ -104,6 +119,9 @@ fn validate_symbol_kind_code(value: &str) -> Result<(), &'static str> {
         if !ok {
             return Err("symbol kind code must be lowercase snake_case ASCII");
         }
+    }
+    if !SymbolKindCode::ALL_V1.contains(&value) {
+        return Err("symbol kind code must be one of the closed v1 wire kinds");
     }
     Ok(())
 }

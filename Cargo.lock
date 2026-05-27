@@ -883,7 +883,6 @@ dependencies = [
  "ciborium",
  "proptest",
  "quanta-index-contract",
- "quanta-index-contract-base",
  "serde",
 ]
 
@@ -1022,7 +1021,6 @@ dependencies = [
  "quanta-index-corpus-smoke",
  "quanta-index-ipc",
  "quanta-index-lexical",
- "quanta-index-lq-bridge",
  "quanta-index-repomap",
  "quanta-index-sdk",
  "quanta-index-search-plane",

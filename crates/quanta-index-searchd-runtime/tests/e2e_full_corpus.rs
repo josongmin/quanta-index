@@ -1,8 +1,9 @@
 //! E2E-06 — machine-readable real-engine corpus rail.
 //!
 //! Runtime rows execute against the live daemon harness. This closeout corpus
-//! is route-aware (`text` / `structural` / `history`) and fails if parser-only
-//! or deferred-producer rows drift back into the runtime file.
+//! is route-aware (`text` / `structural` / `history`) and fails if parser-only,
+//! typed-unavailable, or deferred-producer rows drift back into the runtime
+//! file.
 
 #![forbid(unsafe_code)]
 
@@ -61,7 +62,6 @@ struct FixtureRuntimeState {
 
 struct RunSummary {
     runtime_passed: usize,
-    typed_unavailable_passed: usize,
     parser_only_rows: usize,
     deferred_rows: usize,
 }
@@ -216,7 +216,12 @@ fn require_string_array(
             .iter()
             .map(|value| match value {
                 Value::String(text) => Ok(text.clone()),
-                other => Err(anyhow::anyhow!(
+                other @ (Value::Integer(_)
+                | Value::Float(_)
+                | Value::Boolean(_)
+                | Value::Datetime(_)
+                | Value::Array(_)
+                | Value::Table(_)) => Err(anyhow::anyhow!(
                     "fixture {} field `{field}` must be array<string>, got entry {other:?}",
                     path.display()
                 )),
@@ -263,13 +268,15 @@ fn parse_structural_specs(
     path: &Path,
 ) -> AnyResult<Vec<FixtureStructuralSpec>> {
     let Some(Value::Array(rows)) = value else {
-        return match value {
-            None => Ok(Vec::new()),
-            Some(other) => Err(anyhow::anyhow!(
-                "fixture {} [[structural]] must be an array of tables, got {other:?}",
-                path.display()
-            )),
-        };
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[structural]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -289,13 +296,15 @@ fn parse_structural_specs(
 
 fn parse_history_specs(value: Option<&Value>, path: &Path) -> AnyResult<Vec<FixtureHistorySpec>> {
     let Some(Value::Array(rows)) = value else {
-        return match value {
-            None => Ok(Vec::new()),
-            Some(other) => Err(anyhow::anyhow!(
-                "fixture {} [[history]] must be an array of tables, got {other:?}",
-                path.display()
-            )),
-        };
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[history]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -410,26 +419,10 @@ fn ensure_runtime_row_config(row: &CorpusRow) -> Result<(), String> {
             }
             Ok(())
         }
-        Some(RowClassification::TypedUnavailable) => {
-            if !matches!(&row.gate, Gate::Active) {
-                return Err(format!(
-                    "row {} typed_unavailable classification must use gate=active",
-                    row.id
-                ));
-            }
-            if row.runtime_error_code.is_none()
-                || row.fixture.is_none()
-                || row.top_k.is_none()
-                || row.syntax.is_none()
-                || row.runtime_route.is_none()
-            {
-                return Err(format!(
-                    "row {} typed_unavailable classification requires runtime_error_code, fixture, top_k, syntax, and runtime_route",
-                    row.id
-                ));
-            }
-            Ok(())
-        }
+        Some(RowClassification::TypedUnavailable) => Err(format!(
+            "row {} uses typed_unavailable classification; keep typed-unavailable rows in owner-local parity/conformance rails, not E2E-06 runtime closeout",
+            row.id
+        )),
         Some(RowClassification::ParserOnly) => {
             if !matches!(&row.gate, Gate::Pending { .. }) {
                 return Err(format!(
@@ -726,124 +719,6 @@ fn assess_runtime_row(
     }
 }
 
-fn assess_typed_unavailable_row(rt: &mut E2eRuntime, row: &CorpusRow) -> RowReport {
-    let syntax = match runtime_syntax(row) {
-        Ok(syntax) => syntax,
-        Err(err) => {
-            return RowReport {
-                id: row.id.clone(),
-                failure: Some(err),
-            };
-        }
-    };
-    let Some(top_k) = row.top_k else {
-        return RowReport {
-            id: row.id.clone(),
-            failure: Some(format!("row {} missing top_k", row.id)),
-        };
-    };
-    let Some(expected_code) = row.runtime_error_code.as_deref() else {
-        return RowReport {
-            id: row.id.clone(),
-            failure: Some(format!("row {} missing runtime_error_code", row.id)),
-        };
-    };
-    let route = match runtime_route(row) {
-        Ok(route) => route,
-        Err(err) => {
-            return RowReport {
-                id: row.id.clone(),
-                failure: Some(err),
-            };
-        }
-    };
-    match route {
-        RuntimeRoute::Text => {
-            let result = rt.query_text(syntax, &row.query, top_k);
-            match result.typed_error {
-                Some(err) if err.code == expected_code => RowReport {
-                    id: row.id.clone(),
-                    failure: None,
-                },
-                Some(err) => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected typed_error code={} but got code={} message={}; query=`{}` syntax={:?}",
-                        row.id, expected_code, err.code, err.message, row.query, row.syntax
-                    )),
-                },
-                None => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected typed_error code={} but got candidates={:?}; query=`{}` syntax={:?} explanation={}",
-                        row.id,
-                        expected_code,
-                        result
-                            .candidates
-                            .iter()
-                            .map(|candidate| candidate.candidate_id.as_str())
-                            .collect::<Vec<_>>(),
-                        row.query,
-                        row.syntax,
-                        explanation_artifact(rt, &result)
-                    )),
-                },
-            }
-        }
-        RuntimeRoute::Structural => {
-            let result = rt.query_structural(syntax, &row.query, top_k);
-            match result.typed_error {
-                Some(err) if err.code == expected_code => RowReport {
-                    id: row.id.clone(),
-                    failure: None,
-                },
-                Some(err) => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected structural typed_error code={} but got code={} message={}; query=`{}` syntax={:?}",
-                        row.id, expected_code, err.code, err.message, row.query, row.syntax
-                    )),
-                },
-                None => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected structural typed_error code={} but got candidates={:?}; query=`{}` syntax={:?}",
-                        row.id, expected_code, result.candidate_ids, row.query, row.syntax
-                    )),
-                },
-            }
-        }
-        RuntimeRoute::History => {
-            let result = rt.query_history(syntax, &row.query, top_k);
-            match result.typed_error {
-                Some(err) if err.code == expected_code => RowReport {
-                    id: row.id.clone(),
-                    failure: None,
-                },
-                Some(err) => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected history typed_error code={} but got code={} message={}; query=`{}` syntax={:?}",
-                        row.id, expected_code, err.code, err.message, row.query, row.syntax
-                    )),
-                },
-                None => RowReport {
-                    id: row.id.clone(),
-                    failure: Some(format!(
-                        "row {} expected history typed_error code={} but got commits={:?} diffs={:?}; query=`{}` syntax={:?}",
-                        row.id,
-                        expected_code,
-                        result.commit_ids,
-                        result.diff_paths,
-                        row.query,
-                        row.syntax
-                    )),
-                },
-            }
-        }
-    }
-}
-
 #[test]
 fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
     let corpus = load_corpus(&runtime_rows_path())?;
@@ -854,7 +729,6 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
 
     let mut summary = RunSummary {
         runtime_passed: 0,
-        typed_unavailable_passed: 0,
         parser_only_rows: 0,
         deferred_rows: 0,
     };
@@ -869,7 +743,7 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
             continue;
         }
         match row.classification {
-            Some(RowClassification::Runtime | RowClassification::TypedUnavailable) => {
+            Some(RowClassification::Runtime) => {
                 let fixture_name = row.fixture.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("row {} missing fixture after validation", row.id)
                 })?;
@@ -888,7 +762,7 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
                     if fixture.structural.is_empty() {
                         _ = rt.seal()?;
                     } else {
-                        _ = rt.seal_tracks(&[
+                        _ = rt.seal_lexical_generation_for_tracks(&[
                             quanta_index_contract::SearchPlaneTrackKind::Lexical,
                             quanta_index_contract::SearchPlaneTrackKind::Structural,
                         ])?;
@@ -903,35 +777,20 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
                 let fixture_state = current_fixture_state.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("fixture runtime state missing after fixture boot")
                 })?;
-                let report = match row.classification {
-                    Some(RowClassification::Runtime) => assess_runtime_row(rt, row, fixture_state),
-                    Some(RowClassification::TypedUnavailable) => {
-                        assess_typed_unavailable_row(rt, row)
-                    }
-                    Some(other) => RowReport {
-                        id: row.id.clone(),
-                        failure: Some(format!(
-                            "row {} reached runtime execution with non-runtime classification {:?}",
-                            row.id, other
-                        )),
-                    },
-                    None => RowReport {
-                        id: row.id.clone(),
-                        failure: Some(format!(
-                            "row {} reached runtime execution without classification",
-                            row.id
-                        )),
-                    },
-                };
+                let report = assess_runtime_row(rt, row, fixture_state);
                 if report.failure.is_some() {
                     failures.push(report);
-                } else if matches!(row.classification, Some(RowClassification::Runtime)) {
-                    summary.runtime_passed = summary.runtime_passed.saturating_add(1);
                 } else {
-                    summary.typed_unavailable_passed =
-                        summary.typed_unavailable_passed.saturating_add(1);
+                    summary.runtime_passed = summary.runtime_passed.saturating_add(1);
                 }
             }
+            Some(RowClassification::TypedUnavailable) => failures.push(RowReport {
+                id: row.id.clone(),
+                failure: Some(format!(
+                    "row {} reached E2E-06 with typed_unavailable classification; move it to owner-local parity/conformance rail",
+                    row.id
+                )),
+            }),
             Some(RowClassification::ParserOnly) => {
                 summary.parser_only_rows = summary.parser_only_rows.saturating_add(1);
             }
@@ -973,10 +832,9 @@ fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
     let mut buf = String::new();
     writeln!(
         buf,
-        "E2E-06 full corpus runtime rail: {} failures; runtime_passed={} typed_unavailable_passed={} parser_only_rows={} deferred_external_producer_rows={}",
+        "E2E-06 full corpus runtime rail: {} failures; runtime_passed={} parser_only_rows={} deferred_external_producer_rows={}",
         failures.len(),
         summary.runtime_passed,
-        summary.typed_unavailable_passed,
         summary.parser_only_rows,
         summary.deferred_rows
     )?;

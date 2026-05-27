@@ -181,7 +181,7 @@ fn lexical_error_code_cbor_rejects_unknown() -> TestRes {
 
 #[test]
 fn symbol_kind_code_accepts_canonical_examples() -> TestRes {
-    for code in ["function", "method", "type_alias", "http_handler2"] {
+    for code in ["function", "method", "type_alias", "module"] {
         let parsed = SymbolKindCode::new(code).map_err(str::to_string)?;
         if parsed.as_str() != code {
             return Err(format!("expected {code}, got {}", parsed.as_str()).into());
@@ -199,6 +199,8 @@ fn symbol_kind_code_rejects_non_canonical_forms() -> TestRes {
         "_hidden",
         "123kind",
         "bad kind",
+        "http_handler2",
+        "service",
     ] {
         if SymbolKindCode::from_code_str(bad).is_some() {
             return Err(format!("from_code_str({bad}) accepted invalid symbol kind").into());
@@ -209,7 +211,7 @@ fn symbol_kind_code_rejects_non_canonical_forms() -> TestRes {
 
 #[test]
 fn symbol_kind_code_cbor_roundtrip_examples() -> TestRes {
-    for code in ["function", "method", "type_alias", "variable2"] {
+    for code in ["function", "method", "type_alias", "variable"] {
         let kind = SymbolKindCode::new(code).map_err(str::to_string)?;
         roundtrip_eq(&kind)?;
     }

@@ -99,7 +99,7 @@ fn ingest_structural_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let content = "fn restart_structural_alpha() {}";
     rt.ingest_text("repo-e2e", path, content)?;
     rt.ingest_structural_function_tree(path, content, "restart_structural_alpha")?;
-    _ = rt.seal_tracks(&[
+    _ = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
@@ -523,7 +523,7 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
     let content = "fn restart_structural_tombstone() {}";
     rt.ingest_text("repo-e2e", path, content)?;
     rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
-    _ = rt.seal_tracks(&[
+    _ = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
@@ -546,7 +546,7 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
     rt.ingest_text("repo-e2e", path, content)?;
     rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
     rt.tombstone_structural_for_path(path)?;
-    _ = rt.seal_tracks(&[
+    _ = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
     ])?;
