@@ -11,12 +11,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRuntimeMetadataQueryResponse, SemanticQueryRequest, SymbolCandidate,
-    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType,
+    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
+    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -95,6 +97,8 @@ enum CommandKind {
     Explain,
     RepoMap,
     RuntimeMetadata,
+    History,
+    Structural,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,6 +166,8 @@ enum CliRequest {
     },
     RepoMap(RepoMapQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
+    History(HistoryQueryRequest),
+    Structural(StructuralQueryRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -208,9 +214,14 @@ impl ParsedCommand {
                 CommandKind::RuntimeMetadata,
                 parse_runtime_metadata(&mut common, &mut rest)?,
             ),
+            "history" => (CommandKind::History, parse_history(&mut common, &mut rest)?),
+            "structural" => (
+                CommandKind::Structural,
+                parse_structural(&mut common, &mut rest)?,
+            ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|explain|repomap|runtime-metadata"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|explain|repomap|runtime-metadata|history|structural"
                 )));
             }
         };
@@ -408,6 +419,63 @@ fn parse_runtime_metadata(
     Ok(CliRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
         text_query,
     }))
+}
+
+fn parse_text_query_wrapper(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+    command: &str,
+) -> CliResult<TextQueryRequest> {
+    let mut generation_args = PinnedGenerationArgs::default();
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        command,
+        |current, rest| match current {
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
+    let generation = generation_args.into_generation_pin()?;
+    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
+    let query_text =
+        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
+    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
+    Ok(TextQueryRequest {
+        syntax,
+        query_text,
+        generation: Some(generation),
+        generation_selector: None,
+        top_k,
+    })
+}
+
+fn parse_history(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    let text_query = parse_text_query_wrapper(common, rest, "history")?;
+    Ok(CliRequest::History(HistoryQueryRequest { text_query }))
+}
+
+fn parse_structural(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let text_query = parse_text_query_wrapper(common, rest, "structural")?;
+    Ok(CliRequest::Structural(StructuralQueryRequest { text_query }))
 }
 
 fn parse_semantic(
@@ -694,6 +762,18 @@ fn dispatch_query_request(
                 .explain(generation, candidate)
                 .map_err(map_sdk_error)?,
         ),
+        CliRequest::History(history) => SearchPlaneQueryIpcResponse::History(
+            client
+                .history()
+                .query_request(history)
+                .map_err(map_sdk_error)?,
+        ),
+        CliRequest::Structural(structural) => SearchPlaneQueryIpcResponse::Structural(
+            client
+                .structural()
+                .query_request(structural)
+                .map_err(map_sdk_error)?,
+        ),
     };
     Ok(SearchPlaneQueryIpcResponseEnvelope {
         request_id: REQUEST_ID,
@@ -795,7 +875,9 @@ fn validate_response_kind(
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
         | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
-        | (CommandKind::RuntimeMetadata, SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(()),
+        | (CommandKind::RuntimeMetadata, SearchPlaneQueryIpcResponse::RuntimeMetadata(_))
+        | (CommandKind::History, SearchPlaneQueryIpcResponse::History(_))
+        | (CommandKind::Structural, SearchPlaneQueryIpcResponse::Structural(_)) => Ok(()),
         _ => Err(CliError::protocol(format!(
             "response kind `{}` does not match requested command `{}`",
             response_kind_name(&response.payload),
@@ -931,13 +1013,96 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(payload) => {
             render_runtime_metadata_payload(payload, rendered)
         }
-        SearchPlaneQueryIpcResponse::History(_) | SearchPlaneQueryIpcResponse::Structural(_) => {
-            Err(CliError::protocol(format!(
-                "unsupported pretty renderer for response kind `{}`",
-                response_kind_name(&response.payload)
-            )))
+        SearchPlaneQueryIpcResponse::History(payload) => render_history_payload(payload, rendered),
+        SearchPlaneQueryIpcResponse::Structural(payload) => {
+            render_structural_payload(payload, rendered)
         }
     }
+}
+
+fn render_history_payload(
+    payload: &SearchPlaneHistoryQueryResponse,
+    rendered: &mut String,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: history"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(
+        rendered,
+        "commits: {} diffs: {}",
+        payload.commits.len(),
+        payload.diffs.len()
+    ))?;
+    for (index, commit) in payload.commits.iter().enumerate() {
+        let display_index = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("commit index overflow".to_string()))?;
+        fmt_ok(writeln!(
+            rendered,
+            "{}. sha={} author={} committer={} committed_at_unix_s={} is_merge={} tags={}",
+            display_index,
+            commit.sha.to_hex(),
+            commit.author,
+            commit.committer,
+            commit.committed_at_unix_s,
+            commit.is_merge,
+            commit.tags.join(",")
+        ))?;
+        for line in commit.message.lines() {
+            fmt_ok(writeln!(rendered, "   {line}"))?;
+        }
+    }
+    for (index, diff) in payload.diffs.iter().enumerate() {
+        let display_index = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("diff index overflow".to_string()))?;
+        fmt_ok(writeln!(
+            rendered,
+            "{}. path={} hunk_header={} side={} lines={}-{}",
+            display_index,
+            diff.repo_relative_path,
+            diff.hunk_header,
+            diff.side.as_str(),
+            diff.line_start,
+            diff.line_end
+        ))?;
+        for line in diff.snippet.lines() {
+            fmt_ok(writeln!(rendered, "   {line}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn render_structural_payload(
+    payload: &SearchPlaneStructuralQueryResponse,
+    rendered: &mut String,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: structural"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    for (index, candidate) in payload.results.iter().enumerate() {
+        let display_index = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("structural candidate index overflow".to_string()))?;
+        fmt_ok(writeln!(
+            rendered,
+            "{}. candidate_id={} bindings={}",
+            display_index,
+            candidate.candidate_id,
+            candidate.bindings.len()
+        ))?;
+        for binding in &candidate.bindings {
+            fmt_ok(writeln!(
+                rendered,
+                "   {}: bytes={}-{} lines={}-{}",
+                binding.metavariable,
+                binding.start_byte,
+                binding.end_byte,
+                binding.start_line,
+                binding.end_line
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 fn render_lexical_payload(
@@ -1124,6 +1289,8 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Explain => "explain",
         CommandKind::RepoMap => "repomap",
         CommandKind::RuntimeMetadata => "runtime-metadata",
+        CommandKind::History => "history",
+        CommandKind::Structural => "structural",
     }
 }
 
@@ -1193,6 +1360,8 @@ Read-only subcommands:
   explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
   runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
 "
 }
 
@@ -1702,6 +1871,207 @@ mod tests {
         if let Ok(text) = text {
             assert!(text.contains("kind: lexical"));
             assert!(text.contains("results: 1"));
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test asserts payload variant shape; panic isolates failure to this single test"
+    )]
+    fn parses_history_query_request() {
+        let parsed = ParsedCommand::parse([
+            "history",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "feat: add x",
+            "--top-k",
+            "9",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let CliRequest::History(request) = parsed.request else {
+            panic!("expected history payload");
+        };
+        assert_eq!(request.text_query.syntax, TextQuerySyntax::Native);
+        assert_eq!(request.text_query.query_text.as_str(), "feat: add x");
+        assert_eq!(request.text_query.top_k, 9);
+        assert_eq!(
+            request
+                .text_query
+                .generation
+                .map(|pin| pin.manifest_generation.get()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test asserts payload variant shape; panic isolates failure to this single test"
+    )]
+    fn parses_structural_query_request() {
+        let parsed = ParsedCommand::parse([
+            "structural",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "sourcegraph",
+            "--query-text",
+            "lang:rust fn $NAME(...) {...}",
+            "--top-k",
+            "4",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let CliRequest::Structural(request) = parsed.request else {
+            panic!("expected structural payload");
+        };
+        assert_eq!(request.text_query.syntax, TextQuerySyntax::Sourcegraph);
+        assert_eq!(
+            request.text_query.query_text.as_str(),
+            "lang:rust fn $NAME(...) {...}"
+        );
+        assert_eq!(request.text_query.top_k, 4);
+    }
+
+    #[test]
+    fn rejects_history_missing_top_k() {
+        let parsed = ParsedCommand::parse([
+            "history",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "feat",
+        ]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--top-k"));
+    }
+
+    #[test]
+    fn rejects_structural_missing_query_text() {
+        let parsed = ParsedCommand::parse([
+            "structural",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--top-k",
+            "4",
+        ]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--query-text"));
+    }
+
+    #[test]
+    fn pretty_renderer_supports_history_response() {
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                commits: vec![quanta_index_contract::CommitCandidate {
+                    sha: quanta_index_contract::lex::CommitSha::ZERO,
+                    parent_ids: Vec::new(),
+                    committed_at_unix_s: 1_700_000_000,
+                    author: "alice".to_string(),
+                    committer: "alice".to_string(),
+                    message: "fix: thing\nbody line".to_string(),
+                    is_merge: false,
+                    tags: vec!["v1.0".to_string()],
+                }],
+                diffs: vec![quanta_index_contract::DiffCandidate {
+                    repo_relative_path: "src/lib.rs".to_string(),
+                    hunk_header: "@@ -1,3 +1,4 @@".to_string(),
+                    side: quanta_index_contract::DiffHunkSide::After,
+                    line_start: 1,
+                    line_end: 4,
+                    snippet: "fn sample() {}".to_string(),
+                }],
+            }),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: history"));
+            assert!(text.contains("commits: 1 diffs: 1"));
+            assert!(text.contains("author=alice"));
+            assert!(text.contains("path=src/lib.rs"));
+            assert!(text.contains("side=after"));
+        }
+    }
+
+    #[test]
+    fn pretty_renderer_supports_structural_response() {
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::Structural(SearchPlaneStructuralQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                results: vec![quanta_index_contract::StructuralCandidate {
+                    candidate_id: "struct-1".to_string(),
+                    bindings: vec![quanta_index_contract::StructuralBinding {
+                        metavariable: "$NAME".to_string(),
+                        start_byte: 10,
+                        end_byte: 14,
+                        start_line: 2,
+                        end_line: 2,
+                    }],
+                }],
+            }),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: structural"));
+            assert!(text.contains("results: 1"));
+            assert!(text.contains("candidate_id=struct-1"));
+            assert!(text.contains("$NAME: bytes=10-14"));
         }
     }
 }
