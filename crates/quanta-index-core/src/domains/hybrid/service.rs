@@ -132,7 +132,8 @@ mod tests {
     //!
     //! Equivalent mutations in `over_fetch_top_k` are documented but not
     //! assertable here because the boundary values collapse to the same
-    //! observable result.
+    //! observable result. `.cargo/mutants.toml` excludes only those two exact
+    //! survivor names so any future change to this function reopens review.
 
     use super::*;
     use crate::domains::semantic::SemanticPolicy;

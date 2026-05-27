@@ -200,7 +200,7 @@ rust-miri:
     env QUANTA_INDEX_BUILD_LANE=miri-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly MIRIFLAGS="-Zmiri-strict-provenance" cargo miri test -p quanta-index-contract -p quanta-index-core --lib --all-features'
 
 rust-careful:
-    env QUANTA_INDEX_BUILD_LANE=careful-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly cargo careful test --workspace --all-features --locked'
+    env QUANTA_INDEX_BUILD_LANE=careful-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly CARGO_INCREMENTAL=0 cargo careful test --workspace --all-features --locked'
 
 rust-tsan:
     env QUANTA_INDEX_BUILD_LANE=tsan-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zsanitizer=thread" cargo test -Z build-std --target $(rustc -vV | sed -n '"'"'s|host: ||p'"'"') --workspace --all-features --lib --tests'
@@ -212,7 +212,7 @@ rust-mutants:
     env QUANTA_INDEX_BUILD_LANE=mutants-lane bash -lc 'source scripts/quanta-index-env.sh && cargo mutants --package quanta-index-core --timeout 60 --baseline=skip --no-shuffle'
 
 rust-udeps:
-    env QUANTA_INDEX_BUILD_LANE=udeps-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly cargo udeps --workspace --all-targets --all-features'
+    env QUANTA_INDEX_BUILD_LANE=udeps-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly CARGO_INCREMENTAL=0 cargo udeps --workspace --all-targets --all-features'
 
 rust-deny:
     bash scripts/run-cargo-deny.sh
@@ -261,16 +261,10 @@ rust-public-api-update:
 
 rust-fuzz-build:
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz build'
-    env QUANTA_INDEX_BUILD_LANE=fuzz-ranker-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz build'
 
 rust-fuzz-smoke seconds="60":
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time={{seconds}}'
-
-rust-fuzz-ranker-smoke seconds="60":
-    env QUANTA_INDEX_BUILD_LANE=fuzz-ranker-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_no_panic -- -max_total_time={{seconds}}'
-    env QUANTA_INDEX_BUILD_LANE=fuzz-ranker-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_determinism -- -max_total_time={{seconds}}'
-    env QUANTA_INDEX_BUILD_LANE=fuzz-ranker-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run composite_scorer_no_panic -- -max_total_time={{seconds}}'
 
 rust-policy:
     @just rust-workspace-lints

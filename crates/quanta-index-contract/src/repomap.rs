@@ -3534,6 +3534,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+    )]
     fn entry_rejects_empty_projection_status_on_serialize() {
         let mut entry = sample_entry();
         entry.projection_status.clear();
@@ -3548,6 +3552,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+    )]
     fn entry_rejects_empty_projection_status_on_deserialize() -> TestRes {
         let bytes = encode(&sample_entry())?;
         let mut wire: ciborium::Value = decode(&bytes)?;

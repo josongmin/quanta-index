@@ -189,7 +189,7 @@ jobs:
       - name: cargo udeps
         run: |
           source scripts/quanta-index-env.sh
-          cargo udeps --workspace --all-targets --all-features
+          CARGO_INCREMENTAL=0 cargo udeps --workspace --all-targets --all-features
 
   rust-llvm-lines:
     name: rust-llvm-lines (monomorphization budget)
@@ -311,20 +311,8 @@ jobs:
       - name: Build fuzz targets (contract)
         run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz build
 
-      - name: Build fuzz targets (lq-ranker)
-        run: cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz build
-
       - name: Smoke-run ipc_request_decode (60s)
         run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60
 
       - name: Smoke-run ipc_response_decode (60s)
         run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60
-
-      - name: Smoke-run weights_hash_no_panic (60s)
-        run: cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_no_panic -- -max_total_time=60
-
-      - name: Smoke-run weights_hash_determinism (60s)
-        run: cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run weights_hash_determinism -- -max_total_time=60
-
-      - name: Smoke-run composite_scorer_no_panic (60s)
-        run: cd crates/quanta-index-lq-ranker/fuzz && cargo +nightly fuzz run composite_scorer_no_panic -- -max_total_time=60

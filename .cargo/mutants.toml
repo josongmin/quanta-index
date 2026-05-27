@@ -1,0 +1,14 @@
+# Exact equivalent survivors in `HybridOrchestratorPolicy::over_fetch_top_k`.
+#
+# These two operator flips change only the branch condition at values where the
+# returned value is identical:
+# - `top_k == MIN_INTERNAL_FETCH_K` still yields `MIN_INTERNAL_FETCH_K`
+# - `floored == SemanticPolicy::max_top_k()` still yields that same ceiling
+#
+# Keep the regexes exact, including line/column, so any future refactor or
+# semantic change re-exposes the mutant for review instead of silently inheriting
+# a broad allowlist.
+exclude_re = [
+  "^crates/quanta-index-core/src/domains/hybrid/service\\.rs:30:32: replace < with <= in HybridOrchestratorPolicy::over_fetch_top_k$",
+  "^crates/quanta-index-core/src/domains/hybrid/service\\.rs:35:20: replace > with >= in HybridOrchestratorPolicy::over_fetch_top_k$",
+]

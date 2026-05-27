@@ -796,6 +796,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; embedding f32 vec serde is exercised in stable tests + fuzz"
+    )]
     fn embedding_record_round_trip() -> TestRes {
         let record = EmbeddingRecord {
             embedding_id: EmbeddingId::new("emb-1"),
