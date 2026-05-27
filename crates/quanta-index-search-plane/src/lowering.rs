@@ -48,10 +48,10 @@ fn lower_sourcegraph_query_text_for_route(
     let sourcegraph = parse_sourcegraph(query_text).map_err(|err| map_bridge_error(&err))?;
     let (sourcegraph, saw_structural_patterntype) = match route {
         SourcegraphLoweringRoute::Lexical => (sourcegraph, false),
-        SourcegraphLoweringRoute::Structural => strip_sourcegraph_structural_patterntype(
-            sourcegraph,
-        )
-        .map_err(|err| map_bridge_error(&err))?,
+        SourcegraphLoweringRoute::Structural => {
+            strip_sourcegraph_structural_patterntype(sourcegraph)
+                .map_err(|err| map_bridge_error(&err))?
+        }
     };
     let version = SourcegraphVersionTag::supported().map_err(|err| map_bridge_error(&err))?;
     let mut query = translate_query(sourcegraph, &version, query_text.len())

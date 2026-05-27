@@ -31,11 +31,11 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, GenerationPin, HistoryQueryRequest,
-    HybridQueryRequest,
-    LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchExplanation, SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope,
+    LexicalTombstoneScope, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneActivateGenerationRequest,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,

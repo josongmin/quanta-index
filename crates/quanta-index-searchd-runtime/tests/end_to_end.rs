@@ -29,10 +29,9 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest,
-    HybridQueryRequest,
-    LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope, LqVisibility,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    HybridQueryRequest, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
+    LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
@@ -2799,7 +2798,6 @@ fn structural_query_rejects_typed_hole_kind_with_exact_code() -> TestResult {
 
     stop_runtime(shutdown, join)
 }
-
 
 fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {

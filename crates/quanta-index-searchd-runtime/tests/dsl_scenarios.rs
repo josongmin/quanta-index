@@ -17,10 +17,9 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin,
-    HybridQueryRequest,
-    LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration,
-    PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility,
+    ManifestGeneration, PlannerStage, RepoId, RepoRelativePath, RevisionId,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
@@ -1085,4 +1084,3 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
 
     stop_runtime(shutdown, join)
 }
-

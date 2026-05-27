@@ -475,7 +475,9 @@ fn parse_structural(
     rest: &mut VecDeque<String>,
 ) -> CliResult<CliRequest> {
     let text_query = parse_text_query_wrapper(common, rest, "structural")?;
-    Ok(CliRequest::Structural(StructuralQueryRequest { text_query }))
+    Ok(CliRequest::Structural(StructuralQueryRequest {
+        text_query,
+    }))
 }
 
 fn parse_semantic(

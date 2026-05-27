@@ -2755,14 +2755,14 @@ mod tests {
     use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
-        GenerationPin, GenerationSelector, HistoryQueryRequest,
-        HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType,
-        RepoMapEntryDto, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
-        RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapQueryResponse,
-        RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath, RevisionId,
-        RuntimeMetadataQueryRequest, SearchPlaneActivateGenerationRequest,
-        SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
-        SymbolCandidate, TextQueryRequest, TextQuerySyntax, UpsertCommit,
+        GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
+        LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto,
+        RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+        RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
+        RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+        SearchPlaneActivateGenerationRequest, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcResponse, SemanticQueryRequest, SymbolCandidate, TextQueryRequest,
+        TextQuerySyntax, UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,

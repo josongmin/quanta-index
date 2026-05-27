@@ -339,12 +339,16 @@ The wire-shape identity carrier of `UpsertSymbol` is `symbol_id` (assigned by th
 
 #### 3.4.2 SymbolKind (closed enum, v1)
 
-Per [`quanta-index-lq-symbol::SymbolKind`](../../crates/quanta-index-lq-symbol) and aligned with the prompt's 12-variant set:
+The current tree carries the v1 12-kind policy in planner-facing
+[`SymbolKindFilter`](../../crates/quanta-index-lexical/src/symbol.rs), while
+the wire carrier is validated by
+[`SymbolKindCode`](../../crates/quanta-index-contract/src/lex/symbol.rs).
+Producer-emitted symbol kinds are therefore pinned to this 12-code subset:
 
 ```text
-SymbolKind = Function | Method | Class | Struct | Enum
-           | Trait    | Interface | Variable | Constant
-           | Module   | Macro    | TypeAlias
+SymbolKind = function | method | class | struct | enum
+           | trait    | interface | variable | constant
+           | module   | macro     | type_alias
 ```
 
 12 variants. The producer emits exactly one per `SymbolRecord`. An out-of-set value is `SYMBOL_RECORD_INVALID{field=kind}` per §6.
