@@ -16,7 +16,7 @@ separate lower gate.
   green against the real daemon harness.
 - machine-readable runtime corpus fixtures live under
   `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/`.
-- `quanta-index-conformance` now carries explicit runtime metadata for:
+- `quanta-index-corpus-smoke` now carries explicit runtime metadata for:
   `syntax`, `classification`, `fixture`, `expected_ids`, `top_k`, and
   `runtime_error_code`.
 - current corpus classification counts are:
@@ -32,7 +32,7 @@ separate lower gate.
 
 - new `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
 - new `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/**`
-- `crates/quanta-index-conformance/src/**`
+- `crates/quanta-index-corpus-smoke/src/**`
 - `Justfile`
 - `.github/workflows/**` if CI workflow changes are required
 - `docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`
@@ -44,7 +44,7 @@ separate lower gate.
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/**`:
   store machine-readable query rows, corpora, expected IDs, and expected typed
   failures.
-- `crates/quanta-index-conformance/src/**`: keep parser-only and runtime corpus
+- `crates/quanta-index-corpus-smoke/src/**`: keep parser-only and runtime corpus
   rails explicitly separate.
 - `Justfile` and `.github/workflows/**`: add local and CI entry points for the
   real-engine corpus rail.

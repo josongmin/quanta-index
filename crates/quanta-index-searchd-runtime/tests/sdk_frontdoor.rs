@@ -727,7 +727,7 @@ fn publish_sdk_lexical_and_structural_ready(client: &QuantaIndex) -> TestResult 
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Structural,
-            ])
+            ])?
             .commit()
     })?;
     Ok(())
@@ -1025,7 +1025,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
-            ])
+            ])?
             .commit()
     })?;
     let repo_map_activation = client.repomap().activate(repo_map_activate_request())?;
@@ -1298,7 +1298,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Structural,
-            ])
+            ])?
             .commit()
     })?;
 
@@ -1435,7 +1435,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1506,7 +1506,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1539,7 +1539,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1591,7 +1591,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item } AND match { function_item :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1625,7 +1625,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item { { identifier :[name] } } }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1666,7 +1666,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item { { :[name.expr] } } }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1700,7 +1700,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { :[root.item] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1734,7 +1734,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item { { :[body.stmt] } } }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1770,7 +1770,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .native(
                     "match { identifier :[name] where :[name] == \"main\" inside { function_item } outside { trait_item } }",
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1804,7 +1804,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("match { function_item { :[...prefix] block } }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1839,7 +1839,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .native(
                     "repo:repo-sdk file:src/lib.rs lang:rust match { function_item { { identifier :[name] } } }",
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1879,7 +1879,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .structural()
         .query()
         .native("lang:java match { :[x] }")
-        .active(repo(), revision())
+        .pinned(pin())
         .top_k(2)
         .execute()
     else {
@@ -1895,7 +1895,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("file:src/lib.rs match { :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1915,7 +1915,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("repo:repo-sdk match { :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1935,7 +1935,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .structural()
                 .query()
                 .native("repo:repo-sdk file:src/lib.rs lang:rust match { function_item :[x] }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -1975,7 +1975,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .sourcegraph(
                     r#"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural "function_item { { identifier :[name] } }""#,
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2018,7 +2018,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
                 .sourcegraph(
                     r"repo:repo-sdk path:src/lib.rs lang:rust patterntype:structural /^main$/",
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2060,7 +2060,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .structural()
         .query()
         .native("repo:other-repo match { :[x] }")
-        .active(repo(), revision())
+        .pinned(pin())
         .top_k(2)
         .execute()?;
     if structural_repo_miss.generation != pin() || !structural_repo_miss.results.is_empty() {
@@ -2074,7 +2074,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .structural()
         .query()
         .native("select:repo match { :[x] }")
-        .active(repo(), revision())
+        .pinned(pin())
         .top_k(2)
         .execute()
     else {
@@ -2087,7 +2087,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .structural()
         .query()
         .sourcegraph(r#"select:repo patterntype:structural "function_item""#)
-        .active(repo(), revision())
+        .pinned(pin())
         .top_k(2)
         .execute()
     else {
@@ -2217,7 +2217,7 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
                 .structural()
                 .query()
                 .sourcegraph(r#"patterntype:structural "function_item { { :[name.expr] } }""#)
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2242,7 +2242,7 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
                 .sourcegraph(
                     r#"patterntype:structural "function_item { { identifier :[name] } }" OR "trait_item""#,
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2267,7 +2267,7 @@ fn sdk_structural_sourcegraph_frontdoor_supports_boolean_and_typed_hole_truth() 
                 .sourcegraph(
                     r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT "trait_item""#,
                 )
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2348,7 +2348,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
             .structural()
             .query()
             .sourcegraph(r#"timeout:0ms patterntype:structural "function_item""#)
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(2)
             .execute(),
         "Sourcegraph structural timeout must fail closed",
@@ -2371,7 +2371,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
             .structural()
             .query()
             .native("match { function_item { { :[name.lambda] } } }")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(2)
             .execute(),
         "unsupported typed hole must fail closed",
@@ -2395,7 +2395,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
             .structural()
             .query()
             .native("todo OR match { :[x] }")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(2)
             .execute(),
         "mixed lexical/structural boolean must fail closed",
@@ -2419,7 +2419,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
             .structural()
             .query()
             .native("NOT match { function_item }")
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(2)
             .execute(),
         "pure-negative structural boolean must fail closed",
@@ -2444,7 +2444,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
             .structural()
             .query()
             .sourcegraph(r#""function_item""#)
-            .active(repo(), revision())
+            .pinned(pin())
             .top_k(2)
             .execute(),
         "Sourcegraph structural route requires patterntype:structural",
@@ -2469,7 +2469,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
                 .structural()
                 .query()
                 .native("match { function_item { { :[name.expr] } } }")
-                .active(repo(), revision())
+                .pinned(pin())
                 .top_k(2)
                 .execute()
         },
@@ -2509,7 +2509,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
                 SearchPlaneTrackKind::Structural,
-            ])
+            ])?
             .commit()
     })?;
 
@@ -2846,7 +2846,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
             .tracks([
                 SearchPlaneTrackKind::Lexical,
                 SearchPlaneTrackKind::Semantic,
-            ])
+            ])?
             .commit()
     })?;
 
@@ -2977,7 +2977,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             .revision(revision())
             .generation(generation())
             .manifest_digest("manifest:v1-active")
-            .tracks([SearchPlaneTrackKind::Lexical])
+            .tracks([SearchPlaneTrackKind::Lexical])?
             .commit()
     })?;
 
@@ -3207,7 +3207,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             .revision(revision())
             .generation(generation_two())
             .manifest_digest("manifest:v2-active")
-            .tracks([SearchPlaneTrackKind::Lexical])
+            .tracks([SearchPlaneTrackKind::Lexical])?
             .commit()
     })?;
 
@@ -3281,63 +3281,8 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
 }
 
 #[test]
-fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
+fn sdk_frontdoor_activation_builder_rejects_empty_tracks_before_wire_dispatch() -> TestResult {
     let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-usage")?;
-
-    expect_usage_error_contains(
-        client
-            .lexical()
-            .query()
-            .native("todo")
-            .active(repo(), revision())
-            .execute(),
-        "lexical top_k is required",
-    )?;
-
-    expect_usage_error_contains(
-        client
-            .semantic()
-            .query()
-            .text("quartz")
-            .active(repo(), revision())
-            .top_k(2)
-            .scope_sourcegraph("sphinx")
-            .execute(),
-        "scope_top_k is missing",
-    )?;
-
-    expect_usage_error_contains(
-        client
-            .semantic()
-            .query()
-            .text("quartz")
-            .active(repo(), revision())
-            .top_k(2)
-            .scope_top_k(1)
-            .execute(),
-        "no lexical scope was configured",
-    )?;
-
-    expect_usage_error_contains(
-        client
-            .search()
-            .hybrid()
-            .sourcegraph("sphinx")
-            .active(repo(), revision())
-            .top_k(2)
-            .execute(),
-        "hybrid semantic query text is required",
-    )?;
-
-    expect_usage_error_contains(
-        client
-            .structural()
-            .query()
-            .active(repo(), revision())
-            .top_k(2)
-            .execute(),
-        "structural query text is required",
-    )?;
 
     expect_usage_error_contains(
         client
@@ -3347,7 +3292,7 @@ fn sdk_frontdoor_usage_edges_fail_closed_before_wire_dispatch() -> TestResult {
             .revision(revision())
             .generation(generation())
             .manifest_digest("manifest:missing-tracks")
-            .commit(),
+            .tracks([]),
         "at least one track",
     )?;
 

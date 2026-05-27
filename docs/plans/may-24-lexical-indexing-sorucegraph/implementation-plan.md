@@ -62,7 +62,7 @@ Anything short of all five surfaces as `blocked` per [CLAUDE.md § Verification]
 > |---|---|---|---|
 > | PRE-CONTRACT-EXT | `quanta-index-contract::lex::*` | 43 | shipped (scaffold; downstream migration pending) |
 > | PRE-NORM | `quanta-index-lq-norm` | 75 | shipped (5 deferred items completed) |
-> | PRE-CONF | `quanta-index-conformance` | 32 | shipped (CLI shim landed) |
+> | PRE-CONF | `quanta-index-corpus-smoke` | 32 | shipped (CLI shim landed) |
 > | LEX-00 | `quanta-index-lq-text-norm` | 57 | shipped (NFC + NFKC active) |
 > | LEX-01 | `quanta-index-lq-scorer` | 43 | shipped |
 > | LEX-02 | `quanta-index-lq-trigram` | 56 | shipped |
@@ -676,7 +676,7 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **Size**: L (~2 weeks).
 - **Open questions**: ADR-001 (parser-combinator vs hand-rolled recursive descent) — CLOSED via hand-rolled recursive descent per shipped crate.
 
-### 5.3 PRE-CONF — ✓ shipped (32 tests in `quanta-index-conformance`; CLI shim landed)
+### 5.3 PRE-CONF — ✓ shipped (32 tests in `quanta-index-corpus-smoke`; CLI shim landed)
 
 - **Title**: Conformance corpus runner.
 - **Owner crate(s)**: `quanta-index-contract` (test target), `quanta-index-core` (stub engine).
@@ -686,7 +686,7 @@ Each row is the canonical contract for `done`. Owner crates listed include "ALL"
 - **New invariants**: 100-row corpus is authoritative; no row may flip from `error` → `ok` without RFC amendment ([usecase.md §6](usecase.md) authoring discipline).
 - **Test rails**: unit (per-row parse + plan + execute); integration (full corpus); CI gate `ci/lq-conformance`.
 - **Conformance rows**: all 100.
-- **Test count (shipped)**: 32 tests in `quanta-index-conformance`; CLI shim landed.
+- **Test count (shipped)**: 32 tests in `quanta-index-corpus-smoke`; CLI shim landed.
 - **DoD checklist**:
   1. ✓ golden file layout in `usecase-corpus/*.toml` per [usecase.md §6 Golden file format](usecase.md);
   2. ✓ each UC-* + AC-* row has a 1:1 toml file;

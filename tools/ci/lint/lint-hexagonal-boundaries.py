@@ -68,18 +68,15 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # LQ symbol index (in-progress). Peer of the lq-* family.
     "quanta-index-lq-symbol": frozenset({"quanta-index-contract"}),
     # LQ ranker (in-progress). Peer of the lq-* family.
-    "quanta-index-lq-ranker": frozenset({"quanta-index-contract"}),
     # LQ runtime (in-progress). Peer of the lq-* family.
-    "quanta-index-lq-runtime": frozenset({"quanta-index-contract"}),
     # LQ structural index (in-progress). Peer of the lq-* family.
     "quanta-index-lq-structural": frozenset({"quanta-index-contract"}),
     # LQ history index (in-progress). Peer of the lq-* family.
-    "quanta-index-lq-history": frozenset({"quanta-index-contract"}),
     # RepoMap projection / query store (in-progress). Consumed by searchd.
     "quanta-index-repomap": frozenset({"quanta-index-contract", "quanta-index-core"}),
-    # CI / conformance helpers. No production deps; tests in other crates
-    # consume it via dev-dependencies only.
-    "quanta-index-conformance": frozenset(),
+    # Corpus parser/runner smoke helpers. No production deps; tests in
+    # other crates consume it via dev-dependencies only.
+    "quanta-index-corpus-smoke": frozenset(),
     "quanta-index-searchd": frozenset(
         {
             "quanta-index-contract",

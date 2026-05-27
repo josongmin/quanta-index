@@ -104,7 +104,14 @@ impl<'a> GenerationNamespace<'a> {
     }
 }
 
-pub struct ActivationBuilder<'a> {
+pub struct ActivationBuilder<
+    'a,
+    const HAS_REPO: bool = false,
+    const HAS_REVISION: bool = false,
+    const HAS_GENERATION: bool = false,
+    const HAS_MANIFEST_DIGEST: bool = false,
+    const HAS_TRACKS: bool = false,
+> {
     client: &'a QuantaIndex,
     repo_id: Option<RepoId>,
     revision_id: Option<RevisionId>,
@@ -124,68 +131,151 @@ impl<'a> ActivationBuilder<'a> {
             tracks: Vec::new(),
         }
     }
+}
 
-    #[must_use]
-    pub fn repo(mut self, repo_id: RepoId) -> Self {
-        self.repo_id = Some(repo_id);
-        self
-    }
-
-    #[must_use]
-    pub fn revision(mut self, revision_id: RevisionId) -> Self {
-        self.revision_id = Some(revision_id);
-        self
-    }
-
-    #[must_use]
-    pub fn generation(mut self, generation: ManifestGeneration) -> Self {
-        self.generation = Some(generation);
-        self
-    }
-
-    #[must_use]
-    pub fn manifest_digest(mut self, manifest_digest: impl Into<String>) -> Self {
-        self.manifest_digest = Some(manifest_digest.into());
-        self
-    }
-
-    #[must_use]
-    pub fn track(mut self, track: SearchPlaneTrackKind) -> Self {
-        if !self.tracks.contains(&track) {
-            self.tracks.push(track);
+impl<
+    'a,
+    const HAS_REPO: bool,
+    const HAS_REVISION: bool,
+    const HAS_GENERATION: bool,
+    const HAS_MANIFEST_DIGEST: bool,
+    const HAS_TRACKS: bool,
+> ActivationBuilder<'a, HAS_REPO, HAS_REVISION, HAS_GENERATION, HAS_MANIFEST_DIGEST, HAS_TRACKS>
+{
+    fn transition<
+        const NEXT_REPO: bool,
+        const NEXT_REVISION: bool,
+        const NEXT_GENERATION: bool,
+        const NEXT_MANIFEST_DIGEST: bool,
+        const NEXT_TRACKS: bool,
+    >(
+        mut self,
+        update: impl FnOnce(&mut Self),
+    ) -> ActivationBuilder<
+        'a,
+        NEXT_REPO,
+        NEXT_REVISION,
+        NEXT_GENERATION,
+        NEXT_MANIFEST_DIGEST,
+        NEXT_TRACKS,
+    > {
+        update(&mut self);
+        ActivationBuilder {
+            client: self.client,
+            repo_id: self.repo_id,
+            revision_id: self.revision_id,
+            generation: self.generation,
+            manifest_digest: self.manifest_digest,
+            tracks: self.tracks,
         }
-        self
     }
 
     #[must_use]
-    pub fn tracks<I>(mut self, tracks: I) -> Self
+    pub fn repo(
+        self,
+        repo_id: RepoId,
+    ) -> ActivationBuilder<'a, true, HAS_REVISION, HAS_GENERATION, HAS_MANIFEST_DIGEST, HAS_TRACKS>
+    {
+        self.transition(|builder| {
+            builder.repo_id = Some(repo_id);
+        })
+    }
+
+    #[must_use]
+    pub fn revision(
+        self,
+        revision_id: RevisionId,
+    ) -> ActivationBuilder<'a, HAS_REPO, true, HAS_GENERATION, HAS_MANIFEST_DIGEST, HAS_TRACKS>
+    {
+        self.transition(|builder| {
+            builder.revision_id = Some(revision_id);
+        })
+    }
+
+    #[must_use]
+    pub fn generation(
+        self,
+        generation: ManifestGeneration,
+    ) -> ActivationBuilder<'a, HAS_REPO, HAS_REVISION, true, HAS_MANIFEST_DIGEST, HAS_TRACKS> {
+        self.transition(|builder| {
+            builder.generation = Some(generation);
+        })
+    }
+
+    #[must_use]
+    pub fn manifest_digest(
+        self,
+        manifest_digest: impl Into<String>,
+    ) -> ActivationBuilder<'a, HAS_REPO, HAS_REVISION, HAS_GENERATION, true, HAS_TRACKS> {
+        self.transition(|builder| {
+            builder.manifest_digest = Some(manifest_digest.into());
+        })
+    }
+
+    #[must_use]
+    pub fn track(
+        self,
+        track: SearchPlaneTrackKind,
+    ) -> ActivationBuilder<'a, HAS_REPO, HAS_REVISION, HAS_GENERATION, HAS_MANIFEST_DIGEST, true>
+    {
+        self.transition(|builder| {
+            if !builder.tracks.contains(&track) {
+                builder.tracks.push(track);
+            }
+        })
+    }
+
+    pub fn tracks<I>(
+        self,
+        tracks: I,
+    ) -> Result<
+        ActivationBuilder<'a, HAS_REPO, HAS_REVISION, HAS_GENERATION, HAS_MANIFEST_DIGEST, true>,
+        SdkError,
+    >
     where
         I: IntoIterator<Item = SearchPlaneTrackKind>,
     {
-        for track in tracks {
-            if !self.tracks.contains(&track) {
-                self.tracks.push(track);
+        let next = self.transition(|builder| {
+            for track in tracks {
+                if !builder.tracks.contains(&track) {
+                    builder.tracks.push(track);
+                }
             }
-        }
-        self
-    }
-
-    pub fn commit(self) -> Result<SearchPlaneActivationAck, SdkError> {
-        let repo_id = self
-            .repo_id
-            .ok_or_else(|| SdkError::Usage("activation repo_id is required".to_string()))?;
-        let revision_id = self
-            .revision_id
-            .ok_or_else(|| SdkError::Usage("activation revision_id is required".to_string()))?;
-        let manifest_generation = self
-            .generation
-            .ok_or_else(|| SdkError::Usage("activation generation is required".to_string()))?;
-        let manifest_digest = self
-            .manifest_digest
-            .ok_or_else(|| SdkError::Usage("activation manifest_digest is required".to_string()))?;
-        if self.tracks.is_empty() {
+        });
+        if next.tracks.is_empty() {
             return Err(SdkError::Usage(
                 "activation requires at least one track".to_string(),
+            ));
+        }
+        Ok(next)
+    }
+}
+
+impl ActivationBuilder<'_, true, true, true, true, true> {
+    pub fn commit(self) -> Result<SearchPlaneActivationAck, SdkError> {
+        let Some(repo_id) = self.repo_id else {
+            return Err(SdkError::Protocol(
+                "activation builder lost repo_id invariant".to_string(),
+            ));
+        };
+        let Some(revision_id) = self.revision_id else {
+            return Err(SdkError::Protocol(
+                "activation builder lost revision_id invariant".to_string(),
+            ));
+        };
+        let Some(manifest_generation) = self.generation else {
+            return Err(SdkError::Protocol(
+                "activation builder lost generation invariant".to_string(),
+            ));
+        };
+        let Some(manifest_digest) = self.manifest_digest else {
+            return Err(SdkError::Protocol(
+                "activation builder lost manifest_digest invariant".to_string(),
+            ));
+        };
+        if self.tracks.is_empty() {
+            return Err(SdkError::Protocol(
+                "activation builder lost tracks invariant".to_string(),
             ));
         }
         self.client

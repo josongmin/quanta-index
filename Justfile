@@ -22,7 +22,7 @@ rust-profile-list:
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
         'test-integration    contract/core/channel/lexical/repomap integration rail' \
-        'test-cli-smoke      CLI smoke tests for searchctl + conformance' \
+        'test-cli-smoke      CLI smoke tests for searchctl + corpus-smoke' \
         'test-daemon         searchd runtime scenario/e2e tests' \
         'verify-rust         standard merge gate' \
         'verify-rust-heavy   nightly/heavy correctness gate' \
@@ -160,7 +160,7 @@ rust-test-integration:
 
 rust-test-cli-smoke:
     {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-searchctl --test cli_smoke --all-features --locked
-    {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-conformance --test cli_smoke --all-features --locked
+    {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-corpus-smoke --test cli_smoke --all-features --locked
 
 rust-test-e2e:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked

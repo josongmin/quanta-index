@@ -882,6 +882,145 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
 }
 
 #[test]
+fn reader_client_routes_lexical_query_surface() {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            generation: sample_generation_pin(),
+            results: vec![sample_hit()],
+        },
+    )));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let response = ok_or_fail!(
+        client
+            .reader()
+            .lexical()
+            .native("reader needle")
+            .active(repo_id(), revision_id())
+            .top_k(4)
+            .execute()
+    );
+    assert_eq!(response.generation, sample_generation_pin());
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
+        ),
+        "expected text request, got {:?}",
+        captured.payload
+    );
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
+        return;
+    };
+    assert_eq!(req.query_text, "reader needle");
+    assert_eq!(req.top_k, 4);
+}
+
+#[test]
+fn producer_client_publish_lexical_accepts_unsealed_batches() {
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt::default()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = LexicalBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(2),
+        "manifest:unsealed",
+        "batch:unsealed",
+    )
+    .without_seal();
+    let _receipt = ok_or_fail!(client.producer().publish_lexical(&batch));
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            captured.payload,
+            SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+        ),
+        "expected lexical ingest request, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert!(
+        !wire.seal,
+        "unsealed producer publish must preserve seal=false"
+    );
+}
+
+#[test]
+fn producer_client_publish_lexical_and_activate_routes_ingest_then_control() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(7),
+        manifest_digest: "manifest:activate".to_string(),
+        accepted_replace_scopes: 0,
+        accepted_tombstone_scopes: 0,
+        sealed: true,
+    };
+    let ack = SearchPlaneActivationAck {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        manifest_generation: receipt.generation,
+        manifest_digest: receipt.manifest_digest.clone(),
+        tracks: vec![Track::Lexical],
+    };
+    let control = Arc::new(StubControlTransport::new(
+        quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(ack.clone()),
+    ));
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::LexicalReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
+    let batch = LexicalBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:activate",
+        "batch:activate",
+    );
+    let (observed_receipt, observed_ack) =
+        ok_or_fail!(client.producer().publish_lexical_and_activate(&batch));
+    assert_eq!(observed_receipt, receipt);
+    assert_eq!(observed_ack, ack);
+
+    let ingest_request = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(matches!(
+        ingest_request.payload,
+        SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+    ));
+    let control_request = ok_or_fail!(only_control_request(control.as_ref()));
+    let quanta_index_contract::SearchPlaneControlIpcRequest::ActivateGeneration(request) =
+        &control_request.payload
+    else {
+        return;
+    };
+    assert_eq!(request.repo_id, repo_id());
+    assert_eq!(request.revision_id, revision_id());
+    assert_eq!(request.manifest_generation, ManifestGeneration::new(7));
+    assert_eq!(request.manifest_digest, "manifest:activate");
+    assert_eq!(request.tracks, vec![Track::Lexical]);
+}
+
+#[test]
+fn control_client_activate_rejects_empty_track_iterables() {
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), unused_ingest());
+    let err = client
+        .control()
+        .activate()
+        .repo(repo_id())
+        .revision(revision_id())
+        .generation(ManifestGeneration::new(9))
+        .manifest_digest("manifest:empty")
+        .tracks([])
+        .err();
+    assert!(
+        matches!(err, Some(crate::SdkError::Usage(ref message)) if message.contains("at least one track")),
+        "expected Usage error for empty tracks, got {err:?}"
+    );
+}
+
+#[test]
 fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(3),

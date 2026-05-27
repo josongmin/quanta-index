@@ -85,6 +85,21 @@ impl QuantaIndex {
         GenerationNamespace::new(self)
     }
 
+    #[must_use]
+    pub fn reader(&self) -> ReaderClient<'_> {
+        ReaderClient::new(self)
+    }
+
+    #[must_use]
+    pub fn producer(&self) -> ProducerClient<'_> {
+        ProducerClient::new(self)
+    }
+
+    #[must_use]
+    pub fn control(&self) -> ControlClient<'_> {
+        ControlClient::new(self)
+    }
+
     /// Test-only generic namespace entry point used by SDK-local
     /// namespace conformance tests.
     #[cfg(test)]
@@ -282,5 +297,236 @@ impl QuantaIndex {
 
     fn next_request_id(&self) -> u64 {
         self.inner.next_request_id.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ReaderClient<'a> {
+    client: &'a QuantaIndex,
+}
+
+impl<'a> ReaderClient<'a> {
+    const fn new(client: &'a QuantaIndex) -> Self {
+        Self { client }
+    }
+
+    #[must_use]
+    pub fn lexical(&self) -> crate::LexicalQueryBuilder<'a> {
+        self.client.lexical().query()
+    }
+
+    pub fn lexical_request(
+        &self,
+        request: quanta_index_contract::TextQueryRequest,
+    ) -> Result<quanta_index_contract::TextQueryResponse, SdkError> {
+        self.client.lexical().query_request(request)
+    }
+
+    #[must_use]
+    pub fn symbol(&self) -> crate::SymbolQueryBuilder<'a> {
+        self.client.symbol().query()
+    }
+
+    pub fn symbol_request(
+        &self,
+        request: quanta_index_contract::SymbolQueryRequest,
+    ) -> Result<quanta_index_contract::SymbolQueryResponse, SdkError> {
+        self.client.symbol().query_request(request)
+    }
+
+    #[must_use]
+    pub fn semantic(&self) -> crate::SemanticQueryBuilder<'a> {
+        self.client.semantic().query()
+    }
+
+    pub fn semantic_request(
+        &self,
+        request: quanta_index_contract::SemanticQueryRequest,
+    ) -> Result<quanta_index_contract::SemanticQueryResponse, SdkError> {
+        self.client.semantic().query_request(request)
+    }
+
+    #[must_use]
+    pub fn hybrid(&self) -> crate::HybridQueryBuilder<'a> {
+        self.client.search().hybrid()
+    }
+
+    pub fn hybrid_request(
+        &self,
+        request: quanta_index_contract::HybridQueryRequest,
+    ) -> Result<quanta_index_contract::HybridQueryResponse, SdkError> {
+        self.client.search().hybrid_request(request)
+    }
+
+    pub fn explain(
+        &self,
+        generation: quanta_index_contract::GenerationPin,
+        candidate: quanta_index_contract::LexicalCandidate,
+    ) -> Result<quanta_index_contract::SearchPlaneExplainQueryResponse, SdkError> {
+        self.client.search().explain(generation, candidate)
+    }
+
+    #[must_use]
+    pub fn history(&self) -> crate::HistoryQueryBuilder<'a> {
+        self.client.history().query()
+    }
+
+    pub fn history_request(
+        &self,
+        request: quanta_index_contract::HistoryQueryRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneHistoryQueryResponse, SdkError> {
+        self.client.history().query_request(request)
+    }
+
+    #[must_use]
+    pub fn runtime(&self) -> crate::RuntimeQueryBuilder<'a> {
+        self.client.runtime().query()
+    }
+
+    pub fn runtime_request(
+        &self,
+        request: quanta_index_contract::RuntimeMetadataQueryRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
+        self.client.runtime().query_request(request)
+    }
+
+    #[must_use]
+    pub fn structural(&self) -> crate::StructuralQueryBuilder<'a> {
+        self.client.structural().query()
+    }
+
+    pub fn structural_request(
+        &self,
+        request: quanta_index_contract::StructuralQueryRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, SdkError> {
+        self.client.structural().query_request(request)
+    }
+
+    pub fn repomap_query(
+        &self,
+        request: quanta_index_contract::RepoMapQueryRequest,
+    ) -> Result<quanta_index_contract::RepoMapQueryResponse, SdkError> {
+        self.client.repomap().query(request)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ProducerClient<'a> {
+    client: &'a QuantaIndex,
+}
+
+impl<'a> ProducerClient<'a> {
+    const fn new(client: &'a QuantaIndex) -> Self {
+        Self { client }
+    }
+
+    pub fn publish_lexical<const SEALED: bool>(
+        &self,
+        batch: &crate::LexicalBatch<SEALED>,
+    ) -> Result<crate::BatchReceipt, SdkError> {
+        self.client.lexical().publish(batch)
+    }
+
+    pub fn publish_lexical_and_activate(
+        &self,
+        batch: &crate::LexicalBatch,
+    ) -> Result<
+        (
+            crate::BatchReceipt,
+            quanta_index_contract::SearchPlaneActivationAck,
+        ),
+        SdkError,
+    > {
+        self.client.lexical().publish_and_activate(batch)
+    }
+
+    pub fn publish_history(
+        &self,
+        batch: &crate::HistoryBatch,
+    ) -> Result<crate::BatchReceipt, SdkError> {
+        self.client.history().publish(batch)
+    }
+
+    pub fn publish_dirty(
+        &self,
+        batch: &crate::DirtyBatch,
+    ) -> Result<crate::BatchReceipt, SdkError> {
+        self.client.runtime().publish_dirty(batch)
+    }
+
+    pub fn publish_structural<const SEALED: bool>(
+        &self,
+        batch: &crate::StructuralBatch<SEALED>,
+    ) -> Result<crate::BatchReceipt, SdkError> {
+        self.client.structural().publish(batch)
+    }
+
+    pub fn publish_structural_and_activate(
+        &self,
+        batch: &crate::StructuralBatch,
+    ) -> Result<
+        (
+            crate::BatchReceipt,
+            quanta_index_contract::SearchPlaneActivationAck,
+        ),
+        SdkError,
+    > {
+        self.client.structural().publish_and_activate(batch)
+    }
+
+    pub fn publish_repomap(
+        &self,
+        bundle: &quanta_index_contract::RepoMapSourceBundle,
+    ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
+        self.client.repomap().publish(bundle)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ControlClient<'a> {
+    client: &'a QuantaIndex,
+}
+
+impl<'a> ControlClient<'a> {
+    const fn new(client: &'a QuantaIndex) -> Self {
+        Self { client }
+    }
+
+    #[must_use]
+    pub fn activate(&self) -> crate::ActivationBuilder<'a> {
+        self.client.generations().activate()
+    }
+
+    pub fn commit(
+        &self,
+        request: quanta_index_contract::SearchPlaneActivateGenerationRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneActivationAck, SdkError> {
+        self.client.generations().commit(request)
+    }
+
+    pub fn current(
+        &self,
+        repo_id: quanta_index_contract::RepoId,
+        revision_id: quanta_index_contract::RevisionId,
+        track: quanta_index_contract::SearchPlaneTrackKind,
+    ) -> Result<quanta_index_contract::GenerationSnapshot, SdkError> {
+        self.client
+            .generations()
+            .current(repo_id, revision_id, track)
+    }
+
+    pub fn status(
+        &self,
+        repo_id: quanta_index_contract::RepoId,
+        revision_id: quanta_index_contract::RevisionId,
+    ) -> Result<quanta_index_contract::GenerationStatusReport, SdkError> {
+        self.client.generations().status(repo_id, revision_id)
+    }
+
+    pub fn activate_repomap(
+        &self,
+        request: quanta_index_contract::RepoMapActivateGenerationRequest,
+    ) -> Result<quanta_index_contract::RepoMapMutationAck, SdkError> {
+        self.client.repomap().activate(request)
     }
 }

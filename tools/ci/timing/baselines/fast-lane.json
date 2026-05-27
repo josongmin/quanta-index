@@ -1,6 +1,6 @@
 {
   "summary": {
-    "targets": "quanta-index-semantic 0.1.0 (lib) quanta-index-core 0.1.0 (lib) quanta-index-lq-regex 0.1.0 (lib) quanta-index-contract 0.1.0 (lib) quanta-index-lq-norm 0.1.0 (lib) quanta-index-conformance 0.1.0 (lib, bin \"conformance\") quanta-index-lq-hybrid 0.1.0 (lib) quanta-index-lq-semantic 0.1.0 (lib) quanta-index-lq-history 0.1.0 (lib) quanta-index-repomap 0.1.0 (lib) quanta-index-lq-symbol 0.1.0 (lib) quanta-index-searchctl 0.1.0 (lib, bin \"quanta-index-searchctl\") quanta-index-lq-runtime 0.1.0 (lib) quanta-index-lq-ranker 0.1.0 (lib) quanta-index-lq-obs 0.1.0 (lib) quanta-index-search-plane 0.1.0 (lib) quanta-index-ipc 0.1.0 (lib) quanta-index-lq-scorer 0.1.0 (lib) quanta-index-lq-trigram 0.1.0 (lib) quanta-index-searchd 0.1.0 (lib) quanta-index-lq-bridge 0.1.0 (lib) quanta-index-lq-structural 0.1.0 (lib) quanta-index-lq-positions 0.1.0 (lib) quanta-index-sdk 0.1.0 (lib) quanta-index-contract-base 0.1.0 (lib) quanta-index-lq-text-norm 0.1.0 (lib) quanta-index-lexical 0.1.0 (lib)",
+    "targets": "quanta-index-semantic 0.1.0 (lib) quanta-index-core 0.1.0 (lib) quanta-index-lq-regex 0.1.0 (lib) quanta-index-contract 0.1.0 (lib) quanta-index-lq-norm 0.1.0 (lib) quanta-index-corpus-smoke 0.1.0 (lib, bin \"corpus-smoke\") quanta-index-lq-hybrid 0.1.0 (lib) quanta-index-lq-semantic 0.1.0 (lib) quanta-index-lq-history 0.1.0 (lib) quanta-index-repomap 0.1.0 (lib) quanta-index-lq-symbol 0.1.0 (lib) quanta-index-searchctl 0.1.0 (lib, bin \"quanta-index-searchctl\") quanta-index-lq-runtime 0.1.0 (lib) quanta-index-lq-ranker 0.1.0 (lib) quanta-index-lq-obs 0.1.0 (lib) quanta-index-search-plane 0.1.0 (lib) quanta-index-ipc 0.1.0 (lib) quanta-index-lq-scorer 0.1.0 (lib) quanta-index-lq-trigram 0.1.0 (lib) quanta-index-searchd 0.1.0 (lib) quanta-index-lq-bridge 0.1.0 (lib) quanta-index-lq-structural 0.1.0 (lib) quanta-index-lq-positions 0.1.0 (lib) quanta-index-sdk 0.1.0 (lib) quanta-index-contract-base 0.1.0 (lib) quanta-index-lq-text-norm 0.1.0 (lib) quanta-index-lexical 0.1.0 (lib)",
     "profile": "dev",
     "fresh_units": "0",
     "dirty_units": "208",
@@ -119,7 +119,7 @@
       "units": 2
     },
     {
-      "name": "quanta-index-conformance",
+      "name": "quanta-index-corpus-smoke",
       "duration": 1.0,
       "units": 2
     },

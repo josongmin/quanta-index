@@ -14,10 +14,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result as AnyResult;
-use quanta_index_conformance::{
+use quanta_index_contract::TextQuerySyntax;
+use quanta_index_corpus_smoke::{
     CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeSyntax, load_corpus,
 };
-use quanta_index_contract::TextQuerySyntax;
 use toml::Value;
 
 use crate::e2e_harness::{E2eQueryResult, E2eRuntime};

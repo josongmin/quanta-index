@@ -74,7 +74,7 @@ Cross-cut work that is now covered, but is **not** an RFC roll-up, lives in:
 |---|---|---|
 | [PRE-CONTRACT-EXT.md](PRE-CONTRACT-EXT.md) | 403 | Closes GAP-01..06; `LexicalErrorCode` v1 = 29 variants; `tenant_id`/`user_id` carrier surface added |
 | [PRE-NORM.md](PRE-NORM.md) | 417 | Parser+normalizer+`LqCanonicalHashV1` (CBOR+SHA-256); idempotency property; bounded inputs (16 KiB / depth 32 / fan-out 64 / NFA 100k / 256 structural) |
-| [PRE-CONF.md](PRE-CONF.md) | 452 | New `quanta-index-conformance` crate proposal; consumes `usecase-corpus/` (proposed location); junit XML + per-ticket p99 attribution |
+| [PRE-CONF.md](PRE-CONF.md) | 452 | New `quanta-index-corpus-smoke` crate proposal; consumes `usecase-corpus/` (proposed location); junit XML + per-ticket p99 attribution |
 
 ### Wave 1 — Lexical foundations
 
@@ -191,7 +191,7 @@ Implementation-plan.md §10 pre-seeded 16 ADR slots. Spec sheets surfaced overla
 | DSL-GAP-3 | `LqCanonicalHashV1` placeholder name | Rename via PRE-CONTRACT-EXT |
 | Wave-0 exit verdict | impl-plan says "100 rows blocked"; reality 15+ are `error_expected` | impl-plan §4.1 sentence revision |
 | PRE-CONF corpus location | impl-plan vs usecase.md vs rfc.md disagree on directory | Default `usecase-corpus/`; tracked in PRE-CONF §12 |
-| PRE-CONF test target | impl-plan says `quanta-index-contract --test lq_conformance`; spec says new `quanta-index-conformance` crate | Default new crate per PRE-CONF |
+| PRE-CONF test target | impl-plan says `quanta-index-contract --test lq_conformance`; spec says new `quanta-index-corpus-smoke` crate | Default new crate per PRE-CONF |
 
 ### 3.5 G-CONTROL-LOC (resolved via channel-arch SSOT)
 

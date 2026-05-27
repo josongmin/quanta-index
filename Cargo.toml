@@ -19,15 +19,11 @@ members = [
     "crates/quanta-index-lq-positions",
     "crates/quanta-index-lq-regex",
     "crates/quanta-index-lq-symbol",
-    "crates/quanta-index-lq-ranker",
-    "crates/quanta-index-lq-history",
-    "crates/quanta-index-lq-runtime",
     "crates/quanta-index-lq-structural",
-    "crates/quanta-index-lq-semantic",
     "crates/quanta-index-lq-hybrid",
     "crates/quanta-index-lq-bridge",
     "crates/quanta-index-lq-obs",
-    "crates/quanta-index-conformance",
+    "crates/quanta-index-corpus-smoke",
 ]
 resolver = "2"
 

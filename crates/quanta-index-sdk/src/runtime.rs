@@ -133,7 +133,12 @@ impl crate::NamespaceQuery for RuntimeNs {
     }
 }
 
-pub struct RuntimeQueryBuilder<'a> {
+pub struct RuntimeQueryBuilder<
+    'a,
+    const HAS_TEXT: bool = false,
+    const HAS_SELECTION: bool = false,
+    const HAS_TOP_K: bool = false,
+> {
     client: &'a QuantaIndex,
     state: TextQueryBuilderState,
 }
@@ -145,42 +150,74 @@ impl<'a> RuntimeQueryBuilder<'a> {
             state: TextQueryBuilderState::new(),
         }
     }
+}
 
-    #[must_use]
-    pub fn native(mut self, query_text: impl Into<String>) -> Self {
-        self.state.syntax = TextQuerySyntax::Native;
-        self.state.query_text = Some(query_text.into());
-        self
+impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
+    RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+{
+    fn transition<const NEXT_TEXT: bool, const NEXT_SELECTION: bool, const NEXT_TOP_K: bool>(
+        mut self,
+        update: impl FnOnce(&mut TextQueryBuilderState),
+    ) -> RuntimeQueryBuilder<'a, NEXT_TEXT, NEXT_SELECTION, NEXT_TOP_K> {
+        update(&mut self.state);
+        RuntimeQueryBuilder {
+            client: self.client,
+            state: self.state,
+        }
     }
 
     #[must_use]
-    pub fn sourcegraph(mut self, query_text: impl Into<String>) -> Self {
-        self.state.syntax = TextQuerySyntax::Sourcegraph;
-        self.state.query_text = Some(query_text.into());
-        self
+    pub fn native(
+        self,
+        query_text: impl Into<String>,
+    ) -> RuntimeQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+        self.transition(|state| {
+            state.syntax = TextQuerySyntax::Native;
+            state.query_text = Some(query_text.into());
+        })
     }
 
     #[must_use]
-    pub fn pinned(mut self, pin: GenerationPin) -> Self {
-        self.state.selection = Some(GenerationSelector::Pinned(pin));
-        self
+    pub fn sourcegraph(
+        self,
+        query_text: impl Into<String>,
+    ) -> RuntimeQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+        self.transition(|state| {
+            state.syntax = TextQuerySyntax::Sourcegraph;
+            state.query_text = Some(query_text.into());
+        })
     }
 
     #[must_use]
-    pub fn active(mut self, repo_id: RepoId, revision_id: RevisionId) -> Self {
-        self.state.selection = Some(GenerationSelector::Active {
-            repo_id,
-            revision_id,
-        });
-        self
+    pub fn pinned(self, pin: GenerationPin) -> RuntimeQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K> {
+        self.transition(|state| {
+            state.selection = Some(GenerationSelector::Pinned(pin));
+        })
     }
 
     #[must_use]
-    pub fn top_k(mut self, top_k: u32) -> Self {
-        self.state.top_k = Some(top_k);
-        self
+    pub fn active(
+        self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    ) -> RuntimeQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K> {
+        self.transition(|state| {
+            state.selection = Some(GenerationSelector::Active {
+                repo_id,
+                revision_id,
+            });
+        })
     }
 
+    #[must_use]
+    pub fn top_k(self, top_k: u32) -> RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, true> {
+        self.transition(|state| {
+            state.top_k = Some(top_k);
+        })
+    }
+}
+
+impl RuntimeQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<SearchPlaneRuntimeMetadataQueryResponse, SdkError> {
         let text_query = self.state.build_request("runtime")?;
         dispatch_runtime_query_request_v1(self.client, RuntimeMetadataQueryRequest { text_query })

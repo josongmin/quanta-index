@@ -1,4 +1,4 @@
-//! Smoke test for the `conformance` bin.
+//! Smoke test for the `corpus-smoke` bin.
 //!
 //! Spawns the freshly built binary via `std::process::Command`, points
 //! it at a temp TOML corpus + temp output path, and asserts:
@@ -8,7 +8,7 @@
 //! 2. the `--output` file was created and starts with the expected
 //!    `<?xml` `JUnit` preamble
 //!
-//! Why only gated rows? The v1 wiring uses `MockExecutor::new()` which
+//! Why only gated rows? The wiring uses `MockExecutor::new()` which
 //! returns `NOT_IMPLEMENTED` for any active row — that path produces
 //! `UnexpectedError`, which keeps `summary.failed == 0` but pushes
 //! `summary.unexpected_error > 0`. The spec-sheet §11 contract is keyed
@@ -23,8 +23,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-/// Path to the built `conformance` bin as injected by Cargo.
-const BIN_PATH: &str = env!("CARGO_BIN_EXE_conformance");
+/// Path to the built `corpus-smoke` bin as injected by Cargo.
+const BIN_PATH: &str = env!("CARGO_BIN_EXE_corpus-smoke");
 
 /// Create a temp dir or abort the test loudly.
 ///
@@ -86,7 +86,7 @@ kind = "single"
 /// to force a true `Verdict::Fail` we declare `expected = error` with
 /// `PARSE_ERROR` and let the executor's `NOT_IMPLEMENTED` mismatch the
 /// declared code. This is the only deterministic way to drive
-/// `summary.failed > 0` against the v1 mock wiring — every other path
+/// `summary.failed > 0` against the mock wiring — every other path
 /// would either pass or fall into `UnexpectedError` (which doesn't bump
 /// `summary.failed`).
 const FAILING_CORPUS: &str = r#"

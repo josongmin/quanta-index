@@ -99,7 +99,7 @@ detect_lane() {
         return 0
       fi
       if has_arg "--test" "$@"; then
-        if [[ "$package_name" == "quanta-index-searchctl" || "$package_name" == "quanta-index-conformance" ]]; then
+        if [[ "$package_name" == "quanta-index-searchctl" || "$package_name" == "quanta-index-corpus-smoke" ]]; then
           printf '%s\n' "test-cli-smoke-lane"
           return 0
         fi

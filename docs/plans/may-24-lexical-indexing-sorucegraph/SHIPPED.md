@@ -51,7 +51,7 @@ All 17 crates ship under [`crates/`](../../../crates/). Test counts are aggregat
 |---|---|---|---|---|---|---|
 | 1 | [`quanta-index-contract`](../../../crates/quanta-index-contract/) (`lex::*` subtree) | 0 | PRE-CONTRACT-EXT | 43 | `LexicalErrorCode` (29+ variants), `SymbolKind`, `CommitCandidate`, `DiffCandidate`, `StructuralCandidate`, `BridgeCandidatePacket`, `SearchExplanation` v2, `LqQuery.lq_version`, `LexicalChannelOp` | hand-rolled serde per D18; downstream per-crate `From<ErrorCode>` migration still pending |
 | 2 | [`quanta-index-lq-norm`](../../../crates/quanta-index-lq-norm/) | 0 | PRE-NORM | 75 | `LqParser`, `LqCanonical::normalize`, `LqCanonicalHashV1` | recursive-descent parser; CBOR canonical encoding; idempotency proptest 1k cases; 5 originally-deferred items completed |
-| 3 | [`quanta-index-conformance`](../../../crates/quanta-index-conformance/) | 0 | PRE-CONF | 32 | `ConformanceRunner::run_one`, `CorpusRow`, `ConformanceVerdict` | TOML corpus format; CLI shim landed; `StubLqEngine` fixture |
+| 3 | [`quanta-index-corpus-smoke`](../../../crates/quanta-index-corpus-smoke/) | 0 | PRE-CONF | 32 | `ConformanceRunner::run_one`, `CorpusRow`, `ConformanceVerdict` | TOML corpus format; CLI shim landed; `StubLqEngine` fixture |
 | 4 | [`quanta-index-lq-text-norm`](../../../crates/quanta-index-lq-text-norm/) | 1 | LEX-00 | 57 | `LexicalNormalizer`, identifier splitter | NFC + NFKC active; v1 ship-langs = Rust/Python/TS/JS/Go; `patterntype:literal` skips splitter |
 | 5 | [`quanta-index-lq-scorer`](../../../crates/quanta-index-lq-scorer/) | 1 | LEX-01 | 43 | `LexicalScorer`, `LexicalScorerManifestPort` | per-generation `idf_table.cbor` + `scorer_manifest.cbor`; `f32 ∈ [0.0, 1.0]` score envelope; BM25 `(k1, b)` pinned (ADR-010 closed) |
 | 6 | [`quanta-index-lq-trigram`](../../../crates/quanta-index-lq-trigram/) | 2 | LEX-02 | 56 | byte-trigram index, `memmem::find` verify path | byte trigrams (not code-point); caps 4k trigrams/query, 100k candidates pre-verify; pure-wildcard regex → verify-only |
@@ -81,7 +81,7 @@ Per [tickets/INDEX.md §1.1](tickets/INDEX.md) the 17 spec sheets are per-subsys
 |---|---|---|---|---|
 | (Wave-0 prerequisite, not in RFC pack) | [PRE-CONTRACT-EXT.md](tickets/PRE-CONTRACT-EXT.md) | `quanta-index-contract::lex::*` | 43 | green |
 | `LEX-01` "canonical query AST and parser" | [PRE-NORM.md](tickets/PRE-NORM.md) + [LEX-01.md](tickets/LEX-01.md) | `quanta-index-lq-norm` + `quanta-index-lq-scorer` | 75 + 43 | green |
-| (Wave-0 prerequisite) | [PRE-CONF.md](tickets/PRE-CONF.md) | `quanta-index-conformance` | 32 | green |
+| (Wave-0 prerequisite) | [PRE-CONF.md](tickets/PRE-CONF.md) | `quanta-index-corpus-smoke` | 32 | green |
 | `LEX-00` "baseline and invariants freeze" | [LEX-00.md](tickets/LEX-00.md) | `quanta-index-lq-text-norm` | 57 | green |
 | `LEX-04` "incremental lexical indexing kernel" — trigram shard | [LEX-02.md](tickets/LEX-02.md) | `quanta-index-lq-trigram` | 56 | green |
 | `LEX-04` partial — position shard | [LEX-03.md](tickets/LEX-03.md) | `quanta-index-lq-positions` | 72 | green |
@@ -215,7 +215,7 @@ Two RFC `§Ticket Pack` entries were re-scoped during execution; the shipped beh
 | UC-EDGE-10 vs dsl.md §6.1 filter case sensitivity | dsl.md wins (case-insensitive lookup, lower-cased canonical); usecase.md follow-up filed |
 | Wave-0 exit verdict (impl-plan "100 rows blocked") | revised — 139-row corpus, PRE-CONF reports per-row `ok` / `error_expected` / `blocked` accurately |
 | PRE-CONF corpus location | default `usecase-corpus/` per PRE-CONF §12 |
-| PRE-CONF test target | new crate `quanta-index-conformance` per PRE-CONF spec |
+| PRE-CONF test target | new crate `quanta-index-corpus-smoke` per PRE-CONF spec |
 | G-CONTROL-LOC (working-tree divergence) | resolved via channel-arch SSOT §5.2 — in-memory ledgers replace SQLite control plane |
 
 ---
@@ -329,7 +329,7 @@ For each of the 17 crates the four per-crate rails are green:
 |---|---|---|---|---|---|
 | `quanta-index-contract` (`lex::*`) | green | green | 43 / 43 | green | 0 |
 | `quanta-index-lq-norm` | green | green | 75 / 75 | green | 0 |
-| `quanta-index-conformance` | green | green | 32 / 32 | green | 0 |
+| `quanta-index-corpus-smoke` | green | green | 32 / 32 | green | 0 |
 | `quanta-index-lq-text-norm` | green | green | 57 / 57 | green | 0 |
 | `quanta-index-lq-scorer` | green | green | 43 / 43 | green | 0 |
 | `quanta-index-lq-trigram` | green | green | 56 / 56 | green | 0 |

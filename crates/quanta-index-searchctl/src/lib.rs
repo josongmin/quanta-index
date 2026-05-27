@@ -13,9 +13,10 @@ use std::process::ExitCode;
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, SearchExplanation, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SemanticQueryRequest, SymbolCandidate,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -88,10 +89,12 @@ impl OutputMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandKind {
     Lexical,
+    Symbol,
     Semantic,
     Hybrid,
     Explain,
     RepoMap,
+    RuntimeMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +153,7 @@ impl CommonOptions {
 #[derive(Clone, Debug, PartialEq)]
 enum CliRequest {
     Lexical(TextQueryRequest),
+    Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
     Hybrid(HybridQueryRequest),
     Explain {
@@ -157,6 +161,7 @@ enum CliRequest {
         candidate: LexicalCandidate,
     },
     RepoMap(RepoMapQueryRequest),
+    RuntimeMetadata(RuntimeMetadataQueryRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +194,7 @@ impl ParsedCommand {
         };
         let (kind, payload) = match subcommand.as_str() {
             "lexical" => (CommandKind::Lexical, parse_lexical(&mut common, &mut rest)?),
+            "symbol" => (CommandKind::Symbol, parse_symbol(&mut common, &mut rest)?),
             "semantic" => (
                 CommandKind::Semantic,
                 parse_semantic(&mut common, &mut rest)?,
@@ -198,9 +204,13 @@ impl ParsedCommand {
             "repomap" | "repomap-query" => {
                 (CommandKind::RepoMap, parse_repomap(&mut common, &mut rest)?)
             }
+            "runtime-metadata" => (
+                CommandKind::RuntimeMetadata,
+                parse_runtime_metadata(&mut common, &mut rest)?,
+            ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|semantic|hybrid|explain|repomap"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|explain|repomap|runtime-metadata"
                 )));
             }
         };
@@ -311,6 +321,92 @@ fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
         generation: Some(generation),
         generation_selector: None,
         top_k,
+    }))
+}
+
+fn parse_symbol(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    let mut generation_args = PinnedGenerationArgs::default();
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "symbol",
+        |current, rest| match current {
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
+    let generation = generation_args.into_generation_pin()?;
+    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
+    let query_text =
+        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
+    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
+    Ok(CliRequest::Symbol(SymbolQueryRequest {
+        syntax,
+        query_text,
+        generation: Some(generation),
+        generation_selector: None,
+        top_k,
+    }))
+}
+
+fn parse_runtime_metadata(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let mut generation_args = PinnedGenerationArgs::default();
+    let mut syntax: Option<TextQuerySyntax> = None;
+    let mut query_text: Option<String> = None;
+    let mut top_k: Option<u32> = None;
+    parse_query_command_flags(
+        common,
+        &mut generation_args,
+        rest,
+        "runtime-metadata",
+        |current, rest| match current {
+            "--syntax" => {
+                syntax = Some(parse_syntax(&take_value(rest, "--syntax")?)?);
+                Ok(true)
+            }
+            "--query-text" => {
+                query_text = Some(take_value(rest, "--query-text")?);
+                Ok(true)
+            }
+            "--top-k" => {
+                top_k = Some(parse_u32_flag(rest, "--top-k")?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+    )?;
+    let generation = generation_args.into_generation_pin()?;
+    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
+    let query_text =
+        query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
+    let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
+    let text_query = TextQueryRequest {
+        syntax,
+        query_text,
+        generation: Some(generation),
+        generation_selector: None,
+        top_k,
+    };
+    Ok(CliRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
+        text_query,
     }))
 }
 
@@ -562,6 +658,12 @@ fn dispatch_query_request(
                 .query_request(text)
                 .map_err(map_sdk_error)?,
         ),
+        CliRequest::Symbol(symbol) => SearchPlaneQueryIpcResponse::Symbol(
+            client
+                .symbol()
+                .query_request(symbol)
+                .map_err(map_sdk_error)?,
+        ),
         CliRequest::Semantic(semantic) => SearchPlaneQueryIpcResponse::Semantic(
             client
                 .semantic()
@@ -576,6 +678,12 @@ fn dispatch_query_request(
         ),
         CliRequest::RepoMap(repomap) => SearchPlaneQueryIpcResponse::RepoMapQuery(
             client.repomap().query(repomap).map_err(map_sdk_error)?,
+        ),
+        CliRequest::RuntimeMetadata(runtime) => SearchPlaneQueryIpcResponse::RuntimeMetadata(
+            client
+                .runtime()
+                .query_request(runtime)
+                .map_err(map_sdk_error)?,
         ),
         CliRequest::Explain {
             generation,
@@ -682,10 +790,12 @@ fn validate_response_kind(
             error.code, error.message
         ))),
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
+        | (CommandKind::Symbol, SearchPlaneQueryIpcResponse::Symbol(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
         | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
-        | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_)) => Ok(()),
+        | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
+        | (CommandKind::RuntimeMetadata, SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(()),
         _ => Err(CliError::protocol(format!(
             "response kind `{}` does not match requested command `{}`",
             response_kind_name(&response.payload),
@@ -729,9 +839,7 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Text(payload) => {
             render_lexical_payload("lexical", payload, None, rendered)
         }
-        SearchPlaneQueryIpcResponse::Symbol(_payload) => Err(CliError::protocol(
-            "unsupported pretty renderer for response kind `Symbol`".to_string(),
-        )),
+        SearchPlaneQueryIpcResponse::Symbol(payload) => render_symbol_payload(payload, rendered),
         SearchPlaneQueryIpcResponse::Semantic(payload) => render_lexical_payload(
             "semantic",
             &TextQueryResponse {
@@ -820,10 +928,12 @@ fn render_pretty(
             "{}: {}",
             error.code, error.message
         ))),
+        SearchPlaneQueryIpcResponse::RuntimeMetadata(payload) => {
+            render_runtime_metadata_payload(payload, rendered)
+        }
         SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
-        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => Err(CliError::protocol(format!(
+        | SearchPlaneQueryIpcResponse::Bridge(_) => Err(CliError::protocol(format!(
             "unsupported pretty renderer for response kind `{}`",
             response_kind_name(&response.payload)
         ))),
@@ -859,6 +969,74 @@ fn render_lexical_payload(
     }
     if let Some(explanation) = explanation {
         render_explanation(explanation, rendered)?;
+    }
+    Ok(())
+}
+
+fn render_symbol_payload(payload: &SymbolQueryResponse, rendered: &mut String) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: symbol"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    for (index, candidate) in payload.results.iter().enumerate() {
+        let display_index = index
+            .checked_add(1)
+            .ok_or_else(|| CliError::protocol("symbol candidate index overflow".to_string()))?;
+        render_symbol_candidate(display_index, candidate, rendered)?;
+    }
+    Ok(())
+}
+
+fn render_symbol_candidate(
+    display_index: usize,
+    candidate: &SymbolCandidate,
+    rendered: &mut String,
+) -> CliResult<()> {
+    let family = candidate.symbol_kind_family.map_or(
+        "-",
+        quanta_index_contract::lex::SymbolKindFamily::as_code_str,
+    );
+    fmt_ok(writeln!(
+        rendered,
+        "{}. candidate_id={} path={} lines={}-{} score={} symbol_kind={} symbol_kind_family={}",
+        display_index,
+        candidate.candidate_id,
+        candidate.repo_relative_path.as_str(),
+        candidate.start_line,
+        candidate.end_line,
+        candidate.score,
+        candidate.symbol_kind.as_str(),
+        family,
+    ))?;
+    for line in candidate.snippet.lines() {
+        fmt_ok(writeln!(rendered, "   {line}"))?;
+    }
+    Ok(())
+}
+
+fn render_runtime_metadata_payload(
+    payload: &SearchPlaneRuntimeMetadataQueryResponse,
+    rendered: &mut String,
+) -> CliResult<()> {
+    fmt_ok(writeln!(rendered, "kind: runtime-metadata"))?;
+    render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
+    for (index, candidate) in payload.results.iter().enumerate() {
+        let display_index = index.checked_add(1).ok_or_else(|| {
+            CliError::protocol("runtime-metadata candidate index overflow".to_string())
+        })?;
+        fmt_ok(writeln!(
+            rendered,
+            "{}. candidate_id={} path={} lines={}-{} score={}",
+            display_index,
+            candidate.candidate_id,
+            candidate.repo_relative_path.as_str(),
+            candidate.start_line,
+            candidate.end_line,
+            candidate.score
+        ))?;
+        for line in candidate.snippet.lines() {
+            fmt_ok(writeln!(rendered, "   {line}"))?;
+        }
     }
     Ok(())
 }
@@ -941,10 +1119,12 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
 fn command_kind_name(kind: CommandKind) -> &'static str {
     match kind {
         CommandKind::Lexical => "lexical",
+        CommandKind::Symbol => "symbol",
         CommandKind::Semantic => "semantic",
         CommandKind::Hybrid => "hybrid",
         CommandKind::Explain => "explain",
         CommandKind::RepoMap => "repomap",
+        CommandKind::RuntimeMetadata => "runtime-metadata",
     }
 }
 
@@ -1007,11 +1187,13 @@ Global flags:
   --output pretty|json
 
 Read-only subcommands:
-  lexical  --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT
-  semantic --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
-  hybrid   --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
-  explain  --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
-  repomap  --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
+  lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
+  hybrid           --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
+  explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
+  repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
+  runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
 "
 }
 
@@ -1295,6 +1477,199 @@ mod tests {
                 .with_control_socket("/tmp/quanta/control.sock")
                 .with_ingest_socket("/tmp/quanta/ingest.sock")
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test asserts payload variant shape; panic isolates failure to this single test"
+    )]
+    fn parses_symbol_query_request() {
+        let parsed = ParsedCommand::parse([
+            "symbol",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "MySymbol",
+            "--top-k",
+            "5",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let CliRequest::Symbol(request) = parsed.request else {
+            panic!("expected symbol payload");
+        };
+        assert_eq!(request.syntax, TextQuerySyntax::Native);
+        assert_eq!(request.query_text.as_str(), "MySymbol");
+        assert_eq!(request.top_k, 5);
+        assert_eq!(
+            request.generation.map(|pin| pin.manifest_generation.get()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn rejects_symbol_missing_top_k() {
+        let parsed = ParsedCommand::parse([
+            "symbol",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--syntax",
+            "native",
+            "--query-text",
+            "MySymbol",
+        ]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--top-k"));
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        reason = "test asserts payload variant shape; panic isolates failure to this single test"
+    )]
+    fn parses_runtime_metadata_query_request() {
+        let parsed = ParsedCommand::parse([
+            "runtime-metadata",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "9",
+            "--syntax",
+            "sourcegraph",
+            "--query-text",
+            "lang:rust runtime",
+            "--top-k",
+            "3",
+        ]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        let CliRequest::RuntimeMetadata(request) = parsed.request else {
+            panic!("expected runtime-metadata payload");
+        };
+        assert_eq!(request.text_query.syntax, TextQuerySyntax::Sourcegraph);
+        assert_eq!(request.text_query.query_text.as_str(), "lang:rust runtime");
+        assert_eq!(request.text_query.top_k, 3);
+        assert_eq!(
+            request
+                .text_query
+                .generation
+                .map(|pin| pin.manifest_generation.get()),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_subcommand() {
+        let parsed = ParsedCommand::parse(["nonsense"]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("symbol"));
+        assert!(error.message.contains("runtime-metadata"));
+    }
+
+    #[test]
+    fn pretty_renderer_supports_symbol_response() {
+        use quanta_index_contract::{
+            RepoRelativePath, SymbolQueryResponse,
+            lex::{SymbolKindCode, SymbolKindFamily},
+        };
+        let Ok(symbol_kind) = SymbolKindCode::new("function") else {
+            return;
+        };
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::Symbol(SymbolQueryResponse {
+                generation: GenerationPin::new(
+                    RepoId::new("repo"),
+                    RevisionId::new("rev"),
+                    ManifestGeneration::new(7),
+                ),
+                results: vec![SymbolCandidate {
+                    candidate_id: "sym-1".to_string(),
+                    repo_id: RepoId::new("repo"),
+                    revision_id: RevisionId::new("rev"),
+                    manifest_generation: ManifestGeneration::new(7),
+                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                    start_line: 10,
+                    end_line: 12,
+                    score: 0.8,
+                    snippet: "fn my_symbol() {}".to_string(),
+                    symbol_kind,
+                    symbol_kind_family: Some(SymbolKindFamily::Callable),
+                }],
+            }),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: symbol"));
+            assert!(text.contains("symbol_kind=function"));
+            assert!(text.contains("symbol_kind_family=Callable"));
+        }
+    }
+
+    #[test]
+    fn pretty_renderer_supports_runtime_metadata_response() {
+        use quanta_index_contract::RepoRelativePath;
+        let response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 1,
+            payload: SearchPlaneQueryIpcResponse::RuntimeMetadata(
+                SearchPlaneRuntimeMetadataQueryResponse {
+                    generation: GenerationPin::new(
+                        RepoId::new("repo"),
+                        RevisionId::new("rev"),
+                        ManifestGeneration::new(7),
+                    ),
+                    results: vec![LexicalCandidate {
+                        candidate_id: "rt-1".to_string(),
+                        repo_id: RepoId::new("repo"),
+                        revision_id: RevisionId::new("rev"),
+                        manifest_generation: ManifestGeneration::new(7),
+                        repo_relative_path: RepoRelativePath::new("src/runtime.rs"),
+                        start_line: 1,
+                        end_line: 4,
+                        score: 0.3,
+                        snippet: "runtime body".to_string(),
+                    }],
+                },
+            ),
+        };
+        let mut stdout = Vec::new();
+        let rendered = render_response(OutputMode::Pretty, &response, &mut stdout);
+        assert!(rendered.is_ok());
+        let text = String::from_utf8(stdout);
+        assert!(text.is_ok());
+        if let Ok(text) = text {
+            assert!(text.contains("kind: runtime-metadata"));
+            assert!(text.contains("results: 1"));
+        }
     }
 
     #[test]

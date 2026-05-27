@@ -21,10 +21,10 @@ pub(crate) mod text_query_builder;
 mod transport;
 
 pub use batch::{BatchMode, BatchReceipt};
-pub use client::QuantaIndex;
+pub use client::{ControlClient, ProducerClient, QuantaIndex, ReaderClient};
 pub use config::ConnectOptions;
 pub use error::SdkError;
-pub use generations::GenerationNamespace;
+pub use generations::{ActivationBuilder, GenerationNamespace};
 pub use history::{
     DiffHunkMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
 };

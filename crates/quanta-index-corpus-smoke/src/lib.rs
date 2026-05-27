@@ -1,11 +1,16 @@
 #![forbid(unsafe_code)]
 
-//! PRE-CONF — Conformance corpus runner for the LQ family.
+//! Corpus parser / runner smoke test for the LQ family.
 //!
 //! Wires together: a TOML corpus loader, a pure `run_corpus` function
 //! over [`LqQueryNormalizer`] + [`ConformanceExecutor`] traits, and a
-//! `JUnit` XML emitter. Mocks live under [`mocks`] for self-tests; the
-//! real normalizer arrives via PRE-NORM.
+//! `JUnit` XML emitter. Mocks live under [`mocks`] so the crate can
+//! self-test the corpus parser + runner shape end-to-end without any
+//! real producer or search-plane wiring.
+//!
+//! This crate is intentionally narrow: it is a smoke test of the
+//! corpus parser + runner skeleton, not a cross-plane conformance
+//! gate. The real conformance gate arrives via PRE-NORM (separately).
 //!
 //! Surface guarantees:
 //!

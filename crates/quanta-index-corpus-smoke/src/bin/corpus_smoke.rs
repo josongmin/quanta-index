@@ -1,9 +1,9 @@
-//! `conformance` CLI shim — spec sheet §11.
+//! `corpus-smoke` CLI shim — spec sheet §11.
 //!
 //! Usage:
 //!
 //! ```text
-//! cargo run -p quanta-index-conformance --bin conformance -- \
+//! cargo run -p quanta-index-corpus-smoke --bin corpus-smoke -- \
 //!     --corpus PATH --output PATH
 //! ```
 //!
@@ -12,9 +12,9 @@
 //! - `1` on any other terminal condition (load failure, IO failure,
 //!   render failure, or `report.summary.failed > 0`)
 //!
-//! The v1 wiring uses [`MockNormalizer`] + [`MockExecutor`]; the real
-//! normalizer arrives via PRE-NORM, at which point this bin gets a
-//! constructor swap, not a structural rewrite.
+//! The wiring uses [`MockNormalizer`] + [`MockExecutor`]; the real
+//! normalizer arrives via PRE-NORM (separately), at which point this
+//! bin gets a constructor swap, not a structural rewrite.
 //!
 //! Surface guarantees:
 //! - hand-rolled argv parser, no `clap` dep
@@ -33,7 +33,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use quanta_index_conformance::{
+use quanta_index_corpus_smoke::{
     Report, load_corpus,
     mocks::{MockExecutor, MockNormalizer},
     render_junit, run_corpus,
@@ -56,7 +56,7 @@ fn main() -> ExitCode {
             // is nothing useful to do beyond surfacing the non-zero
             // exit code.
             let _stderr_result: io::Result<()> =
-                writeln!(io::stderr().lock(), "conformance: {err}");
+                writeln!(io::stderr().lock(), "corpus-smoke: {err}");
             ExitCode::from(EXIT_FAIL)
         }
     }
@@ -73,8 +73,8 @@ struct CliArgs {
 
 /// Closed-set CLI failure mode.
 ///
-/// Distinct from [`quanta_index_conformance::CorpusLoadError`] /
-/// [`quanta_index_conformance::ConformanceError`] because those describe
+/// Distinct from [`quanta_index_corpus_smoke::CorpusLoadError`] /
+/// [`quanta_index_corpus_smoke::ConformanceError`] because those describe
 /// the *content* of the corpus run; `CliError` describes the *driver*
 /// surface (argv shape, IO around the report file).
 #[derive(Debug)]
@@ -247,7 +247,7 @@ fn write_summary(report: &Report) -> Result<(), CliError> {
     let s = &report.summary;
     writeln!(
         handle,
-        "conformance: total={} passed={} failed={} pending={} expected_error={} unexpected_error={} elapsed_us={}",
+        "corpus-smoke: total={} passed={} failed={} pending={} expected_error={} unexpected_error={} elapsed_us={}",
         s.total,
         s.passed,
         s.failed,
@@ -268,7 +268,7 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         let mut v: Vec<OsString> = Vec::with_capacity(values.len().saturating_add(1));
-        v.push(OsString::from("conformance"));
+        v.push(OsString::from("corpus-smoke"));
         for s in values {
             v.push(OsString::from(*s));
         }

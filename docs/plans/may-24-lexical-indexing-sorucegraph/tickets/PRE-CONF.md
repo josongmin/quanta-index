@@ -3,11 +3,11 @@
 | field | value |
 |---|---|
 | Status | shipped |
-| Crate | `quanta-index-conformance` |
+| Crate | `quanta-index-corpus-smoke` |
 | Tests | 32 |
 | Last verified | 2026-05-25 |
 | Wave | 0 |
-| Owner crate(s) | `quanta-index-conformance` crate (default-position landed: standalone crate, not in-tree test target) |
+| Owner crate(s) | `quanta-index-corpus-smoke` crate (default-position landed: standalone crate, not in-tree test target) |
 | Touches contract | no — consumes `quanta-index-contract` types only |
 | Size | M (~5–7d engineer-time; 100 corpus rows, TOML schema, runner, CI rail, drift detection) |
 | Depends on | PRE-CONTRACT-EXT (typed `LexicalErrorCode` enum + every new candidate / packet type), PRE-NORM (`parse_normalize_hash` pipeline) |
@@ -34,12 +34,12 @@ Current state vs. RFC-mandated state:
 
 - **Runner**: absent ([implementation-plan.md § 2.8](../implementation-plan.md) — "Conformance corpus runner absent — PRE-CONF in § 3"). No code, no fixture, no CI rail.
 - **Corpus**: spec'd only — [usecase.md § 2](../usecase.md) lists 85 UC-* rows; [usecase.md § 4](../usecase.md) lists 15 AC-* rows. No `.toml` / `.yaml` files exist on disk. [usecase.md § 6 Golden file format](../usecase.md) proposes TOML.
-- **CI gate**: [usecase.md § 6](../usecase.md) calls for `cargo test -p quanta-index-contract --test lq_conformance`; this ticket either implements that target or (per ADR-006) creates a new `quanta-index-conformance` test-only crate. [implementation-plan.md § 5.3](../implementation-plan.md) DoD bullet 4 names `ci/lq-conformance` as the CI rail.
+- **CI gate**: [usecase.md § 6](../usecase.md) calls for `cargo test -p quanta-index-contract --test lq_conformance`; this ticket either implements that target or (per ADR-006) creates a new `quanta-index-corpus-smoke` test-only crate. [implementation-plan.md § 5.3](../implementation-plan.md) DoD bullet 4 names `ci/lq-conformance` as the CI rail.
 - **Agent output schema**: every conformance run validates against [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json) — `ok` / `blocked` / `error`. Rows without evidence are `blocked`, not `ok` (per [CLAUDE.md](../../../../CLAUDE.md) § Verification).
 - **StubLqEngine**: per [implementation-plan.md § 8.4](../implementation-plan.md) Mock policy, allowed only behind `#[cfg(test)]`; retired per-wave as real engines come online (parser path retires at Wave-1; executor path at Wave-3; ranking path at Wave-4). This ticket lands the initial Stub.
 - **Pending / blocked rows**: explicitly enumerated in [usecase.md § 3](../usecase.md) — `UC-RT-08` (`dirty:`) and `UC-BR-01..04` are `blocked` until later waves. The runner must support `blocked` as a terminal verdict per the schema, **not auto-skip** these rows ([CLAUDE.md](../../../../CLAUDE.md) "no `ok` status when required inputs ... remain").
 
-Honest gap: **physical home for the runner is unresolved**. The default position recorded by this ticket is a fresh `quanta-index-conformance` crate (parallels the proposed-but-not-resolved `quanta-index-lq-norm` from PRE-NORM). Final decision is forced by ADR-006 ([implementation-plan.md § 10](../implementation-plan.md)) and is logged in §12.
+Honest gap: **physical home for the runner is unresolved**. The default position recorded by this ticket is a fresh `quanta-index-corpus-smoke` crate (parallels the proposed-but-not-resolved `quanta-index-lq-norm` from PRE-NORM). Final decision is forced by ADR-006 ([implementation-plan.md § 10](../implementation-plan.md)) and is logged in §12.
 
 ## 3. Inputs (preconditions)
 
@@ -69,22 +69,22 @@ Trade-off: TOML lacks YAML's referencing / anchoring. The corpus does not need t
 
 ### 4.2 New files
 
-- file: `crates/quanta-index-conformance/Cargo.toml` — new crate, dev-only.
-- file: `crates/quanta-index-conformance/src/lib.rs` — runner library; pub-uses `ConformanceRunner`, `CorpusRow`, `ConformanceVerdict`, `StubLqEngine`.
-- file: `crates/quanta-index-conformance/src/corpus_row.rs` — TOML deserialization into typed `CorpusRow` (hand-impl serde per D18).
-- file: `crates/quanta-index-conformance/src/verdict.rs` — `ConformanceVerdict` enum with payload (hand-impl serde).
-- file: `crates/quanta-index-conformance/src/runner.rs` — `ConformanceRunner::run_one(row: &CorpusRow) -> ConformanceVerdict`.
-- file: `crates/quanta-index-conformance/src/stub_engine.rs` — `StubLqEngine` deterministic fixture (returns canned `LexicalCandidate` / `CommitCandidate` / etc. for known queries; returns `STATE_NOT_READY` for unknown).
-- file: `crates/quanta-index-conformance/src/junit.rs` — JUnit XML emitter; one `<testcase>` per row, with `<failure>` / `<skipped>` / `<system-out>`.
-- file: `crates/quanta-index-conformance/src/agent_output.rs` — emit one `tools/ci/agent/agent_output.schema.json`-validating report per run.
-- file: `crates/quanta-index-conformance/src/drift.rs` — Sourcegraph parity drift detector (loads the reference tag pinned by PRE-CONTRACT-EXT handoff doc, reports drift, does **not** auto-accept).
-- file: `crates/quanta-index-conformance/tests/lq_conformance.rs` — `#[test] fn corpus_full()` walks every `.toml`, runs the runner, asserts none are `error`-status (blocked is permitted per the row's declared gate).
-- file: `crates/quanta-index-conformance/tests/property_hash_determinism_corpus.rs` — proptest over the corpus: every UC-* row's canonical hash is identical across two runs, x86_64 + aarch64.
-- file: `crates/quanta-index-conformance/tests/runner_self_tests.rs` — meta-tests: a synthetic row that *should* pass passes; a synthetic row that *should* fail produces the expected verdict with the expected JUnit XML; the runner's own `parse → normalize → hash → execute` pipeline produces a verdict that validates against the agent output schema.
+- file: `crates/quanta-index-corpus-smoke/Cargo.toml` — new crate, dev-only.
+- file: `crates/quanta-index-corpus-smoke/src/lib.rs` — runner library; pub-uses `ConformanceRunner`, `CorpusRow`, `ConformanceVerdict`, `StubLqEngine`.
+- file: `crates/quanta-index-corpus-smoke/src/corpus_row.rs` — TOML deserialization into typed `CorpusRow` (hand-impl serde per D18).
+- file: `crates/quanta-index-corpus-smoke/src/verdict.rs` — `ConformanceVerdict` enum with payload (hand-impl serde).
+- file: `crates/quanta-index-corpus-smoke/src/runner.rs` — `ConformanceRunner::run_one(row: &CorpusRow) -> ConformanceVerdict`.
+- file: `crates/quanta-index-corpus-smoke/src/stub_engine.rs` — `StubLqEngine` deterministic fixture (returns canned `LexicalCandidate` / `CommitCandidate` / etc. for known queries; returns `STATE_NOT_READY` for unknown).
+- file: `crates/quanta-index-corpus-smoke/src/junit.rs` — JUnit XML emitter; one `<testcase>` per row, with `<failure>` / `<skipped>` / `<system-out>`.
+- file: `crates/quanta-index-corpus-smoke/src/agent_output.rs` — emit one `tools/ci/agent/agent_output.schema.json`-validating report per run.
+- file: `crates/quanta-index-corpus-smoke/src/drift.rs` — Sourcegraph parity drift detector (loads the reference tag pinned by PRE-CONTRACT-EXT handoff doc, reports drift, does **not** auto-accept).
+- file: `crates/quanta-index-corpus-smoke/tests/lq_conformance.rs` — `#[test] fn corpus_full()` walks every `.toml`, runs the runner, asserts none are `error`-status (blocked is permitted per the row's declared gate).
+- file: `crates/quanta-index-corpus-smoke/tests/property_hash_determinism_corpus.rs` — proptest over the corpus: every UC-* row's canonical hash is identical across two runs, x86_64 + aarch64.
+- file: `crates/quanta-index-corpus-smoke/tests/runner_self_tests.rs` — meta-tests: a synthetic row that *should* pass passes; a synthetic row that *should* fail produces the expected verdict with the expected JUnit XML; the runner's own `parse → normalize → hash → execute` pipeline produces a verdict that validates against the agent output schema.
 - file: `usecase-corpus/UC-LEX-01.toml` … `usecase-corpus/AC-15.toml` — one `.toml` per row, 100 files total, placed at the workspace root next to the planning docs. Path is canonical per [usecase.md § 6](../usecase.md) "golden files live under `tools/ci/conformance/lq/` (proposed path, not yet created)" — **this ticket pins the location as `usecase-corpus/`** (rationale: keeps the corpus next to `usecase.md` per [rfc.md § Conformance Suite Reference](../rfc.md) "Corpus location — the corpus lives next to `usecase.md`"; alternative `tools/ci/conformance/lq/` mixes corpus content with CI tooling). Decision recorded in §12 ADR-006.
 - file: `tools/ci/conformance/run.sh` — shell entry-point invoked by CI; runs the cargo target + agent_output validation + JUnit XML upload.
 - file: `tools/ci/agent/validate_agent_output.py` (already exists) — extend to support the conformance run's report shape.
-- file: `justfile` (extend) — add `rust-conformance` recipe: `cargo test -p quanta-index-conformance --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`.
+- file: `justfile` (extend) — add `rust-conformance` recipe: `cargo test -p quanta-index-corpus-smoke --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`.
 
 ### 4.3 New Rust types — manual serde impls (D18)
 
@@ -203,13 +203,13 @@ None. PRE-CONF is greenfield.
 
 Already enumerated in §4.2. Restated for the standard-schema row:
 
-- `crates/quanta-index-conformance/tests/lq_conformance.rs` — drives the full 100-row corpus run via `#[test] fn corpus_full()`.
-- `crates/quanta-index-conformance/tests/property_hash_determinism_corpus.rs` — proptest over the corpus.
-- `crates/quanta-index-conformance/tests/runner_self_tests.rs` — meta-tests.
-- `crates/quanta-index-conformance/tests/junit_xml_shape.rs` — asserts JUnit XML is well-formed and contains one `<testcase>` per row.
-- `crates/quanta-index-conformance/tests/agent_output_schema.rs` — asserts emitted `agent_output.json` validates against [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json).
-- `crates/quanta-index-conformance/tests/anti_usecase_typed_errors.rs` — for each of the 15 AC-* rows, asserts the observed `LexicalErrorCode` matches the row's expected code exactly (no fuzzy / partial match).
-- `crates/quanta-index-conformance/tests/drift_detector.rs` — sanity test: a synthetic row tagged `parity = SgEq` that the stub engine returns a different shape for, produces a drift report (not auto-accepted, exit ≠ 0).
+- `crates/quanta-index-corpus-smoke/tests/lq_conformance.rs` — drives the full 100-row corpus run via `#[test] fn corpus_full()`.
+- `crates/quanta-index-corpus-smoke/tests/property_hash_determinism_corpus.rs` — proptest over the corpus.
+- `crates/quanta-index-corpus-smoke/tests/runner_self_tests.rs` — meta-tests.
+- `crates/quanta-index-corpus-smoke/tests/junit_xml_shape.rs` — asserts JUnit XML is well-formed and contains one `<testcase>` per row.
+- `crates/quanta-index-corpus-smoke/tests/agent_output_schema.rs` — asserts emitted `agent_output.json` validates against [tools/ci/agent/agent_output.schema.json](../../../../tools/ci/agent/agent_output.schema.json).
+- `crates/quanta-index-corpus-smoke/tests/anti_usecase_typed_errors.rs` — for each of the 15 AC-* rows, asserts the observed `LexicalErrorCode` matches the row's expected code exactly (no fuzzy / partial match).
+- `crates/quanta-index-corpus-smoke/tests/drift_detector.rs` — sanity test: a synthetic row tagged `parity = SgEq` that the stub engine returns a different shape for, produces a drift report (not auto-accepted, exit ≠ 0).
 
 ## 5. Implementation steps (strict TDD order)
 
@@ -261,12 +261,12 @@ Already enumerated in §4.2. Restated for the standard-schema row:
 17. **Write failing test**: `anti_usecase_typed_errors::test_ac_*` — one `#[test]` per AC-* row; assert the runner observes the exact `LexicalErrorCode` named in [usecase.md § 4](../usecase.md). For AC-08 / AC-11 / AC-12 / AC-14 / AC-15 (not parser-reachable per PRE-NORM §6.4), assert `Blocked` with the named gating ticket. **Pass**: derived from corpus rows; no new logic.
 18. **Write failing test**: `lq_conformance::no_silent_skip` — assert that no row whose `gate = "active"` is reported as `Blocked`. **Pass**: meta-rule: `Blocked` is reachable only from `gate ≠ "active"`.
 19. **Author** `tools/ci/conformance/run.sh` — `set -euo pipefail`; runs cargo + agent_output validator; uploads JUnit XML as a build artifact (`target/conformance/lq-conformance.junit.xml`).
-20. **Wire** `justfile`: `rust-conformance: cargo test -p quanta-index-conformance --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`.
+20. **Wire** `justfile`: `rust-conformance: cargo test -p quanta-index-corpus-smoke --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`.
 21. **Add CI job** `ci/lq-conformance` to `.github/workflows/correctness.yml` (or the active workflow). PR-blocking. Uses `./scripts/cargow` per [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) `workflow-use-cargow` rule.
 22. **Run** `python3 tools/ci/lint/lint-doc-paths.py` on the 100 new `.toml` files? **No** — `.toml` is not in `DOC_SUFFIXES` per [tools/ci/lint/lint-doc-paths.py:9](../../../../tools/ci/lint/lint-doc-paths.py#L9). The linter ignores them. The ticket only needs to assert the 3 new ticket `.md` files in this PR pass the linter (see DoD §11.11).
 23. **Run** `cargo clippy --workspace --all-targets -- -D warnings && semgrep --config tools/ci/semgrep/rules.yml --error`. Fix until green.
 24. **Run** `python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json` against a real run. Expected: validates clean.
-25. **Document** the runner in a one-page `crates/quanta-index-conformance/README.md` (allowed: explicitly requested as a deliverable artifact — see DoD §11.4; this is the only doc this ticket creates beyond the corpus).
+25. **Document** the runner in a one-page `crates/quanta-index-corpus-smoke/README.md` (allowed: explicitly requested as a deliverable artifact — see DoD §11.4; this is the only doc this ticket creates beyond the corpus).
 
 ## 6. Test plan
 
@@ -360,7 +360,7 @@ Wave-1 will start emitting `lq.parse` / `lq.normalize` spans through this runner
 - Memory: < 256 MiB peak for full-corpus run (allows for 100 rows × small stub fixtures + report aggregation).
 - Wave-0 exit SLO ([implementation-plan.md § 4.1](../implementation-plan.md)): "PRE-CONF runner is wired as `cargo test -p quanta-index-contract --test lq_conformance`; runs against a `StubLqEngine` and reports 100 rows as `blocked` (status accurate, not `ok`)." → DoD §11 below.
 
-Note: [implementation-plan.md § 4.1](../implementation-plan.md) names the test target as `cargo test -p quanta-index-contract --test lq_conformance`. This ticket pins the target as `cargo test -p quanta-index-conformance --test lq_conformance` per ADR-006 default (new crate, not test inside the contract crate). The discrepancy is logged as a follow-up against the plan doc (§12 ADR-006 forcing function): one of the two must change.
+Note: [implementation-plan.md § 4.1](../implementation-plan.md) names the test target as `cargo test -p quanta-index-contract --test lq_conformance`. This ticket pins the target as `cargo test -p quanta-index-corpus-smoke --test lq_conformance` per ADR-006 default (new crate, not test inside the contract crate). The discrepancy is logged as a follow-up against the plan doc (§12 ADR-006 forcing function): one of the two must change.
 
 ## 10. Risks & mitigations
 
@@ -368,17 +368,17 @@ Note: [implementation-plan.md § 4.1](../implementation-plan.md) names the test 
 |---|---|---|---|
 | R6 (cite) | Conformance corpus rot (queries valid today, broken silently tomorrow) | `ci/lq-conformance` blocks PRs; drift detection vs Sourcegraph reference tag is mandatory and **not** auto-accepted; one-PR-per-row-change rule for `expected.kind` flip | [implementation-plan.md § 6 R6](../implementation-plan.md) |
 | R10 (cite) | Sourcegraph ⊂ LQ claim correctness | every row carries `parity` token; `SG=` → `SG~` flip requires explicit RFC amendment ([usecase.md § 6 Versioning policy](../usecase.md)); the drift detector reports drift but does not auto-accept | [implementation-plan.md § 6 R10](../implementation-plan.md) |
-| R15 (cite) | New crate proliferation (PRE-CONF's `quanta-index-conformance` is the third new crate after `quanta-index-lq-norm` and `quanta-index-channel`) breaks hexagonal lint | every new crate is reviewed against `ALLOWED_CRATE_DEPS` in the same PR; PRE-CONF's deps are pinned to `quanta-index-contract` + dev-deps only | [implementation-plan.md § 6 R15](../implementation-plan.md) |
+| R15 (cite) | New crate proliferation (PRE-CONF's `quanta-index-corpus-smoke` is the third new crate after `quanta-index-lq-norm` and `quanta-index-channel`) breaks hexagonal lint | every new crate is reviewed against `ALLOWED_CRATE_DEPS` in the same PR; PRE-CONF's deps are pinned to `quanta-index-contract` + dev-deps only | [implementation-plan.md § 6 R15](../implementation-plan.md) |
 | (new) | StubLqEngine drift — when real engines come online (Wave-3 / Wave-4 / Wave-5 / Wave-6), some rows may flip from `Blocked` to `ErrorUnexpected` if Stub's canned outputs disagreed with real-engine outputs | each row's `gate` flip is owned by the wave's exit gate; the wave's owner must update both the corpus row and retire the Stub for that surface; CI rail enforces no row can become `Ok` without the gate being `active` | this ticket |
 | (new) | TOML corpus files are easy to introduce inconsistently (e.g., two rows with same `id`) | `CorpusLoadError::DuplicateRowId` test; CI fails on duplicate; PR template asks the author to confirm `id` uniqueness | this ticket §8 |
 | (new) | Agent output schema drift breaks the runner mid-program | `agent_output.json` is validated by `tools/ci/agent/validate_agent_output.py` on every conformance run; schema-version pin in `agent_output.schema.json` is enforced | this ticket §6.2 |
 
 ## 11. Definition of Done (provable)
 
-All 13 rows shipped (32 tests in `quanta-index-conformance`).
+All 13 rows shipped (32 tests in `quanta-index-corpus-smoke`).
 
 1. ✓ shipped — **Runner compiles + tests pass.**
-   - command: `cargo test -p quanta-index-conformance --test lq_conformance && cargo test -p quanta-index-conformance --test runner_self_tests && cargo test -p quanta-index-conformance --test anti_usecase_typed_errors && cargo test -p quanta-index-conformance --test junit_xml_shape && cargo test -p quanta-index-conformance --test agent_output_schema && cargo test -p quanta-index-conformance --test drift_detector && cargo test -p quanta-index-conformance --test property_hash_determinism_corpus`
+   - command: `cargo test -p quanta-index-corpus-smoke --test lq_conformance && cargo test -p quanta-index-corpus-smoke --test runner_self_tests && cargo test -p quanta-index-corpus-smoke --test anti_usecase_typed_errors && cargo test -p quanta-index-corpus-smoke --test junit_xml_shape && cargo test -p quanta-index-corpus-smoke --test agent_output_schema && cargo test -p quanta-index-corpus-smoke --test drift_detector && cargo test -p quanta-index-corpus-smoke --test property_hash_determinism_corpus`
    - expected: exit 0 for each
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 1, 4](../implementation-plan.md).
 2. ✓ shipped — **All 100 corpus `.toml` files exist and load.**
@@ -390,7 +390,7 @@ All 13 rows shipped (32 tests in `quanta-index-conformance`).
    - expected: empty stdout (no MISSING lines)
    - proof: closes 1:1 row mapping.
 4. ✓ shipped — **Agent output validates against the schema.**
-   - command: `cargo test -p quanta-index-conformance --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`
+   - command: `cargo test -p quanta-index-corpus-smoke --test lq_conformance && python3 tools/ci/agent/validate_agent_output.py target/conformance/agent_output.json`
    - expected: validator exit 0
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 3](../implementation-plan.md).
 5. ✓ shipped — **CI rail `ci/lq-conformance` enforced.**
@@ -398,23 +398,23 @@ All 13 rows shipped (32 tests in `quanta-index-conformance`).
    - expected: rail entry exists
    - proof: closes [implementation-plan.md § 4.1 exit gate](../implementation-plan.md).
 6. ✓ shipped — **Drift detection reports but does not auto-accept.**
-   - command: `cargo test -p quanta-index-conformance --test drift_detector test_sgEq_drift_detected`
+   - command: `cargo test -p quanta-index-corpus-smoke --test drift_detector test_sgEq_drift_detected`
    - expected: pass — drift report emitted, runner exits non-zero
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 5](../implementation-plan.md) and [rfc.md § Conformance corpus ownership](../rfc.md).
 7. ✓ shipped — **Wave-0 exit verdict distribution.**
-   - command: `cargo test -p quanta-index-conformance --test lq_conformance -- --nocapture | grep -E '^(ok|error_expected|blocked):' | sort`
+   - command: `cargo test -p quanta-index-corpus-smoke --test lq_conformance -- --nocapture | grep -E '^(ok|error_expected|blocked):' | sort`
    - expected: `error_expected: 15`, `blocked: 85`, `ok: 0`, `error_unexpected: 0`, `result_mismatch: 0`, `internal_error: 0` (per §6.4 table; concrete count: 15 parser-reachable AC + 13 parser-reachable UC-EDGE rows = 28 `error_expected` if all parser-reachable UC-EDGE rows are tagged `gate=active` from Wave-0; otherwise revise to match the corpus authoring). Final distribution pinned by the corpus author and asserted by `corpus_full` test.
    - proof: closes [implementation-plan.md § 4.1 exit gate](../implementation-plan.md) "reports 100 rows as `blocked` (status accurate, not `ok`)" — verbatim. Note: the exit gate text says "100 rows blocked" but rows that pass `parse → normalize → hash → expected error` are *accurately* `error_expected`, not `blocked`. This ticket's authoring records the more precise distribution per §6.4 and files this as a sibling-doc follow-up (§12).
 8. ✓ shipped — **No silent skip.**
-   - command: `cargo test -p quanta-index-conformance --test runner_self_tests test_blocked_row_still_hashes_canonically && cargo test -p quanta-index-conformance --test property_no_silent_skip`
+   - command: `cargo test -p quanta-index-corpus-smoke --test runner_self_tests test_blocked_row_still_hashes_canonically && cargo test -p quanta-index-corpus-smoke --test property_no_silent_skip`
    - expected: pass
    - proof: closes [CLAUDE.md](../../../../CLAUDE.md) "no silent failure / no silent fallback".
 9. ✓ shipped — **JUnit XML well-formed.**
-   - command: `cargo test -p quanta-index-conformance --test junit_xml_shape`
+   - command: `cargo test -p quanta-index-corpus-smoke --test junit_xml_shape`
    - expected: pass
    - proof: closes ops integration (CI artifact upload).
 10. ✓ shipped — **Bench within target.**
-    - command: `cargo bench -p quanta-index-conformance --bench pre_conf_runner_bench`
+    - command: `cargo bench -p quanta-index-corpus-smoke --bench pre_conf_runner_bench`
     - expected: full corpus run p99 < 5s wall
     - proof: closes §9 envelope.
 11. ✓ shipped — **`tools/ci/lint/lint-doc-paths.py` green on the 3 new ticket files.**
@@ -435,7 +435,7 @@ All 13 rows shipped (32 tests in `quanta-index-conformance`).
 | Q-ID | Question | Forcing function |
 |---|---|---|
 | ADR-006 ([implementation-plan.md § 10](../implementation-plan.md)) | Corpus format: TOML vs YAML | Step 1 of §5 cannot start without the format. **Default position recorded**: TOML (rationale in §4.1). Forcing function: DoD §11.2 file count requires the format pinned to one extension. |
-| ADR-006 follow-on (new crate vs in-tree test target) | Runner location: new `quanta-index-conformance` crate vs `cargo test -p quanta-index-contract --test lq_conformance` (per [implementation-plan.md § 4.1](../implementation-plan.md)) | **Default position**: new `quanta-index-conformance` crate (clean dependency surface; test-only deps stay isolated from contract crate). [implementation-plan.md § 4.1](../implementation-plan.md)'s text names the contract crate; reconcile in a follow-up. Forcing function: DoD §11.1 names the crate explicitly. |
+| ADR-006 follow-on (new crate vs in-tree test target) | Runner location: new `quanta-index-corpus-smoke` crate vs `cargo test -p quanta-index-contract --test lq_conformance` (per [implementation-plan.md § 4.1](../implementation-plan.md)) | **Default position**: new `quanta-index-corpus-smoke` crate (clean dependency surface; test-only deps stay isolated from contract crate). [implementation-plan.md § 4.1](../implementation-plan.md)'s text names the contract crate; reconcile in a follow-up. Forcing function: DoD §11.1 names the crate explicitly. |
 | ADR-006 follow-on (corpus location) | Corpus path: `usecase-corpus/` (next to `usecase.md`) vs `tools/ci/conformance/lq/` (per [usecase.md § 6](../usecase.md)) | **Default position**: `usecase-corpus/` — keeps the corpus next to its authoring doc per [rfc.md § Conformance Suite Reference](../rfc.md). [usecase.md § 6](../usecase.md) text marks the `tools/ci/conformance/lq/` path as "proposed, not yet created"; this ticket pins it differently. Reconcile in a follow-up against [usecase.md § 6](../usecase.md). |
 | (new) | Wave-0 exit verdict distribution: are parser-reachable UC-EDGE rows tagged `gate=active` (counted as `error_expected`) or `gate=pending` (counted as `blocked`)? | DoD §11.7 distribution count depends on this. **Default position**: parser-reachable UC-EDGE rows (UC-EDGE-01, 02, 03, 04, 05, 06, 10) are `gate=active` because PRE-NORM emits the typed code at parse time. UC-EDGE-07, 08, 09 are `gate=pending` (need executor / authz). |
 | Q-FS-5 ([feature-scope.md § 1.4.1](../feature-scope.md)) | `dirty:` semantics — producer dependency vs deferred | UC-RT-08 row's `gating_ticket` value. **Default**: `gating_ticket="RT-01"` with a `notes` field flagging the cross-repo dependency. |
