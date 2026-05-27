@@ -30,8 +30,8 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
-    ChunkRecord, EngineTouched, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, GenerationPin, HistoryQueryRequest,
+    HybridQueryRequest,
     LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
     ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
     SearchExplanation, SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
@@ -137,16 +137,6 @@ pub(super) struct E2eQueryResult {
 pub(super) struct E2eHistoryResult {
     pub(super) commit_ids: Vec<String>,
     pub(super) diff_paths: Vec<String>,
-    pub(super) typed_error: Option<E2eTypedError>,
-}
-
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eBridgeResult {
-    pub(super) candidate_ids: Vec<String>,
-    pub(super) scope: Option<BridgeScope>,
     pub(super) typed_error: Option<E2eTypedError>,
 }
 
@@ -345,6 +335,28 @@ impl E2eRuntime {
         Ok(())
     }
 
+    pub(super) fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
+            LexicalIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation: None,
+                manifest_digest: format!("lex-meta:{}", self.current_generation().get()),
+                batch_digest: format!(
+                    "lex-meta-batch:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode: BatchIngestMode::Delta,
+                bundle_payload: Some(payload),
+                replace_scopes: Vec::new(),
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
+        Ok(())
+    }
+
     pub(super) fn ingest_structural_function_tree(
         &mut self,
         path: &str,
@@ -462,7 +474,9 @@ impl E2eRuntime {
                     applied_at_ms: 13,
                     author: "alice".to_string().into_boxed_str(),
                     committer: "alice".to_string().into_boxed_str(),
-                    message: "fix: sample history".to_string().into_boxed_str(),
+                    message: "fix: sample history alpha_content_needle"
+                        .to_string()
+                        .into_boxed_str(),
                     is_merge: false,
                     tags: vec!["v1.0.0".to_string().into_boxed_str()],
                 }],
@@ -771,7 +785,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -819,7 +832,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_history_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_history_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_history_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_history_response("RepoMapQuery")
             }
@@ -874,7 +886,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -916,112 +927,8 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
-        }
-    }
-
-    pub(super) fn query_bridge(
-        &mut self,
-        syntax: TextQuerySyntax,
-        query_text: &str,
-        top_k: u32,
-        target: BridgeTarget,
-    ) -> E2eBridgeResult {
-        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
-        let envelope = SearchPlaneQueryIpcRequestEnvelope {
-            request_id,
-            payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax,
-                    query_text: query_text.to_string(),
-                    generation: self.last_sealed_pin(),
-                    generation_selector: None,
-                    top_k,
-                },
-                target,
-            }),
-        };
-        let socket = match self.ensure_driver() {
-            Ok(socket) => socket,
-            Err(err) => {
-                return E2eBridgeResult {
-                    candidate_ids: Vec::new(),
-                    scope: None,
-                    typed_error: Some(E2eTypedError {
-                        code: "HARNESS_START".to_string(),
-                        message: err.to_string(),
-                    }),
-                };
-            }
-        };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
-            Ok(r) => r,
-            Err(err) => {
-                let query_result = self.semantic_transport_error(readiness_reached, err);
-                return E2eBridgeResult {
-                    candidate_ids: Vec::new(),
-                    scope: None,
-                    typed_error: query_result.typed_error,
-                };
-            }
-        };
-        match response.payload {
-            SearchPlaneQueryIpcResponse::Bridge(bridge) => E2eBridgeResult {
-                candidate_ids: bridge
-                    .packet
-                    .candidates
-                    .iter()
-                    .map(|candidate| match candidate {
-                        BridgeCandidate::Lexical(candidate) => candidate.candidate_id.clone(),
-                        BridgeCandidate::Structural(candidate) => candidate.candidate_id.clone(),
-                    })
-                    .collect(),
-                scope: Some(bridge.packet.scope),
-                typed_error: None,
-            },
-            SearchPlaneQueryIpcResponse::Error(err) => E2eBridgeResult {
-                candidate_ids: Vec::new(),
-                scope: None,
-                typed_error: Some(E2eTypedError {
-                    code: err.code,
-                    message: err.message,
-                }),
-            },
-            SearchPlaneQueryIpcResponse::Text(_) => unexpected_bridge_response("Text"),
-            SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_bridge_response("Symbol"),
-            SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_bridge_response("Semantic"),
-            SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_bridge_response("Hybrid"),
-            SearchPlaneQueryIpcResponse::History(_) => unexpected_bridge_response("History"),
-            SearchPlaneQueryIpcResponse::Structural(_) => unexpected_bridge_response("Structural"),
-            SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
-                unexpected_bridge_response("RepoMapQuery")
-            }
-            SearchPlaneQueryIpcResponse::Explain(_) => unexpected_bridge_response("Explain"),
-            SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                unexpected_bridge_response("RuntimeMetadata")
-            }
         }
     }
 
@@ -1077,7 +984,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1118,7 +1024,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1174,7 +1079,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1215,7 +1119,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1274,7 +1177,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1315,7 +1217,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1374,7 +1275,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1415,7 +1315,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1506,7 +1405,6 @@ impl E2eRuntime {
                     | SearchPlaneQueryIpcResponse::Hybrid(_)
                     | SearchPlaneQueryIpcResponse::History(_)
                     | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::Bridge(_)
                     | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                     | SearchPlaneQueryIpcResponse::Explain(_)
                     | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
@@ -1551,7 +1449,6 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_explain_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
-            SearchPlaneQueryIpcResponse::Bridge(_) => unexpected_explain_response("Bridge"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_explain_response("RepoMapQuery")
             }
@@ -1613,17 +1510,6 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
         typed_error: Some(E2eTypedError {
             code: "UNEXPECTED_RESPONSE".to_string(),
             message: format!("expected History, got {kind}"),
-        }),
-    }
-}
-
-fn unexpected_bridge_response(kind: &str) -> E2eBridgeResult {
-    E2eBridgeResult {
-        candidate_ids: Vec::new(),
-        scope: None,
-        typed_error: Some(E2eTypedError {
-            code: "UNEXPECTED_RESPONSE".to_string(),
-            message: format!("expected Bridge, got {kind}"),
         }),
     }
 }

@@ -1,8 +1,4 @@
 pub mod quanta_index_contract
-pub use quanta_index_contract::BridgeCandidate
-pub use quanta_index_contract::BridgeCandidatePacket
-pub use quanta_index_contract::BridgeScope
-pub use quanta_index_contract::BridgeTarget
 pub use quanta_index_contract::DiffCandidate
 pub use quanta_index_contract::DiffHunkSide
 pub use quanta_index_contract::FileId
@@ -1018,7 +1014,6 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcRequest
-pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Bridge(quanta_index_contract::BridgeQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Explain(quanta_index_contract::SearchPlaneExplainQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::History(quanta_index_contract::HistoryQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
@@ -1047,7 +1042,6 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::ipc::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Bridge(quanta_index_contract::SearchPlaneBridgeQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::History(quanta_index_contract::SearchPlaneHistoryQueryResponse)
@@ -3311,28 +3305,6 @@ pub use quanta_index_contract::query::LqVisibility
 pub use quanta_index_contract::query::LqYesNoOnly
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
-pub struct quanta_index_contract::query::BridgeQueryRequest
-pub quanta_index_contract::query::BridgeQueryRequest::target: quanta_index_contract_base::results::bridge::BridgeTarget
-pub quanta_index_contract::query::BridgeQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
-impl core::clone::Clone for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::clone(&self) -> quanta_index_contract::BridgeQueryRequest
-impl core::cmp::Eq for quanta_index_contract::BridgeQueryRequest
-impl core::cmp::PartialEq for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::eq(&self, other: &quanta_index_contract::BridgeQueryRequest) -> bool
-impl core::fmt::Debug for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::BridgeQueryRequest
-impl serde_core::ser::Serialize for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Send for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Sync for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Unpin for quanta_index_contract::BridgeQueryRequest
-impl core::marker::UnsafeUnpin for quanta_index_contract::BridgeQueryRequest
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BridgeQueryRequest
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BridgeQueryRequest
 pub struct quanta_index_contract::query::HistoryQueryRequest
 pub quanta_index_contract::query::HistoryQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::HistoryQueryRequest
@@ -4293,10 +4265,6 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapSymbolNode
 pub mod quanta_index_contract::results
-pub use quanta_index_contract::results::BridgeCandidate
-pub use quanta_index_contract::results::BridgeCandidatePacket
-pub use quanta_index_contract::results::BridgeScope
-pub use quanta_index_contract::results::BridgeTarget
 pub use quanta_index_contract::results::DiffCandidate
 pub use quanta_index_contract::results::DiffHunkSide
 pub use quanta_index_contract::results::LexicalCandidate
@@ -4538,27 +4506,6 @@ impl core::marker::Unpin for quanta_index_contract::SearchExplanationBuilder
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchExplanationBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchExplanationBuilder
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchExplanationBuilder
-pub struct quanta_index_contract::results::SearchPlaneBridgeQueryResponse
-pub quanta_index_contract::results::SearchPlaneBridgeQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::results::SearchPlaneBridgeQueryResponse::packet: quanta_index_contract_base::results::bridge::BridgeCandidatePacket
-impl core::clone::Clone for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::eq(&self, other: &quanta_index_contract::SearchPlaneBridgeQueryResponse) -> bool
-impl core::fmt::Debug for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Send for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Sync for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Unpin for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneBridgeQueryResponse
 pub struct quanta_index_contract::results::SearchPlaneExplainQueryResponse
 pub quanta_index_contract::results::SearchPlaneExplainQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::SearchPlaneExplainQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
@@ -5412,7 +5359,6 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneIngestIpcRe
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub enum quanta_index_contract::SearchPlaneQueryIpcRequest
-pub quanta_index_contract::SearchPlaneQueryIpcRequest::Bridge(quanta_index_contract::BridgeQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Explain(quanta_index_contract::SearchPlaneExplainQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::History(quanta_index_contract::HistoryQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(quanta_index_contract::HybridQueryRequest)
@@ -5441,7 +5387,6 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcReq
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcRequest
 pub enum quanta_index_contract::SearchPlaneQueryIpcResponse
-pub quanta_index_contract::SearchPlaneQueryIpcResponse::Bridge(quanta_index_contract::SearchPlaneBridgeQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(quanta_index_contract::SearchPlaneExplainQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::History(quanta_index_contract::SearchPlaneHistoryQueryResponse)
@@ -5559,28 +5504,6 @@ impl core::marker::Unpin for quanta_index_contract::BatchPublishReceipt
 impl core::marker::UnsafeUnpin for quanta_index_contract::BatchPublishReceipt
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BatchPublishReceipt
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BatchPublishReceipt
-pub struct quanta_index_contract::BridgeQueryRequest
-pub quanta_index_contract::BridgeQueryRequest::target: quanta_index_contract_base::results::bridge::BridgeTarget
-pub quanta_index_contract::BridgeQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
-impl core::clone::Clone for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::clone(&self) -> quanta_index_contract::BridgeQueryRequest
-impl core::cmp::Eq for quanta_index_contract::BridgeQueryRequest
-impl core::cmp::PartialEq for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::eq(&self, other: &quanta_index_contract::BridgeQueryRequest) -> bool
-impl core::fmt::Debug for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::BridgeQueryRequest
-impl serde_core::ser::Serialize for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::BridgeQueryRequest
-pub fn quanta_index_contract::BridgeQueryRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Send for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Sync for quanta_index_contract::BridgeQueryRequest
-impl core::marker::Unpin for quanta_index_contract::BridgeQueryRequest
-impl core::marker::UnsafeUnpin for quanta_index_contract::BridgeQueryRequest
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::BridgeQueryRequest
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::BridgeQueryRequest
 pub struct quanta_index_contract::ChunkId(_)
 impl quanta_index_contract::ChunkId
 pub fn quanta_index_contract::ChunkId::as_str(&self) -> &str
@@ -7052,27 +6975,6 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneActivationAck
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneActivationAck
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneActivationAck
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneActivationAck
-pub struct quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub quanta_index_contract::SearchPlaneBridgeQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
-pub quanta_index_contract::SearchPlaneBridgeQueryResponse::packet: quanta_index_contract_base::results::bridge::BridgeCandidatePacket
-impl core::clone::Clone for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::eq(&self, other: &quanta_index_contract::SearchPlaneBridgeQueryResponse) -> bool
-impl core::fmt::Debug for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneBridgeQueryResponse
-pub fn quanta_index_contract::SearchPlaneBridgeQueryResponse::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Send for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Sync for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::Unpin for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneBridgeQueryResponse
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneBridgeQueryResponse
 pub struct quanta_index_contract::SearchPlaneControlIpcRequestEnvelope
 pub quanta_index_contract::SearchPlaneControlIpcRequestEnvelope::payload: quanta_index_contract::SearchPlaneControlIpcRequest
 pub quanta_index_contract::SearchPlaneControlIpcRequestEnvelope::request_id: u64

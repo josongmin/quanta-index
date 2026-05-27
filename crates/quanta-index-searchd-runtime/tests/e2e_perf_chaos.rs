@@ -13,8 +13,8 @@ mod e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    BridgeScope, BridgeTarget, EarlyStopReason, EngineTouched, HistoryIngestBatch,
-    HistoryRefMutation, SearchPlaneTrackKind, TextQuerySyntax,
+    EarlyStopReason, EngineTouched, HistoryIngestBatch, HistoryRefMutation, SearchPlaneTrackKind,
+    TextQuerySyntax,
 };
 
 use crate::e2e_harness::{E2eRuntime, E2eTypedError};
@@ -679,72 +679,6 @@ fn structural_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyRe
             "lq_merge_result_count",
         ],
         &["function_item", "name.expr", "chaos_structural_alpha"],
-    )
-}
-
-#[test]
-fn bridge_structural_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    seed_structural_boolean_fixture(&mut rt)?;
-
-    let result = rt.query_bridge(
-        TextQuerySyntax::Sourcegraph,
-        r#"patterntype:structural "function_item { { :[name.expr] } }""#,
-        10,
-        BridgeTarget::CodeQl,
-    );
-    require_no_typed_error(result.typed_error, "bridge structural metrics query")?;
-    if result.scope != Some(BridgeScope::Structural) || result.candidate_ids.len() != 1 {
-        return Err(anyhow::anyhow!(
-            "unexpected structural bridge result scope={:?} candidate_ids={:?}",
-            result.scope,
-            result.candidate_ids
-        ));
-    }
-    assert_closed_metric_suffix(
-        &rt,
-        &[
-            "lq_query_intake_total",
-            "lq_planner_total",
-            "lq_engine_fanout_count",
-            "lq_merge_result_count",
-        ],
-        &[
-            "lq_query_intake_total",
-            "lq_typed_error_not_ready_total",
-            "lq_planner_total",
-            "lq_engine_fanout_count",
-            "lq_merge_result_count",
-        ],
-        &["function_item", "name.expr", "codeql"],
-    )
-}
-
-#[test]
-fn bridge_translate_fail_runtime_metrics_use_parse_bucket_without_query_leakage() -> AnyResult<()> {
-    let mut rt = E2eRuntime::boot()?;
-    seed_structural_boolean_fixture(&mut rt)?;
-
-    let result = rt.query_bridge(
-        TextQuerySyntax::Sourcegraph,
-        "patterntype:structural /(/",
-        10,
-        BridgeTarget::CodeQl,
-    );
-    let error = result
-        .typed_error
-        .ok_or_else(|| anyhow::anyhow!("expected bridge translate failure"))?;
-    if error.code != "BRIDGE_TRANSLATE_FAIL" {
-        return Err(anyhow::anyhow!(
-            "expected BRIDGE_TRANSLATE_FAIL, got {}",
-            error.code
-        ));
-    }
-    assert_closed_metric_suffix(
-        &rt,
-        &["lq_query_intake_total", "lq_typed_error_parse_total"],
-        &["lq_query_intake_total", "lq_typed_error_parse_total"],
-        &["chaos_", "structural", "codeql"],
     )
 }
 

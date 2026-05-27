@@ -1,8 +1,7 @@
 //! Wire-leaf query request shapes that depend only on core base types
 //! (`TextQuerySyntax`, `GenerationPin`, `GenerationSelector`).
 //!
-//! Heavier request variants (semantic, hybrid, etc.) that still depend on
-//! higher-level contract surfaces such as `BridgeTarget` stay in
+//! Heavier request variants (semantic, hybrid, etc.) stay in
 //! `quanta-index-contract`.
 
 use core::fmt;

@@ -931,12 +931,12 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(payload) => {
             render_runtime_metadata_payload(payload, rendered)
         }
-        SearchPlaneQueryIpcResponse::History(_)
-        | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_) => Err(CliError::protocol(format!(
-            "unsupported pretty renderer for response kind `{}`",
-            response_kind_name(&response.payload)
-        ))),
+        SearchPlaneQueryIpcResponse::History(_) | SearchPlaneQueryIpcResponse::Structural(_) => {
+            Err(CliError::protocol(format!(
+                "unsupported pretty renderer for response kind `{}`",
+                response_kind_name(&response.payload)
+            )))
+        }
     }
 }
 
@@ -1108,7 +1108,6 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
-        SearchPlaneQueryIpcResponse::Bridge(_) => "Bridge",
         SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery",
         SearchPlaneQueryIpcResponse::Explain(_) => "Explain",
         SearchPlaneQueryIpcResponse::Error(_) => "Error",

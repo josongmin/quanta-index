@@ -43,14 +43,12 @@
 
 pub mod candidate;
 pub mod errors;
-pub mod packet;
 pub mod syntax;
 mod translator;
 pub mod version;
 
 pub use candidate::BridgeCandidate;
 pub use errors::{BridgeError, BridgeErrorCode};
-pub use packet::export_bridge_candidate_packet;
 pub use syntax::{SgFilter, SgQuery, parse_sourcegraph};
 pub use translator::translate_query;
 pub use version::{SUPPORTED_SG_VERSION, SourcegraphVersionTag, TRANSLATOR_VERSION};

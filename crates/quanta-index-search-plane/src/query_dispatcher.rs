@@ -7,20 +7,19 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::{
     ActivationCatalog, ActiveGenerationRecord, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION,
     lower_lexical_text_query,
-    lowering::{lower_sourcegraph_bridge_query_text, lower_sourcegraph_structural_query_text},
+    lowering::lower_sourcegraph_structural_query_text,
     query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort},
     readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    BridgeCandidate, BridgeQueryRequest, BridgeScope, ChunkRecord, CommitCandidate, DiffCandidate,
-    EarlyStopReason, EngineTouched, GenerationPin, GenerationSelector, HistoryQueryRequest,
-    HybridQueryRequest, HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr,
-    LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
-    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
-    LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest,
-    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneBridgeQueryResponse, SearchPlaneExplainQueryRequest,
+    ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched, GenerationPin,
+    GenerationSelector, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
+    LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan,
+    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    LqStructuralHoleRef, LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage,
+    PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
@@ -37,7 +36,6 @@ use quanta_index_core::{
     SemanticPolicy, SemanticQueryPort, StructuralMatchBinding, StructuralMatchCandidate,
     StructuralService,
 };
-use quanta_index_lq_bridge::export_bridge_candidate_packet;
 use quanta_index_lq_obs::{
     CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
     validate_dimensions,
@@ -508,65 +506,6 @@ impl SearchPlaneDispatcher {
         })
     }
 
-    fn bridge(
-        &self,
-        request: &BridgeQueryRequest,
-    ) -> Result<SearchPlaneBridgeQueryResponse, CoreError> {
-        let (scope, pin, candidates) = match lower_bridge_query_request(&request.text_query)? {
-            BridgeExecutionPlan::Lexical(lowered) => {
-                let pin = resolve_lexical_request_pin(
-                    self.activation_catalog.as_ref(),
-                    &request.text_query,
-                    SearchPlaneTrackKind::Lexical,
-                    "bridge",
-                )?;
-                let materialized =
-                    self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-                LexicalPolicy::validate_query_against_readiness(
-                    pin.manifest_generation,
-                    materialized,
-                )?;
-                LexicalPolicy::validate_query(&lowered)?;
-                let searcher = self.lex_opener.open(
-                    &pin.repo_id,
-                    &pin.revision_id,
-                    pin.manifest_generation,
-                )?;
-                let candidates = searcher
-                    .search(&lowered, request.text_query.top_k)?
-                    .into_iter()
-                    .map(BridgeCandidate::Lexical)
-                    .collect();
-                (BridgeScope::Lexical, pin, candidates)
-            }
-            BridgeExecutionPlan::Structural(lowered) => {
-                let pin = resolve_lexical_request_pin(
-                    self.activation_catalog.as_ref(),
-                    &request.text_query,
-                    SearchPlaneTrackKind::Structural,
-                    "bridge",
-                )?;
-                let candidates = self
-                    .execute_structural_results(&pin, &lowered, request.text_query.top_k)?
-                    .into_iter()
-                    .map(BridgeCandidate::Structural)
-                    .collect();
-                (BridgeScope::Structural, pin, candidates)
-            }
-        };
-        let packet = export_bridge_candidate_packet(
-            request.target,
-            scope,
-            &pin,
-            &request.text_query,
-            candidates,
-        );
-        Ok(SearchPlaneBridgeQueryResponse {
-            generation: pin,
-            packet,
-        })
-    }
-
     fn explain(
         &self,
         request: SearchPlaneExplainQueryRequest,
@@ -685,7 +624,6 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
-            SearchPlaneQueryIpcRequest::Bridge(req) => self.dispatch_bridge(&req),
             SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
             SearchPlaneQueryIpcRequest::Explain(req) => self.dispatch_explain(req),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(req) => {
@@ -802,26 +740,6 @@ impl SearchPlaneDispatcher {
                 self.emit_engine_fanout_metric(&response.generation, 1);
                 self.emit_merge_count_metric(&response.generation, response.results.len());
                 SearchPlaneQueryIpcResponse::Structural(response)
-            }
-            Err(err) => {
-                self.emit_error_metric(requested_pin, &err);
-                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
-            }
-        }
-    }
-
-    fn dispatch_bridge(&self, request: &BridgeQueryRequest) -> SearchPlaneQueryIpcResponse {
-        let requested_pin = request.text_query.generation.as_ref();
-        self.emit_intake_metric(requested_pin);
-        match self.bridge(request) {
-            Ok(response) => {
-                self.emit_planner_metric(&response.generation);
-                self.emit_engine_fanout_metric(&response.generation, 1);
-                self.emit_merge_count_metric(
-                    &response.generation,
-                    response.packet.candidates.len(),
-                );
-                SearchPlaneQueryIpcResponse::Bridge(response)
             }
             Err(err) => {
                 self.emit_error_metric(requested_pin, &err);
@@ -1339,25 +1257,6 @@ fn lower_structural_query_request(
         "structural",
     )?;
     Ok((pin, lowered))
-}
-
-enum BridgeExecutionPlan {
-    Lexical(LqQuery),
-    Structural(LqQuery),
-}
-
-fn lower_bridge_query_request(
-    request: &TextQueryRequest,
-) -> Result<BridgeExecutionPlan, CoreError> {
-    let lowered = match request.syntax {
-        TextQuerySyntax::Native => lower_lexical_text_query(request)?,
-        TextQuerySyntax::Sourcegraph => lower_sourcegraph_bridge_query_text(&request.query_text)?,
-    };
-    if extract_structural_requested_lang(&lowered.expr).is_ok() {
-        validate_structural_feature_surface(&lowered)?;
-        return Ok(BridgeExecutionPlan::Structural(lowered));
-    }
-    Ok(BridgeExecutionPlan::Lexical(lowered))
 }
 
 fn validate_structural_feature_surface(query: &LqQuery) -> Result<(), CoreError> {
@@ -2856,7 +2755,7 @@ mod tests {
     use quanta_index_contract::channel::LexicalChannelOp;
     use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
     use quanta_index_contract::{
-        BridgeQueryRequest, GenerationPin, GenerationSelector, HistoryQueryRequest,
+        GenerationPin, GenerationSelector, HistoryQueryRequest,
         HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType,
         RepoMapEntryDto, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
         RepoMapItemIndexAvailability, RepoMapQueryRequest, RepoMapQueryResponse,
@@ -2984,7 +2883,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -3393,7 +3291,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -3447,7 +3344,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
@@ -3517,260 +3413,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_dispatch_forwards_text_query_top_k() -> TestResult {
-        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
-        let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(RecordingLexicalOpener {
-                state: Arc::clone(&state),
-                results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
-            }),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            Arc::new(FailClosedStructuralProducer),
-            ready_ledger(),
-            test_activation_catalog()?,
-        );
-
-        let pin = make_pin(
-            RepoId::new("repo-map-ipc"),
-            RevisionId::new("rev-map-ipc"),
-            ManifestGeneration::new(9),
-        );
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: "alpha".to_string(),
-                    generation: Some(pin),
-                    generation_selector: None,
-                    top_k: 7,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-
-        match response {
-            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
-                if bridge.packet.candidates.len() != 2 {
-                    return Err(format!(
-                        "expected 2 bridge candidates, got {}",
-                        bridge.packet.candidates.len()
-                    )
-                    .into());
-                }
-            }
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                return Err(format!("expected Bridge response, got {other:?}").into());
-            }
-        }
-
-        let guard = state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?;
-        if guard.search_top_ks.as_slice() != [7] {
-            return Err(format!(
-                "expected bridge route to forward top_k=7, got {:?}",
-                guard.search_top_ks
-            )
-            .into());
-        }
-        drop(guard);
-        Ok(())
-    }
-
-    #[test]
-    fn bridge_dispatch_routes_native_structural_query_to_structural_scope() -> TestResult {
-        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
-        let producer = Arc::new(PatternRoutingStructuralProducer::new());
-        let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(RecordingLexicalOpener {
-                state: Arc::clone(&lexical_state),
-                results: vec![candidate("lexical-should-not-run", 1.0)],
-            }),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            producer,
-            ready_ledger(),
-            test_activation_catalog()?,
-        );
-
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Native,
-                    query_text: "match { alpha } AND match { beta }".to_string(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 10,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-
-        match response {
-            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
-                if bridge.packet.scope != quanta_index_contract::BridgeScope::Structural {
-                    return Err(format!(
-                        "expected structural bridge scope, got {:?}",
-                        bridge.packet.scope
-                    )
-                    .into());
-                }
-                let ids = bridge
-                    .packet
-                    .candidates
-                    .iter()
-                    .map(|candidate| match candidate {
-                        quanta_index_contract::BridgeCandidate::Structural(candidate) => {
-                            Ok(candidate.candidate_id.clone())
-                        }
-                        quanta_index_contract::BridgeCandidate::Lexical(candidate) => Err(format!(
-                            "expected structural bridge candidate, got lexical `{}`",
-                            candidate.candidate_id
-                        )),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(Box::<dyn std::error::Error>::from)?;
-                if ids != vec!["chunk-shared".to_string()] {
-                    return Err(
-                        format!("unexpected structural bridge candidate ids: {ids:?}").into(),
-                    );
-                }
-            }
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                return Err(format!("expected Bridge response, got {other:?}").into());
-            }
-        }
-
-        if !lexical_state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?
-            .search_top_ks
-            .is_empty()
-        {
-            return Err("lexical opener must not execute for structural bridge route".into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn bridge_dispatch_routes_sourcegraph_structural_query_to_structural_scope() -> TestResult {
-        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
-        let producer = Arc::new(PatternRoutingStructuralProducer::new());
-        let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(RecordingLexicalOpener {
-                state: Arc::clone(&lexical_state),
-                results: vec![candidate("lexical-should-not-run", 1.0)],
-            }),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            producer,
-            ready_ledger(),
-            test_activation_catalog()?,
-        );
-
-        let query_text =
-            r#"patterntype:structural "alpha" OR patterntype:structural "beta""#.to_string();
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: query_text.clone(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 10,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-
-        match response {
-            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
-                if bridge.packet.scope != quanta_index_contract::BridgeScope::Structural {
-                    return Err(format!(
-                        "expected structural bridge scope, got {:?}",
-                        bridge.packet.scope
-                    )
-                    .into());
-                }
-                if bridge.packet.source_syntax.as_deref() != Some(query_text.as_str()) {
-                    return Err(format!(
-                        "unexpected structural bridge source_syntax: {:?}",
-                        bridge.packet.source_syntax
-                    )
-                    .into());
-                }
-                if bridge.packet.translator_version.as_deref()
-                    != Some(quanta_index_lq_bridge::TRANSLATOR_VERSION)
-                {
-                    return Err(format!(
-                        "unexpected structural bridge translator_version: {:?}",
-                        bridge.packet.translator_version
-                    )
-                    .into());
-                }
-                let ids = bridge
-                    .packet
-                    .candidates
-                    .iter()
-                    .map(|candidate| match candidate {
-                        quanta_index_contract::BridgeCandidate::Structural(candidate) => {
-                            Ok(candidate.candidate_id.clone())
-                        }
-                        quanta_index_contract::BridgeCandidate::Lexical(candidate) => Err(format!(
-                            "expected structural bridge candidate, got lexical `{}`",
-                            candidate.candidate_id
-                        )),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(Box::<dyn std::error::Error>::from)?;
-                if ids != vec!["chunk-a".to_string(), "chunk-shared".to_string()] {
-                    return Err(
-                        format!("unexpected SG structural bridge candidate ids: {ids:?}").into(),
-                    );
-                }
-            }
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)
-            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-                return Err(format!("expected Bridge response, got {other:?}").into());
-            }
-        }
-
-        if !lexical_state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?
-            .search_top_ks
-            .is_empty()
-        {
-            return Err("lexical opener must not execute for SG structural bridge route".into());
-        }
-        Ok(())
-    }
-
-    #[test]
     fn semantic_dispatch_embeds_query_text() -> TestResult {
         let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
         let dispatcher = SearchPlaneDispatcher::new(
@@ -3812,7 +3454,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
@@ -3884,7 +3525,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
@@ -4291,7 +3931,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -4377,7 +4016,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -4486,7 +4124,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
                 return Err(format!("expected RepoMapQuery response, got {other:?}").into());
@@ -4609,7 +4246,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -4694,7 +4330,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -4710,106 +4345,6 @@ mod tests {
                 "lq_engine_fanout_count",
                 "lq_merge_result_count",
             ],
-        )
-    }
-
-    #[test]
-    fn bridge_dispatch_structural_success_emits_closed_obs_metrics() -> TestResult {
-        let obs_sink = Arc::new(BoundedQueryObsStore::default());
-        let dispatcher = SearchPlaneDispatcher::new_with_obs(
-            Arc::new(RejectLexicalOpener),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            Arc::new(PatternRoutingStructuralProducer::new()),
-            ready_ledger(),
-            test_activation_catalog()?,
-            default_query_embedder(),
-            obs_sink.clone(),
-        );
-
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: r#"patterntype:structural "alpha""#.to_string(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 10,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-        match response {
-            SearchPlaneQueryIpcResponse::Bridge(bridge) => {
-                if bridge.generation != ready_pin()
-                    || bridge.packet.scope != quanta_index_contract::BridgeScope::Structural
-                    || bridge.packet.candidates.len() != 2
-                {
-                    return Err(format!("unexpected structural bridge response: {bridge:?}").into());
-                }
-            }
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
-            | SearchPlaneQueryIpcResponse::Symbol(_)
-            | SearchPlaneQueryIpcResponse::Semantic(_)
-            | SearchPlaneQueryIpcResponse::Hybrid(_)
-            | SearchPlaneQueryIpcResponse::History(_)
-            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-            | SearchPlaneQueryIpcResponse::Explain(_)
-            | SearchPlaneQueryIpcResponse::Error(_)) => {
-                return Err(format!("expected Bridge response, got {other:?}").into());
-            }
-        }
-
-        assert_closed_obs_metrics(
-            &obs_sink,
-            &[
-                "lq_query_intake_total",
-                "lq_planner_total",
-                "lq_engine_fanout_count",
-                "lq_merge_result_count",
-            ],
-        )
-    }
-
-    #[test]
-    fn bridge_dispatch_translate_fail_emits_parse_obs_metric() -> TestResult {
-        let obs_sink = Arc::new(BoundedQueryObsStore::default());
-        let dispatcher = SearchPlaneDispatcher::new_with_obs(
-            Arc::new(RejectLexicalOpener),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            Arc::new(FailClosedStructuralProducer),
-            ready_ledger(),
-            test_activation_catalog()?,
-            default_query_embedder(),
-            obs_sink.clone(),
-        );
-
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: r#"patterntype:regexp "needle""#.to_string(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 10,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-        let (code, _message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != BridgeErrorCode::BridgeTranslateFail.as_code_str() {
-            return Err(format!(
-                "expected {}, got {code}",
-                BridgeErrorCode::BridgeTranslateFail.as_code_str()
-            )
-            .into());
-        }
-
-        assert_closed_obs_metrics(
-            &obs_sink,
-            &["lq_query_intake_total", "lq_typed_error_parse_total"],
         )
     }
 
@@ -4954,7 +4489,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5058,7 +4592,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
@@ -5129,7 +4662,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5250,7 +4782,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5404,7 +4935,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5502,7 +5032,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5553,55 +5082,6 @@ mod tests {
         }
         if producer.execute_calls.load(Ordering::SeqCst) != 0 {
             return Err("producer execute must not run for typed-hole rejection".into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn bridge_dispatch_rejects_typed_hole_kind_before_structural_execution() -> TestResult {
-        let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
-        let producer = Arc::new(PatternRoutingStructuralProducer::new());
-        let dispatcher = SearchPlaneDispatcher::new(
-            Arc::new(RecordingLexicalOpener {
-                state: Arc::clone(&lexical_state),
-                results: vec![candidate("lexical-should-not-run", 1.0)],
-            }),
-            Arc::new(RejectSemanticOpener),
-            Arc::new(StubRepoMapQueryPort),
-            producer,
-            ready_ledger(),
-            test_activation_catalog()?,
-        );
-
-        let response =
-            dispatcher.dispatch(SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Native,
-                    query_text: "match { function_item { { :[name.lambda] } } }".to_string(),
-                    generation: Some(ready_pin()),
-                    generation_selector: None,
-                    top_k: 10,
-                },
-                target: quanta_index_contract::BridgeTarget::CodeQl,
-            }));
-
-        let (code, message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "STR_HOLE_KIND_UNSUPPORTED" {
-            return Err(format!("expected STR_HOLE_KIND_UNSUPPORTED, got {code}").into());
-        }
-        if !message.contains("typed hole kind `lambda`") {
-            return Err(
-                format!("expected typed-hole bridge rejection message, got {message}").into(),
-            );
-        }
-        if !lexical_state
-            .lock()
-            .map_err(|err| format!("lexical state poisoned: {err}"))?
-            .search_top_ks
-            .is_empty()
-        {
-            return Err("lexical opener must not execute for typed-hole bridge rejection".into());
         }
         Ok(())
     }
@@ -5658,7 +5138,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5720,7 +5199,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5771,7 +5249,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {
@@ -5831,7 +5308,6 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)) => {

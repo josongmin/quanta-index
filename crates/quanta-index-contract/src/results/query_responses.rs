@@ -7,8 +7,8 @@ use serde::{
 };
 
 use crate::{
-    BridgeCandidatePacket, CommitCandidate, DiffCandidate, GenerationPin, LexicalCandidate,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, StructuralCandidate,
+    CommitCandidate, DiffCandidate, GenerationPin, LexicalCandidate, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -598,20 +598,6 @@ impl_generation_results_response_serde!(
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
     StructuralCandidate
-);
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct SearchPlaneBridgeQueryResponse {
-    pub generation: GenerationPin,
-    pub packet: BridgeCandidatePacket,
-}
-
-const SEARCH_PLANE_BRIDGE_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "packet"];
-impl_generation_payload_response_serde!(
-    SearchPlaneBridgeQueryResponse,
-    SEARCH_PLANE_BRIDGE_QUERY_RESPONSE_FIELDS,
-    SearchPlaneBridgeQueryResponseVisitor,
-    packet: BridgeCandidatePacket => "packet"
 );
 
 #[derive(Clone, Debug, PartialEq)]

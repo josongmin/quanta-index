@@ -29,14 +29,6 @@ pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreErr
     clippy::redundant_pub_crate,
     reason = "crate-private lowering helpers are shared across sibling modules"
 )]
-pub(crate) fn lower_sourcegraph_bridge_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
-    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Bridge)
-}
-
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "crate-private lowering helpers are shared across sibling modules"
-)]
 pub(crate) fn lower_sourcegraph_structural_query_text(
     query_text: &str,
 ) -> Result<LqQuery, CoreError> {
@@ -46,7 +38,6 @@ pub(crate) fn lower_sourcegraph_structural_query_text(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourcegraphLoweringRoute {
     Lexical,
-    Bridge,
     Structural,
 }
 
@@ -57,10 +48,10 @@ fn lower_sourcegraph_query_text_for_route(
     let sourcegraph = parse_sourcegraph(query_text).map_err(|err| map_bridge_error(&err))?;
     let (sourcegraph, saw_structural_patterntype) = match route {
         SourcegraphLoweringRoute::Lexical => (sourcegraph, false),
-        SourcegraphLoweringRoute::Bridge | SourcegraphLoweringRoute::Structural => {
-            strip_sourcegraph_structural_patterntype(sourcegraph)
-                .map_err(|err| map_bridge_error(&err))?
-        }
+        SourcegraphLoweringRoute::Structural => strip_sourcegraph_structural_patterntype(
+            sourcegraph,
+        )
+        .map_err(|err| map_bridge_error(&err))?,
     };
     let version = SourcegraphVersionTag::supported().map_err(|err| map_bridge_error(&err))?;
     let mut query = translate_query(sourcegraph, &version, query_text.len())
@@ -70,13 +61,6 @@ fn lower_sourcegraph_query_text_for_route(
     }
     match route {
         SourcegraphLoweringRoute::Lexical => reject_sourcegraph_structural_lexical_shape(query),
-        SourcegraphLoweringRoute::Bridge => {
-            if saw_structural_patterntype {
-                lower_sourcegraph_structural_shape(query_text, query)
-            } else {
-                Ok(query)
-            }
-        }
         SourcegraphLoweringRoute::Structural => {
             if !saw_structural_patterntype {
                 return Err(CoreError::Typed {
@@ -367,8 +351,7 @@ fn map_bridge_error(err: &BridgeError) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        lower_lq_query_text, lower_sourcegraph_bridge_query_text, lower_sourcegraph_query_text,
-        lower_sourcegraph_structural_query_text,
+        lower_lq_query_text, lower_sourcegraph_query_text, lower_sourcegraph_structural_query_text,
     };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
@@ -686,43 +669,6 @@ mod tests {
                     "expected boolean structural tree after SG NOT lowering, got {other:?}"
                 )
                 .into());
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn sourcegraph_bridge_lowering_rewrites_structural_boolean_route() -> TestResult {
-        let lowered = lower_sourcegraph_bridge_query_text(
-            r#"patterntype:structural "function_item" OR patterntype:structural "identifier""#,
-        )
-        .map_err(|err| -> Box<dyn std::error::Error> {
-            format!("expected SG bridge structural lowering, got {err:?}").into()
-        })?;
-        if lowered.options.pattern_type != LqPatternType::Structural {
-            return Err(format!(
-                "expected structural pattern_type, got {:?}",
-                lowered.options.pattern_type
-            )
-            .into());
-        }
-        match lowered.expr {
-            LqExpr::Any(children) => {
-                let [first, second] = children.as_slice() else {
-                    return Err(format!(
-                        "expected 2 structural boolean children, got {children:?}"
-                    )
-                    .into());
-                };
-                if !matches!(first, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
-                    return Err(format!("expected structural positive leaf, got {first:?}").into());
-                }
-                if !matches!(second, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
-                    return Err(format!("expected structural second leaf, got {second:?}").into());
-                }
-            }
-            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
-                return Err(format!("expected structural OR tree, got {other:?}").into());
             }
         }
         Ok(())

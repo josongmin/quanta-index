@@ -17,11 +17,11 @@
 use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
-    BridgeQueryRequest, CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest,
-    HistoryIngestBatch, HistoryQueryRequest, HybridQueryRequest, LexicalIngestBatch,
-    RepoMapQueryRequest, RepoMapSourceBundle, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
+    CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
+    HistoryQueryRequest, HybridQueryRequest, LexicalIngestBatch, RepoMapQueryRequest,
+    RepoMapSourceBundle, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SemanticIngestBatch, SemanticQueryRequest,
     StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
@@ -34,7 +34,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<HybridQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HistoryQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<StructuralQueryRequest, _>(data);
-    let _ = ciborium::de::from_reader::<BridgeQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneExplainQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequest, _>(data);

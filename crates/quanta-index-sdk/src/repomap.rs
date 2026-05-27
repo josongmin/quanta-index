@@ -28,7 +28,6 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {

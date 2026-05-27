@@ -138,7 +138,6 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
@@ -226,7 +225,6 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
             SearchPlaneQueryIpcResponse::History(_) => "history",
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
-            SearchPlaneQueryIpcResponse::Bridge(_) => "bridge",
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
             SearchPlaneQueryIpcResponse::Explain(_) => "explain",
             SearchPlaneQueryIpcResponse::Error(_) => "error",

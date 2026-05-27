@@ -378,7 +378,6 @@ fn dispatch_structural_query_request_v1(
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, BridgeCandidate, BridgeQueryRequest, BridgeScope, BridgeTarget, ChunkId,
-    ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest,
+    BatchIngestMode, ChunkId, ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin,
+    HybridQueryRequest,
     LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility, ManifestGeneration,
     PlannerStage, RepoId, RepoRelativePath, RevisionId, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -27,7 +27,6 @@ use quanta_index_contract::{
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_lq_bridge::TRANSLATOR_VERSION;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
@@ -327,23 +326,6 @@ fn lexical_ids(results: &[LexicalCandidate]) -> Vec<String> {
         .collect()
 }
 
-fn bridge_lexical_ids(results: &[BridgeCandidate]) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut ids = Vec::with_capacity(results.len());
-    for candidate in results {
-        match candidate {
-            BridgeCandidate::Lexical(candidate) => ids.push(candidate.candidate_id.clone()),
-            BridgeCandidate::Structural(candidate) => {
-                return Err(format!(
-                    "expected lexical bridge candidate, got structural `{}`",
-                    candidate.candidate_id
-                )
-                .into());
-            }
-        }
-    }
-    Ok(ids)
-}
-
 fn sort_ids(mut ids: Vec<String>) -> Vec<String> {
     ids.sort();
     ids
@@ -404,7 +386,6 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
@@ -505,7 +486,6 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
-            | SearchPlaneQueryIpcResponse::Bridge(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::Error(_)
@@ -573,7 +553,6 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -606,7 +585,6 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -655,7 +633,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
-                | SearchPlaneQueryIpcResponse::Bridge(_)
                 | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
@@ -677,7 +654,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -710,7 +686,6 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -767,7 +742,6 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -796,7 +770,6 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -865,7 +838,6 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -978,7 +950,6 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::Bridge(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
@@ -1115,93 +1086,3 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     stop_runtime(shutdown, join)
 }
 
-#[test]
-fn bridge_query_preserves_complex_sourcegraph_metadata_and_candidate_set() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let state_root = dir.path();
-    let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-bridge-metadata")?;
-    publish_lexical_chunks(
-        &ingest_socket,
-        vec![
-            chunk_record("alpha", "sphinx alpha needle")?,
-            chunk_record("beta", "beta needle")?,
-            chunk_record("gamma", "sphinx gamma")?,
-            chunk_record("delta", "beta needle forbidden")?,
-        ],
-        Some(b"manifest".to_vec()),
-    )?;
-    seal_lexical(&ingest_socket)?;
-
-    let query_text = "(sphinx OR beta) needle NOT forbidden";
-    let lexical_probe = lexical_request(5, TextQuerySyntax::Sourcegraph, query_text);
-    if !wait_for_non_error(&socket, &lexical_probe) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("bridge lexical complex query never became ready".into());
-    }
-
-    let response = send_query_request(
-        &socket,
-        &SearchPlaneQueryIpcRequestEnvelope {
-            request_id: 6,
-            payload: SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-                text_query: TextQueryRequest {
-                    syntax: TextQuerySyntax::Sourcegraph,
-                    query_text: query_text.to_string(),
-                    generation: Some(pin()),
-                    generation_selector: None,
-                    top_k: 50,
-                },
-                target: BridgeTarget::CodeQl,
-            }),
-        },
-    )?;
-    let bridge = match response.payload {
-        SearchPlaneQueryIpcResponse::Bridge(bridge) => bridge,
-        other @ (SearchPlaneQueryIpcResponse::Text(_)
-        | SearchPlaneQueryIpcResponse::Symbol(_)
-        | SearchPlaneQueryIpcResponse::Semantic(_)
-        | SearchPlaneQueryIpcResponse::Hybrid(_)
-        | SearchPlaneQueryIpcResponse::History(_)
-        | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-        | SearchPlaneQueryIpcResponse::Explain(_)
-        | SearchPlaneQueryIpcResponse::Error(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
-            shutdown.store(true, Ordering::Release);
-            drop(join.join());
-            return Err(format!("expected Bridge, got {other:?}").into());
-        }
-    };
-    if bridge.packet.scope != BridgeScope::Lexical {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("unexpected bridge scope: {:?}", bridge.packet.scope).into());
-    }
-    if bridge.packet.source_syntax.as_deref() != Some(query_text) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!(
-            "unexpected bridge source_syntax: {:?}",
-            bridge.packet.source_syntax
-        )
-        .into());
-    }
-    if bridge.packet.translator_version.as_deref() != Some(TRANSLATOR_VERSION) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!(
-            "unexpected bridge translator_version: {:?}",
-            bridge.packet.translator_version
-        )
-        .into());
-    }
-    let ids = bridge_lexical_ids(&bridge.packet.candidates)?;
-    if sort_ids(ids.clone()) != ["alpha".to_string(), "beta".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("unexpected bridge candidate ids: {ids:?}").into());
-    }
-
-    stop_runtime(shutdown, join)
-}

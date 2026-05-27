@@ -5,12 +5,11 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    BridgeCandidate, BridgeCandidatePacket, BridgeQueryRequest, BridgeScope, BridgeTarget,
     DiffCandidate, DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse,
     LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneBridgeQueryResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse,
-    StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate,
+    TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -346,33 +345,6 @@ fn lq_query_cbor_decode_rejects_unknown_lq_version() -> TestRes {
 }
 
 #[test]
-fn search_plane_ipc_request_v2_bridge_roundtrips_sourcegraph_syntax() -> TestRes {
-    let request = SearchPlaneQueryIpcRequest::Bridge(BridgeQueryRequest {
-        text_query: lexical_request(),
-        target: BridgeTarget::CodeQl,
-    });
-
-    roundtrip_eq(&request)?;
-
-    let decoded: SearchPlaneQueryIpcRequest = decode(&encode(&request)?)?;
-    if let SearchPlaneQueryIpcRequest::Bridge(inner) = decoded {
-        if inner.text_query.syntax != TextQuerySyntax::Sourcegraph {
-            return Err(format!(
-                "expected sourcegraph syntax, got {:?}",
-                inner.text_query.syntax
-            )
-            .into());
-        }
-        if inner.target != BridgeTarget::CodeQl {
-            return Err(format!("expected codeql target, got {:?}", inner.target).into());
-        }
-        Ok(())
-    } else {
-        Err(format!("expected Bridge request, got {decoded:?}").into())
-    }
-}
-
-#[test]
 fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> TestRes {
     let request =
         SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_query_text("1.0 0.0 -1.0"));
@@ -623,44 +595,6 @@ fn search_plane_ipc_request_v2_hybrid_rejects_legacy_semantic_vector_ref_field()
     )?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcRequest>(&bytes, "semantic_vector_ref")
-}
-
-#[test]
-fn search_plane_ipc_response_v2_bridge_roundtrips_nested_payload() -> TestRes {
-    let response = SearchPlaneQueryIpcResponse::Bridge(SearchPlaneBridgeQueryResponse {
-        generation: generation_pin(),
-        packet: BridgeCandidatePacket {
-            target: BridgeTarget::CodeQl,
-            scope: BridgeScope::Hybrid,
-            repo_id: RepoId::new("repo-1"),
-            revision_id: RevisionId::new("rev-1"),
-            manifest_generation: ManifestGeneration::new(7),
-            source_syntax: Some("sourcegraph".to_owned()),
-            translator_version: Some("bridge-v2".to_owned()),
-            candidates: vec![BridgeCandidate::Lexical(lexical_candidate())],
-        },
-    });
-
-    roundtrip_eq(&response)?;
-
-    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
-    if let SearchPlaneQueryIpcResponse::Bridge(inner) = decoded {
-        if inner.packet.scope != BridgeScope::Hybrid {
-            return Err(
-                format!("expected hybrid bridge scope, got {:?}", inner.packet.scope).into(),
-            );
-        }
-        if inner.packet.source_syntax.as_deref() != Some("sourcegraph") {
-            return Err(format!(
-                "expected source_syntax=sourcegraph, got {:?}",
-                inner.packet.source_syntax
-            )
-            .into());
-        }
-        Ok(())
-    } else {
-        Err(format!("expected Bridge response, got {decoded:?}").into())
-    }
 }
 
 #[test]

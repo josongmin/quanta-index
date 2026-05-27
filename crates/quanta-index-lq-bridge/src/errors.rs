@@ -16,9 +16,8 @@ use core::fmt;
 /// Wire form is `SCREAMING_SNAKE_CASE`. The five variants here cover the
 /// translator-local refusals locked in
 /// [BRIDGE-01 § 8.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md);
-/// downstream sink / overflow / provenance codes from § 8.1 live on the
-/// `BridgeCandidatePacket` wire surface owned by `quanta-index-contract`
-/// (PRE-CONTRACT-EXT) and are out of scope for this translator crate.
+/// downstream sink / overflow / provenance codes from § 8.1 are out of scope
+/// for this translator crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[expect(
     clippy::enum_variant_names,

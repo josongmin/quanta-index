@@ -6,7 +6,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::{BridgeTarget, LexicalCandidate};
+use crate::LexicalCandidate;
 
 use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
 
@@ -582,21 +582,6 @@ impl_text_query_wrapper_serde!(
     StructuralQueryRequest,
     STRUCTURAL_QUERY_REQUEST_FIELDS,
     StructuralQueryRequestVisitor
-);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BridgeQueryRequest {
-    pub text_query: TextQueryRequest,
-    pub target: BridgeTarget,
-}
-
-const BRIDGE_QUERY_REQUEST_FIELDS: &[&str] = &["text_query", "target"];
-impl_two_required_field_serde!(
-    BridgeQueryRequest,
-    BRIDGE_QUERY_REQUEST_FIELDS,
-    BridgeQueryRequestVisitor,
-    text_query: TextQueryRequest => "text_query",
-    target: BridgeTarget => "target"
 );
 
 #[derive(Clone, Debug, PartialEq)]
