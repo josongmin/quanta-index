@@ -196,8 +196,8 @@ Most carrier types currently live in
 | `DiffCandidate` (+ `DiffHunkSide`) | [contract-base/src/results/diff_candidate.rs](../../../crates/quanta-index-contract-base/src/results/diff_candidate.rs) | `executed` |
 | `StructuralBinding` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L10) | `executed` |
 | `StructuralCandidate` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L93) | `executed` |
-| `BridgeTarget` | [contract-base/src/results/bridge.rs](../../../crates/quanta-index-contract-base/src/results/bridge.rs) | `executed` (CodeQl only) |
-| `BridgeCandidatePacket` | [lq-bridge/src/packet.rs](../../../crates/quanta-index-lq-bridge/src/packet.rs) | `executed` |
+| `BridgeTarget` | contract bridge DTO surface (worktree-local file move in progress) | `executed` (CodeQl only) |
+| `BridgeCandidatePacket` | bridge packet carrier surface (worktree-local file move in progress) | `executed` |
 
 Internal structural match carriers are intentionally not public result DTOs:
 `quanta-index-core` / `searchd` execute on `StructuralMatchBinding` /
@@ -245,6 +245,11 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 | Restart/replay | `tests/e2e_restart_replay_determinism.rs` | `executed[E2E-05]` |
 | Full corpus rail | `tests/e2e_full_corpus.rs` + `tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
 | Perf/chaos | `tests/e2e_perf_chaos.rs` | `executed[E2E-07]` |
+
+The full-corpus fixture is now route-aware: rows declare `runtime_route =
+text|structural|history`, and the shared fixture can carry repo metadata,
+structural parse trees, and history shards. Parser-only / deferred rows are no
+longer parked in `runtime_rows.toml`.
 
 ## 12. Risk register
 

@@ -39,6 +39,10 @@ pub struct CorpusRow {
     /// rows stay in the same machine-readable corpus but must not be counted
     /// as runtime pass/fail rows.
     pub classification: Option<RowClassification>,
+    /// Optional public query route for rows promoted into the live daemon
+    /// rail. Keeps text/history/structural execution explicit instead of
+    /// inferring the route from free-form engine tags.
+    pub runtime_route: Option<RuntimeRoute>,
     /// Optional named fixture bundle consumed by the runtime rail.
     pub fixture: Option<String>,
     /// Optional exact corpus-id set asserted by the runtime rail.
@@ -57,6 +61,14 @@ pub struct CorpusRow {
 pub enum RuntimeSyntax {
     Native,
     Sourcegraph,
+}
+
+/// Public query route for runtime rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeRoute {
+    Text,
+    Structural,
+    History,
 }
 
 /// Runtime-corpus classification.

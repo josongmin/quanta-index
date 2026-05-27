@@ -1,0 +1,2 @@
+# Historical planning subtree with intentionally frozen references to retired crate names.
+docs/plans/may-24-lexical-indexing-sorucegraph

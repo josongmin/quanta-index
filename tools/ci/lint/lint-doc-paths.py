@@ -17,18 +17,39 @@ IGNORE_DIRS = {
     ".ruff_cache",
     "sources",
 }
+IGNORE_PREFIXES_FILE = REPO_ROOT / "tools/ci/lint/baselines/doc-path-ignore-prefixes.txt"
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+def load_ignore_prefixes() -> tuple[Path, ...]:
+    if not IGNORE_PREFIXES_FILE.exists():
+        return ()
+    prefixes: list[Path] = []
+    for raw_line in IGNORE_PREFIXES_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        prefixes.append(Path(line))
+    return tuple(prefixes)
+
+
+def is_ignored_doc(path: Path, ignored_prefixes: tuple[Path, ...]) -> bool:
+    rel = path.relative_to(REPO_ROOT)
+    rel_parts = set(rel.parts)
+    if rel_parts & IGNORE_DIRS:
+        return True
+    return any(rel.is_relative_to(prefix) for prefix in ignored_prefixes)
 
 
 def iter_docs() -> list[Path]:
     docs: list[Path] = []
+    ignored_prefixes = load_ignore_prefixes()
     for path in REPO_ROOT.rglob("*"):
         if not path.is_file():
             continue
         if path.suffix not in DOC_SUFFIXES:
             continue
-        rel_parts = set(path.relative_to(REPO_ROOT).parts)
-        if rel_parts & IGNORE_DIRS:
+        if is_ignored_doc(path, ignored_prefixes):
             continue
         docs.append(path)
     return docs

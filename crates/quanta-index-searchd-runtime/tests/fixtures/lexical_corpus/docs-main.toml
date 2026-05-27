@@ -38,3 +38,16 @@ id = "theta_symbol"
 path = "src/sym.rs"
 content = "pub fn MyTypeSymbol(arg: i32) -> i32 { arg }"
 symbol_name = "MyTypeSymbol"
+
+[repo_metadata]
+fork = false
+archived = false
+visibility = "public"
+contexts = ["global", "team-search"]
+
+[[structural]]
+path = "src/lib.rs"
+identifier = "alpha_content_needle"
+
+[[history]]
+file_path = "src/lib.rs"

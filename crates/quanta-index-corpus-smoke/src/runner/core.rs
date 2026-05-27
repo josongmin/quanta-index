@@ -285,6 +285,7 @@ mod tests {
             filters: Vec::new(),
             syntax: None,
             classification: None,
+            runtime_route: None,
             fixture: None,
             expected_ids: Vec::new(),
             top_k: None,

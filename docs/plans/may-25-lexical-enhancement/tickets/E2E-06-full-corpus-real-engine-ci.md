@@ -17,13 +17,13 @@ separate lower gate.
 - machine-readable runtime corpus fixtures live under
   `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/`.
 - `quanta-index-corpus-smoke` now carries explicit runtime metadata for:
-  `syntax`, `classification`, `fixture`, `expected_ids`, `top_k`, and
-  `runtime_error_code`.
+  `syntax`, `classification`, `runtime_route`, `fixture`, `expected_ids`,
+  `top_k`, and `runtime_error_code`.
 - current corpus classification counts are:
-  - `runtime`: 7 rows
-  - `typed_unavailable`: 2 rows
-  - `parser_only`: 1 row
-  - `deferred_external_producer`: 1 row
+  - `runtime`: 11 rows
+  - `typed_unavailable`: 0 rows
+  - `parser_only`: 0 rows
+  - `deferred_external_producer`: 0 rows
 - local/CI command surface exists as `just rust-test-full-corpus`.
 - the current tree also wires the rail into
   `.github/workflows/correctness.yml` as `rust-full-corpus`.
@@ -42,8 +42,8 @@ separate lower gate.
 - `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`: execute the
   corpus through the real runtime harness and report row-level failures.
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/**`:
-  store machine-readable query rows, corpora, expected IDs, and expected typed
-  failures.
+  store machine-readable query rows plus typed repo-metadata, structural-tree,
+  and history authority for the runtime rail.
 - `crates/quanta-index-corpus-smoke/src/**`: keep parser-only and runtime corpus
   rails explicitly separate.
 - `Justfile` and `.github/workflows/**`: add local and CI entry points for the
@@ -54,12 +54,10 @@ separate lower gate.
 ## Required scenarios
 
 - import the existing usecase/corpus rows into machine-readable fixtures.
-- classify every row:
-  - LQ runtime
-  - Sourcegraph runtime
-  - parser-only
-  - expected typed unavailable
-  - deferred external producer
+- classify every row with its public runtime route:
+  - text
+  - structural
+  - history
 - run real runtime rows through `E2E-00` harness.
 - produce failure artifacts with:
   - row id
@@ -71,9 +69,10 @@ separate lower gate.
   - typed error code
   - `SearchExplanation`
 
-The current live rail executes only `runtime` and `typed_unavailable` rows;
-`parser_only` and `deferred_external_producer` rows stay counted but are not
-misreported as runtime passes.
+The current live rail executes text, structural, and history rows through the
+real daemon harness. Parser-only and deferred-producer gaps were retired from
+this runtime closeout corpus; future incomplete rows must live in the separate
+conformance or owner-local proof rails instead of this file.
 
 ## Test plan
 

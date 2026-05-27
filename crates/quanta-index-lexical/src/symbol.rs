@@ -1,6 +1,6 @@
-//! Symbol planner and `select:`/`type:` routing scaffold (ticket LXE-06).
+//! Symbol-route planning and `select:`/`type:` surface resolution.
 //!
-//! Three concerns, all `pending[LXE-06]` on the capability matrix:
+//! This module owns three live concerns:
 //!
 //! 1. Symbol-route planning — turns a symbol needle (+ optional kind)
 //!    into a typed [`SymbolPlan`] for the symbol index, not content
@@ -10,11 +10,9 @@
 //!    [`ResultSurface`] per dsl.md §6.4–§6.5. `Select` wins for
 //!    rendering; `Type` constrains engine routing.
 //! 3. Typed-unavailable bookkeeping — `Commit` / `Diff` / `Repo` /
-//!    `Structural` surfaces have no producer today; the trace records
-//!    intent, execution emits the typed-unavailable response.
-//!
-//! Integration with `planner.rs` / `plan.rs` is a coordinated
-//! follow-up (LXE-04 / LXE-05 are editing those files concurrently).
+//!    `Structural` surfaces still have no producer on the lexical rail,
+//!    so the trace records intent and the executor emits the typed
+//!    response instead of silently degrading.
 
 use core::fmt;
 

@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 
 use toml::Value;
 
-use crate::corpus::{Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeSyntax};
+use crate::corpus::{
+    Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeRoute, RuntimeSyntax,
+};
 use crate::errors::{ConformanceError, CorpusLoadError};
 
 /// Allow-listed row-level keys. Anything else triggers
@@ -34,6 +36,7 @@ const ALLOWED_ROW_KEYS: &[&str] = &[
     "filters",
     "syntax",
     "classification",
+    "runtime_route",
     "fixture",
     "expected_ids",
     "top_k",
@@ -166,6 +169,7 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
     let filters = parse_string_array(table, "filters", path)?;
     let syntax = optional_runtime_syntax(table, path)?;
     let classification = optional_row_classification(table, path)?;
+    let runtime_route = optional_runtime_route(table, path)?;
     let fixture = optional_string(table, "fixture", path)?;
     let expected_ids = parse_string_array(table, "expected_ids", path)?;
     let top_k = optional_u32(table, "top_k", path)?;
@@ -189,6 +193,7 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
         filters,
         syntax,
         classification,
+        runtime_route,
         fixture,
         expected_ids,
         top_k,
@@ -237,6 +242,26 @@ fn optional_row_classification(
                 "typed_unavailable",
                 "deferred_external_producer",
             ],
+        }),
+    }
+}
+
+fn optional_runtime_route(
+    table: &toml::map::Map<String, Value>,
+    path: &str,
+) -> Result<Option<RuntimeRoute>, CorpusLoadError> {
+    let Some(raw) = optional_string(table, "runtime_route", path)? else {
+        return Ok(None);
+    };
+    match raw.as_str() {
+        "text" => Ok(Some(RuntimeRoute::Text)),
+        "structural" => Ok(Some(RuntimeRoute::Structural)),
+        "history" => Ok(Some(RuntimeRoute::History)),
+        other => Err(CorpusLoadError::UnknownEnumValue {
+            path: path.to_owned(),
+            field: "runtime_route",
+            value: other.to_owned(),
+            allowed: &["text", "structural", "history"],
         }),
     }
 }
@@ -507,6 +532,7 @@ mod tests {
                     filters: Vec::new(),
                     syntax: None,
                     classification: None,
+                    runtime_route: None,
                     fixture: None,
                     expected_ids: Vec::new(),
                     top_k: None,
@@ -564,6 +590,7 @@ mod tests {
         assert_eq!(row.expected, ExpectedShape::Multi { min: 1, max: None });
         assert_eq!(row.syntax, None);
         assert_eq!(row.classification, None);
+        assert_eq!(row.runtime_route, None);
         assert!(row.expected_ids.is_empty());
         assert_eq!(row.top_k, None);
         assert_eq!(row.runtime_error_code, None);
@@ -579,6 +606,7 @@ mod tests {
             engines = ["lexical_content"]
             syntax = "sourcegraph"
             classification = "runtime"
+            runtime_route = "text"
             fixture = "docs.toml"
             expected_ids = ["alpha", "beta"]
             top_k = 7
@@ -593,6 +621,7 @@ mod tests {
         let row = first_row(&corpus);
         assert_eq!(row.syntax, Some(RuntimeSyntax::Sourcegraph));
         assert_eq!(row.classification, Some(RowClassification::Runtime));
+        assert_eq!(row.runtime_route, Some(RuntimeRoute::Text));
         assert_eq!(row.fixture.as_deref(), Some("docs.toml"));
         assert_eq!(
             row.expected_ids,
@@ -622,6 +651,26 @@ mod tests {
             err,
             CorpusLoadError::UnknownEnumValue { field, value, .. }
                 if field == "classification" && value == "bogus"
+        ));
+    }
+
+    #[test]
+    fn invalid_runtime_route_rejected() {
+        let raw = r#"
+            [[row]]
+            id = "BAD-ROUTE"
+            query = "alpha"
+            gate = "active"
+            runtime_route = "bridge"
+
+            [row.expected]
+            kind = "single"
+        "#;
+        let err = expect_err(parse_corpus(raw, p()));
+        assert!(matches!(
+            err,
+            CorpusLoadError::UnknownEnumValue { field, value, .. }
+                if field == "runtime_route" && value == "bridge"
         ));
     }
 

@@ -6,6 +6,7 @@ engines = ["lexical_content"]
 filters = ["content"]
 syntax = "native"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["alpha_content", "gamma_py_same"]
 top_k = 10
@@ -23,6 +24,7 @@ engines = ["lexical_content"]
 filters = ["file"]
 syntax = "native"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["alpha_content"]
 top_k = 10
@@ -38,6 +40,7 @@ engines = ["lexical_regex"]
 filters = ["regex"]
 syntax = "native"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["epsilon_regex"]
 top_k = 10
@@ -53,6 +56,7 @@ engines = ["lexical_raw"]
 filters = ["raw"]
 syntax = "native"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["zeta_raw"]
 top_k = 10
@@ -68,6 +72,7 @@ engines = ["lexical_symbol"]
 filters = ["type:symbol"]
 syntax = "native"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["theta_symbol"]
 top_k = 10
@@ -83,6 +88,7 @@ engines = ["lexical_symbol", "sourcegraph_lowering"]
 filters = ["select:symbol"]
 syntax = "sourcegraph"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["theta_symbol"]
 top_k = 10
@@ -98,6 +104,7 @@ engines = ["lexical_phrase", "sourcegraph_lowering"]
 filters = ["phrase"]
 syntax = "sourcegraph"
 classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = []
 top_k = 10
@@ -106,44 +113,50 @@ top_k = 10
 kind = "empty"
 
 [[row]]
-id = "typed_unavailable_native_fork"
+id = "runtime_native_fork_filter"
 query = "fork:no alpha_content_needle"
 gate = "active"
 engines = ["lexical_content"]
 filters = ["fork"]
 syntax = "native"
-classification = "typed_unavailable"
+classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
 top_k = 10
-runtime_error_code = "LEX_FILTER_FORK_UNAVAILABLE"
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 2
+max = 2
 
 [[row]]
-id = "typed_unavailable_sourcegraph_visibility"
+id = "runtime_sourcegraph_visibility_filter"
 query = "visibility:public alpha_content_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
 filters = ["visibility"]
 syntax = "sourcegraph"
-classification = "typed_unavailable"
+classification = "runtime"
+runtime_route = "text"
 fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
 top_k = 10
-runtime_error_code = "LEX_FILTER_VISIBILITY_UNAVAILABLE"
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 2
+max = 2
 
 [[row]]
-id = "parser_only_structural_match"
-query = "repo:repo-e2e file:src/lib.rs lang:rust match { function_item { { identifier :[name] } } }"
-gate = "pending"
-gating_ticket = "E2E-04"
-engines = ["structural_parser"]
+id = "runtime_sourcegraph_structural_match"
+query = "repo:repo-e2e path:src/lib.rs lang:rust patterntype:structural \"function_item { { identifier :[name] } }\""
+gate = "active"
+engines = ["structural", "sourcegraph_lowering"]
 filters = ["structural"]
 syntax = "sourcegraph"
-classification = "parser_only"
+classification = "runtime"
+runtime_route = "structural"
 fixture = "docs-main.toml"
 expected_ids = ["alpha_content"]
 top_k = 10
@@ -152,16 +165,16 @@ top_k = 10
 kind = "single"
 
 [[row]]
-id = "deferred_history_external_producer"
+id = "runtime_sourcegraph_history_commit"
 query = "type:commit alpha_content_needle"
-gate = "blocked"
-gating_ticket = "EXT-HISTORY-FIXTURE"
+gate = "active"
 engines = ["history"]
 filters = ["type:commit"]
 syntax = "sourcegraph"
-classification = "deferred_external_producer"
+classification = "runtime"
+runtime_route = "history"
 fixture = "docs-main.toml"
-expected_ids = ["commit-alpha"]
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
 top_k = 10
 
 [row.expected]
