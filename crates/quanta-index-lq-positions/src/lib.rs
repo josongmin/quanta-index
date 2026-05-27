@@ -3,9 +3,8 @@
 //! LEX-03 — Phrase position index for adjacency / phrase queries.
 //!
 //! Per-generation immutable shard mapping `(term, doc) -> Vec<Position>`
-//! against a post-normalize token stream from
-//! [`quanta-index-lq-text-norm`](../quanta_index_lq_text_norm). Positions
-//! drive two query paths:
+//! against a post-normalize token stream from the upstream text
+//! normalizer. Positions drive two query paths:
 //!
 //! 1. Exact phrase (`PhraseQuery`, slop = 0) — `query_phrase` accepts an
 //!    ordered slice of normalized terms and emits `PhraseMatch` rows for

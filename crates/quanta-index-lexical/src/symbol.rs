@@ -22,11 +22,8 @@ use quanta_index_contract::{LqFilter, LqSelect, LqType};
 
 /// Closed set of v1 symbol kinds accepted as a `kind_filter`.
 ///
-/// Mirrors `quanta_index_lq_symbol::SymbolKind` (12 v1 kinds from
-/// LEX-05 §3.3) but is defined locally so the lexical crate does not
-/// yet take a build-time dep on `quanta-index-lq-symbol`. The LXE-06
-/// executor PR is the right place to wire a `From` adapter onto the
-/// upstream enum; drift between the two is a planner-integration bug.
+/// Canonical 12 v1 kinds (originally from LEX-05 §3.3). This is the
+/// authoritative enum on the lexical plane; no mirror crate exists.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SymbolKindFilter {
     Function,
