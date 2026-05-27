@@ -61,20 +61,20 @@ class Violation:
 # A line is "facade-acceptable" iff it matches one of these patterns when
 # leading whitespace is stripped.
 FACADE_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^\s*$"),                       # blank
-    re.compile(r"^\s*//"),                      # line comment / doc
-    re.compile(r"^\s*/\*"),                     # block comment open
-    re.compile(r"^\s*\*"),                      # block-comment continuation
-    re.compile(r"^\s*\*/"),                     # block comment close
-    re.compile(r"^\s*#!?\["),                   # attribute / inner attribute
-    re.compile(r"^\s*use\b"),                   # use ...;
-    re.compile(r"^\s*pub\s+use\b"),             # pub use ...;
-    re.compile(r"^\s*pub\([^)]*\)\s+use\b"),    # pub(crate) use / pub(super) use
-    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*;"),                       # mod foo;
-    re.compile(r"^\s*pub\s+mod\s+[A-Za-z_][\w]*\s*;"),                 # pub mod foo;
-    re.compile(r"^\s*pub\s*\([^)]*\)\s+mod\s+[A-Za-z_][\w]*\s*;"),     # pub(crate) mod foo;
-    re.compile(r"^\s*\}"),                                              # closing brace from a use-tree
-    re.compile(r"^\s*[A-Za-z_][\w:]*\s*[,{]"),                          # use-tree continuation
+    re.compile(r"^\s*$"),  # blank
+    re.compile(r"^\s*//"),  # line comment / doc
+    re.compile(r"^\s*/\*"),  # block comment open
+    re.compile(r"^\s*\*"),  # block-comment continuation
+    re.compile(r"^\s*\*/"),  # block comment close
+    re.compile(r"^\s*#!?\["),  # attribute / inner attribute
+    re.compile(r"^\s*use\b"),  # use ...;
+    re.compile(r"^\s*pub\s+use\b"),  # pub use ...;
+    re.compile(r"^\s*pub\([^)]*\)\s+use\b"),  # pub(crate) use / pub(super) use
+    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*;"),  # mod foo;
+    re.compile(r"^\s*pub\s+mod\s+[A-Za-z_][\w]*\s*;"),  # pub mod foo;
+    re.compile(r"^\s*pub\s*\([^)]*\)\s+mod\s+[A-Za-z_][\w]*\s*;"),  # pub(crate) mod foo;
+    re.compile(r"^\s*\}"),  # closing brace from a use-tree
+    re.compile(r"^\s*[A-Za-z_][\w:]*\s*[,{]"),  # use-tree continuation
 ]
 
 
@@ -90,7 +90,7 @@ FORBIDDEN_PREFIXES: list[re.Pattern[str]] = [
     re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?type\s+"),
     re.compile(r"^\s*macro_rules!\s*"),
     re.compile(r"^\s*extern\s+"),
-    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*\{"),       # inline mod foo {
+    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*\{"),  # inline mod foo {
     re.compile(r"^\s*pub\s+mod\s+[A-Za-z_][\w]*\s*\{"),
 ]
 

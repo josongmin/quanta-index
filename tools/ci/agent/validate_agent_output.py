@@ -10,7 +10,6 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_PATH = Path(__file__).with_name("agent_output.schema.json")
 FORBIDDEN_RUST_PATTERN = (
@@ -33,9 +32,7 @@ def validate_status_contract(obj: dict) -> None:
         if obj["required_inputs_missing"]:
             raise AgentValidationError("ok with missing inputs")
 
-        if any(
-            assumption["can_affect_correctness"] for assumption in obj.get("assumptions", [])
-        ):
+        if any(assumption["can_affect_correctness"] for assumption in obj.get("assumptions", [])):
             raise AgentValidationError("ok with correctness-affecting assumption")
 
         if any(not check["passed"] for check in obj.get("checks", [])):
@@ -66,9 +63,7 @@ def requires_rust_verification(paths: list[Path]) -> bool:
 def run_command(command: list[str], cwd: Path) -> None:
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
-        details = "\n".join(
-            part for part in [result.stdout.strip(), result.stderr.strip()] if part
-        )
+        details = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
         raise AgentValidationError(
             f"command failed ({' '.join(command)}): {details or f'exit {result.returncode}'}"
         )
@@ -82,9 +77,7 @@ def check_forbidden_rust_patterns(cwd: Path) -> None:
         text=True,
     )
     if result.returncode == 0:
-        raise AgentValidationError(
-            "forbidden Rust pattern detected:\n" + result.stdout.strip()
-        )
+        raise AgentValidationError("forbidden Rust pattern detected:\n" + result.stdout.strip())
     if result.returncode > 1:
         raise AgentValidationError(
             f"rg failed while checking forbidden Rust patterns: {result.stderr.strip()}"

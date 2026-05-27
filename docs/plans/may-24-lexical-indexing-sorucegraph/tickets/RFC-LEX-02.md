@@ -177,7 +177,7 @@ Constituent DoDs (✓ = shipped per constituent spec; 🔜 = deferred to this ro
 - ✓ [PRE-CONTRACT-EXT §11 DoD](PRE-CONTRACT-EXT.md) — `LexicalErrorCode` v1 + envelope types compile + hand-rolled serde
 - ✓ [PRE-NORM §11 DoD](PRE-NORM.md) — parser + canonical-hash byte-stable
 - ✓ [BRIDGE-01 §11 DoD](BRIDGE-01.md) — subset table + bridge packet
-- ✓ IPC codec round-trip ([quanta-index-ipc tests](../../../../crates/quanta-index-ipc/tests))
+- ✓ IPC codec round-trip ([quanta-index-ipc src tests](../../../../crates/quanta-index-ipc/src/server.rs))
 - 🔜 `SearchPlaneIpcServer::dispatch` wired in [searchd composition root](../../../../crates/quanta-index-searchd/src/app/ipc_dispatcher.rs) for all 10 variants
 - 🔜 Per-variant e2e integration test (one row per variant) green
 - 🔜 OBS-01 span attributes per variant emitted at front door

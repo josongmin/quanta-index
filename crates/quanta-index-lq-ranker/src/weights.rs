@@ -1,13 +1,13 @@
 //! Frozen-per-generation ranker weight carrier.
 //!
-//! [`RankerWeightsV1`] pins the linear-weighted-sum coefficients for the
+//! [`RankerWeights`] pins the linear-weighted-sum coefficients for the
 //! composite ranker. Default values land via ADR-006 and are exported as
-//! [`RankerWeightsV1::DEFAULTS`]; every other construction must pass through
-//! [`RankerWeightsV1::new`] which validates the envelope.
+//! [`RankerWeights::DEFAULTS`]; every other construction must pass through
+//! [`RankerWeights::new`] which validates the envelope.
 //!
 //! The accompanying [`weights_hash`] is the SHA-256 of the canonical CBOR
 //! encoding of the weight set, version-tagged with `b"RankerWeightsV1\0"`
-//! so a hypothetical future `RankerWeightsV2` can never collide.
+//! so hash-domain evolution stays isolated from the live Rust type name.
 //!
 //! D18 — every wire shape is hand-rolled serde; no proc-macro derives.
 
@@ -25,7 +25,7 @@ const SUM_TOLERANCE: f32 = 1.0e-3;
 
 /// Linear-weighted-sum coefficients for the composite ranker.
 ///
-/// Invariants enforced by [`RankerWeightsV1::new`]:
+/// Invariants enforced by [`RankerWeights::new`]:
 ///
 /// - every field is finite (no `NaN`, no infinity);
 /// - every field is in the closed range `[0.0, 1.0]`;
@@ -33,9 +33,9 @@ const SUM_TOLERANCE: f32 = 1.0e-3;
 ///
 /// Fields are kept private behind accessors so the invariants cannot be
 /// bypassed by direct construction; the only literal construction is
-/// [`RankerWeightsV1::DEFAULTS`].
+/// [`RankerWeights::DEFAULTS`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RankerWeightsV1 {
+pub struct RankerWeights {
     bm25: f32,
     path_prior: f32,
     symbol_boost: f32,
@@ -43,7 +43,7 @@ pub struct RankerWeightsV1 {
     boost_directive: f32,
 }
 
-impl RankerWeightsV1 {
+impl RankerWeights {
     /// Default weight set per ADR-006 candidate.
     pub const DEFAULTS: Self = Self {
         bm25: 0.7,
@@ -129,17 +129,17 @@ impl RankerWeightsV1 {
     }
 }
 
-impl Default for RankerWeightsV1 {
+impl Default for RankerWeights {
     fn default() -> Self {
         Self::DEFAULTS
     }
 }
 
-impl fmt::Display for RankerWeightsV1 {
+impl fmt::Display for RankerWeights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "RankerWeightsV1(bm25={}, path_prior={}, symbol_boost={}, recency={}, boost_directive={})",
+            "RankerWeights(bm25={}, path_prior={}, symbol_boost={}, recency={}, boost_directive={})",
             self.bm25, self.path_prior, self.symbol_boost, self.recency, self.boost_directive,
         )
     }
@@ -149,20 +149,20 @@ impl fmt::Display for RankerWeightsV1 {
 ///
 /// The digest is computed over `VERSION_TAG || cbor(weights)`, where
 /// `cbor(weights)` is produced by the hand-rolled serde implementation
-/// on [`RankerWeightsV1`]. The version tag guarantees that no future
-/// `RankerWeightsV2` can hash-collide with `RankerWeightsV1`.
+/// on [`RankerWeights`]. The version tag keeps this digest namespace
+/// separate from any future wire-shape revision.
 ///
 /// Returns [`RankerErrorCode::WeightsEncodeFailed`] if the CBOR
 /// serialize step fails. `Vec<u8>` writes are infallible in practice,
 /// but the function propagates the typed error rather than falling
 /// back to a heuristic alternate-algorithm digest — a single weight
 /// set must hash to exactly one digest under exactly one algorithm.
-pub fn weights_hash(weights: &RankerWeightsV1) -> Result<[u8; 32], crate::errors::RankerError> {
+pub fn weights_hash(weights: &RankerWeights) -> Result<[u8; 32], crate::errors::RankerError> {
     let mut buf: Vec<u8> = Vec::with_capacity(64);
     ciborium::ser::into_writer(weights, &mut buf).map_err(|e| {
         crate::errors::RankerError::new(
             crate::errors::RankerErrorCode::WeightsEncodeFailed,
-            format!("cbor encode of RankerWeightsV1 failed: {e}"),
+            format!("cbor encode of RankerWeights failed: {e}"),
         )
     })?;
     let mut hasher = Sha256::new();
@@ -174,7 +174,7 @@ pub fn weights_hash(weights: &RankerWeightsV1) -> Result<[u8; 32], crate::errors
     Ok(arr)
 }
 
-impl serde::Serialize for RankerWeightsV1 {
+impl serde::Serialize for RankerWeights {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -190,23 +190,23 @@ impl serde::Serialize for RankerWeightsV1 {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for RankerWeightsV1 {
+impl<'de> serde::Deserialize<'de> for RankerWeights {
     fn deserialize<D>(de: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         struct V;
         impl<'d> serde::de::Visitor<'d> for V {
-            type Value = RankerWeightsV1;
+            type Value = RankerWeights;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
-                    "RankerWeightsV1 map with fields bm25, boost_directive, path_prior, recency, symbol_boost",
+                    "RankerWeights map with fields bm25, boost_directive, path_prior, recency, symbol_boost",
                 )
             }
             fn visit_map<M: serde::de::MapAccess<'d>>(
                 self,
                 mut map: M,
-            ) -> Result<RankerWeightsV1, M::Error> {
+            ) -> Result<RankerWeights, M::Error> {
                 let mut bm25: Option<f32> = None;
                 let mut path_prior: Option<f32> = None;
                 let mut symbol_boost: Option<f32> = None;
@@ -266,7 +266,7 @@ impl<'de> serde::Deserialize<'de> for RankerWeightsV1 {
                 let recency = recency.ok_or_else(|| serde::de::Error::missing_field("recency"))?;
                 let boost_directive = boost_directive
                     .ok_or_else(|| serde::de::Error::missing_field("boost_directive"))?;
-                RankerWeightsV1::new(bm25, path_prior, symbol_boost, recency, boost_directive)
+                RankerWeights::new(bm25, path_prior, symbol_boost, recency, boost_directive)
                     .map_err(serde::de::Error::custom)
             }
         }
@@ -276,7 +276,7 @@ impl<'de> serde::Deserialize<'de> for RankerWeightsV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RankerWeightsV1, weights_hash};
+    use super::{RankerWeights, weights_hash};
     use crate::errors::RankerErrorCode;
 
     fn fatal(msg: &str) -> ! {
@@ -284,7 +284,7 @@ mod tests {
         std::process::abort();
     }
 
-    fn assert_invalid(r: Result<RankerWeightsV1, crate::errors::RankerError>) {
+    fn assert_invalid(r: Result<RankerWeights, crate::errors::RankerError>) {
         match r {
             Ok(_) => assert!(false, "expected InvalidWeights"),
             Err(e) => assert_eq!(e.code, RankerErrorCode::InvalidWeights),
@@ -293,8 +293,8 @@ mod tests {
 
     #[test]
     fn defaults_validate() {
-        let d = RankerWeightsV1::DEFAULTS;
-        let got = match RankerWeightsV1::new(
+        let d = RankerWeights::DEFAULTS;
+        let got = match RankerWeights::new(
             d.bm25(),
             d.path_prior(),
             d.symbol_boost(),
@@ -309,39 +309,39 @@ mod tests {
 
     #[test]
     fn defaults_sum_to_one() {
-        let d = RankerWeightsV1::DEFAULTS;
+        let d = RankerWeights::DEFAULTS;
         let s = d.bm25() + d.path_prior() + d.symbol_boost() + d.recency() + d.boost_directive();
         assert!((s - 1.0).abs() < 1.0e-6, "defaults sum {s} != 1.0");
     }
 
     #[test]
     fn rejects_nan() {
-        assert_invalid(RankerWeightsV1::new(f32::NAN, 0.1, 0.1, 0.05, 0.05));
+        assert_invalid(RankerWeights::new(f32::NAN, 0.1, 0.1, 0.05, 0.05));
     }
 
     #[test]
     fn rejects_infinity() {
-        assert_invalid(RankerWeightsV1::new(0.7, f32::INFINITY, 0.1, 0.05, 0.05));
+        assert_invalid(RankerWeights::new(0.7, f32::INFINITY, 0.1, 0.05, 0.05));
     }
 
     #[test]
     fn rejects_negative_weight() {
-        assert_invalid(RankerWeightsV1::new(0.7, -0.1, 0.1, 0.05, 0.05));
+        assert_invalid(RankerWeights::new(0.7, -0.1, 0.1, 0.05, 0.05));
     }
 
     #[test]
     fn rejects_weight_above_one() {
-        assert_invalid(RankerWeightsV1::new(1.5, 0.0, 0.0, 0.0, 0.0));
+        assert_invalid(RankerWeights::new(1.5, 0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
     fn rejects_sum_far_from_one() {
-        assert_invalid(RankerWeightsV1::new(0.5, 0.5, 0.5, 0.5, 0.5));
+        assert_invalid(RankerWeights::new(0.5, 0.5, 0.5, 0.5, 0.5));
     }
 
     #[test]
     fn accepts_sum_within_tolerance() {
-        match RankerWeightsV1::new(0.7005, 0.1, 0.1, 0.05, 0.05) {
+        match RankerWeights::new(0.7005, 0.1, 0.1, 0.05, 0.05) {
             Ok(_) => {}
             Err(e) => fatal(&format!("should accept near-1 sum: {e}")),
         }
@@ -349,12 +349,12 @@ mod tests {
 
     #[test]
     fn rejects_sum_at_zero() {
-        assert_invalid(RankerWeightsV1::new(0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_invalid(RankerWeights::new(0.0, 0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
     fn hash_is_deterministic() {
-        let d = RankerWeightsV1::DEFAULTS;
+        let d = RankerWeights::DEFAULTS;
         let h1 = match weights_hash(&d) {
             Ok(v) => v,
             Err(e) => fatal(&format!("{e}")),
@@ -368,8 +368,8 @@ mod tests {
 
     #[test]
     fn hash_changes_when_weight_changes() {
-        let a = RankerWeightsV1::DEFAULTS;
-        let b = match RankerWeightsV1::new(0.69, 0.11, 0.1, 0.05, 0.05) {
+        let a = RankerWeights::DEFAULTS;
+        let b = match RankerWeights::new(0.69, 0.11, 0.1, 0.05, 0.05) {
             Ok(v) => v,
             Err(e) => fatal(&format!("{e}")),
         };
@@ -386,13 +386,13 @@ mod tests {
 
     #[test]
     fn cbor_roundtrip_preserves_value() {
-        let d = RankerWeightsV1::DEFAULTS;
+        let d = RankerWeights::DEFAULTS;
         let mut buf: Vec<u8> = Vec::new();
         match ciborium::ser::into_writer(&d, &mut buf) {
             Ok(()) => {}
             Err(e) => fatal(&format!("serialize: {e}")),
         }
-        match ciborium::de::from_reader::<RankerWeightsV1, _>(buf.as_slice()) {
+        match ciborium::de::from_reader::<RankerWeights, _>(buf.as_slice()) {
             Ok(got) => assert_eq!(got, d),
             Err(e) => fatal(&format!("deserialize: {e}")),
         }
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn cbor_encoding_byte_identical_across_calls() {
-        let d = RankerWeightsV1::DEFAULTS;
+        let d = RankerWeights::DEFAULTS;
         let mut a: Vec<u8> = Vec::new();
         let mut b: Vec<u8> = Vec::new();
         if let Err(e) = ciborium::ser::into_writer(&d, &mut a) {

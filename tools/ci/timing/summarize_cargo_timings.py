@@ -126,15 +126,13 @@ def render_text(
     ]
     for unit in units:
         lines.append(
-            f"  {unit.duration:>6.2f}s start={unit.start:>5.2f}s "
-            f"{unit.name} {unit.target}".rstrip()
+            f"  {unit.duration:>6.2f}s start={unit.start:>5.2f}s {unit.name} {unit.target}".rstrip()
         )
     lines.append("")
     lines.append("top_repo_crates")
     for crate in crate_totals:
         lines.append(
-            f"  {float(crate['duration']):>6.2f}s units={int(crate['units']):>2d} "
-            f"{crate['name']}"
+            f"  {float(crate['duration']):>6.2f}s units={int(crate['units']):>2d} {crate['name']}"
         )
     return "\n".join(lines)
 
@@ -145,9 +143,7 @@ def main() -> int:
     summary = parse_summary_fields(html)
     units = parse_units(html)
     top_unit_list = top_units(units, args.top_units)
-    top_repo_crate_list = aggregate_repo_crates(
-        units, args.repo_prefix, args.top_crates
-    )
+    top_repo_crate_list = aggregate_repo_crates(units, args.repo_prefix, args.top_crates)
 
     if args.json:
         payload = {

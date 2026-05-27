@@ -11,14 +11,14 @@ use core::fmt;
 /// Closed taxonomy of ranker failures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RankerErrorCode {
-    /// `RankerWeightsV1::new` rejected a non-finite weight, an
+    /// `RankerWeights::new` rejected a non-finite weight, an
     /// out-of-`[0.0, 1.0]` weight, or a sum that did not fall within the
     /// approximate-unit tolerance.
     InvalidWeights,
     /// Signal slot delivered `NaN`, `Inf`, or a value outside its declared
     /// domain envelope.
     RankInvalidSignal,
-    /// CBOR decode failure when loading a `RankerWeightsV1`.
+    /// CBOR decode failure when loading a `RankerWeights`.
     WeightsDeserialize,
     /// Pinned `weights_hash` did not match the recomputed hash on a
     /// `CompositeScorer` instance.

@@ -403,7 +403,7 @@ Close the contract serde / ingest / query / control SDK smoke / searchd e2e proo
 
 **Owner files**
 - [crates/quanta-index-contract/tests/](../../crates/quanta-index-contract/tests/) (round-trip every `SearchPlaneIngest/Query/Control` variant)
-- [crates/quanta-index-sdk/tests/](../../crates/quanta-index-sdk/tests/)
+- [crates/quanta-index-sdk/src/tests.rs](../../crates/quanta-index-sdk/src/tests.rs)
 - [crates/quanta-index-searchd-runtime/tests/](../../crates/quanta-index-searchd-runtime/tests/) (integration e2e across `ingest.sock` + `query.sock` + `control.sock`)
 - [tools/ci/lint/baselines/public-api/quanta-index-contract.txt](../../tools/ci/lint/baselines/public-api/quanta-index-contract.txt) (frozen)
 - [tools/ci/lint/baselines/cargo-modules/](../../tools/ci/lint/baselines/cargo-modules/) (frozen)

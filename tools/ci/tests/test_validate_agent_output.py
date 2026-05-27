@@ -34,9 +34,7 @@ def test_rejects_ok_payload_with_missing_inputs(tmp_path):
 
 def test_rejects_ok_payload_with_correctness_affecting_assumption(tmp_path):
     payload = sample_payload(
-        assumptions=[
-            {"name": "repo-clean", "risk": "high", "can_affect_correctness": True}
-        ]
+        assumptions=[{"name": "repo-clean", "risk": "high", "can_affect_correctness": True}]
     )
 
     try:

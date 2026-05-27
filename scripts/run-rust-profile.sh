@@ -34,10 +34,11 @@ log_profile_event() {
 
 start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 
-set +e
-just "$delegated_recipe"
-status="$?"
-set -e
+if just "$delegated_recipe"; then
+  status=0
+else
+  status="$?"
+fi
 
 end_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 duration_ms="$((end_ms - start_ms))"

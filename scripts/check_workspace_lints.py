@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 try:
     import tomllib
@@ -29,7 +28,9 @@ def main() -> int:
             print(f" - {path}")
         return 1
 
-    print(f"All {len(list(CRATES_DIR.glob('*/Cargo.toml')))} workspace crates inherit workspace lints.")
+    print(
+        f"All {len(list(CRATES_DIR.glob('*/Cargo.toml')))} workspace crates inherit workspace lints."
+    )
     return 0
 
 

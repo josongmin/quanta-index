@@ -9,9 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-ciborium.workspace = true
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 quanta-index-lq-obs = { version = "0.1.0", path = "../quanta-index-lq-obs" }

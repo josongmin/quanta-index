@@ -213,7 +213,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "crates/*/src/**"
+        - "/crates/*/src/**"
       exclude:
         - "**/tests/**"
         - "**/benches/**"
@@ -235,7 +235,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "crates/*/src/**"
+        - "/crates/*/src/**"
       exclude:
         - "**/tests/**"
         - "**/benches/**"
@@ -258,6 +258,35 @@ rules:
       include:
         - "/crates/quanta-index-searchd/src/**"
     pattern-regex: 'let\s+Ok\([^)]*\)\s*=\s*[^;]+else\s*\{\s*return\s+StructuralReadiness::Ready;'
+
+  - id: rust-no-public-version-suffix-in-live-types
+    message: |
+      Live public Rust types in `quanta-index-lq-ranker` and
+      `quanta-index-repomap` must not encode storage or wire revision in the
+      type name. Keep revision bytes in constants or crate-private records.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-lq-ranker/src/**"
+        - "/crates/quanta-index-repomap/src/**"
+    patterns:
+      - pattern-either:
+          - pattern-regex: '(?m)^\s*pub\s+struct\s+[A-Z][A-Za-z0-9_]*V[0-9]+\b'
+          - pattern-regex: '(?m)^\s*pub\s+enum\s+[A-Z][A-Za-z0-9_]*V[0-9]+\b'
+          - pattern-regex: '(?m)^\s*pub\s+type\s+[A-Z][A-Za-z0-9_]*V[0-9]+\b'
+          - pattern-regex: '(?m)^\s*pub\s+use\b.*\b[A-Z][A-Za-z0-9_]*V[0-9]+\b'
+
+  - id: rust-no-search-plane-direct-ciborium
+    message: |
+      `quanta-index-search-plane` must not name `ciborium` directly on
+      production paths. Route CBOR encode/decode through `quanta-index-ipc`.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-search-plane/src/**"
+    pattern-regex: '\bciborium::'
 
   # NOTE: a `rust-no-map-or-else-non-err` rule was considered to catch
   # `Result::map_or(default, ...)` / `map_or_else` fallback patterns, but

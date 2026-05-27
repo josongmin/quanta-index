@@ -1,13 +1,13 @@
 //! Golden ordering for the composite ranker.
 //!
-//! Two weight vectors (`RankerWeightsV1::DEFAULTS` and a manual
+//! Two weight vectors (`RankerWeights::DEFAULTS` and a manual
 //! `(0.5, 0.2, 0.15, 0.1, 0.05)` profile) are evaluated against five
 //! hand-tuned candidates. The top-3 `doc_id` sequence is pinned per
 //! weight vector so regressions in the composition arithmetic or the
 //! tiebreak ordering surface here.
 
 use quanta_index_lq_ranker::{
-    CandidateSignals, CompositeScorer, RankerWeightsV1, ScoredCandidate, rank_candidates,
+    CandidateSignals, CompositeScorer, RankerWeights, ScoredCandidate, rank_candidates,
 };
 
 fn fatal(msg: &str) -> ! {
@@ -15,15 +15,15 @@ fn fatal(msg: &str) -> ! {
     std::process::abort();
 }
 
-fn scorer_for(weights: RankerWeightsV1) -> CompositeScorer {
+fn scorer_for(weights: RankerWeights) -> CompositeScorer {
     match CompositeScorer::new(weights) {
         Ok(s) => s,
         Err(e) => fatal(&format!("CompositeScorer::new failed: {e}")),
     }
 }
 
-fn manual_weights() -> RankerWeightsV1 {
-    match RankerWeightsV1::new(0.5, 0.2, 0.15, 0.1, 0.05) {
+fn manual_weights() -> RankerWeights {
+    match RankerWeights::new(0.5, 0.2, 0.15, 0.1, 0.05) {
         Ok(v) => v,
         Err(e) => fatal(&format!("manual weights must validate: {e}")),
     }
@@ -74,7 +74,7 @@ fn ids(v: &[ScoredCandidate]) -> Vec<u64> {
 
 #[test]
 fn defaults_pins_top3_to_100_200_300() {
-    let scorer = scorer_for(RankerWeightsV1::DEFAULTS);
+    let scorer = scorer_for(RankerWeights::DEFAULTS);
     let set = build_set(&scorer);
     let got = rank_candidates(set);
     // Hand-computed scores:
@@ -104,7 +104,7 @@ fn manual_weights_pin_top3_to_300_100_200() {
 
 #[test]
 fn full_ordering_is_deterministic_under_defaults() {
-    let scorer = scorer_for(RankerWeightsV1::DEFAULTS);
+    let scorer = scorer_for(RankerWeights::DEFAULTS);
     let set = build_set(&scorer);
     let got = rank_candidates(set);
     assert_eq!(ids(&got), vec![100, 200, 300, 400, 500]);

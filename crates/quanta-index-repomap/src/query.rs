@@ -3,13 +3,13 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{RepoMapDocType, RepoMapQueryRequest, RepoMapQueryResponse};
 use quanta_index_core::{CoreError, RepoMapPolicy};
 
-use crate::model::RepoMapSnapshotV1;
+use crate::model::RepoMapSnapshot;
 
 pub struct RepoMapQueryEngine;
 
 impl RepoMapQueryEngine {
     pub fn query(
-        snapshot: &RepoMapSnapshotV1,
+        snapshot: &RepoMapSnapshot,
         request: &RepoMapQueryRequest,
     ) -> Result<RepoMapQueryResponse, CoreError> {
         RepoMapPolicy::validate_query(request)?;
@@ -121,20 +121,20 @@ fn tokenize(query_text: &str) -> Vec<String> {
 }
 
 fn exact_focus(
-    entry: &crate::model::RepoMapEntryV1,
+    entry: &crate::model::RepoMapEntry,
     focus_keys: &BTreeSet<(String, RepoMapDocType)>,
 ) -> bool {
     focus_keys.contains(&(entry.subject_identity.clone(), entry.subject_doc_type))
 }
 
 fn owner_path_focus(
-    entry: &crate::model::RepoMapEntryV1,
+    entry: &crate::model::RepoMapEntry,
     focus_owner_paths: &BTreeSet<String>,
 ) -> bool {
     focus_owner_paths.contains(&entry.owner_path)
 }
 
-fn query_match_score(entry: &crate::model::RepoMapEntryV1, query_terms: &[String]) -> u32 {
+fn query_match_score(entry: &crate::model::RepoMapEntry, query_terms: &[String]) -> u32 {
     if query_terms.is_empty() {
         return 0;
     }

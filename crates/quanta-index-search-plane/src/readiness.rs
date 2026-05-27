@@ -19,6 +19,7 @@ use quanta_index_contract::{
     SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
+use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 
 type SharedLedger = Arc<RwLock<Ledger>>;
 type SharedActivationCatalog = Arc<ActivationCatalog>;
@@ -1049,7 +1050,7 @@ fn decode_record<T>(payload: &[u8], label: &str) -> Result<T, CoreError>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    ciborium::from_reader(payload).map_err(|err| {
+    decode_cbor_payload(payload).map_err(|err| {
         CoreError::InvalidContract(format!(
             "search-plane authority ledger: decode {label}: {err}"
         ))
@@ -1476,8 +1477,7 @@ impl AuxiliaryAuthorityStore {
         value: &T,
         label: &str,
     ) -> Result<(), CoreError> {
-        let mut bytes = Vec::new();
-        ciborium::into_writer(value, &mut bytes).map_err(|err| {
+        let bytes = encode_cbor_payload(value).map_err(|err| {
             CoreError::Storage(format!(
                 "search-plane authority store: encode {label} {}: {err}",
                 path.display()
@@ -1506,7 +1506,7 @@ impl AuxiliaryAuthorityStore {
                 )));
             }
         };
-        ciborium::from_reader(bytes.as_slice())
+        decode_cbor_payload(bytes.as_slice())
             .map(Some)
             .map_err(|err| {
                 CoreError::Storage(format!(
@@ -1866,9 +1866,8 @@ mod tests {
     }
 
     fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut bytes = Vec::new();
-        ciborium::into_writer(value, &mut bytes)?;
-        Ok(bytes)
+        quanta_index_ipc::encode_cbor_payload(value)
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })
     }
 
     fn install_chunk(ledger: &mut Ledger, path: &str, text: &str) -> TestResult {

@@ -119,16 +119,21 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         let Some(state) =
             guard.structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
         else {
+            drop(guard);
             return StructuralReadiness::GenerationNotReady;
         };
-        if state.parse_trees().is_empty() {
+        let readiness_snapshot = (
+            state.parse_trees().is_empty(),
+            state
+                .parse_trees()
+                .keys()
+                .any(|chunk_id| !state.chunks().contains_key(chunk_id)),
+        );
+        drop(guard);
+        if readiness_snapshot.0 {
             return StructuralReadiness::GenerationNotReady;
         }
-        if state
-            .parse_trees()
-            .keys()
-            .any(|chunk_id| !state.chunks().contains_key(chunk_id))
-        {
+        if readiness_snapshot.1 {
             return StructuralReadiness::ShardUnavailable;
         }
         StructuralReadiness::Ready
@@ -649,9 +654,9 @@ mod tests {
         LedgerStructuralProducer, LqStructuralBlock, RepoId, RevisionId, StructuralProducerPort,
         StructuralReadiness,
     };
+    use quanta_index_contract::LqOptions;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{Arc, RwLock};
-    use quanta_index_contract::LqOptions;
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
     fn request_with_generation(generation: GenerationSelector) -> DomainStructuralQueryRequest {
@@ -693,36 +698,39 @@ mod tests {
     }
 
     #[test]
-    fn structural_readiness_fails_closed_on_poisoned_ledger() -> TestRes {
-        struct PanicOnDrop;
+    fn structural_readiness_fails_closed_on_poisoned_ledger() {
+        let result = (|| -> TestRes {
+            struct PanicOnDrop;
 
-        impl Drop for PanicOnDrop {
-            fn drop(&mut self) {
-                assert!(false, "poison structural ledger");
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    std::panic::resume_unwind(Box::new("poison structural ledger"));
+                }
             }
-        }
 
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let poisoned = Arc::clone(&ledger);
-        let unwind = catch_unwind(AssertUnwindSafe(move || -> TestRes {
-            let _guard = poisoned
-                .write()
-                .map_err(|err| format!("test must acquire write lock before poisoning: {err}"))?;
-            let _tripwire = PanicOnDrop;
+            let ledger = Arc::new(RwLock::new(Ledger::new()));
+            let poisoned = Arc::clone(&ledger);
+            let unwind = catch_unwind(AssertUnwindSafe(move || -> TestRes {
+                let _guard = poisoned.write().map_err(|err| {
+                    format!("test must acquire write lock before poisoning: {err}")
+                })?;
+                let _tripwire = PanicOnDrop;
+                Ok(())
+            }));
+            match unwind {
+                Err(_) => {}
+                Ok(Ok(())) => return Err("poison tripwire did not unwind".into()),
+                Ok(Err(err)) => return Err(err),
+            }
+            let producer = LedgerStructuralProducer::new(ledger);
+            let readiness = producer.readiness(&pinned_request());
+            assert!(matches!(
+                readiness,
+                StructuralReadiness::ProducerExecution(message)
+                    if message.starts_with("structural ledger poisoned during readiness:")
+            ));
             Ok(())
-        }));
-        match unwind {
-            Err(_) => {}
-            Ok(Ok(())) => return Err("poison tripwire did not unwind".into()),
-            Ok(Err(err)) => return Err(err),
-        }
-        let producer = LedgerStructuralProducer::new(ledger);
-        let readiness = producer.readiness(&pinned_request());
-        assert!(matches!(
-            readiness,
-            StructuralReadiness::ProducerExecution(message)
-                if message.starts_with("structural ledger poisoned during readiness:")
-        ));
-        Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
     }
 }

@@ -2874,12 +2874,8 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn encode_cbor<T: serde::Serialize>(
-        value: &T,
-    ) -> Result<Vec<u8>, ciborium::ser::Error<std::io::Error>> {
-        let mut buf: Vec<u8> = Vec::new();
-        ciborium::into_writer(value, &mut buf)?;
-        Ok(buf)
+    fn encode_cbor<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, quanta_index_ipc::IpcError> {
+        quanta_index_ipc::encode_cbor_payload(value)
     }
 
     fn default_query_embedder() -> Arc<dyn QueryTextEmbedderPort + Send + Sync> {
@@ -3115,10 +3111,6 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::panic,
-        reason = "test fixture uses a canonical symbol kind literal"
-    )]
     fn symbol_candidate(id: &str, score: f32) -> SymbolCandidate {
         SymbolCandidate {
             candidate_id: id.to_string(),
@@ -3130,10 +3122,8 @@ mod tests {
             end_line: 1,
             score,
             snippet: "MySymbol crate".to_string(),
-            symbol_kind: match SymbolKindCode::new("function") {
-                Ok(symbol_kind) => symbol_kind,
-                Err(err) => panic!("test symbol kind is canonical: {err}"),
-            },
+            symbol_kind: SymbolKindCode::from_code_str("function")
+                .unwrap_or_else(|| std::process::abort()),
             symbol_kind_family: Some(SymbolKindFamily::Callable),
         }
     }

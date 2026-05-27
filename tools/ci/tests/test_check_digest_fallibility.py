@@ -141,7 +141,7 @@ def test_multiline_signature_handled(tmp_path: Path):
         """
         pub fn
             weights_hash(
-                weights: &RankerWeightsV1,
+                weights: &RankerWeights,
             )
             -> [u8; 32]
         {
@@ -158,7 +158,7 @@ def test_multiline_signature_with_result_passes(tmp_path: Path):
         tmp_path,
         """
         pub fn weights_hash(
-            weights: &RankerWeightsV1,
+            weights: &RankerWeights,
         ) -> Result<
             [u8; 32],
             RankerError,

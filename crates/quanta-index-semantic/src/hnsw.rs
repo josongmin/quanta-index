@@ -585,6 +585,10 @@ mod tests {
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
+    fn assert_test_ok(result: &TestRes) {
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[test]
     fn insert_search_returns_self_first() -> TestRes {
         let mut index = HnswIndex::new(4);
@@ -641,42 +645,50 @@ mod tests {
     }
 
     #[test]
-    fn zero_norm_insert_rejected_without_mutating_index() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+    fn zero_norm_insert_rejected_without_mutating_index() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
 
-        let err = index.insert("zero".to_string(), &[0.0, 0.0, 0.0]);
-        assert!(matches!(
-            err,
-            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm vector rejected"
-        ));
-        assert!(!index.id_to_idx.contains_key("zero"));
+            let err = index.insert("zero".to_string(), &[0.0, 0.0, 0.0]);
+            assert!(matches!(
+                err,
+                Err(CoreError::InvalidContract(message))
+                    if message == "hnsw: zero-norm vector rejected"
+            ));
+            assert!(!index.id_to_idx.contains_key("zero"));
 
-        let results = index.search(&[1.0, 0.0, 0.0], 8)?;
-        let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
-        assert_eq!(ids, vec!["anchor".to_string()]);
-        Ok(())
+            let results = index.search(&[1.0, 0.0, 0.0], 8)?;
+            let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
+            assert_eq!(ids, vec!["anchor".to_string()]);
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn zero_norm_replace_rejected_without_tombstoning_existing_id() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+    fn zero_norm_replace_rejected_without_tombstoning_existing_id() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
 
-        let err = index.insert("anchor".to_string(), &[0.0, 0.0, 0.0]);
-        assert!(matches!(
-            err,
-            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm vector rejected"
-        ));
-        assert!(index.id_to_idx.contains_key("anchor"));
+            let err = index.insert("anchor".to_string(), &[0.0, 0.0, 0.0]);
+            assert!(matches!(
+                err,
+                Err(CoreError::InvalidContract(message))
+                    if message == "hnsw: zero-norm vector rejected"
+            ));
+            assert!(index.id_to_idx.contains_key("anchor"));
 
-        let results = index.search(&[1.0, 0.0, 0.0], 1)?;
-        let Some((top_id, score)) = results.first() else {
-            return Err("anchor disappeared after rejected replacement".into());
-        };
-        assert_eq!(top_id, "anchor");
-        assert!(*score > 0.99);
-        Ok(())
+            let results = index.search(&[1.0, 0.0, 0.0], 1)?;
+            let Some((top_id, score)) = results.first() else {
+                return Err("anchor disappeared after rejected replacement".into());
+            };
+            assert_eq!(top_id, "anchor");
+            assert!(*score > 0.99);
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
@@ -723,53 +735,66 @@ mod tests {
     }
 
     #[test]
-    fn zero_norm_search_query_rejected() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+    fn zero_norm_search_query_rejected() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
 
-        let err = index.search(&[0.0, 0.0, 0.0], 4);
-        assert!(matches!(
-            err,
-            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm query rejected"
-        ));
-        Ok(())
+            let err = index.search(&[0.0, 0.0, 0.0], 4);
+            assert!(matches!(
+                err,
+                Err(CoreError::InvalidContract(message))
+                    if message == "hnsw: zero-norm query rejected"
+            ));
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn zero_norm_scoped_search_query_rejected() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
-        let mut allow: BTreeSet<String> = BTreeSet::new();
-        if !allow.insert("anchor".to_string()) {
-            return Err("duplicate allowlist id".into());
-        }
+    fn zero_norm_scoped_search_query_rejected() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+            let mut allow: BTreeSet<String> = BTreeSet::new();
+            if !allow.insert("anchor".to_string()) {
+                return Err("duplicate allowlist id".into());
+            }
 
-        let err = index.search_scoped(&[0.0, 0.0, 0.0], &allow, 4);
-        assert!(matches!(
-            err,
-            Err(CoreError::InvalidContract(message))
-                if message == "hnsw: zero-norm scoped query rejected"
-        ));
-        Ok(())
+            let err = index.search_scoped(&[0.0, 0.0, 0.0], &allow, 4);
+            assert!(matches!(
+                err,
+                Err(CoreError::InvalidContract(message))
+                    if message == "hnsw: zero-norm scoped query rejected"
+            ));
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn dim_mismatch_search_query_rejected() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+    fn dim_mismatch_search_query_rejected() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
 
-        let err = index.search(&[1.0, 0.0], 4);
-        assert!(matches!(err, Err(CoreError::InvalidContract(_))));
-        Ok(())
+            let err = index.search(&[1.0, 0.0], 4);
+            assert!(matches!(err, Err(CoreError::InvalidContract(_))));
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn search_top_k_zero_returns_empty_ok() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+    fn search_top_k_zero_returns_empty_ok() {
+        let result = (|| -> TestRes {
+            let mut index = HnswIndex::new(3);
+            index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
 
-        let results = index.search(&[1.0, 0.0, 0.0], 0)?;
-        assert!(results.is_empty());
-        Ok(())
+            let results = index.search(&[1.0, 0.0, 0.0], 0)?;
+            assert!(results.is_empty());
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 }

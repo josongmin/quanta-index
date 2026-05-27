@@ -6,8 +6,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-rust-derive-allowlist.py"
 
@@ -27,8 +25,7 @@ MODULE = _load_module()
 def test_allowlist_passes_for_cheap_derives(tmp_path: Path):
     f = tmp_path / "ok.rs"
     f.write_text(
-        "#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]\n"
-        "struct A;\n"
+        "#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]\nstruct A;\n"
     )
     assert MODULE.audit_file(f) == []
 
@@ -72,14 +69,7 @@ def test_unknown_derive_is_flagged(tmp_path: Path):
 
 def test_multiline_derive_parses_each_entry(tmp_path: Path):
     f = tmp_path / "multi.rs"
-    f.write_text(
-        "#[derive(\n"
-        "  Debug,\n"
-        "  Clone,\n"
-        "  EnumIter\n"
-        ")]\n"
-        "struct Z;\n"
-    )
+    f.write_text("#[derive(\n  Debug,\n  Clone,\n  EnumIter\n)]\nstruct Z;\n")
     findings = MODULE.audit_file(f)
     assert len(findings) == 1
     assert "EnumIter" in findings[0]
@@ -92,9 +82,7 @@ def test_repo_audit_passes():
         if "/target/" in str(rs):
             continue
         findings.extend(MODULE.audit_file(rs))
-    assert findings == [], "existing tree violates derive allowlist:\n" + "\n".join(
-        findings
-    )
+    assert findings == [], "existing tree violates derive allowlist:\n" + "\n".join(findings)
 
 
 def test_clippy_attribute_is_not_a_derive(tmp_path: Path):

@@ -26,6 +26,7 @@ use quanta_index_core::{
     CoreError, LexicalBatchBuildPort, LexicalIngestPort, RepoMapBundleIngestPort,
     SemanticBatchBuildPort, SemanticIngestPort,
 };
+use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -707,8 +708,7 @@ impl SearchPlaneIngestDispatcher {
 }
 
 fn write_cbor<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<(), CoreError> {
-    let mut bytes = Vec::new();
-    ciborium::into_writer(value, &mut bytes).map_err(|err| {
+    let bytes = encode_cbor_payload(value).map_err(|err| {
         CoreError::Storage(format!(
             "search-plane ingest: encode {label} {}: {err}",
             path.display()
@@ -736,7 +736,7 @@ fn read_cbor<T: for<'de> Deserialize<'de>>(
             )));
         }
     };
-    ciborium::from_reader(bytes.as_slice())
+    decode_cbor_payload(bytes.as_slice())
         .map(Some)
         .map_err(|err| {
             CoreError::Storage(format!(

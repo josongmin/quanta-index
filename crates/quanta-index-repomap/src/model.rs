@@ -12,7 +12,7 @@ use serde::{
 };
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RepoMapEntryV1 {
+pub struct RepoMapEntry {
     pub subject_identity: String,
     pub subject_doc_type: RepoMapDocType,
     pub subject_kind: String,
@@ -41,7 +41,7 @@ pub struct RepoMapEntryV1 {
     pub source_import_outgoing_edges: u32,
 }
 
-const REPOMAP_ENTRY_V1_FIELDS: &[&str] = &[
+const REPOMAP_ENTRY_FIELDS: &[&str] = &[
     "subject_identity",
     "subject_doc_type",
     "subject_kind",
@@ -70,12 +70,12 @@ const REPOMAP_ENTRY_V1_FIELDS: &[&str] = &[
     "source_import_outgoing_edges",
 ];
 
-impl Serialize for RepoMapEntryV1 {
+impl Serialize for RepoMapEntry {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapEntryV1", 26)?;
+        let mut state = serializer.serialize_struct("RepoMapEntry", 26)?;
         state.serialize_field("subject_identity", &self.subject_identity)?;
         state.serialize_field("subject_doc_type", &self.subject_doc_type)?;
         state.serialize_field("subject_kind", &self.subject_kind)?;
@@ -124,13 +124,13 @@ impl Serialize for RepoMapEntryV1 {
     }
 }
 
-struct RepoMapEntryV1Visitor;
+struct RepoMapEntryVisitor;
 
-impl<'de> Visitor<'de> for RepoMapEntryV1Visitor {
-    type Value = RepoMapEntryV1;
+impl<'de> Visitor<'de> for RepoMapEntryVisitor {
+    type Value = RepoMapEntry;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapEntryV1 map")
+        formatter.write_str("a RepoMapEntry map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -342,7 +342,7 @@ impl<'de> Visitor<'de> for RepoMapEntryV1Visitor {
                 }
             }
         }
-        Ok(RepoMapEntryV1 {
+        Ok(RepoMapEntry {
             subject_identity: subject_identity
                 .ok_or_else(|| de::Error::missing_field("subject_identity"))?,
             subject_doc_type: subject_doc_type
@@ -387,20 +387,16 @@ impl<'de> Visitor<'de> for RepoMapEntryV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapEntryV1 {
+impl<'de> Deserialize<'de> for RepoMapEntry {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct(
-            "RepoMapEntryV1",
-            REPOMAP_ENTRY_V1_FIELDS,
-            RepoMapEntryV1Visitor,
-        )
+        deserializer.deserialize_struct("RepoMapEntry", REPOMAP_ENTRY_FIELDS, RepoMapEntryVisitor)
     }
 }
 
-impl RepoMapEntryV1 {
+impl RepoMapEntry {
     #[must_use]
     pub fn to_dto(&self) -> RepoMapEntryDto {
         RepoMapEntryDto {
@@ -428,15 +424,15 @@ impl RepoMapEntryV1 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct RepoMapSnapshotV1 {
+pub struct RepoMapSnapshot {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub manifest_generation: ManifestGeneration,
     pub snapshot_meta: RepoMapSnapshotMeta,
-    pub entries: Vec<RepoMapEntryV1>,
+    pub entries: Vec<RepoMapEntry>,
 }
 
-const REPOMAP_SNAPSHOT_V1_FIELDS: &[&str] = &[
+const REPOMAP_SNAPSHOT_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "manifest_generation",
@@ -444,12 +440,12 @@ const REPOMAP_SNAPSHOT_V1_FIELDS: &[&str] = &[
     "entries",
 ];
 
-impl Serialize for RepoMapSnapshotV1 {
+impl Serialize for RepoMapSnapshot {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("RepoMapSnapshotV1", 5)?;
+        let mut state = serializer.serialize_struct("RepoMapSnapshot", 5)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
@@ -459,13 +455,13 @@ impl Serialize for RepoMapSnapshotV1 {
     }
 }
 
-struct RepoMapSnapshotV1Visitor;
+struct RepoMapSnapshotVisitor;
 
-impl<'de> Visitor<'de> for RepoMapSnapshotV1Visitor {
-    type Value = RepoMapSnapshotV1;
+impl<'de> Visitor<'de> for RepoMapSnapshotVisitor {
+    type Value = RepoMapSnapshot;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a RepoMapSnapshotV1 map")
+        formatter.write_str("a RepoMapSnapshot map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -476,7 +472,7 @@ impl<'de> Visitor<'de> for RepoMapSnapshotV1Visitor {
         let mut revision_id: Option<RevisionId> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
         let mut snapshot_meta: Option<RepoMapSnapshotMeta> = None;
-        let mut entries: Option<Vec<RepoMapEntryV1>> = None;
+        let mut entries: Option<Vec<RepoMapEntry>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "repo_id" => {
@@ -514,7 +510,7 @@ impl<'de> Visitor<'de> for RepoMapSnapshotV1Visitor {
                 }
             }
         }
-        Ok(RepoMapSnapshotV1 {
+        Ok(RepoMapSnapshot {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             manifest_generation: manifest_generation
@@ -526,15 +522,15 @@ impl<'de> Visitor<'de> for RepoMapSnapshotV1Visitor {
     }
 }
 
-impl<'de> Deserialize<'de> for RepoMapSnapshotV1 {
+impl<'de> Deserialize<'de> for RepoMapSnapshot {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "RepoMapSnapshotV1",
-            REPOMAP_SNAPSHOT_V1_FIELDS,
-            RepoMapSnapshotV1Visitor,
+            "RepoMapSnapshot",
+            REPOMAP_SNAPSHOT_FIELDS,
+            RepoMapSnapshotVisitor,
         )
     }
 }
@@ -544,10 +540,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn fixture_entry() -> RepoMapEntryV1 {
+    fn fixture_entry() -> RepoMapEntry {
         let mut contributing_signals = BTreeMap::new();
         assert_eq!(contributing_signals.insert("files".to_string(), 3), None);
-        RepoMapEntryV1 {
+        RepoMapEntry {
             subject_identity: "subject://main".to_string(),
             subject_doc_type: RepoMapDocType::File,
             subject_kind: "File".to_string(),
@@ -577,8 +573,8 @@ mod tests {
         }
     }
 
-    fn fixture_snapshot() -> RepoMapSnapshotV1 {
-        RepoMapSnapshotV1 {
+    fn fixture_snapshot() -> RepoMapSnapshot {
+        RepoMapSnapshot {
             repo_id: RepoId::new("repo-1"),
             revision_id: RevisionId::new("rev-1"),
             manifest_generation: ManifestGeneration::new(11),
@@ -595,19 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn repomap_entry_v1_round_trip_json() {
+    fn repomap_entry_round_trip_json() {
         let entry = fixture_entry();
         let encoded = match serde_json::to_value(&entry) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode RepoMapEntryV1: {err}");
+                assert!(false, "failed to encode RepoMapEntry: {err}");
                 return;
             }
         };
-        let decoded: RepoMapEntryV1 = match serde_json::from_value(encoded) {
+        let decoded: RepoMapEntry = match serde_json::from_value(encoded) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to decode RepoMapEntryV1: {err}");
+                assert!(false, "failed to decode RepoMapEntry: {err}");
                 return;
             }
         };
@@ -615,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn repomap_entry_v1_defaults_missing_search_and_source_fields() {
+    fn repomap_entry_defaults_missing_search_and_source_fields() {
         let value = json!({
             "subject_identity": "subject://main",
             "subject_doc_type": "File",
@@ -639,13 +635,10 @@ mod tests {
             "projection_status": "fresh",
             "redaction_state": "Unredacted"
         });
-        let decoded: RepoMapEntryV1 = match serde_json::from_value(value) {
+        let decoded: RepoMapEntry = match serde_json::from_value(value) {
             Ok(value) => value,
             Err(err) => {
-                assert!(
-                    false,
-                    "failed to decode RepoMapEntryV1 with defaults: {err}"
-                );
+                assert!(false, "failed to decode RepoMapEntry with defaults: {err}");
                 return;
             }
         };
@@ -659,19 +652,19 @@ mod tests {
     }
 
     #[test]
-    fn repomap_snapshot_v1_round_trip_json() {
+    fn repomap_snapshot_round_trip_json() {
         let snapshot = fixture_snapshot();
         let encoded = match serde_json::to_value(&snapshot) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to encode RepoMapSnapshotV1: {err}");
+                assert!(false, "failed to encode RepoMapSnapshot: {err}");
                 return;
             }
         };
-        let decoded: RepoMapSnapshotV1 = match serde_json::from_value(encoded) {
+        let decoded: RepoMapSnapshot = match serde_json::from_value(encoded) {
             Ok(value) => value,
             Err(err) => {
-                assert!(false, "failed to decode RepoMapSnapshotV1: {err}");
+                assert!(false, "failed to decode RepoMapSnapshot: {err}");
                 return;
             }
         };

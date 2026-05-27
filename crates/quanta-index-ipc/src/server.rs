@@ -179,14 +179,13 @@ impl UdsServer {
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     let dispatcher = Arc::clone(dispatcher);
-                    let reason = handle_connection::<
+                    let _close_reason = handle_connection::<
                         RequestEnvelopeT,
                         Request,
                         ResponseEnvelopeT,
                         Response,
                         D,
                     >(stream, dispatcher.as_ref());
-                    report_connection_close(&reason);
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(accept_idle);
@@ -251,13 +250,6 @@ impl core::fmt::Display for ConnectionCloseReason {
     }
 }
 
-fn report_connection_close(reason: &ConnectionCloseReason) {
-    if matches!(reason, ConnectionCloseReason::PeerClosed) {
-        return;
-    }
-    eprintln!("quanta-index-ipc: closed connection: {reason}");
-}
-
 fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     mut stream: UnixStream,
     dispatcher: &D,
@@ -274,14 +266,10 @@ where
     // Apply a bounded read/write timeout so a stalled peer cannot pin the
     // dispatcher thread indefinitely.
     if let Err(err) = stream.set_read_timeout(Some(CONNECTION_IO_TIMEOUT)) {
-        return ConnectionCloseReason::TimeoutConfigFailed(format!(
-            "set_read_timeout: {err}"
-        ));
+        return ConnectionCloseReason::TimeoutConfigFailed(format!("set_read_timeout: {err}"));
     }
     if let Err(err) = stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)) {
-        return ConnectionCloseReason::TimeoutConfigFailed(format!(
-            "set_write_timeout: {err}"
-        ));
+        return ConnectionCloseReason::TimeoutConfigFailed(format!("set_write_timeout: {err}"));
     }
     loop {
         let request = match decode_request::<RequestEnvelopeT, _>(&mut stream) {
@@ -328,12 +316,14 @@ mod tests {
     use std::io::Write;
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
 
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    type TestRes = Result<(), Box<dyn std::error::Error>>;
+    type TestRes = Result<(), String>;
 
     struct TestDispatcher;
 
@@ -517,13 +507,32 @@ mod tests {
         where
             S: Serializer,
         {
-            Err(serde::ser::Error::custom("simulated response encode failure"))
+            Err(serde::ser::Error::custom(
+                "simulated response encode failure",
+            ))
         }
     }
 
     impl ResponseEnvelope<u64> for FailingResponseEnvelope {
         fn from_parts(_request_id: u64, _payload: u64) -> Self {
             Self
+        }
+    }
+
+    struct BlockingDispatcher {
+        entered: mpsc::Sender<()>,
+        gate: Arc<Barrier>,
+    }
+
+    impl IpcDispatcher<u64, u64> for BlockingDispatcher {
+        fn dispatch(&self, request: u64) -> u64 {
+            let send_result = self.entered.send(());
+            assert!(
+                send_result.is_ok(),
+                "test must observe dispatcher entry: {send_result:?}"
+            );
+            let _wait = self.gate.wait();
+            request.saturating_add(1)
         }
     }
 
@@ -534,126 +543,150 @@ mod tests {
         }
     }
 
+    fn assert_test_ok(result: &TestRes) {
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    fn encode_test_frame(request_id: u64, payload: u64) -> Result<Vec<u8>, String> {
+        encode_request(&test_request(request_id, payload))
+            .map_err(|err| format!("test request must encode: {err}"))
+    }
+
     #[test]
-    fn handle_connection_returns_peer_closed_after_successful_round_trip() -> TestRes {
-        let (mut client, server) = UnixStream::pair()?;
-        let frame = encode_request(&test_request(41, 8))?;
-        client.write_all(&frame)?;
-        client.shutdown(Shutdown::Write)?;
+    fn handle_connection_returns_peer_closed_after_successful_round_trip() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(41, 8)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
 
-        let handle = std::thread::spawn(move || {
-            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
-                server,
-                &TestDispatcher,
-            )
-        });
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    TestDispatcher,
+                >(server, &TestDispatcher)
+            });
 
-        let response = decode_response::<TestResponseEnvelope, _>(&mut client)?;
-        assert_eq!(
-            response,
-            TestResponseEnvelope {
+            let response = decode_response::<TestResponseEnvelope, _>(&mut client)
+                .map_err(|err| format!("server must write one response before closing: {err}"))?;
+            let expected = TestResponseEnvelope {
                 request_id: 41,
                 payload: 9,
+            };
+            if response != expected {
+                return Err(format!("unexpected response: {response:?}"));
             }
-        );
-        let reason = match handle.join() {
-            Ok(reason) => reason,
-            Err(_) => return Err("server thread panicked".into()),
-        };
-        assert!(matches!(reason, ConnectionCloseReason::PeerClosed));
-        Ok(())
+            let reason = handle
+                .join()
+                .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
+            if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn handle_connection_surfaces_decode_failure_reason() -> TestRes {
-        let (mut client, server) = UnixStream::pair()?;
-        client.write_all(&[0, 0, 0, 0])?;
-        client.shutdown(Shutdown::Write)?;
+    fn handle_connection_surfaces_decode_failure_reason() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            client
+                .write_all(&[0, 0, 0, 0])
+                .map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
 
-        let reason = handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
-            server,
-            &TestDispatcher,
-        );
-        assert!(matches!(
-            reason,
-            ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
-        ));
-        Ok(())
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                TestResponseEnvelope,
+                u64,
+                TestDispatcher,
+            >(server, &TestDispatcher);
+            if !matches!(
+                reason,
+                ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
+            ) {
+                return Err(format!("unexpected close reason: {reason:?}"));
+            }
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn handle_connection_surfaces_response_encode_failure_reason() -> TestRes {
-        let (mut client, server) = UnixStream::pair()?;
-        let frame = encode_request(&test_request(7, 4))?;
-        client.write_all(&frame)?;
-        client.shutdown(Shutdown::Write)?;
+    fn handle_connection_surfaces_response_encode_failure_reason() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(7, 4)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
+            client
+                .shutdown(Shutdown::Write)
+                .map_err(|err| err.to_string())?;
 
-        let reason = handle_connection::<TestRequestEnvelope, u64, FailingResponseEnvelope, u64, TestDispatcher>(
-            server,
-            &TestDispatcher,
-        );
-        match reason {
-            ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message))
-                if message.contains("simulated response encode failure") => {}
-            other => return Err(format!("unexpected close reason: {other:?}").into()),
-        }
-        Ok(())
+            let reason = handle_connection::<
+                TestRequestEnvelope,
+                u64,
+                FailingResponseEnvelope,
+                u64,
+                TestDispatcher,
+            >(server, &TestDispatcher);
+            if let ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message)) = &reason
+                && message.contains("simulated response encode failure")
+            {
+                return Ok(());
+            }
+            Err(format!("unexpected close reason: {reason:?}"))
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
-    fn handle_connection_surfaces_response_write_failure_reason() -> TestRes {
-        let (mut client, server) = UnixStream::pair()?;
-        let frame = encode_request(&test_request(9, 1))?;
-        client.write_all(&frame)?;
+    fn handle_connection_surfaces_response_write_failure_reason() {
+        let result = (|| -> TestRes {
+            let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+            let frame = encode_test_frame(9, 1)?;
+            client.write_all(&frame).map_err(|err| err.to_string())?;
 
-        struct BlockingDispatcher {
-            entered: std::sync::mpsc::Sender<()>,
-            gate: std::sync::Arc<std::sync::Barrier>,
-        }
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let gate = Arc::new(Barrier::new(2));
+            let dispatcher = BlockingDispatcher {
+                entered: entered_tx,
+                gate: Arc::clone(&gate),
+            };
+            let handle = thread::spawn(move || {
+                handle_connection::<
+                    TestRequestEnvelope,
+                    u64,
+                    TestResponseEnvelope,
+                    u64,
+                    BlockingDispatcher,
+                >(server, &dispatcher)
+            });
 
-        impl IpcDispatcher<u64, u64> for BlockingDispatcher {
-            fn dispatch(&self, request: u64) -> u64 {
-                assert!(
-                    self.entered.send(()).is_ok(),
-                    "test must observe dispatcher entry"
-                );
-                let _wait = self.gate.wait();
-                request.saturating_add(1)
+            entered_rx.recv().map_err(|err| {
+                format!("test must observe request decode before closing peer: {err}")
+            })?;
+            drop(client);
+            let _wait = gate.wait();
+
+            let reason = handle
+                .join()
+                .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
+            if let ConnectionCloseReason::ResponseWriteFailed(message) = &reason
+                && !message.is_empty()
+            {
+                return Ok(());
             }
-        }
-
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let dispatcher = BlockingDispatcher {
-            entered: entered_tx,
-            gate: gate.clone(),
-        };
-        let handle = std::thread::spawn(move || {
-            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, BlockingDispatcher>(
-                server,
-                &dispatcher,
-            )
-        });
-
-        match entered_rx.recv() {
-            Ok(()) => {}
-            Err(err) => {
-                return Err(
-                    format!("test must observe request decode before closing peer: {err}").into(),
-                );
-            }
-        }
-        drop(client);
-        let _wait = gate.wait();
-
-        let reason = match handle.join() {
-            Ok(reason) => reason,
-            Err(_) => return Err("server thread panicked".into()),
-        };
-        match reason {
-            ConnectionCloseReason::ResponseWriteFailed(message) if !message.is_empty() => {}
-            other => return Err(format!("unexpected close reason: {other:?}").into()),
-        }
-        Ok(())
+            Err(format!("unexpected close reason: {reason:?}"))
+        })();
+        assert_test_ok(&result);
     }
 }

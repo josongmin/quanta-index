@@ -6,7 +6,7 @@ use quanta_index_contract::{
     RepoMapSnapshotMeta, RepoMapSourceBundle, RepoMapSymbolNode,
 };
 
-use crate::model::{RepoMapEntryV1, RepoMapSnapshotV1};
+use crate::model::{RepoMapEntry, RepoMapSnapshot};
 
 pub struct RepoMapMaterializer;
 
@@ -41,7 +41,7 @@ struct SymbolEntryInput {
 
 impl RepoMapMaterializer {
     #[must_use]
-    pub fn materialize(bundle: &RepoMapSourceBundle) -> RepoMapSnapshotV1 {
+    pub fn materialize(bundle: &RepoMapSourceBundle) -> RepoMapSnapshot {
         let snapshot_meta = RepoMapSnapshotMeta {
             snapshot_id: bundle.snapshot_id.clone(),
             projection_version: bundle.projection_version,
@@ -117,7 +117,7 @@ impl RepoMapMaterializer {
             entry.included = true;
         }
 
-        RepoMapSnapshotV1 {
+        RepoMapSnapshot {
             repo_id: bundle.repo_id.clone(),
             revision_id: bundle.revision_id.clone(),
             manifest_generation: bundle.manifest_generation,
@@ -201,7 +201,7 @@ fn build_file_entry(
     call_stats: &GraphStatsV1,
     import_stats: &GraphStatsV1,
     chunk_stats: &ChunkStatsV1,
-) -> RepoMapEntryV1 {
+) -> RepoMapEntry {
     let symbol_count = saturating_u32_from_usize(file_symbols.len());
     let graph_degree = total_degree(call_stats).saturating_add(total_degree(import_stats));
     let line_bonus = file.line_count.div_euclid(8).min(120);
@@ -262,7 +262,7 @@ fn build_file_entry(
             .as_code_str()
             .to_string(),
     ]);
-    RepoMapEntryV1 {
+    RepoMapEntry {
         subject_identity: file.subject_identity.clone(),
         subject_doc_type: RepoMapDocType::File,
         subject_kind: "file".to_string(),
@@ -328,7 +328,7 @@ fn build_symbol_entry(
     call_stats: &GraphStatsV1,
     import_stats: &GraphStatsV1,
     chunk_stats: &ChunkStatsV1,
-) -> RepoMapEntryV1 {
+) -> RepoMapEntry {
     let graph_degree = total_degree(call_stats).saturating_add(total_degree(import_stats));
     let importance = clamp_score(
         420_u32
@@ -374,7 +374,7 @@ fn build_symbol_entry(
             .join(" "),
         bundle.exactness_summary.as_code_str().to_string(),
     ]);
-    RepoMapEntryV1 {
+    RepoMapEntry {
         subject_identity: symbol.subject_identity.clone(),
         subject_doc_type: RepoMapDocType::Symbol,
         subject_kind: symbol.symbol_kind.clone(),

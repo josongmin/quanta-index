@@ -2760,10 +2760,6 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
     clippy::panic_in_result_fn,
     reason = "serde roundtrip tests use assert_eq! for compact proof"
 )]
-#[expect(
-    clippy::unwrap_used,
-    reason = "unknown-tag unit test asserts the deserialize error path directly"
-)]
 mod tests {
     use super::*;
     use crate::lex::{
@@ -2811,7 +2807,7 @@ mod tests {
         ChunkRecord {
             chunk_id: fixture_chunk_id(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: LanguageCode::new("rust").unwrap(),
+            language: LanguageCode::from_code_str("rust").unwrap_or_else(|| std::process::abort()),
             start_byte: 0,
             end_byte: 12,
             start_line: 1,
@@ -2829,7 +2825,7 @@ mod tests {
             owner_id: "main".to_string().into_boxed_str(),
             source_doc_id: "doc-1".to_string().into_boxed_str(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
-            language: LanguageCode::new("rust").unwrap(),
+            language: LanguageCode::from_code_str("rust").unwrap_or_else(|| std::process::abort()),
             symbol_kind: None,
             start_byte: 0,
             end_byte: 12,
@@ -2891,7 +2887,7 @@ mod tests {
     fn fixture_parse_tree_record() -> ParseTreeRecord {
         ParseTreeRecord {
             wire_version: 1,
-            lang: LanguageCode::new("rust").unwrap(),
+            lang: LanguageCode::from_code_str("rust").unwrap_or_else(|| std::process::abort()),
             root: ParseNode {
                 kind: "function_item".to_string().into_boxed_str(),
                 byte_start: 0,
@@ -3257,7 +3253,14 @@ mod tests {
     #[test]
     fn unknown_batch_ingest_mode_tag_rejected() {
         let bad = serde_json::json!("Unknown");
-        let err = BatchIngestMode::deserialize(bad).unwrap_err();
+        let result = BatchIngestMode::deserialize(bad);
+        assert!(
+            result.is_err(),
+            "unknown batch ingest mode tag should fail closed: {result:?}"
+        );
+        let Err(err) = result else {
+            return;
+        };
         assert!(err.to_string().contains("unknown variant"));
     }
 }

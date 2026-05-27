@@ -8,12 +8,12 @@
 //! This target locks the invariant: **no panic on any input**, error path
 //! always typed.
 //!
-//! The whole pipeline (RankerWeightsV1::new -> weights_hash) must never
+//! The whole pipeline (RankerWeights::new -> weights_hash) must never
 //! panic, never loop forever, never UB on any byte sequence.
 
 use libfuzzer_sys::fuzz_target;
 
-use quanta_index_lq_ranker::{RankerWeightsV1, weights_hash};
+use quanta_index_lq_ranker::{RankerWeights, weights_hash};
 
 fuzz_target!(|data: &[u8]| {
     // Extract 5 f32s from the input. Skip if not enough bytes.
@@ -28,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Try to construct a weight set. If validation rejects, we exit cleanly.
     // The whole pipeline must never panic, never loop forever, never UB.
-    if let Ok(w) = RankerWeightsV1::new(bm25, path_prior, symbol_boost, recency, boost_directive) {
+    if let Ok(w) = RankerWeights::new(bm25, path_prior, symbol_boost, recency, boost_directive) {
         // weights_hash MUST always return Result; never panic.
         let _ = weights_hash(&w);
     }

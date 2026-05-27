@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 try:
     import tomllib
@@ -126,9 +126,7 @@ _TRANSPORT_LEAK_TOKENS = (
     re.compile(r"\bsegment_id\b"),
 )
 
-DOMAIN_USE_RE = re.compile(
-    r"\b(?:crate::domains::|domains::)(?P<target>lexical|semantic|hybrid)\b"
-)
+DOMAIN_USE_RE = re.compile(r"\b(?:crate::domains::|domains::)(?P<target>lexical|semantic|hybrid)\b")
 
 
 @dataclass(frozen=True)
@@ -256,7 +254,9 @@ def check_domain_isolation() -> list[Violation]:
     violations: list[Violation] = []
     core_domains = CRATES / "quanta-index-core" / "src" / "domains"
     if not core_domains.is_dir():
-        violations.append(Violation(core_domains, "missing domains/ directory in quanta-index-core"))
+        violations.append(
+            Violation(core_domains, "missing domains/ directory in quanta-index-core")
+        )
         return violations
 
     for rust_file in sorted(core_domains.rglob("*.rs")):
@@ -288,7 +288,9 @@ def check_contract_is_dto_only() -> list[Violation]:
         text = rust_file.read_text(encoding="utf-8")
         if re.search(r"\bpub\s+trait\b", text):
             violations.append(
-                Violation(rust_file, "contract crate must not define port traits (use quanta-index-core)")
+                Violation(
+                    rust_file, "contract crate must not define port traits (use quanta-index-core)"
+                )
             )
     return violations
 

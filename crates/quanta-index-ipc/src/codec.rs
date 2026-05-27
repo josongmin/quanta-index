@@ -64,6 +64,12 @@ pub fn encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, Ipc
     encode_frame(envelope)
 }
 
+pub fn encode_cbor_payload<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
+    let mut body: Vec<u8> = Vec::new();
+    ciborium::into_writer(value, &mut body).map_err(|err| IpcError::Encode(err.to_string()))?;
+    Ok(body)
+}
+
 pub fn decode_request<T, R>(reader: &mut R) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,
@@ -80,6 +86,13 @@ where
     decode_frame(reader)
 }
 
+pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    ciborium::from_reader(bytes).map_err(|err| IpcError::Decode(err.to_string()))
+}
+
 #[expect(
     clippy::manual_unwrap_or,
     reason = "workspace bans Result::unwrap_or / map_or; explicit match is the only safe form."
@@ -93,8 +106,7 @@ fn oversized_for(len: usize) -> IpcError {
 }
 
 fn encode_frame<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
-    let mut body: Vec<u8> = Vec::new();
-    ciborium::into_writer(value, &mut body).map_err(|err| IpcError::Encode(err.to_string()))?;
+    let body = encode_cbor_payload(value)?;
     if body.len() > MAX_FRAME_BODY_BYTES {
         return Err(oversized_for(body.len()));
     }
@@ -133,9 +145,7 @@ where
 
     let mut body = vec![0u8; body_len];
     read_exact_or_truncated(reader, &mut body)?;
-    let decoded: T =
-        ciborium::from_reader(body.as_slice()).map_err(|err| IpcError::Decode(err.to_string()))?;
-    Ok(decoded)
+    decode_cbor_payload(body.as_slice())
 }
 
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
@@ -160,4 +170,34 @@ fn read_exact_or_truncated<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IpcError, decode_cbor_payload, encode_cbor_payload};
+
+    #[test]
+    fn cbor_payload_round_trip_preserves_tuple_value() {
+        let result = (|| -> Result<(), IpcError> {
+            let expected = (7_u32, "ranker".to_string(), vec![1_u8, 2, 3]);
+            let encoded = encode_cbor_payload(&expected)?;
+            let decoded: (u32, String, Vec<u8>) = decode_cbor_payload(encoded.as_slice())?;
+            if decoded != expected {
+                return Err(IpcError::Decode(format!(
+                    "tuple payload round-trip drifted: decoded={decoded:?}"
+                )));
+            }
+            Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn invalid_cbor_payload_returns_typed_decode_error() {
+        let result = decode_cbor_payload::<u32>(&[0xff]);
+        assert!(matches!(
+            result,
+            Err(IpcError::Decode(ref message)) if !message.is_empty()
+        ));
+    }
 }

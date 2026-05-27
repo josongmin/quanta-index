@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 LOG_RELATIVE_PATH = Path("build-profile") / "history.jsonl"
 LOG_SCHEMA_VERSION = 2
 

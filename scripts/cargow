@@ -50,7 +50,9 @@ arg_value() {
 
 detect_lane() {
   local subcommand="${1:-}"
-  shift || true
+  if [[ "$#" -gt 0 ]]; then
+    shift
+  fi
 
   local package_name=""
   if package_name="$(arg_value "-p" "--package" "$@")"; then
@@ -163,10 +165,11 @@ source "${SCRIPT_DIR}/quanta-index-env.sh"
 
 start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 
-set +e
-cargo "$@"
-status="$?"
-set -e
+if cargo "$@"; then
+  status=0
+else
+  status="$?"
+fi
 
 end_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 duration_ms="$((end_ms - start_ms))"

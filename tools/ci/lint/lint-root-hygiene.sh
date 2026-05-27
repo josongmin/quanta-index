@@ -65,7 +65,12 @@ while IFS= read -r path; do
   [[ -n "$path" ]] || continue
   echo "Forbidden nested target directory present: ${path#./}" >&2
   fail=1
-done < <(find . -path ./.git -prune -o -type d -name target -print)
+done < <(
+  find . \
+    -path ./.git -prune -o \
+    -path ./.claude -prune -o \
+    -type d -name target -print
+)
 
 if [[ "$fail" -ne 0 ]]; then
   cat <<'EOF' >&2

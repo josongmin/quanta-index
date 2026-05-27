@@ -9,7 +9,7 @@
 //! ## Shipped
 //!
 //! - `errors`: closed `RankerErrorCode` (5 variants) + `SignalKind` + `RankerError`
-//! - `weights`: `RankerWeightsV1` + `DEFAULTS` + envelope-validated `new` + version-tagged `weights_hash`
+//! - `weights`: `RankerWeights` + `DEFAULTS` + envelope-validated `new` + version-tagged `weights_hash`
 //! - `signals`: `CandidateSignals` + envelope constants + `validate_signals`
 //! - `scorer`: `CompositeScorer` with closed-form weighted sum + clamp + `RankExplanation`
 //! - `tiebreak`: `ScoredCandidate` + 6-tier `TiebreakKey` + stable `rank_candidates`
@@ -27,4 +27,4 @@ pub use signals::{
     validate_signals,
 };
 pub use tiebreak::{ScoredCandidate, TiebreakKey, rank_candidates};
-pub use weights::{RankerWeightsV1, weights_hash};
+pub use weights::{RankerWeights, weights_hash};

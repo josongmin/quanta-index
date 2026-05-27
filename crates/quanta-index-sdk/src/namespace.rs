@@ -134,15 +134,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "namespace tests use direct panic-style assertions for transport capture"
-    )]
-    #![expect(
-        clippy::significant_drop_tightening,
-        reason = "mutex guard lifetime in namespace tests is intentionally local and harmless"
-    )]
-
     //! Namespace trait conformance tests for the test-only generic handle.
 
     use std::sync::{Arc, Mutex};
@@ -158,6 +149,8 @@ mod tests {
 
     use super::*;
     use crate::{BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport};
+
+    type TestRes = Result<(), String>;
 
     /// Test-local marker used only in this module.
     struct DownstreamLexicalNs;
@@ -249,8 +242,14 @@ mod tests {
         }
     }
 
-    fn fixture_batch() -> LexicalBatch {
-        LexicalBatch::replace_generation(
+    fn assert_test_ok(result: &TestRes) {
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    fn fixture_batch() -> Result<LexicalBatch, String> {
+        let language = LanguageCode::new("rust")
+            .map_err(|err| format!("valid language code fixture required: {err}"))?;
+        Ok(LexicalBatch::replace_generation(
             RepoId::new("repo"),
             RevisionId::new("rev"),
             ManifestGeneration::new(1),
@@ -266,7 +265,7 @@ mod tests {
             vec![quanta_index_contract::ChunkRecord {
                 chunk_id: ChunkId::new("c1"),
                 repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-                language: LanguageCode::new("rust").expect("valid language code"),
+                language,
                 start_byte: 0,
                 end_byte: 12,
                 start_line: 1,
@@ -276,91 +275,90 @@ mod tests {
                 parent_chunk_id: None,
             }],
             Vec::new(),
-        )
+        ))
+    }
+
+    fn only_ingest_request(
+        ingest: &StubIngestTransport,
+    ) -> Result<SearchPlaneIngestIpcRequestEnvelope, String> {
+        let captured = ingest
+            .requests
+            .lock()
+            .map_err(|err| format!("captured requests must not be poisoned: {err}"))?;
+        let len = captured.len();
+        if len != 1 {
+            return Err(format!("expected one captured request, got {len}"));
+        }
+        captured
+            .first()
+            .cloned()
+            .ok_or_else(|| "expected one captured request".to_string())
     }
 
     #[test]
     fn test_local_marker_routes_through_ns_handle() {
-        let ingest = Arc::new(StubIngestTransport {
-            requests: Mutex::new(Vec::new()),
-            response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
-                fixture_receipt(),
-            ))),
-        });
-        let client = make_client(Arc::clone(&ingest));
-        let receipt = client
-            .ns::<DownstreamLexicalNs>()
-            .publish(&fixture_batch())
-            .expect("test-local publish must succeed");
-        assert_eq!(receipt.generation, ManifestGeneration::new(1));
-        let captured = ingest
-            .requests
-            .lock()
-            .expect("captured requests must not be poisoned");
-        assert_eq!(captured.len(), 1);
-        let first = captured.first().expect("expected one captured request");
-        assert!(matches!(
-            first.payload,
-            SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
-        ));
+        let result = (|| -> TestRes {
+            let ingest = Arc::new(StubIngestTransport {
+                requests: Mutex::new(Vec::new()),
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                    fixture_receipt(),
+                ))),
+            });
+            let client = make_client(Arc::clone(&ingest));
+            let batch = fixture_batch()?;
+            let receipt = client
+                .ns::<DownstreamLexicalNs>()
+                .publish(&batch)
+                .map_err(|err| format!("test-local publish must succeed: {err}"))?;
+            assert_eq!(receipt.generation, ManifestGeneration::new(1));
+            let first = only_ingest_request(ingest.as_ref())?;
+            assert!(matches!(
+                first.payload,
+                SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+            ));
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]
     fn sugar_lexical_and_ns_lexical_produce_equivalent_wire() {
-        // QI-NS-01: `client.lexical().publish(batch)` is sugar for
-        // `client.ns::<LexicalNs>().publish(batch)`. Wire output must be
-        // identical apart from request_id allocation.
-        let batch = fixture_batch();
+        let result = (|| -> TestRes {
+            // QI-NS-01: `client.lexical().publish(batch)` is sugar for
+            // `client.ns::<LexicalNs>().publish(batch)`. Wire output must be
+            // identical apart from request_id allocation.
+            let batch = fixture_batch()?;
 
-        let sugar_ingest = Arc::new(StubIngestTransport {
-            requests: Mutex::new(Vec::new()),
-            response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
-                fixture_receipt(),
-            ))),
-        });
-        let sugar_client = make_client(Arc::clone(&sugar_ingest));
-        let _sugar_receipt = sugar_client
-            .lexical()
-            .publish(&batch)
-            .expect("sugar publish must succeed");
+            let sugar_ingest = Arc::new(StubIngestTransport {
+                requests: Mutex::new(Vec::new()),
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                    fixture_receipt(),
+                ))),
+            });
+            let sugar_client = make_client(Arc::clone(&sugar_ingest));
+            let _sugar_receipt = sugar_client
+                .lexical()
+                .publish(&batch)
+                .map_err(|err| format!("sugar publish must succeed: {err}"))?;
 
-        let ns_ingest = Arc::new(StubIngestTransport {
-            requests: Mutex::new(Vec::new()),
-            response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
-                fixture_receipt(),
-            ))),
-        });
-        let ns_client = make_client(Arc::clone(&ns_ingest));
-        let _ns_receipt = ns_client
-            .ns::<crate::lexical::LexicalNs>()
-            .publish(&batch)
-            .expect("ns publish must succeed");
+            let ns_ingest = Arc::new(StubIngestTransport {
+                requests: Mutex::new(Vec::new()),
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                    fixture_receipt(),
+                ))),
+            });
+            let ns_client = make_client(Arc::clone(&ns_ingest));
+            let _ns_receipt = ns_client
+                .ns::<crate::lexical::LexicalNs>()
+                .publish(&batch)
+                .map_err(|err| format!("ns publish must succeed: {err}"))?;
 
-        let sugar_payload = {
-            let captured = sugar_ingest
-                .requests
-                .lock()
-                .expect("sugar captured must not be poisoned");
-            assert_eq!(captured.len(), 1);
-            captured
-                .first()
-                .expect("expected one sugar request")
-                .payload
-                .clone()
-        };
-        let ns_payload = {
-            let captured = ns_ingest
-                .requests
-                .lock()
-                .expect("ns captured must not be poisoned");
-            assert_eq!(captured.len(), 1);
-            captured
-                .first()
-                .expect("expected one ns request")
-                .payload
-                .clone()
-        };
-        assert_eq!(sugar_payload, ns_payload);
+            let sugar_payload = only_ingest_request(sugar_ingest.as_ref())?.payload;
+            let ns_payload = only_ingest_request(ns_ingest.as_ref())?.payload;
+            assert_eq!(sugar_payload, ns_payload);
+            Ok(())
+        })();
+        assert_test_ok(&result);
     }
 
     #[test]

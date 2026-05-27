@@ -98,7 +98,7 @@ E1 ──► E3 ──► E4 ──► E5
 
 ## Epic E1 — Control adapter completion
 
-**Goal:** every outbound port currently defined in `quanta-index-core::domains` has a real, idempotent, fail-closed impl in [quanta-index-control](../../crates/quanta-index-control/). No placeholders on the inspect path.
+**Goal:** every outbound port currently defined in `quanta-index-core::domains` has a real, idempotent, fail-closed impl in `quanta-index-control` (historical crate name; removed from the current workspace). No placeholders on the inspect path.
 
 ### T1.1 — `PublishedSearchBundleDeltaApplyPort` impl
 
@@ -106,7 +106,7 @@ E1 ──► E3 ──► E4 ──► E5
 - **Scope:**
   - new SQLite table `bundle_delta_applied` keyed by `(repo_id, revision_id, manifest_generation, op_kind, target_id)`
   - `apply_bundle_delta`:
-    1. validate request via new `BundlePolicy::validate_delta` (extension; see [bundle_ingest/service.rs](../../crates/quanta-index-core/src/domains/bundle_ingest/service.rs))
+    1. validate request via new `BundlePolicy::validate_delta` (extension; historical note referenced `quanta-index-core/src/domains/bundle_ingest/service.rs`, which no longer exists after the breaking-first reshuffle)
     2. open transaction
     3. for each `SearchBundleMutationOp`: INSERT OR IGNORE into `bundle_delta_applied`
     4. count newly-inserted rows; commit

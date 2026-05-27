@@ -172,8 +172,7 @@ def audit_enum_variants(
                 Violation(
                     path,
                     i + 1,
-                    f"variant `{enum_name}::{m.group('name')}` lacks "
-                    f"`#[error(\"...\")]` attribute",
+                    f'variant `{enum_name}::{m.group("name")}` lacks `#[error("...")]` attribute',
                 )
             )
         pending_error_attr = False

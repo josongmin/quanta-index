@@ -144,7 +144,7 @@ Cross-link: [tickets/INDEX.md §3.5](tickets/INDEX.md) records this resolution a
 
 ### 2.4 Lexical adapter — [crates/quanta-index-lexical/src/](../../../crates/quanta-index-lexical/src/)
 
-Today = Tantivy 0.22 chunk index, schema in [schema.rs](../../../crates/quanta-index-lexical/src/schema.rs), per-generation `Index` cache, `en_stem` tokenizer (predecessor D4). `MARKER_OK` sentinel + atomic rename.
+Today = Tantivy 0.22 chunk index, schema in `crates/quanta-index-lexical/src/schema.rs` (historical path; the file was removed in later reshuffles), per-generation `Index` cache, `en_stem` tokenizer (predecessor D4). `MARKER_OK` sentinel + atomic rename.
 
 | RFC requirement | State |
 |---|---|
@@ -397,7 +397,7 @@ graph LR
 
 **Risks.**
 
-- Path + symbol shard schemas drift from Sourcegraph defaults. Mitigation: pin schema at [crates/quanta-index-lexical/src/schema.rs](../../../crates/quanta-index-lexical/src/schema.rs) and assert serialized form in a golden file.
+- Path + symbol shard schemas drift from Sourcegraph defaults. Mitigation: pin schema at `crates/quanta-index-lexical/src/schema.rs` (historical path; removed later) and assert serialized form in a golden file.
 - ACL injection at planner widens query semantics if buggy (RFC Non-Negotiable Invariant 11). Mitigation: invariant-test "no planner pass ever widens a filter set" + property test that asserts `filters.subset_of(filters_post_planner)`.
 
 **Cutover / rollback.** Front-door surface is a breaking change. Rollback = revert front-door PR; downstream (predecessor T4.4 UDS dispatch) still works because the legacy surface is removed cleanly.

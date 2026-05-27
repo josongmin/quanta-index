@@ -1048,9 +1048,9 @@ dependencies = [
 name = "quanta-index-search-plane"
 version = "0.1.0"
 dependencies = [
- "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-ipc",
  "quanta-index-lq-bridge",
  "quanta-index-lq-norm",
  "quanta-index-lq-obs",

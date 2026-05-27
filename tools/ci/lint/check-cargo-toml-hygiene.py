@@ -27,9 +27,9 @@ Failure modes this catches in practice:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 
 try:
     import tomllib
@@ -179,8 +179,7 @@ def check_single_dep(
             violations.append(
                 Violation(
                     cargo_toml,
-                    f"[{section}] internal dep {name!r} must specify "
-                    f'`path = "../{name}"`',
+                    f'[{section}] internal dep {name!r} must specify `path = "../{name}"`',
                 )
             )
         else:
@@ -191,8 +190,7 @@ def check_single_dep(
                     violations.append(
                         Violation(
                             cargo_toml,
-                            f"[{section}] dep {name!r} path escapes crates/ "
-                            f"(resolved: {resolved})",
+                            f"[{section}] dep {name!r} path escapes crates/ (resolved: {resolved})",
                         )
                     )
     else:

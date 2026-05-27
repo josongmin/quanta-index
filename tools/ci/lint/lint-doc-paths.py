@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DOC_SUFFIXES = {".md", ".mdc"}
 IGNORE_DIRS = {
     ".git",
+    ".claude",
     "target",
     "state",
     ".venv",

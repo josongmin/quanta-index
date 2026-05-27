@@ -63,7 +63,7 @@ def test_parse_units_reads_unit_data():
         "quanta-index-searchctl",
     ]
     assert units[1].duration == 7.25
-    assert 'lex_property_roundtrip' in units[1].target
+    assert "lex_property_roundtrip" in units[1].target
 
 
 def test_aggregate_repo_crates_sums_matching_crates():

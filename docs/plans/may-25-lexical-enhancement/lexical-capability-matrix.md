@@ -249,8 +249,8 @@ Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-in
 ## 12. Risk register
 
 - **Predicate lowering in-flight**: `lower_bridge_predicate` is currently being
-  added to both [search-plane/lowering.rs](../../../crates/quanta-index-search-plane/src/lowering.rs)
-  and [core/domains/lexical/lowering.rs](../../../crates/quanta-index-core/src/domains/lexical/lowering.rs).
+  added to [search-plane/lowering.rs](../../../crates/quanta-index-search-plane/src/lowering.rs)
+  and to the lexical lowering surface in `quanta-index-core/src/domains/lexical/lowering.rs` (historical path; removed in the current tree).
   LXE-03 must integrate, not replace. **Open question**: keep the duplicated
   predicate-parsing logic, or lift it into a single helper in lq-norm before
   LXE-03 lands?

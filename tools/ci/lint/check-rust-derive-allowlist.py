@@ -79,8 +79,7 @@ def audit_file(path: Path) -> list[str]:
             name = last_segment(raw)
             if name in EXPLICIT_BAN:
                 findings.append(
-                    f"{path}:{line}: derive `{raw}` is banned outright "
-                    f"({EXPLICIT_BAN[name]})"
+                    f"{path}:{line}: derive `{raw}` is banned outright ({EXPLICIT_BAN[name]})"
                 )
                 continue
             if name not in ALLOWED_DERIVES:

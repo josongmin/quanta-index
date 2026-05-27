@@ -8,13 +8,13 @@ use quanta_index_core::{
 
 use crate::{
     RepoMapMaterializer, RepoMapQueryEngine,
-    model::RepoMapSnapshotV1,
+    model::RepoMapSnapshot,
     persistence::{RepoMapActivationRecordV1, RepoMapSnapshotPersistence},
 };
 
 #[derive(Debug)]
 pub struct RepoMapGenerationStore {
-    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, RepoMapSnapshotV1>>,
+    snapshots: RwLock<BTreeMap<RepoMapStoreKeyV1, RepoMapSnapshot>>,
     activated: RwLock<BTreeMap<(String, String), u64>>,
     persistence: Option<RepoMapSnapshotPersistence>,
 }
@@ -108,7 +108,7 @@ impl RepoMapGenerationStore {
         self.insert_snapshot(snapshot)
     }
 
-    pub fn insert_snapshot(&self, snapshot: RepoMapSnapshotV1) -> Result<(), CoreError> {
+    pub fn insert_snapshot(&self, snapshot: RepoMapSnapshot) -> Result<(), CoreError> {
         if let Some(persistence) = &self.persistence {
             persistence.persist_snapshot(&snapshot)?;
         }

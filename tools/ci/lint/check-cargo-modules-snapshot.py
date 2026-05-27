@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +46,33 @@ GUARDED_CRATES: list[str] = [
 ]
 
 
+def default_cache_root() -> Path:
+    override = os.environ.get("QUANTA_INDEX_CACHE_ROOT")
+    if override:
+        return Path(override).expanduser()
+
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Caches" / "quanta-index"
+
+    base = os.environ.get("XDG_CACHE_HOME")
+    if base:
+        return Path(base).expanduser() / "quanta-index"
+    return Path.home() / ".cache" / "quanta-index"
+
+
+def cargo_env(default_lane: str) -> dict[str, str]:
+    env = os.environ.copy()
+    cache_root = default_cache_root()
+    env.setdefault("QUANTA_INDEX_CACHE_ROOT", str(cache_root))
+    env.setdefault("QUANTA_INDEX_REPO_ROOT", str(ROOT))
+    env.setdefault("QUANTA_INDEX_BUILD_LANE", default_lane)
+    env.setdefault(
+        "CARGO_TARGET_DIR",
+        str(cache_root / "target" / env["QUANTA_INDEX_BUILD_LANE"]),
+    )
+    return env
+
+
 def workspace_member_names() -> set[str]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
     members = data.get("workspace", {}).get("members", [])
@@ -52,11 +81,15 @@ def workspace_member_names() -> set[str]:
 
 def render_module_tree(package: str) -> str:
     cmd = ["cargo", "modules", "structure", "--package", package, "--no-fns"]
-    result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        env=cargo_env("cargo-modules-lane"),
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"cargo modules structure failed for {package}: {result.stderr}"
-        )
+        raise RuntimeError(f"cargo modules structure failed for {package}: {result.stderr}")
     body = "\n".join(line.rstrip() for line in result.stdout.splitlines())
     return body + "\n"
 

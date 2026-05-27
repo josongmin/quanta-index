@@ -8,7 +8,6 @@ crate quanta_index_contract
 │   │   └── struct SymbolId: pub
 │   ├── mod ops: pub(self)
 │   │   ├── struct DeleteChunk: pub
-│   │   ├── struct DeleteEmbedding: pub
 │   │   ├── struct DeleteParseTree: pub
 │   │   ├── struct DeleteParseTreeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -26,13 +25,8 @@ crate quanta_index_contract
 │   │   ├── struct LexicalFullBundle: pub
 │   │   ├── struct LexicalSeal: pub
 │   │   ├── struct ReplaceLexicalScope: pub
-│   │   ├── struct ReplaceSemanticScope: pub
 │   │   ├── struct ReplaceStructuralScope: pub
-│   │   ├── enum SemanticChannelOp: pub
-│   │   ├── struct SemanticFullBundle: pub
-│   │   ├── struct SemanticSeal: pub
 │   │   ├── struct TombstoneLexicalScope: pub
-│   │   ├── struct TombstoneSemanticScope: pub
 │   │   ├── struct TombstoneStructuralScope: pub
 │   │   ├── struct UpsertChunk: pub
 │   │   ├── struct UpsertCommit: pub
@@ -44,7 +38,6 @@ crate quanta_index_contract
 │   │   ├── struct UpsertDirty: pub
 │   │   ├── struct UpsertDirtyVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct UpsertEmbedding: pub
 │   │   ├── struct UpsertParseTree: pub
 │   │   ├── struct UpsertParseTreeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)

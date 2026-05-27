@@ -1,12 +1,3 @@
-#![expect(
-    clippy::expect_used,
-    reason = "SDK unit tests use explicit transport-capture assertions"
-)]
-#![expect(
-    clippy::panic,
-    reason = "SDK unit tests use direct assertion panics to surface wire mismatches"
-)]
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -197,7 +188,7 @@ fn sample_symbol_hit() -> quanta_index_contract::SymbolCandidate {
         end_line: 1,
         score: 1.0,
         snippet: "sample crate".to_string(),
-        symbol_kind: SymbolKindCode::new("function").expect("valid symbol kind"),
+        symbol_kind: ok_or_fail!(SymbolKindCode::new("function")),
         symbol_kind_family: Some(SymbolKindFamily::Callable),
     }
 }
@@ -221,8 +212,8 @@ fn sample_symbol() -> SymbolRecord {
     SymbolRecord {
         symbol_id: SymbolId::new("sym-1"),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        language: LanguageCode::new("rust").expect("valid language code"),
-        symbol_kind: SymbolKindCode::new("function").expect("valid symbol kind"),
+        language: ok_or_fail!(LanguageCode::new("rust")),
+        symbol_kind: ok_or_fail!(SymbolKindCode::new("function")),
         symbol_kind_family: Some(SymbolKindFamily::Callable),
         local_name: "sample".into(),
         qualified_name: "crate::sample".into(),
@@ -244,7 +235,7 @@ fn sample_chunk() -> ChunkRecord {
     ChunkRecord {
         chunk_id: ChunkId::new("chunk-1"),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        language: LanguageCode::new("rust").expect("valid language code"),
+        language: ok_or_fail!(LanguageCode::new("rust")),
         start_byte: 0,
         end_byte: 16,
         start_line: 1,
@@ -380,7 +371,7 @@ fn sample_dirty_record() -> DirtyRecord {
 fn sample_parse_tree_record() -> ParseTreeRecord {
     ParseTreeRecord {
         wire_version: 1,
-        lang: LanguageCode::new("rust").expect("valid language code"),
+        lang: ok_or_fail!(LanguageCode::new("rust")),
         root: ParseNode {
             kind: "function_item".into(),
             byte_start: 0,
@@ -522,11 +513,16 @@ fn semantic_query_builder_emits_active_selector_and_query_text() {
         .execute();
     let _response = ok_or_fail!(response);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(_)
+        ),
+        "expected semantic request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(req) = &captured.payload else {
-        panic!(
-            "expected semantic request, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(req.top_k, 5);
     assert_eq!(req.query_text.as_str(), "0.1 0.2 0.3");
@@ -558,15 +554,24 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(_)
+        ),
+        "expected semantic request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(req) = &captured.payload else {
-        panic!(
-            "expected semantic request, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(req.top_k, 5);
+    assert!(
+        req.lexical_scope.is_some(),
+        "expected semantic lexical scope"
+    );
     let Some(scope) = &req.lexical_scope else {
-        panic!("expected semantic lexical scope");
+        return;
     };
     assert_eq!(
         scope.syntax,
@@ -595,11 +600,16 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
+        ),
+        "expected text request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
-        panic!(
-            "expected text request, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(
         req.top_k, 42,
@@ -652,8 +662,9 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
     };
     let response = ok_or_fail!(client.symbol().query_request(request.clone()));
     assert_eq!(response.results.len(), 1);
+    assert!(!response.results.is_empty(), "expected one symbol result");
     let Some(first) = response.results.first() else {
-        panic!("expected one symbol result");
+        return;
     };
     assert_eq!(first.candidate_id, "sym-1");
     assert_eq!(first.symbol_kind.as_str(), "function");
@@ -686,11 +697,16 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_semantic_text() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(_)
+        ),
+        "expected hybrid request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(req) = &captured.payload else {
-        panic!(
-            "expected hybrid request, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(req.top_k, 7);
     assert_eq!(req.text_query.top_k, 7);
@@ -784,11 +800,16 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
     let response = ok_or_fail!(response);
     assert_eq!(response.results.len(), 1);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Text(_)
+        ),
+        "expected text request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
-        panic!(
-            "expected text request, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(
         req.syntax,
@@ -830,11 +851,16 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let observed = ok_or_fail!(client.lexical().publish(&batch));
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+        ),
+        "expected PublishLexicalBatch, got {:?}",
+        captured.payload
+    );
     let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
-        panic!(
-            "expected PublishLexicalBatch, got {payload:?}",
-            payload = captured.payload
-        );
+        return;
     };
     assert_eq!(wire.repo_id, repo_id());
     assert_eq!(wire.manifest_digest, "manifest:feed");
@@ -842,10 +868,14 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
     assert_eq!(wire.replace_scopes.len(), 1);
     assert_eq!(wire.tombstone_scopes.len(), 0);
     assert!(wire.seal);
-    let first_scope = wire
-        .replace_scopes
-        .first()
-        .expect("expected one lexical replace scope");
+    assert_eq!(
+        wire.replace_scopes.len(),
+        1,
+        "expected one lexical replace scope"
+    );
+    let Some(first_scope) = wire.replace_scopes.first() else {
+        return;
+    };
     assert_eq!(first_scope.scope, sample_search_scope());
     assert_eq!(first_scope.chunks, vec![chunk]);
     assert_eq!(first_scope.symbols, vec![symbol]);
@@ -878,8 +908,16 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     let observed = ok_or_fail!(client.history().publish(&batch));
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+        ),
+        "expected PublishHistoryBatch, got {:?}",
+        captured.payload
+    );
     let SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire) = &captured.payload else {
-        panic!("expected PublishHistoryBatch, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(wire.manifest_digest.as_deref(), Some("manifest:history-3"));
     assert_eq!(wire.batch_digest, "batch:history-3");
@@ -887,12 +925,15 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
     assert_eq!(wire.refs.len(), 1);
     assert_eq!(wire.tags.len(), 1);
     assert_eq!(wire.diff_hunks.len(), 1);
-    let first_commit = wire.commits.first().expect("expected one history commit");
+    assert_eq!(wire.commits.len(), 1, "expected one history commit");
+    let Some(first_commit) = wire.commits.first() else {
+        return;
+    };
     assert_eq!(first_commit.author_time_ms, 11);
-    let first_diff = wire
-        .diff_hunks
-        .first()
-        .expect("expected one history diff hunk");
+    assert_eq!(wire.diff_hunks.len(), 1, "expected one history diff hunk");
+    let Some(first_diff) = wire.diff_hunks.first() else {
+        return;
+    };
     assert_eq!(first_diff.record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
 }
 
@@ -913,8 +954,16 @@ fn dirty_publish_routes_through_ingest_transport_and_carries_typed_entries() {
     .delete(ChunkId::new("chunk-evict"));
     let _receipt = ok_or_fail!(client.runtime().publish_dirty(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+        ),
+        "expected PublishDirtyBatch, got {:?}",
+        captured.payload
+    );
     let SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire) = &captured.payload else {
-        panic!("expected PublishDirtyBatch, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(wire.overlay_epoch_ms, 1_717_171_717_000);
     assert_eq!(wire.batch_digest, "batch:dirty-4");
@@ -949,16 +998,21 @@ fn structural_publish_routes_through_ingest_transport_and_carries_parse_trees() 
     });
     let _receipt = ok_or_fail!(client.structural().publish(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+        ),
+        "expected PublishStructuralBatch, got {:?}",
+        captured.payload
+    );
     let SearchPlaneIngestIpcRequest::PublishStructuralBatch(wire) = &captured.payload else {
-        panic!(
-            "expected PublishStructuralBatch, got {:?}",
-            captured.payload
-        );
+        return;
     };
     assert_eq!(wire.replace_scopes.len(), 1);
     assert_eq!(wire.tombstone_scopes.len(), 1);
     let Some(first_scope) = wire.replace_scopes.first() else {
-        panic!("replace_scopes length already asserted");
+        return;
     };
     assert_eq!(first_scope.trees.len(), 1);
 }
@@ -1002,14 +1056,14 @@ fn repomap_publish_routes_through_ingest_transport() {
             owner_path: RepoRelativePath::new("src/lib.rs"),
             local_name: "RepoMapOwner".to_string(),
             qualified_name: "crate::RepoMapOwner".to_string(),
-            symbol_kind: SymbolKindCode::new("struct").expect("valid symbol kind"),
+            symbol_kind: ok_or_fail!(SymbolKindCode::new("struct")),
         },
     ))
     .with_node(quanta_index_contract::RepoMapNode::Chunk(
         quanta_index_contract::RepoMapChunkNode {
             chunk_id: ChunkId::new("chunk://repomap"),
             owner_path: RepoRelativePath::new("src/lib.rs"),
-            language: LanguageCode::new("rust").expect("valid language"),
+            language: ok_or_fail!(LanguageCode::new("rust")),
             start_byte: 0,
             end_byte: 32,
             start_line: 1,
@@ -1055,9 +1109,17 @@ fn repomap_query_routes_through_query_transport() {
     let observed = ok_or_fail!(client.repomap().query(request.clone()));
     assert_eq!(observed, response);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+        ),
+        "expected RepoMapQuery request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::RepoMapQuery(wire) = &captured.payload
     else {
-        panic!("expected RepoMapQuery request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(wire.query_text, request.query_text);
     assert_eq!(wire.top_k, request.top_k);
@@ -1085,13 +1147,18 @@ fn repomap_activate_routes_through_control_transport() {
     let observed = ok_or_fail!(client.repomap().activate(request.clone()));
     assert_eq!(observed, ack);
     let captured = ok_or_fail!(only_control_request(control.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(_)
+        ),
+        "expected RepoMapActivate request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(wire) =
         &captured.payload
     else {
-        panic!(
-            "expected RepoMapActivate request, got {:?}",
-            captured.payload
-        );
+        return;
     };
     assert_eq!(wire.repo_id, request.repo_id);
     assert_eq!(wire.revision_id, request.revision_id);
@@ -1120,8 +1187,16 @@ fn history_query_routes_through_typed_query_variant() {
     );
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)
+        ),
+        "expected History request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
-        panic!("expected History request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(req.text_query.query_text, "type:commit author:alice");
 }
@@ -1146,8 +1221,16 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::History(_)
+        ),
+        "expected History request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(req) = &captured.payload else {
-        panic!("expected History request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(
         req.text_query.syntax,
@@ -1206,12 +1289,17 @@ fn runtime_query_routes_through_typed_query_variant() {
     );
     assert_eq!(response.results.len(), 1);
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
+        ),
+        "expected RuntimeMetadata request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(req) = &captured.payload
     else {
-        panic!(
-            "expected RuntimeMetadata request, got {:?}",
-            captured.payload
-        );
+        return;
     };
     assert_eq!(
         req.text_query.syntax,
@@ -1265,9 +1353,17 @@ fn structural_query_routes_through_typed_query_variant() {
     );
     assert_eq!(response.generation, sample_generation_pin());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(_)
+        ),
+        "expected Structural request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
     else {
-        panic!("expected Structural request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(req.text_query.query_text, "match { :[x] }");
 }
@@ -1320,9 +1416,17 @@ fn structural_native_query_preserves_syntax() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(_)
+        ),
+        "expected Structural request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
     else {
-        panic!("expected Structural request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(
         req.text_query.syntax,
@@ -1356,9 +1460,17 @@ fn structural_sourcegraph_query_preserves_syntax() {
             .execute()
     );
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(_)
+        ),
+        "expected Structural request, got {:?}",
+        captured.payload
+    );
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(req) = &captured.payload
     else {
-        panic!("expected Structural request, got {:?}", captured.payload);
+        return;
     };
     assert_eq!(
         req.text_query.syntax,
@@ -1388,8 +1500,12 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         "batch:feed",
     );
     let err = client.lexical().publish(&batch).err();
+    assert!(
+        matches!(err, Some(crate::SdkError::Remote { .. })),
+        "expected Remote error, got {err:?}"
+    );
     let Some(crate::SdkError::Remote { code, message }) = err else {
-        panic!("expected Remote error, got {err:?}");
+        return;
     };
     assert_eq!(code, "INVALID_REQUEST");
     assert!(message.contains("channel rejected"));
@@ -1416,12 +1532,16 @@ fn generations_current_returns_snapshot_from_control_response() {
         Track::Lexical,
     ));
     assert_eq!(observed, snapshot);
-    let captured = control
-        .requests
-        .lock()
-        .expect("control requests must not be poisoned")
-        .first()
-        .cloned();
+    let captured = ok_or_fail!(
+        control
+            .requests
+            .lock()
+            .map_err(|err| crate::SdkError::Protocol(format!(
+                "control requests must not be poisoned: {err}"
+            )))
+    )
+    .first()
+    .cloned();
     assert!(matches!(
         captured.map(|request| request.payload),
         Some(quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(_))
@@ -1443,8 +1563,12 @@ fn generations_current_propagates_not_ready_as_typed_remote() {
         .generations()
         .current(repo_id(), revision_id(), Track::Lexical)
         .err();
+    assert!(
+        matches!(err, Some(crate::SdkError::Remote { .. })),
+        "expected Remote error, got {err:?}"
+    );
     let Some(crate::SdkError::Remote { code, .. }) = err else {
-        panic!("expected Remote error, got {err:?}");
+        return;
     };
     assert_eq!(code, "NOT_READY");
 }

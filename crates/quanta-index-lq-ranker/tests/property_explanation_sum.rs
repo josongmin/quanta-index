@@ -1,7 +1,7 @@
 //! Proptest: [`CompositeScorer::explain`] sum invariant.
 //!
 //! For arbitrary valid [`CandidateSignals`] paired with arbitrary valid
-//! [`RankerWeightsV1`], the sum of [`SignalContribution::contribution`]
+//! [`RankerWeights`], the sum of [`SignalContribution::contribution`]
 //! from [`CompositeScorer::explain`] must match the pre-clamp raw
 //! weighted sum within `1e-5` f32 epsilon, and the returned
 //! `clamped_score` must equal [`CompositeScorer::score`] for the same
@@ -15,18 +15,18 @@
 use proptest::prelude::*;
 
 use quanta_index_lq_ranker::{
-    CandidateSignals, CompositeScorer, RankerWeightsV1, SignalContribution,
+    CandidateSignals, CompositeScorer, RankerWeights, SignalContribution,
 };
 
-/// Construct a valid `RankerWeightsV1` from five `[0.0, 1.0]` weights by
+/// Construct a valid `RankerWeights` from five `[0.0, 1.0]` weights by
 /// projecting onto the unit-sum simplex.
 ///
-/// `RankerWeightsV1::new` rejects sums outside `1.0 ± 1e-3`; we therefore
+/// `RankerWeights::new` rejects sums outside `1.0 ± 1e-3`; we therefore
 /// normalize by dividing by the actual sum. If every input is zero we
 /// fall back to `DEFAULTS` so we always emit a valid weight set.
 ///
 /// Returns `None` only if normalization produced a quintuple that
-/// `RankerWeightsV1::new` rejects (e.g. floating-point drift outside the
+/// `RankerWeights::new` rejects (e.g. floating-point drift outside the
 /// tolerance). The proptest harness retries on `None` via
 /// `prop_filter_map`.
 fn weights_from_unit_quintuple(
@@ -35,15 +35,15 @@ fn weights_from_unit_quintuple(
     symbol_boost: f32,
     recency: f32,
     boost: f32,
-) -> Option<RankerWeightsV1> {
+) -> Option<RankerWeights> {
     let sum = bm25 + path_prior + symbol_boost + recency + boost;
     if sum < 1e-3 {
-        return Some(RankerWeightsV1::DEFAULTS);
+        return Some(RankerWeights::DEFAULTS);
     }
     // We deliberately do not propagate the typed error here: the only
     // call site is the proptest filter, which treats rejection as
     // "regenerate". The contract is "valid weights or None".
-    let built = RankerWeightsV1::new(
+    let built = RankerWeights::new(
         bm25 / sum,
         path_prior / sum,
         symbol_boost / sum,
@@ -56,7 +56,7 @@ fn weights_from_unit_quintuple(
     None
 }
 
-fn arb_weights() -> impl Strategy<Value = RankerWeightsV1> {
+fn arb_weights() -> impl Strategy<Value = RankerWeights> {
     (
         0.01_f32..=1.0_f32,
         0.01_f32..=1.0_f32,
@@ -65,7 +65,7 @@ fn arb_weights() -> impl Strategy<Value = RankerWeightsV1> {
         0.01_f32..=1.0_f32,
     )
         .prop_filter_map(
-            "must validate under RankerWeightsV1::new",
+            "must validate under RankerWeights::new",
             |(bm25, path_prior, symbol_boost, recency, boost)| {
                 weights_from_unit_quintuple(bm25, path_prior, symbol_boost, recency, boost)
             },

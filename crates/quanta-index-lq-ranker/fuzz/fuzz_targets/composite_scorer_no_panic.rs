@@ -10,7 +10,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use quanta_index_lq_ranker::{CandidateSignals, CompositeScorer, RankerWeightsV1};
+use quanta_index_lq_ranker::{CandidateSignals, CompositeScorer, RankerWeights};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 20 {
@@ -22,7 +22,7 @@ fuzz_target!(|data: &[u8]| {
     let recency = f32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let boost_directive = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
 
-    let Ok(w) = RankerWeightsV1::new(bm25, path_prior, symbol_boost, recency, boost_directive)
+    let Ok(w) = RankerWeights::new(bm25, path_prior, symbol_boost, recency, boost_directive)
     else {
         return;
     };

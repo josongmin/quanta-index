@@ -3,14 +3,14 @@
 
 //! `weights_hash` determinism fuzz target.
 //!
-//! Two calls to `weights_hash` for the same `RankerWeightsV1` must produce
+//! Two calls to `weights_hash` for the same `RankerWeights` must produce
 //! byte-identical digests. Determinism is a hard invariant: the weight
 //! identity / generation pin is downstream-observed via the digest, so any
 //! drift would silently fork the cache key.
 
 use libfuzzer_sys::fuzz_target;
 
-use quanta_index_lq_ranker::{RankerWeightsV1, weights_hash};
+use quanta_index_lq_ranker::{RankerWeights, weights_hash};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 20 {
@@ -22,7 +22,7 @@ fuzz_target!(|data: &[u8]| {
     let recency = f32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let boost_directive = f32::from_le_bytes([data[16], data[17], data[18], data[19]]);
 
-    if let Ok(w) = RankerWeightsV1::new(bm25, path_prior, symbol_boost, recency, boost_directive) {
+    if let Ok(w) = RankerWeights::new(bm25, path_prior, symbol_boost, recency, boost_directive) {
         let h1 = weights_hash(&w);
         let h2 = weights_hash(&w);
         assert_eq!(h1, h2, "weights_hash must be deterministic");

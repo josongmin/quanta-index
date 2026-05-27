@@ -32,7 +32,7 @@ TARGET_PACKAGES: list[str] = [
 ]
 
 TOLERANCE_RATIO = 1.15  # fail if total LLVM lines grow > 15% over baseline
-TOLERANCE_ABS = 5_000   # ignore absolute deltas under 5k lines (noise floor)
+TOLERANCE_ABS = 5_000  # ignore absolute deltas under 5k lines (noise floor)
 
 
 def measure_llvm_lines(package: str) -> int:
@@ -40,9 +40,7 @@ def measure_llvm_lines(package: str) -> int:
     cmd = ["cargo", "llvm-lines", "--release", "-p", package, "--lib"]
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"cargo llvm-lines failed for {package}: {result.stderr}"
-        )
+        raise RuntimeError(f"cargo llvm-lines failed for {package}: {result.stderr}")
     return parse_total(result.stdout)
 
 
@@ -112,10 +110,7 @@ def main() -> int:
         if delta > TOLERANCE_ABS and ratio > TOLERANCE_RATIO:
             status = "FAIL"
             bad = True
-        print(
-            f"{pkg}: {lines} (baseline {base}, "
-            f"delta {delta:+d}, ratio {ratio:.2f}) [{status}]"
-        )
+        print(f"{pkg}: {lines} (baseline {base}, delta {delta:+d}, ratio {ratio:.2f}) [{status}]")
 
     if bad:
         print(

@@ -1,4 +1,4 @@
-//! Composite scorer over [`crate::weights::RankerWeightsV1`] +
+//! Composite scorer over [`crate::weights::RankerWeights`] +
 //! [`crate::signals::CandidateSignals`].
 //!
 //! [`CompositeScorer`] pins a frozen weight set plus its
@@ -24,7 +24,7 @@
 //!
 //! The raw weighted sum is clamped to `[0.0, 1.0]`. The clamp is documented
 //! rather than silent: every per-signal weight is in `[0.0, 1.0]` with
-//! sum `~1.0` (enforced by `RankerWeightsV1::new`), every unit signal is in
+//! sum `~1.0` (enforced by `RankerWeights::new`), every unit signal is in
 //! `[0.0, 1.0]`, and the boost term lives in `[-0.875, +7.0]` after
 //! `(boost - 1.0)`, multiplied by `w.boost_directive ∈ [0.0, 1.0]`. The
 //! raw envelope is therefore `[-0.875, +8.0]` in the worst case; the
@@ -35,14 +35,14 @@
 
 use crate::errors::{RankerError, RankerErrorCode, SignalKind};
 use crate::signals::{CandidateSignals, validate_signals};
-use crate::weights::{RankerWeightsV1, weights_hash};
+use crate::weights::{RankerWeights, weights_hash};
 
 /// Frozen-weight composite scorer.
 ///
 /// Pins the weight set + its `weights_hash` at construction.
 #[derive(Clone, Debug)]
 pub struct CompositeScorer {
-    weights: RankerWeightsV1,
+    weights: RankerWeights,
     weights_hash_pinned: [u8; 32],
 }
 
@@ -55,7 +55,7 @@ impl CompositeScorer {
     /// [`crate::errors::RankerErrorCode::WeightsEncodeFailed`] if the
     /// hash codec step fails — the path is infallible on `Vec<u8>` but
     /// the typed error propagates per repo `no silent fallback` rule.
-    pub fn new(weights: RankerWeightsV1) -> Result<Self, crate::errors::RankerError> {
+    pub fn new(weights: RankerWeights) -> Result<Self, crate::errors::RankerError> {
         let pinned = weights_hash(&weights)?;
         Ok(Self {
             weights,
@@ -65,7 +65,7 @@ impl CompositeScorer {
 
     /// Borrow the pinned weight set.
     #[must_use]
-    pub const fn weights(&self) -> &RankerWeightsV1 {
+    pub const fn weights(&self) -> &RankerWeights {
         &self.weights
     }
 
@@ -109,7 +109,7 @@ impl CompositeScorer {
     }
 }
 
-fn compute_raw(w: &RankerWeightsV1, sig: &CandidateSignals) -> f32 {
+fn compute_raw(w: &RankerWeights, sig: &CandidateSignals) -> f32 {
     let bm25 = w.bm25() * sig.bm25;
     let pp = w.path_prior() * sig.path_prior;
     let sb = w.symbol_boost() * sig.symbol_boost;
@@ -118,7 +118,7 @@ fn compute_raw(w: &RankerWeightsV1, sig: &CandidateSignals) -> f32 {
     bm25 + pp + sb + rec + boost
 }
 
-fn compute_contributions(w: &RankerWeightsV1, sig: &CandidateSignals) -> Vec<SignalContribution> {
+fn compute_contributions(w: &RankerWeights, sig: &CandidateSignals) -> Vec<SignalContribution> {
     let boost_value = sig.boost_directive - 1.0;
     vec![
         SignalContribution {
@@ -169,7 +169,7 @@ fn finalize_score(raw: f32) -> Result<f32, RankerError> {
         // Defense in depth: `validate_signals` already filters NaN/Inf
         // inputs; this branch only fires if a weight×signal product
         // overflows the f32 envelope, which is bounded out by
-        // `RankerWeightsV1::new`. Surface it as a typed signal error
+        // `RankerWeights::new`. Surface it as a typed signal error
         // anyway rather than silently coercing.
         return Err(RankerError::signal(
             RankerErrorCode::RankInvalidSignal,
@@ -184,7 +184,7 @@ fn finalize_score(raw: f32) -> Result<f32, RankerError> {
 ///
 /// `signal_value` is the raw slot value as delivered to the scorer
 /// (so it round-trips with `CandidateSignals`). `weight` is the matching
-/// `RankerWeightsV1` coefficient. `contribution` is `weight * signal_value`,
+/// `RankerWeights` coefficient. `contribution` is `weight * signal_value`,
 /// except for `BoostDirective`, where the contribution uses
 /// `weight * (signal_value - 1.0)` per the closed-form score function.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -433,7 +433,7 @@ mod tests {
     use super::{CompositeScorer, RankExplanation, SignalContribution};
     use crate::errors::{RankerErrorCode, SignalKind};
     use crate::signals::CandidateSignals;
-    use crate::weights::RankerWeightsV1;
+    use crate::weights::RankerWeights;
 
     fn fatal(msg: &str) -> ! {
         assert!(false, "{msg}");
@@ -441,7 +441,7 @@ mod tests {
     }
 
     fn defaults_scorer() -> CompositeScorer {
-        match CompositeScorer::new(RankerWeightsV1::DEFAULTS) {
+        match CompositeScorer::new(RankerWeights::DEFAULTS) {
             Ok(s) => s,
             Err(e) => fatal(&format!("CompositeScorer::new failed: {e}")),
         }
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn weights_hash_matches_canonical() {
-        let w = RankerWeightsV1::DEFAULTS;
+        let w = RankerWeights::DEFAULTS;
         let s = match CompositeScorer::new(w) {
             Ok(v) => v,
             Err(e) => fatal(&format!("{e}")),
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn weights_accessor_round_trips() {
-        let w = RankerWeightsV1::DEFAULTS;
+        let w = RankerWeights::DEFAULTS;
         let s = match CompositeScorer::new(w) {
             Ok(v) => v,
             Err(e) => fatal(&format!("{e}")),

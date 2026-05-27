@@ -573,7 +573,7 @@ Per [implementation-plan.md §1.4](../implementation-plan.md#14-claimability-rul
 - [crates/quanta-index-core/src/domains/lexical/](../../../../crates/quanta-index-core/src/domains/lexical/) — domain home (port host)
 - [crates/quanta-index-contract-base/src/results/candidates.rs](../../../../crates/quanta-index-contract-base/src/results/candidates.rs) — `LexicalCandidate.score: f32`
 - [crates/quanta-index-contract/src/results/explanation.rs](../../../../crates/quanta-index-contract/src/results/explanation.rs) — `SearchExplanation` placeholder
-- [crates/quanta-index-contract/src/query/pin.rs](../../../../crates/quanta-index-contract/src/query/pin.rs) — generation pin carrier
+- `crates/quanta-index-contract/src/query/pin.rs` — generation pin carrier (historical path; removed in the current tree)
 - [tools/ci/semgrep/rules.yml](../../../../tools/ci/semgrep/rules.yml) — `rust-no-serde-derive`
 
 ### 13.3 Governance

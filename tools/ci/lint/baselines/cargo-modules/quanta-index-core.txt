@@ -35,7 +35,6 @@ crate quanta_index_core
 │   │   │   └── trait SemanticQueryPort: pub
 │   │   ├── mod outbound: pub(self)
 │   │   │   ├── trait SemanticBatchBuildPort: pub
-│   │   │   ├── trait SemanticIndexBuildPort: pub
 │   │   │   ├── trait SemanticIndexOpenPort: pub
 │   │   │   ├── trait SemanticIngestPort: pub
 │   │   │   ├── struct SemanticReadiness: pub

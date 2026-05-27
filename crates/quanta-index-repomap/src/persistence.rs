@@ -12,7 +12,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::model::RepoMapSnapshotV1;
+use crate::model::RepoMapSnapshot;
 
 #[expect(
     clippy::redundant_pub_crate,
@@ -137,7 +137,7 @@ impl RepoMapSnapshotPersistence {
         })
     }
 
-    pub(crate) fn load_snapshots(&self) -> Result<Vec<RepoMapSnapshotV1>, CoreError> {
+    pub(crate) fn load_snapshots(&self) -> Result<Vec<RepoMapSnapshot>, CoreError> {
         let mut snapshots = Vec::new();
         for path in self.list_json_files(&self.snapshots_dir)? {
             let bytes = fs::read(&path).map_err(|err| {
@@ -146,7 +146,7 @@ impl RepoMapSnapshotPersistence {
                     path.display()
                 ))
             })?;
-            let snapshot = serde_json::from_slice::<RepoMapSnapshotV1>(&bytes).map_err(|err| {
+            let snapshot = serde_json::from_slice::<RepoMapSnapshot>(&bytes).map_err(|err| {
                 CoreError::Storage(format!(
                     "repomap persistence failed to decode snapshot {}: {err}",
                     path.display()
@@ -178,7 +178,7 @@ impl RepoMapSnapshotPersistence {
         Ok(activations)
     }
 
-    pub(crate) fn persist_snapshot(&self, snapshot: &RepoMapSnapshotV1) -> Result<(), CoreError> {
+    pub(crate) fn persist_snapshot(&self, snapshot: &RepoMapSnapshot) -> Result<(), CoreError> {
         let path = self.snapshots_dir.join(snapshot_file_name(snapshot));
         let bytes = serde_json::to_vec_pretty(snapshot).map_err(|err| {
             CoreError::Storage(format!(
@@ -258,7 +258,7 @@ impl RepoMapSnapshotPersistence {
     }
 }
 
-fn snapshot_file_name(snapshot: &RepoMapSnapshotV1) -> String {
+fn snapshot_file_name(snapshot: &RepoMapSnapshot) -> String {
     format!(
         "{}--{}--g{}.json",
         encode_component(snapshot.repo_id.as_str()),
@@ -302,7 +302,7 @@ fn hex_char(nibble: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::RepoMapEntryV1;
+    use crate::model::RepoMapEntry;
     use quanta_index_contract::{
         ManifestGeneration, RepoMapDocType, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
         RepoMapItemIndexAvailability, RepoMapRedactionState, RepoMapSnapshotMeta,
@@ -310,10 +310,10 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
-    fn fixture_snapshot() -> RepoMapSnapshotV1 {
+    fn fixture_snapshot() -> RepoMapSnapshot {
         let mut contributing_signals = BTreeMap::new();
         assert_eq!(contributing_signals.insert("files".to_string(), 3), None);
-        RepoMapSnapshotV1 {
+        RepoMapSnapshot {
             repo_id: RepoId::new("repo/a"),
             revision_id: RevisionId::new("rev:b"),
             manifest_generation: ManifestGeneration::new(11),
@@ -325,7 +325,7 @@ mod tests {
                 graph_coverage_class: RepoMapGraphCoverageClass::Full,
                 exactness_summary: RepoMapExactnessSummary::Exact,
             },
-            entries: vec![RepoMapEntryV1 {
+            entries: vec![RepoMapEntry {
                 subject_identity: "subject://main".to_string(),
                 subject_doc_type: RepoMapDocType::File,
                 subject_kind: "File".to_string(),
