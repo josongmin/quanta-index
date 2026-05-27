@@ -4141,7 +4141,7 @@ mod tests {
     impl StructuralProducerPort for RecordingStructuralProducer {
         fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
             let _prev: usize = self.readiness_calls.fetch_add(1, Ordering::SeqCst);
-            self.readiness
+            self.readiness.clone()
         }
 
         fn execute(

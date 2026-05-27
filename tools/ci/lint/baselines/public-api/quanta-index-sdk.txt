@@ -270,6 +270,7 @@ pub struct quanta_index_sdk::HistoryNamespace<'a>
 impl<'a> quanta_index_sdk::HistoryNamespace<'a>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::query(&self) -> quanta_index_sdk::HistoryQueryBuilder<'a>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::HistoryQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneHistoryQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::HistoryNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::HistoryNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::HistoryNamespace<'a>
@@ -404,6 +405,7 @@ pub struct quanta_index_sdk::RuntimeNamespace<'a>
 impl<'a> quanta_index_sdk::RuntimeNamespace<'a>
 pub fn quanta_index_sdk::RuntimeNamespace<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::RuntimeNamespace<'a>::query(&self) -> quanta_index_sdk::RuntimeQueryBuilder<'a>
+pub fn quanta_index_sdk::RuntimeNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::RuntimeMetadataQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneRuntimeMetadataQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::RuntimeNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::RuntimeNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::RuntimeNamespace<'a>
@@ -503,6 +505,7 @@ pub struct quanta_index_sdk::StructuralNamespace<'a>
 impl<'a> quanta_index_sdk::StructuralNamespace<'a>
 pub fn quanta_index_sdk::StructuralNamespace<'a>::publish(&self, batch: &quanta_index_sdk::StructuralBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::StructuralNamespace<'a>::query(&self) -> quanta_index_sdk::StructuralQueryBuilder<'a>
+pub fn quanta_index_sdk::StructuralNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::StructuralQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneStructuralQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::StructuralNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::StructuralNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::StructuralNamespace<'a>

@@ -247,6 +247,18 @@ rules:
               ...
           }
 
+  - id: rust-no-ready-on-failed-structural-precondition
+    message: |
+      Do not advertise `StructuralReadiness::Ready` when a prerequisite
+      `Result` failed. Return a fail-closed readiness state such as
+      `InvalidRequest` or `ProducerExecution` instead.
+    languages: [rust]
+    severity: ERROR
+    paths:
+      include:
+        - "/crates/quanta-index-searchd/src/**"
+    pattern-regex: 'let\s+Ok\([^)]*\)\s*=\s*[^;]+else\s*\{\s*return\s+StructuralReadiness::Ready;'
+
   # NOTE: a `rust-no-map-or-else-non-err` rule was considered to catch
   # `Result::map_or(default, ...)` / `map_or_else` fallback patterns, but
   # semgrep cannot distinguish `Option::map_or` (legitimate) from

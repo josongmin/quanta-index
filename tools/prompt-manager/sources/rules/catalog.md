@@ -39,7 +39,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 ### Contract surface
 
-- public API of `quanta-index-contract` is snapshotted by `tools/ci/lint/check-public-api.py` against `tools/ci/lint/baselines/public-api/quanta-index-contract.txt`. Any drift fails CI; updating the baseline must be an intentional commit in the same PR as the breaking change. Reason: contract crate is the only producer/search-plane integration surface — silent shape drift is impossible to review after the fact.
+- public API of `quanta-index-contract` and `quanta-index-sdk` is snapshotted by `tools/ci/lint/check-public-api.py` against `tools/ci/lint/baselines/public-api/<crate>.txt`. Any drift fails CI; updating the baseline must be an intentional commit in the same PR as the breaking change. Reason: both crates are typed integration surfaces, so silent shape drift is impossible to review after the fact.
 
 ### Fail-closed deserialization
 

@@ -14,7 +14,7 @@ use super::types::StructuralMatchCandidate;
 /// Option B fail-closed semantics: any non-`Ready` value MUST be surfaced as a
 /// typed [`StructuralError`] by the service — never silently degraded into
 /// regex / text fallback or an empty success.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuralReadiness {
     /// Parse-tree producer data exists for the requested generation.
     Ready,
@@ -27,6 +27,15 @@ pub enum StructuralReadiness {
     /// The shard backing the requested generation is unavailable. Stable code:
     /// `STR_SHARD_UNAVAILABLE`.
     ShardUnavailable,
+    /// The producer rejected the request shape before execution. The payload
+    /// must carry a typed reason that can surface as
+    /// [`StructuralError::InvalidRequest`].
+    InvalidRequest(Box<str>),
+    /// The producer hit an internal failure before execution and therefore
+    /// must fail closed rather than advertising readiness. The payload must
+    /// carry a typed reason that can surface as
+    /// [`StructuralError::ProducerExecution`].
+    ProducerExecution(Box<str>),
 }
 
 /// Typed structural-domain failure.

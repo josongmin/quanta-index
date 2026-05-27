@@ -104,11 +104,17 @@ impl LedgerStructuralProducer {
 
 impl StructuralProducerPort for LedgerStructuralProducer {
     fn readiness(&self, request: &DomainStructuralQueryRequest) -> StructuralReadiness {
-        let Ok(pin) = resolve_structural_pin(request) else {
-            return StructuralReadiness::Ready;
+        let pin = match resolve_structural_pin(request) {
+            Ok(pin) => pin,
+            Err(err) => return StructuralReadiness::InvalidRequest(err.to_string().into()),
         };
-        let Ok(guard) = self.ledger.read() else {
-            return StructuralReadiness::Ready;
+        let guard = match self.ledger.read() {
+            Ok(guard) => guard,
+            Err(err) => {
+                return StructuralReadiness::ProducerExecution(
+                    format!("structural ledger poisoned during readiness: {err}").into(),
+                );
+            }
         };
         let Some(state) =
             guard.structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
@@ -634,4 +640,89 @@ fn bootstrap_persisted_semantic_state(
     authority_store
         .replay_into(ledger, builder)
         .map_err(anyhow::Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
+        LedgerStructuralProducer, LqStructuralBlock, RepoId, RevisionId, StructuralProducerPort,
+        StructuralReadiness,
+    };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, RwLock};
+    use quanta_index_contract::LqOptions;
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    fn request_with_generation(generation: GenerationSelector) -> DomainStructuralQueryRequest {
+        DomainStructuralQueryRequest {
+            pattern: LqStructuralBlock {
+                lang: None,
+                nodes: Vec::new(),
+                exprs: Vec::new(),
+            },
+            requested_lang: None,
+            filters: Vec::new(),
+            candidate_scope: None,
+            options: LqOptions::defaults(),
+            generation,
+        }
+    }
+
+    fn pinned_request() -> DomainStructuralQueryRequest {
+        request_with_generation(GenerationSelector::Pinned(GenerationPin::new(
+            RepoId::new("repo".to_string()),
+            RevisionId::new("rev".to_string()),
+            quanta_index_contract::ManifestGeneration::new(7),
+        )))
+    }
+
+    #[test]
+    fn structural_readiness_rejects_active_generation_selector() {
+        let producer = LedgerStructuralProducer::new(Arc::new(RwLock::new(Ledger::new())));
+        let readiness = producer.readiness(&request_with_generation(GenerationSelector::Active {
+            repo_id: RepoId::new("repo".to_string()),
+            revision_id: RevisionId::new("rev".to_string()),
+        }));
+        assert!(matches!(
+            readiness,
+            StructuralReadiness::InvalidRequest(message)
+                if message.as_ref()
+                    == "structural: invalid request: search-plane structural producer requires a pinned generation"
+        ));
+    }
+
+    #[test]
+    fn structural_readiness_fails_closed_on_poisoned_ledger() -> TestRes {
+        struct PanicOnDrop;
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                assert!(false, "poison structural ledger");
+            }
+        }
+
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let poisoned = Arc::clone(&ledger);
+        let unwind = catch_unwind(AssertUnwindSafe(move || -> TestRes {
+            let _guard = poisoned
+                .write()
+                .map_err(|err| format!("test must acquire write lock before poisoning: {err}"))?;
+            let _tripwire = PanicOnDrop;
+            Ok(())
+        }));
+        match unwind {
+            Err(_) => {}
+            Ok(Ok(())) => return Err("poison tripwire did not unwind".into()),
+            Ok(Err(err)) => return Err(err),
+        }
+        let producer = LedgerStructuralProducer::new(ledger);
+        let readiness = producer.readiness(&pinned_request());
+        assert!(matches!(
+            readiness,
+            StructuralReadiness::ProducerExecution(message)
+                if message.starts_with("structural ledger poisoned during readiness:")
+        ));
+        Ok(())
+    }
 }

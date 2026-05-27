@@ -81,9 +81,9 @@ impl HnswIndex {
             )));
         }
         let Some(normalized) = l2_normalize(vector) else {
-            // Zero-norm vector: silently no-op. The contract layer should
-            // reject these upstream, but we tolerate them rather than crash.
-            return Ok(());
+            return Err(CoreError::InvalidContract(
+                "hnsw: zero-norm vector rejected".to_string(),
+            ));
         };
 
         // If the id already exists, tombstone the old node before inserting
@@ -153,16 +153,31 @@ impl HnswIndex {
     }
 
     /// Returns `(id, cosine_similarity)` tuples sorted descending by score.
-    #[must_use]
-    pub(crate) fn search(&self, query: &[f32], top_k: usize) -> Vec<(String, f32)> {
-        if top_k == 0 || query.len() != self.dim {
-            return Vec::new();
+    ///
+    /// Rejects zero-norm and dim-mismatched queries with
+    /// [`CoreError::InvalidContract`] rather than returning an empty hit list,
+    /// so caller-side contract bugs surface loudly instead of being absorbed
+    /// as "no results".
+    pub(crate) fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<(String, f32)>, CoreError> {
+        if top_k == 0 {
+            return Ok(Vec::new());
         }
-        let Some(normalized) = l2_normalize(query) else {
-            return Vec::new();
-        };
+        if query.len() != self.dim {
+            return Err(CoreError::InvalidContract(format!(
+                "hnsw: query dim {} != index dim {}",
+                query.len(),
+                self.dim
+            )));
+        }
+        let normalized = l2_normalize(query).ok_or_else(|| {
+            CoreError::InvalidContract("hnsw: zero-norm query rejected".to_string())
+        })?;
         let Some(entry) = self.entry_alive() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
 
         // Greedy descent through upper layers.
@@ -189,25 +204,31 @@ impl HnswIndex {
                 out.push((node.id.clone(), score));
             }
         }
-        out
+        Ok(out)
     }
 
     /// Exact allowlist search over normalized vectors. This closes the
     /// lexical-scope starvation hole that appears when a global ANN top-k is
     /// post-filtered after the fact.
-    #[must_use]
     pub(crate) fn search_scoped(
         &self,
         query: &[f32],
         allowed_ids: &BTreeSet<String>,
         top_k: usize,
-    ) -> Vec<(String, f32)> {
-        if top_k == 0 || query.len() != self.dim || allowed_ids.is_empty() {
-            return Vec::new();
+    ) -> Result<Vec<(String, f32)>, CoreError> {
+        if top_k == 0 || allowed_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        let Some(normalized) = l2_normalize(query) else {
-            return Vec::new();
-        };
+        if query.len() != self.dim {
+            return Err(CoreError::InvalidContract(format!(
+                "hnsw: scoped query dim {} != index dim {}",
+                query.len(),
+                self.dim
+            )));
+        }
+        let normalized = l2_normalize(query).ok_or_else(|| {
+            CoreError::InvalidContract("hnsw: zero-norm scoped query rejected".to_string())
+        })?;
         let mut out: Vec<(String, f32)> = Vec::new();
         for id in allowed_ids {
             let Some(idx) = self.id_to_idx.get(id).copied() else {
@@ -228,7 +249,7 @@ impl HnswIndex {
                 .then_with(|| lhs.0.as_str().cmp(rhs.0.as_str()))
         });
         out.truncate(top_k);
-        out
+        Ok(out)
     }
 
     fn entry_alive(&self) -> Option<usize> {
@@ -580,7 +601,7 @@ mod tests {
         let Some(first) = vecs.first() else {
             return Err("missing first vec".into());
         };
-        let results = index.search(&first.1, 1);
+        let results = index.search(&first.1, 1)?;
         let Some(top) = results.first() else {
             return Err("empty results".into());
         };
@@ -600,7 +621,7 @@ mod tests {
         index.insert("y".to_string(), &[0.0, 1.0, 0.0])?;
         index.insert("z".to_string(), &[0.0, 0.0, 1.0])?;
         index.delete("y");
-        let results = index.search(&[0.0, 1.0, 0.0], 5);
+        let results = index.search(&[0.0, 1.0, 0.0], 5)?;
         let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
         if ids.iter().any(|i| i == "y") {
             return Err(format!("deleted id 'y' still present: {ids:?}").into());
@@ -620,12 +641,51 @@ mod tests {
     }
 
     #[test]
+    fn zero_norm_insert_rejected_without_mutating_index() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+
+        let err = index.insert("zero".to_string(), &[0.0, 0.0, 0.0]);
+        assert!(matches!(
+            err,
+            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm vector rejected"
+        ));
+        assert!(!index.id_to_idx.contains_key("zero"));
+
+        let results = index.search(&[1.0, 0.0, 0.0], 8)?;
+        let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["anchor".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_norm_replace_rejected_without_tombstoning_existing_id() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+
+        let err = index.insert("anchor".to_string(), &[0.0, 0.0, 0.0]);
+        assert!(matches!(
+            err,
+            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm vector rejected"
+        ));
+        assert!(index.id_to_idx.contains_key("anchor"));
+
+        let results = index.search(&[1.0, 0.0, 0.0], 1)?;
+        let Some((top_id, score)) = results.first() else {
+            return Err("anchor disappeared after rejected replacement".into());
+        };
+        assert_eq!(top_id, "anchor");
+        assert!(*score > 0.99);
+        Ok(())
+    }
+
+    #[test]
     fn cosine_ordering_correct() -> TestRes {
         let mut index = HnswIndex::new(2);
         index.insert("east".to_string(), &[1.0, 0.0])?;
         index.insert("diag".to_string(), &[0.7, 0.7])?;
         index.insert("north".to_string(), &[0.0, 1.0])?;
-        let results = index.search(&[1.0, 0.0], 3);
+        let results = index.search(&[1.0, 0.0], 3)?;
         if results.len() != 3 {
             return Err(format!("expected 3 results, got {}", results.len()).into());
         }
@@ -654,11 +714,62 @@ mod tests {
             return Err("duplicate allowlist id inserted: gamma".into());
         }
 
-        let results = index.search_scoped(&[1.0, 0.0], &allow, 2);
+        let results = index.search_scoped(&[1.0, 0.0], &allow, 2)?;
         let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
         if ids != vec!["beta".to_string(), "gamma".to_string()] {
             return Err(format!("scoped search ordering mismatch: {ids:?}").into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_norm_search_query_rejected() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+
+        let err = index.search(&[0.0, 0.0, 0.0], 4);
+        assert!(matches!(
+            err,
+            Err(CoreError::InvalidContract(message)) if message == "hnsw: zero-norm query rejected"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn zero_norm_scoped_search_query_rejected() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+        let mut allow: BTreeSet<String> = BTreeSet::new();
+        if !allow.insert("anchor".to_string()) {
+            return Err("duplicate allowlist id".into());
+        }
+
+        let err = index.search_scoped(&[0.0, 0.0, 0.0], &allow, 4);
+        assert!(matches!(
+            err,
+            Err(CoreError::InvalidContract(message))
+                if message == "hnsw: zero-norm scoped query rejected"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn dim_mismatch_search_query_rejected() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+
+        let err = index.search(&[1.0, 0.0], 4);
+        assert!(matches!(err, Err(CoreError::InvalidContract(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn search_top_k_zero_returns_empty_ok() -> TestRes {
+        let mut index = HnswIndex::new(3);
+        index.insert("anchor".to_string(), &[1.0, 0.0, 0.0])?;
+
+        let results = index.search(&[1.0, 0.0, 0.0], 0)?;
+        assert!(results.is_empty());
         Ok(())
     }
 }

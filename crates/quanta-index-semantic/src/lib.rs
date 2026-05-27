@@ -340,7 +340,7 @@ impl SnapshotSemanticSearcher {
                 ),
             });
         }
-        let hits = index.search(query_vector, limit);
+        let hits = index.search(query_vector, limit)?;
         drop(store);
         Ok(hits)
     }
@@ -380,7 +380,7 @@ impl SnapshotSemanticSearcher {
                 ),
             });
         }
-        let hits = index.search_scoped(query_vector, allowed_ids, limit);
+        let hits = index.search_scoped(query_vector, allowed_ids, limit)?;
         drop(store);
         Ok(hits)
     }

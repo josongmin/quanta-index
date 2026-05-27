@@ -63,6 +63,12 @@ impl StructuralService {
                 StructuralReadiness::ShardUnavailable => {
                     return Err(StructuralError::ShardUnavailable);
                 }
+                StructuralReadiness::InvalidRequest(message) => {
+                    return Err(StructuralError::InvalidRequest(message.into()));
+                }
+                StructuralReadiness::ProducerExecution(message) => {
+                    return Err(StructuralError::ProducerExecution(message.into()));
+                }
             }
         }
         let candidates = self.producer.execute(request)?;
@@ -104,7 +110,7 @@ mod tests {
 
     impl StructuralProducerPort for FakeProducer {
         fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
-            self.readiness
+            self.readiness.clone()
         }
 
         fn execute(
@@ -180,6 +186,42 @@ mod tests {
         let result = service.query(&request);
         assert!(matches!(result, Err(StructuralError::ShardUnavailable)));
         assert_eq!(code_or_debug(&result), "STR_SHARD_UNAVAILABLE");
+    }
+
+    #[test]
+    fn invalid_request_readiness_maps_to_stable_code() {
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::InvalidRequest(
+                "search-plane structural producer requires a pinned generation".into(),
+            ),
+        ));
+        let service = StructuralService::new(producer);
+        let request = dummy_request();
+        let result = service.query(&request);
+        assert!(matches!(
+            result,
+            Err(StructuralError::InvalidRequest(ref message))
+                if message == "search-plane structural producer requires a pinned generation"
+        ));
+        assert_eq!(code_or_debug(&result), "STR_INVALID_REQUEST");
+    }
+
+    #[test]
+    fn producer_execution_readiness_maps_to_stable_code() {
+        let producer = Arc::new(FakeProducer::with_readiness(
+            StructuralReadiness::ProducerExecution(
+                "structural ledger poisoned during readiness: simulated".into(),
+            ),
+        ));
+        let service = StructuralService::new(producer);
+        let request = dummy_request();
+        let result = service.query(&request);
+        assert!(matches!(
+            result,
+            Err(StructuralError::ProducerExecution(ref message))
+                if message == "structural ledger poisoned during readiness: simulated"
+        ));
+        assert_eq!(code_or_debug(&result), "STR_PRODUCER_EXECUTION_FAILED");
     }
 
     #[test]

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Snapshot the public API surface of the contract crate.
+"""Snapshot the public API surface of guarded integration crates.
 
-`quanta-index-contract` is the **only** producer/search-plane integration
-surface. Any change to its public types is by definition a wire-protocol
-change. This script forces such changes to appear as a reviewable diff in
+`quanta-index-contract` and `quanta-index-sdk` are typed integration surfaces.
+Changes to their public items must appear as a reviewable diff in
 `tools/ci/lint/baselines/public-api/<crate>.txt`.
 
 Pairs with the "breaking-first" doctrine — the goal is not to prevent
@@ -29,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "public-api"
 
-GUARDED_CRATES: list[str] = ["quanta-index-contract"]
+GUARDED_CRATES: list[str] = ["quanta-index-contract", "quanta-index-sdk"]
 
 
 def render_public_api(package: str) -> str:
@@ -102,7 +101,7 @@ def main() -> int:
 
     if bad:
         sys.stderr.write(
-            "\nThe public API of a contract-tier crate has changed. If this "
+            "\nThe public API of a guarded integration crate has changed. If this "
             "is intentional, re-run with --update-baseline and commit the "
             "new baseline alongside the breaking change.\n"
         )

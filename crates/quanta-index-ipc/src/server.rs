@@ -179,10 +179,14 @@ impl UdsServer {
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     let dispatcher = Arc::clone(dispatcher);
-                    handle_connection::<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
-                        stream,
-                        dispatcher.as_ref(),
-                    );
+                    let reason = handle_connection::<
+                        RequestEnvelopeT,
+                        Request,
+                        ResponseEnvelopeT,
+                        Response,
+                        D,
+                    >(stream, dispatcher.as_ref());
+                    report_connection_close(&reason);
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(accept_idle);
@@ -220,44 +224,80 @@ impl ShutdownHandle {
 /// otherwise stall every other client.
 const CONNECTION_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[derive(Debug)]
+enum ConnectionCloseReason {
+    BlockingModeConfigFailed(String),
+    TimeoutConfigFailed(String),
+    PeerClosed,
+    RequestDecodeFailed(IpcError),
+    ResponseEncodeFailed(IpcError),
+    ResponseWriteFailed(String),
+}
+
+impl core::fmt::Display for ConnectionCloseReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BlockingModeConfigFailed(message) => {
+                write!(f, "blocking-mode setup failed: {message}")
+            }
+            Self::TimeoutConfigFailed(message) => {
+                write!(f, "timeout setup failed: {message}")
+            }
+            Self::PeerClosed => f.write_str("peer closed connection cleanly"),
+            Self::RequestDecodeFailed(err) => write!(f, "request decode failed: {err}"),
+            Self::ResponseEncodeFailed(err) => write!(f, "response encode failed: {err}"),
+            Self::ResponseWriteFailed(message) => write!(f, "response write failed: {message}"),
+        }
+    }
+}
+
+fn report_connection_close(reason: &ConnectionCloseReason) {
+    if matches!(reason, ConnectionCloseReason::PeerClosed) {
+        return;
+    }
+    eprintln!("quanta-index-ipc: closed connection: {reason}");
+}
+
 fn handle_connection<RequestEnvelopeT, Request, ResponseEnvelopeT, Response, D>(
     mut stream: UnixStream,
     dispatcher: &D,
-) where
+) -> ConnectionCloseReason
+where
     RequestEnvelopeT: RequestEnvelope<Request>,
     ResponseEnvelopeT: ResponseEnvelope<Response>,
     D: IpcDispatcher<Request, Response> + ?Sized,
 {
     // Each connection may carry multiple sequential requests until close.
-    if stream.set_nonblocking(false).is_err() {
-        // Cannot operate the connection in blocking mode here; drop it.
-        return;
+    if let Err(err) = stream.set_nonblocking(false) {
+        return ConnectionCloseReason::BlockingModeConfigFailed(err.to_string());
     }
     // Apply a bounded read/write timeout so a stalled peer cannot pin the
     // dispatcher thread indefinitely.
-    if stream
-        .set_read_timeout(Some(CONNECTION_IO_TIMEOUT))
-        .is_err()
-        || stream
-            .set_write_timeout(Some(CONNECTION_IO_TIMEOUT))
-            .is_err()
-    {
-        return;
+    if let Err(err) = stream.set_read_timeout(Some(CONNECTION_IO_TIMEOUT)) {
+        return ConnectionCloseReason::TimeoutConfigFailed(format!(
+            "set_read_timeout: {err}"
+        ));
+    }
+    if let Err(err) = stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)) {
+        return ConnectionCloseReason::TimeoutConfigFailed(format!(
+            "set_write_timeout: {err}"
+        ));
     }
     loop {
         let request = match decode_request::<RequestEnvelopeT, _>(&mut stream) {
             Ok(env) => env,
-            Err(IpcError::Truncated) => return, // peer closed cleanly
-            Err(_other_err) => return,          // framing / oversize / decode → close
+            Err(IpcError::Truncated) => return ConnectionCloseReason::PeerClosed,
+            Err(err) => return ConnectionCloseReason::RequestDecodeFailed(err),
         };
         let (request_id, request_payload) = request.into_parts();
         let response_payload = dispatcher.dispatch(request_payload);
         let response = ResponseEnvelopeT::from_parts(request_id, response_payload);
-        let Ok(frame) = encode_response(&response) else {
-            return;
+        let frame = match encode_response(&response) {
+            Ok(frame) => frame,
+            Err(err) => return ConnectionCloseReason::ResponseEncodeFailed(err),
         };
-        if stream.write_all(&frame).is_err() {
-            return;
+        if let Err(err) = stream.write_all(&frame) {
+            return ConnectionCloseReason::ResponseWriteFailed(err.to_string());
         }
         // continue: next request on same conn
     }
@@ -277,4 +317,343 @@ where
     stream.write_all(&frame).map_err(IpcError::Io)?;
     let response = decode_response::<ResponseEnvelopeT, _>(&mut stream)?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ConnectionCloseReason, IpcDispatcher, IpcError, RequestEnvelope, ResponseEnvelope,
+        decode_response, encode_request, handle_connection,
+    };
+    use std::io::Write;
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::ser::SerializeStruct;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    struct TestDispatcher;
+
+    impl IpcDispatcher<u64, u64> for TestDispatcher {
+        fn dispatch(&self, request: u64) -> u64 {
+            request.saturating_add(1)
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct TestRequestEnvelope {
+        request_id: u64,
+        payload: u64,
+    }
+
+    impl Serialize for TestRequestEnvelope {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut state = serializer.serialize_struct("TestRequestEnvelope", 2)?;
+            state.serialize_field("request_id", &self.request_id)?;
+            state.serialize_field("payload", &self.payload)?;
+            state.end()
+        }
+    }
+
+    impl<'de> Deserialize<'de> for TestRequestEnvelope {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct TestRequestEnvelopeVisitor;
+
+            impl<'de> Visitor<'de> for TestRequestEnvelopeVisitor {
+                type Value = TestRequestEnvelope;
+
+                fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    formatter.write_str("a TestRequestEnvelope map")
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                where
+                    A: MapAccess<'de>,
+                {
+                    let mut request_id: Option<u64> = None;
+                    let mut payload: Option<u64> = None;
+                    while let Some(key) = map.next_key::<String>()? {
+                        match key.as_str() {
+                            "request_id" => {
+                                if request_id.is_some() {
+                                    return Err(de::Error::duplicate_field("request_id"));
+                                }
+                                request_id = Some(map.next_value()?);
+                            }
+                            "payload" => {
+                                if payload.is_some() {
+                                    return Err(de::Error::duplicate_field("payload"));
+                                }
+                                payload = Some(map.next_value()?);
+                            }
+                            _ => {
+                                return Err(de::Error::unknown_field(
+                                    &key,
+                                    &["request_id", "payload"],
+                                ));
+                            }
+                        }
+                    }
+                    Ok(TestRequestEnvelope {
+                        request_id: request_id
+                            .ok_or_else(|| de::Error::missing_field("request_id"))?,
+                        payload: payload.ok_or_else(|| de::Error::missing_field("payload"))?,
+                    })
+                }
+            }
+
+            deserializer.deserialize_struct(
+                "TestRequestEnvelope",
+                &["request_id", "payload"],
+                TestRequestEnvelopeVisitor,
+            )
+        }
+    }
+
+    impl RequestEnvelope<u64> for TestRequestEnvelope {
+        fn into_parts(self) -> (u64, u64) {
+            (self.request_id, self.payload)
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct TestResponseEnvelope {
+        request_id: u64,
+        payload: u64,
+    }
+
+    impl Serialize for TestResponseEnvelope {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut state = serializer.serialize_struct("TestResponseEnvelope", 2)?;
+            state.serialize_field("request_id", &self.request_id)?;
+            state.serialize_field("payload", &self.payload)?;
+            state.end()
+        }
+    }
+
+    impl<'de> Deserialize<'de> for TestResponseEnvelope {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct TestResponseEnvelopeVisitor;
+
+            impl<'de> Visitor<'de> for TestResponseEnvelopeVisitor {
+                type Value = TestResponseEnvelope;
+
+                fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    formatter.write_str("a TestResponseEnvelope map")
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                where
+                    A: MapAccess<'de>,
+                {
+                    let mut request_id: Option<u64> = None;
+                    let mut payload: Option<u64> = None;
+                    while let Some(key) = map.next_key::<String>()? {
+                        match key.as_str() {
+                            "request_id" => {
+                                if request_id.is_some() {
+                                    return Err(de::Error::duplicate_field("request_id"));
+                                }
+                                request_id = Some(map.next_value()?);
+                            }
+                            "payload" => {
+                                if payload.is_some() {
+                                    return Err(de::Error::duplicate_field("payload"));
+                                }
+                                payload = Some(map.next_value()?);
+                            }
+                            _ => {
+                                return Err(de::Error::unknown_field(
+                                    &key,
+                                    &["request_id", "payload"],
+                                ));
+                            }
+                        }
+                    }
+                    Ok(TestResponseEnvelope {
+                        request_id: request_id
+                            .ok_or_else(|| de::Error::missing_field("request_id"))?,
+                        payload: payload.ok_or_else(|| de::Error::missing_field("payload"))?,
+                    })
+                }
+            }
+
+            deserializer.deserialize_struct(
+                "TestResponseEnvelope",
+                &["request_id", "payload"],
+                TestResponseEnvelopeVisitor,
+            )
+        }
+    }
+
+    impl ResponseEnvelope<u64> for TestResponseEnvelope {
+        fn from_parts(request_id: u64, payload: u64) -> Self {
+            Self {
+                request_id,
+                payload,
+            }
+        }
+    }
+
+    struct FailingResponseEnvelope;
+
+    impl Serialize for FailingResponseEnvelope {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(serde::ser::Error::custom("simulated response encode failure"))
+        }
+    }
+
+    impl ResponseEnvelope<u64> for FailingResponseEnvelope {
+        fn from_parts(_request_id: u64, _payload: u64) -> Self {
+            Self
+        }
+    }
+
+    fn test_request(request_id: u64, payload: u64) -> TestRequestEnvelope {
+        TestRequestEnvelope {
+            request_id,
+            payload,
+        }
+    }
+
+    #[test]
+    fn handle_connection_returns_peer_closed_after_successful_round_trip() -> TestRes {
+        let (mut client, server) = UnixStream::pair()?;
+        let frame = encode_request(&test_request(41, 8))?;
+        client.write_all(&frame)?;
+        client.shutdown(Shutdown::Write)?;
+
+        let handle = std::thread::spawn(move || {
+            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
+                server,
+                &TestDispatcher,
+            )
+        });
+
+        let response = decode_response::<TestResponseEnvelope, _>(&mut client)?;
+        assert_eq!(
+            response,
+            TestResponseEnvelope {
+                request_id: 41,
+                payload: 9,
+            }
+        );
+        let reason = match handle.join() {
+            Ok(reason) => reason,
+            Err(_) => return Err("server thread panicked".into()),
+        };
+        assert!(matches!(reason, ConnectionCloseReason::PeerClosed));
+        Ok(())
+    }
+
+    #[test]
+    fn handle_connection_surfaces_decode_failure_reason() -> TestRes {
+        let (mut client, server) = UnixStream::pair()?;
+        client.write_all(&[0, 0, 0, 0])?;
+        client.shutdown(Shutdown::Write)?;
+
+        let reason = handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
+            server,
+            &TestDispatcher,
+        );
+        assert!(matches!(
+            reason,
+            ConnectionCloseReason::RequestDecodeFailed(IpcError::EmptyFrame)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn handle_connection_surfaces_response_encode_failure_reason() -> TestRes {
+        let (mut client, server) = UnixStream::pair()?;
+        let frame = encode_request(&test_request(7, 4))?;
+        client.write_all(&frame)?;
+        client.shutdown(Shutdown::Write)?;
+
+        let reason = handle_connection::<TestRequestEnvelope, u64, FailingResponseEnvelope, u64, TestDispatcher>(
+            server,
+            &TestDispatcher,
+        );
+        match reason {
+            ConnectionCloseReason::ResponseEncodeFailed(IpcError::Encode(message))
+                if message.contains("simulated response encode failure") => {}
+            other => return Err(format!("unexpected close reason: {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_connection_surfaces_response_write_failure_reason() -> TestRes {
+        let (mut client, server) = UnixStream::pair()?;
+        let frame = encode_request(&test_request(9, 1))?;
+        client.write_all(&frame)?;
+
+        struct BlockingDispatcher {
+            entered: std::sync::mpsc::Sender<()>,
+            gate: std::sync::Arc<std::sync::Barrier>,
+        }
+
+        impl IpcDispatcher<u64, u64> for BlockingDispatcher {
+            fn dispatch(&self, request: u64) -> u64 {
+                assert!(
+                    self.entered.send(()).is_ok(),
+                    "test must observe dispatcher entry"
+                );
+                let _wait = self.gate.wait();
+                request.saturating_add(1)
+            }
+        }
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let dispatcher = BlockingDispatcher {
+            entered: entered_tx,
+            gate: gate.clone(),
+        };
+        let handle = std::thread::spawn(move || {
+            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, BlockingDispatcher>(
+                server,
+                &dispatcher,
+            )
+        });
+
+        match entered_rx.recv() {
+            Ok(()) => {}
+            Err(err) => {
+                return Err(
+                    format!("test must observe request decode before closing peer: {err}").into(),
+                );
+            }
+        }
+        drop(client);
+        let _wait = gate.wait();
+
+        let reason = match handle.join() {
+            Ok(reason) => reason,
+            Err(_) => return Err("server thread panicked".into()),
+        };
+        match reason {
+            ConnectionCloseReason::ResponseWriteFailed(message) if !message.is_empty() => {}
+            other => return Err(format!("unexpected close reason: {other:?}").into()),
+        }
+        Ok(())
+    }
 }
