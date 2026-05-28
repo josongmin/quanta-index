@@ -45,6 +45,7 @@ use crate::app::config::{QueryTextEmbedderMode, SearchdConfig};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
+use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
 };
@@ -446,6 +447,7 @@ pub struct SearchdRuntime {
     >,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
+    pub semantic_boot: semantic_boot::SemanticBootReport,
 }
 
 impl SearchdRuntime {
@@ -465,11 +467,21 @@ impl SearchdRuntime {
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         bootstrap_persisted_lexical_state(&ledger, config.state_root())?;
-        bootstrap_persisted_semantic_state(
-            &ledger,
+        let semantic_root = config.state_root().join("indexes").join("semantic");
+        let migration = semantic_boot::migrate_legacy_semantic_journal(
             semantic_authority_store.as_ref(),
             sem_build_port.as_ref(),
-        )?;
+            &semantic_root,
+        )
+        .map_err(anyhow::Error::from)?;
+        let seed_start = std::time::Instant::now();
+        let seed = semantic_boot::seed_persisted_semantic_readiness(&ledger, &semantic_root)
+            .map_err(anyhow::Error::from)?;
+        let boot_report = semantic_boot::SemanticBootReport {
+            migration,
+            seed,
+            seed_micros: seed_start.elapsed().as_micros(),
+        };
         {
             let mut guard = ledger.write().map_err(|err| {
                 anyhow::anyhow!("ledger poisoned during auxiliary authority bootstrap: {err}")
@@ -478,12 +490,9 @@ impl SearchdRuntime {
                 .restore_into(&mut guard)
                 .map_err(anyhow::Error::from)?;
         }
-        let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> =
-            Arc::new(DirectSemanticMaterializer::new(
-                semantic_authority_store,
-                Arc::clone(&sem_build_port),
-                Arc::clone(&ledger),
-            ));
+        let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+            DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
+        );
         let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
             Arc::new(DirectLexicalMaterializer::new_with_search_owned_semantics(
                 Arc::clone(&lex_build_port),
@@ -562,6 +571,7 @@ impl SearchdRuntime {
             ingest_server,
             repo_map_query_port,
             query_obs_store,
+            semantic_boot: boot_report,
         })
     }
 }
@@ -635,16 +645,6 @@ fn seed_persisted_lexical_readiness(ledger: &Arc<RwLock<Ledger>>, state_root: &P
     }
     drop(guard);
     Ok(())
-}
-
-fn bootstrap_persisted_semantic_state(
-    ledger: &Arc<RwLock<Ledger>>,
-    authority_store: &SemanticAuthorityStore,
-    builder: &(dyn SemanticBatchBuildPort + Send + Sync),
-) -> Result<()> {
-    authority_store
-        .replay_into(ledger, builder)
-        .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]

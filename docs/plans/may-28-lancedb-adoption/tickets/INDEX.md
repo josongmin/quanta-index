@@ -1,5 +1,8 @@
 # Tickets — LanceDB Adoption
 
+Status: **all tickets `done` (2026-05-29)** — see each ticket's `Status:` line and
+the parent [../README.md](../README.md) §3.1 backend decision.
+
 Parent doc: [../README.md](../README.md)
 
 This ticket pack replaces the current semantic `journal.cbor` plus boot replay

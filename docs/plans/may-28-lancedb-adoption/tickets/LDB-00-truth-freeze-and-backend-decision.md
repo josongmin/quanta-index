@@ -1,8 +1,20 @@
 # LDB-00 — Truth Freeze and Backend Decision
 
-Status: `proposed`
+Status: `done` (2026-05-29)
 Parent: [../README.md](../README.md)
 Depends on: none
+
+## 0. Outcome
+
+Frozen decision recorded in [../README.md](../README.md) §3.1: an in-house,
+generation-scoped, columnar durable semantic store inside
+`quanta-index-semantic`; the async `lance` / `lancedb` crates are rejected for
+this repo's sync-port + strict-supply-chain + bounded-cold-build posture. The
+durable *shape* matches the Lance-family target (generation directory +
+manifest + READY/SEALED markers + direct sealed-generation open, no boot
+replay, fail-closed). `journal.cbor` is demoted to LDB-04 migration input only.
+Live-truth drift (`T3.2 done`, README "Tantivy + Lance" ownership) is mapped in
+[HISTORICAL-MAP.md](HISTORICAL-MAP.md) and closed in code by LDB-02..LDB-E2E-01.
 
 ## 1. Purpose
 

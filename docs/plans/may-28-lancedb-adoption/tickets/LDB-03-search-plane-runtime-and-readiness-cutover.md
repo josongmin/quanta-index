@@ -1,8 +1,22 @@
 # LDB-03 — Search-plane Runtime and Readiness Cutover
 
-Status: `proposed`
+Status: `done` (2026-05-29)
 Parent: [../README.md](../README.md)
 Depends on: [LDB-02-lance-persisted-semantic-adapter.md](LDB-02-lance-persisted-semantic-adapter.md)
+
+## 0. Outcome
+
+Boot-time `bootstrap_persisted_semantic_state(...).replay_into(...)` removed
+from `searchd::app::runtime::assemble`. New `searchd::app::semantic_boot::
+seed_persisted_semantic_readiness` seeds the ledger from sealed durable
+generations (via `quanta_index_semantic::scan_persisted_generations`, using each
+manifest digest). `searchd-runtime` now builds `SemanticAdapter::with_state_root
+(state_root/indexes/semantic)`. `DirectSemanticMaterializer` no longer holds the
+`SemanticAuthorityStore`: it builds the durable adapter first, then updates the
+ledger (a failed durable write leaves no SEALED marker and no ledger mutation).
+Activation/generation resolution unchanged. The daemon-level restart proof
+`reopen_preserves_semantic_scope_ids_and_explanation` passes on the durable
+path; boot seeding/incomplete-skip covered by `semantic_boot` unit tests.
 
 ## 1. Purpose
 

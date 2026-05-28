@@ -145,13 +145,6 @@ impl HnswIndex {
         Ok(())
     }
 
-    pub(crate) fn delete(&mut self, id: &str) {
-        if let Some(idx) = self.id_to_idx.get(id).copied() {
-            self.tombstone_node(idx);
-            let _removed = self.id_to_idx.remove(id);
-        }
-    }
-
     /// Returns `(id, cosine_similarity)` tuples sorted descending by score.
     ///
     /// Rejects zero-norm and dim-mismatched queries with
@@ -436,6 +429,103 @@ impl HnswIndex {
     }
 }
 
+/// Plain-data projection of one graph node for durable persistence.
+pub(crate) struct PersistedNode {
+    pub(crate) id: String,
+    pub(crate) vector: Vec<f32>,
+    pub(crate) adjacency: Vec<Vec<usize>>,
+    pub(crate) deleted: bool,
+}
+
+/// Plain-data projection of the whole graph for persistence.
+///
+/// The persisted form holds node indices directly; `id_to_idx` is rebuilt from
+/// node order on load so it is never serialized (it cannot drift from the node
+/// table).
+pub(crate) struct PersistedGraph {
+    pub(crate) dim: usize,
+    pub(crate) max_level: usize,
+    pub(crate) entry: Option<usize>,
+    pub(crate) nodes: Vec<PersistedNode>,
+}
+
+impl HnswIndex {
+    /// Project the live graph into its durable plain-data form.
+    pub(crate) fn to_persisted(&self) -> PersistedGraph {
+        let mut nodes: Vec<PersistedNode> = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            nodes.push(PersistedNode {
+                id: node.id.clone(),
+                vector: node.vector.clone(),
+                adjacency: node.adjacency.clone(),
+                deleted: node.deleted,
+            });
+        }
+        PersistedGraph {
+            dim: self.dim,
+            max_level: self.max_level,
+            entry: self.entry,
+            nodes,
+        }
+    }
+
+    /// Rehydrate a graph from durable plain data, failing closed on any index,
+    /// dimension, or id inconsistency so a corrupt shard cannot serve queries.
+    pub(crate) fn from_persisted(graph: PersistedGraph) -> Result<Self, CoreError> {
+        let node_count = graph.nodes.len();
+        if let Some(entry) = graph.entry
+            && entry >= node_count
+        {
+            return Err(CoreError::Storage(format!(
+                "hnsw: entry index {entry} out of range for {node_count} nodes"
+            )));
+        }
+        let mut id_to_idx: BTreeMap<String, usize> = BTreeMap::new();
+        let mut nodes: Vec<Node> = Vec::with_capacity(node_count);
+        for (idx, persisted) in graph.nodes.into_iter().enumerate() {
+            if persisted.vector.len() != graph.dim {
+                return Err(CoreError::Storage(format!(
+                    "hnsw: node `{}` vector dim {} != graph dim {}",
+                    persisted.id,
+                    persisted.vector.len(),
+                    graph.dim
+                )));
+            }
+            for layer in &persisted.adjacency {
+                for &neighbor in layer {
+                    if neighbor >= node_count {
+                        return Err(CoreError::Storage(format!(
+                            "hnsw: adjacency index {neighbor} out of range for {node_count} nodes"
+                        )));
+                    }
+                }
+            }
+            if !persisted.deleted {
+                if id_to_idx.contains_key(&persisted.id) {
+                    return Err(CoreError::Storage(format!(
+                        "hnsw: duplicate live id `{}` in persisted graph",
+                        persisted.id
+                    )));
+                }
+                let _slot = id_to_idx.insert(persisted.id.clone(), idx);
+            }
+            nodes.push(Node {
+                id: persisted.id,
+                vector: persisted.vector,
+                adjacency: persisted.adjacency,
+                deleted: persisted.deleted,
+            });
+        }
+        Ok(Self {
+            dim: graph.dim,
+            nodes,
+            id_to_idx,
+            max_level: graph.max_level,
+            entry: graph.entry,
+        })
+    }
+}
+
 /// Insert into a list kept in descending-score order.
 fn insert_sorted_desc(list: &mut Vec<(f32, usize)>, item: (f32, usize)) {
     let mut pos = list.len();
@@ -614,21 +704,6 @@ mod tests {
         }
         if top.1 < 0.999 {
             return Err(format!("expected score >= 0.999, got {}", top.1).into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn delete_then_search_excludes() -> TestRes {
-        let mut index = HnswIndex::new(3);
-        index.insert("x".to_string(), &[1.0, 0.0, 0.0])?;
-        index.insert("y".to_string(), &[0.0, 1.0, 0.0])?;
-        index.insert("z".to_string(), &[0.0, 0.0, 1.0])?;
-        index.delete("y");
-        let results = index.search(&[0.0, 1.0, 0.0], 5)?;
-        let ids: Vec<String> = results.into_iter().map(|(id, _)| id).collect();
-        if ids.iter().any(|i| i == "y") {
-            return Err(format!("deleted id 'y' still present: {ids:?}").into());
         }
         Ok(())
     }

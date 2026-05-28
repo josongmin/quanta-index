@@ -1,8 +1,20 @@
 # LDB-02 — Lance Persisted Semantic Adapter
 
-Status: `proposed`
+Status: `done` (2026-05-29)
 Parent: [../README.md](../README.md)
 Depends on: [LDB-01-semantic-generation-layout-and-manifest-contract.md](LDB-01-semantic-generation-layout-and-manifest-contract.md)
+
+## 0. Outcome
+
+`SemanticAdapter` rewritten off the in-memory-only store onto durable,
+generation-scoped persistence (`build.rs` writes rows + READY per batch, builds
+the HNSW graph once and writes manifest + SEALED on seal; `search.rs` opens a
+sealed generation directly — manifest/shape/checksum validated — and loads the
+persisted graph rather than rebuilding it; `graph.rs` is the HNSW CBOR codec).
+Vendor/layout knowledge stays inside the crate. `tests/persisted_semantic.rs`
+covers build/open roundtrip, restart open by a fresh adapter, replace/tombstone,
+generation-pin isolation, contract + query dimension mismatch, and corruption
+fail-closed. Per LDB-00 the durable backend is in-house, not the `lance` crate.
 
 ## 1. Purpose
 

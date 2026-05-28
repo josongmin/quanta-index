@@ -1007,7 +1007,9 @@ dependencies = [
  "quanta-index-ipc",
  "quanta-index-lq-structural",
  "quanta-index-search-plane",
+ "quanta-index-semantic",
  "regex",
+ "tempfile",
 ]
 
 [[package]]
@@ -1035,8 +1037,11 @@ dependencies = [
 name = "quanta-index-semantic"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "quanta-index-contract",
  "quanta-index-core",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

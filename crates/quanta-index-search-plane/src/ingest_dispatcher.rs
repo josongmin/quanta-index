@@ -126,10 +126,19 @@ impl_struct_serde!(SemanticAuthorityJournal {
     batches: Vec<SemanticIngestBatch>,
 });
 
+/// Legacy semantic journal authority — **migration input only** (LDB-04).
+///
+/// Before the Lance cutover this was the live semantic durability path
+/// (`journal.cbor` plus boot replay). It is now read-only: the durable
+/// generation directories under `state_root/indexes/semantic` are the sole
+/// serve-time authority. This type exists solely to let a one-shot migration
+/// read legacy batches and record an idempotent completion marker. It is never
+/// a second live authority.
 #[derive(Debug)]
 pub struct SemanticAuthorityStore {
     journal_path: PathBuf,
-    journal: RwLock<SemanticAuthorityJournal>,
+    migrated_marker_path: PathBuf,
+    batches: Vec<SemanticIngestBatch>,
 }
 
 impl SemanticAuthorityStore {
@@ -142,74 +151,71 @@ impl SemanticAuthorityStore {
             ))
         })?;
         let journal_path = root.join("journal.cbor");
+        let migrated_marker_path = root.join("MIGRATED");
         let journal = read_cbor::<SemanticAuthorityJournal>(&journal_path, "semantic journal")?
             .unwrap_or_default();
         Ok(Self {
             journal_path,
-            journal: RwLock::new(journal),
+            migrated_marker_path,
+            batches: journal.batches,
         })
     }
 
-    pub fn append_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
-        let mut guard = self.journal.write().map_err(|err| {
-            CoreError::Storage(format!("semantic authority store poisoned: {err}"))
-        })?;
-        guard.batches.push(batch.clone());
-        write_cbor(&self.journal_path, &*guard, "semantic journal")
+    /// True when a legacy `journal.cbor` is present on disk.
+    #[must_use]
+    pub fn has_legacy_journal(&self) -> bool {
+        self.journal_path.exists()
     }
 
-    pub fn rollback_last_batch(&self, batch: &SemanticIngestBatch) -> Result<(), CoreError> {
-        let mut guard = self.journal.write().map_err(|err| {
-            CoreError::Storage(format!("semantic authority store poisoned: {err}"))
-        })?;
-        match guard.batches.last() {
-            Some(last) if last == batch => {
-                drop(guard.batches.pop());
-                write_cbor(&self.journal_path, &*guard, "semantic journal")
-            }
-            Some(_) => Err(CoreError::Storage(
-                "semantic authority rollback: latest batch mismatch".to_string(),
-            )),
-            None => Err(CoreError::Storage(
-                "semantic authority rollback: journal empty".to_string(),
-            )),
-        }
+    /// True when the one-shot migration completion marker is present.
+    #[must_use]
+    pub fn migration_complete(&self) -> bool {
+        self.migrated_marker_path.exists()
     }
 
-    pub fn replay_into(
-        &self,
-        ledger: &Arc<RwLock<Ledger>>,
-        builder: &(dyn SemanticBatchBuildPort + Send + Sync),
+    /// Legacy batches in journal order (empty when no journal exists).
+    #[must_use]
+    pub fn legacy_batches(&self) -> &[SemanticIngestBatch] {
+        &self.batches
+    }
+
+    /// Write a legacy-format semantic journal — the inverse of [`Self::open`]'s
+    /// read. The steady-state ingest path no longer writes a journal; this is
+    /// retained for migration round-trip proofs and offline journal staging.
+    pub fn write_legacy_journal(
+        root: impl AsRef<Path>,
+        batches: &[SemanticIngestBatch],
     ) -> Result<(), CoreError> {
-        let batches = {
-            let guard = self.journal.read().map_err(|err| {
-                CoreError::Storage(format!("semantic authority store poisoned: {err}"))
-            })?;
-            guard.batches.clone()
+        let root = root.as_ref();
+        fs::create_dir_all(root).map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic authority store: create root {}: {err}",
+                root.display()
+            ))
+        })?;
+        let journal = SemanticAuthorityJournal {
+            batches: batches.to_vec(),
         };
-        for batch in batches {
-            builder.build_batch(&batch)?;
-            let mut guard = ledger.write().map_err(|err| {
-                CoreError::Storage(format!("semantic authority replay: ledger poisoned: {err}"))
-            })?;
-            guard.materialize_track(
-                &batch.repo_id,
-                &batch.revision_id,
-                SearchPlaneTrackKind::Semantic,
-                batch.generation,
-                Some(batch.manifest_digest.as_str()),
-            );
-            if batch.seal {
-                guard.seal_track_with_digest(
-                    &batch.repo_id,
-                    &batch.revision_id,
-                    SearchPlaneTrackKind::Semantic,
-                    batch.generation,
-                    batch.manifest_digest.as_str(),
-                );
-            }
-        }
-        Ok(())
+        let bytes = encode_cbor_payload(&journal)
+            .map_err(|err| CoreError::Storage(format!("semantic journal: encode: {err}")))?;
+        let journal_path = root.join("journal.cbor");
+        fs::write(&journal_path, bytes).map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic journal: write {}: {err}",
+                journal_path.display()
+            ))
+        })
+    }
+
+    /// Record idempotent migration completion. The legacy journal is retained
+    /// (not deleted) so the only recoverable legacy state survives validation.
+    pub fn mark_migration_complete(&self) -> Result<(), CoreError> {
+        fs::write(&self.migrated_marker_path, b"migrated").map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic migration marker {}: {err}",
+                self.migrated_marker_path.display()
+            ))
+        })
     }
 }
 
@@ -404,11 +410,14 @@ fn derive_embedding_record(
     })
 }
 
-/// Direct semantic batch materializer that updates the semantic builder + the
-/// readiness ledger immediately while persisting accepted batches into the
-/// semantic authority journal for restart recovery.
+/// Direct semantic batch materializer.
+///
+/// Writes the durable, generation-scoped semantic adapter first (rows on every
+/// batch; graph + manifest + seal on `seal`), then updates the readiness
+/// ledger. Durability lives entirely in the adapter's generation directories;
+/// there is no journal write here. A failed durable write leaves no SEALED
+/// marker and does not touch the ledger, so readiness cannot go falsely ready.
 pub struct DirectSemanticMaterializer {
-    authority_store: Arc<SemanticAuthorityStore>,
     builder: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
 }
@@ -416,25 +425,16 @@ pub struct DirectSemanticMaterializer {
 impl DirectSemanticMaterializer {
     #[must_use]
     pub fn new(
-        authority_store: Arc<SemanticAuthorityStore>,
         builder: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
-        Self {
-            authority_store,
-            builder,
-            ledger,
-        }
+        Self { builder, ledger }
     }
 }
 
 impl SemanticIngestPort for DirectSemanticMaterializer {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
-        self.authority_store.append_batch(batch)?;
-        if let Err(err) = self.builder.build_batch(batch) {
-            self.authority_store.rollback_last_batch(batch)?;
-            return Err(err);
-        }
+        self.builder.build_batch(batch)?;
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
                 "direct semantic materialize: ledger poisoned: {err}"
@@ -701,21 +701,6 @@ impl SearchPlaneIngestDispatcher {
     }
 }
 
-fn write_cbor<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<(), CoreError> {
-    let bytes = encode_cbor_payload(value).map_err(|err| {
-        CoreError::Storage(format!(
-            "search-plane ingest: encode {label} {}: {err}",
-            path.display()
-        ))
-    })?;
-    fs::write(path, bytes).map_err(|err| {
-        CoreError::Storage(format!(
-            "search-plane ingest: write {label} {}: {err}",
-            path.display()
-        ))
-    })
-}
-
 fn read_cbor<T: for<'de> Deserialize<'de>>(
     path: &Path,
     label: &str,
@@ -912,38 +897,53 @@ mod tests {
     }
 
     #[test]
-    fn semantic_authority_store_replays_batches_into_builder_and_ledger() -> TestRes {
+    fn semantic_authority_store_exposes_migration_surface() -> TestRes {
         let dir = tempfile::tempdir()?;
         let store = SemanticAuthorityStore::open(dir.path())?;
-        let batch = fixture_semantic_batch()?;
-        store.append_batch(&batch)?;
-
-        let ledger = Arc::new(RwLock::new(Ledger::new()));
-        let builder = FakeSemanticBuilder::default();
-        store.replay_into(&ledger, &builder)?;
-
-        let batches = builder.take()?;
-        if batches.as_slice() != [batch.clone()] {
-            return Err(format!("unexpected semantic replay batch sequence: {batches:?}").into());
+        if store.has_legacy_journal() {
+            return Err("fresh store must report no legacy journal".into());
         }
+        if !store.legacy_batches().is_empty() {
+            return Err("fresh store must expose no legacy batches".into());
+        }
+        if store.migration_complete() {
+            return Err("fresh store must not be marked migrated".into());
+        }
+        store.mark_migration_complete()?;
+        if !store.migration_complete() {
+            return Err("migration completion marker must persist".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_semantic_materializer_builds_durably_and_marks_ledger() -> TestRes {
+        let builder = Arc::new(FakeSemanticBuilder::default());
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let materializer = DirectSemanticMaterializer::new(builder.clone(), Arc::clone(&ledger));
+        let batch = fixture_semantic_batch()?;
+        let receipt = materializer.publish_batch(&batch)?;
+        if !receipt.sealed || receipt.manifest_digest != batch.manifest_digest {
+            return Err("unexpected semantic materialize receipt".into());
+        }
+
+        // The durable builder received the batch (durability lives in the adapter).
+        let built = builder.take()?;
+        if built.as_slice() != [batch.clone()] {
+            return Err(format!("durable builder did not receive batch: {built:?}").into());
+        }
+
+        // Readiness reflects the durable seal, not a journal write.
         let guard = ledger
             .read()
             .map_err(|err| format!("ledger poisoned: {err}"))?;
-        if guard.track_materialized(
-            &batch.repo_id,
-            &batch.revision_id,
-            SearchPlaneTrackKind::Semantic,
-        ) != Some(batch.generation)
-        {
-            return Err("semantic replay did not record materialized generation".into());
-        }
         if guard.track_sealed(
             &batch.repo_id,
             &batch.revision_id,
             SearchPlaneTrackKind::Semantic,
         ) != Some(batch.generation)
         {
-            return Err("semantic replay did not record sealed generation".into());
+            return Err("publish did not record sealed generation".into());
         }
         if guard.track_manifest_digest(
             &batch.repo_id,
@@ -951,55 +951,19 @@ mod tests {
             SearchPlaneTrackKind::Semantic,
         ) != Some(batch.manifest_digest.as_str())
         {
-            return Err("semantic replay did not preserve manifest digest".into());
+            return Err("publish did not preserve manifest digest".into());
         }
         drop(guard);
         Ok(())
     }
 
     #[test]
-    fn direct_semantic_materializer_persists_batches_for_restart_replay() -> TestRes {
-        let dir = tempfile::tempdir()?;
-        let store = Arc::new(SemanticAuthorityStore::open(dir.path())?);
-        let live_builder = Arc::new(FakeSemanticBuilder::default());
-        let live_ledger = Arc::new(RwLock::new(Ledger::new()));
-        let materializer = DirectSemanticMaterializer::new(
-            Arc::clone(&store),
-            live_builder,
-            Arc::clone(&live_ledger),
-        );
-        let batch = fixture_semantic_batch()?;
-        let receipt = materializer.publish_batch(&batch)?;
-        if !receipt.sealed || receipt.manifest_digest != batch.manifest_digest {
-            return Err("unexpected semantic materialize receipt".into());
-        }
-
-        let restart_builder = FakeSemanticBuilder::default();
-        let restart_ledger = Arc::new(RwLock::new(Ledger::new()));
-        store.replay_into(&restart_ledger, &restart_builder)?;
-        if restart_ledger
-            .read()
-            .map_err(|err| format!("restart ledger poisoned: {err}"))?
-            .semantic_sealed()
-            != Some(batch.generation)
-        {
-            return Err("restart replay did not restore semantic seal".into());
-        }
-        Ok(())
-    }
-
-    #[test]
     fn lexical_materializer_derives_search_owned_semantic_batch() -> TestRes {
-        let semantic_dir = tempfile::tempdir()?;
-        let semantic_store = Arc::new(SemanticAuthorityStore::open(semantic_dir.path())?);
         let semantic_builder = Arc::new(FakeSemanticBuilder::default());
         let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
-        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
-            Arc::new(DirectSemanticMaterializer::new(
-                Arc::clone(&semantic_store),
-                semantic_builder.clone(),
-                Arc::clone(&semantic_ledger),
-            ));
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+            DirectSemanticMaterializer::new(semantic_builder.clone(), Arc::clone(&semantic_ledger)),
+        );
         let lexical_builder = Arc::new(FakeLexicalBuilder::default());
         let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
         let materializer = DirectLexicalMaterializer::new_with_search_owned_semantics(

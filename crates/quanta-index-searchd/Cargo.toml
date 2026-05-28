@@ -17,3 +17,7 @@ quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-lq-structural = { version = "0.1.0", path = "../quanta-index-lq-structural" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

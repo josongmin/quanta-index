@@ -1,8 +1,19 @@
 # LDB-01 — Semantic Generation Layout and Manifest Contract
 
-Status: `proposed`
+Status: `done` (2026-05-29)
 Parent: [../README.md](../README.md)
 Depends on: [LDB-00-truth-freeze-and-backend-decision.md](LDB-00-truth-freeze-and-backend-decision.md)
+
+## 0. Outcome
+
+Implemented in `crates/quanta-index-semantic`: `layout.rs` owns the
+generation-local directory shape (`{semantic_root}/{repo}/{revision}/g{gen}/` +
+`dataset/` + `semantic-manifest.cbor` + `MARKER_READY` + `MARKER_SEALED`);
+`manifest.rs` defines `SemanticManifest` (LDB-01 §3 fields) with a manual
+`ciborium` codec and `validate_scope` fail-closed open guard; `dataset.rs`
+defines the columnar row shard (LDB-01 §4 data contract). Markers/manifest/
+checksum semantics covered by `tests/persisted_semantic.rs` (unsealed →
+not-ready, sealed-empty → empty hits, manifest/dataset corruption → fail-closed).
 
 ## 1. Purpose
 

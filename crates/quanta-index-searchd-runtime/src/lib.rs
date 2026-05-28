@@ -31,7 +31,9 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
     ));
-    let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::new());
+    let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
+        state_root.join("indexes/semantic"),
+    ));
     let repo_map_store = Arc::new(
         RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
             .map_err(anyhow::Error::from)?,

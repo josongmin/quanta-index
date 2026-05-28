@@ -1,8 +1,26 @@
 # LDB-E2E-01 — Cutover Proof, Observability, and Doc Closeout
 
-Status: `proposed`
+Status: `done` (2026-05-29)
 Parent: [../README.md](../README.md)
 Depends on: [LDB-04-legacy-semantic-journal-migration.md](LDB-04-legacy-semantic-journal-migration.md)
+
+## 0. Outcome
+
+- **Cold-boot / restart proof**: `searchd-runtime` e2e
+  `reopen_preserves_semantic_scope_ids_and_explanation` serves a sealed
+  generation after restart from durable state (no replay);
+  `restart_opens_prior_generation_without_replay` proves a fresh adapter opens
+  prior durable state.
+- **Not-ready proof**: `unsealed_generation_open_fails_closed`,
+  `seed_skips_unsealed_generations`, and corruption tests fail closed.
+- **Migration proof**: `migration_imports_journal_idempotently_and_matches_clean_build`
+  asserts migrated results equal a clean durable build, plus idempotent re-run.
+- **Observability**: `SearchdRuntime.semantic_boot` (`SemanticBootReport`) exposes
+  migration outcome, sealed-generation count, and cold-boot seed timing — bounded
+  enums/counts/duration only, no vectors/snippets/path text.
+- **Doc closeout**: `README.md` semantic-backend lines corrected (no shipped
+  `lance`-crate claim); prompt-manager sources mention `lance` only as a
+  forbidden-token rule, so generated agent docs stayed in sync (`pm.py lint` ✓).
 
 ## 1. Purpose
 

@@ -1,18 +1,18 @@
 # May 28 LanceDB Adoption Plan
 
-Status: `final-planning-packet`
+Status: `implemented` (2026-05-29)
 Date: `2026-05-28`
 Scope: replace the current semantic `journal.cbor` plus boot-time full replay
 path with a persisted Lance-family semantic backend while preserving
 generation-pinned, fail-closed search-plane semantics.
 
-This packet is the planning SSOT for the semantic storage cutover. It is not a
-claim that Lance-backed persistence already ships in the current tree.
+This packet was the planning SSOT for the semantic storage cutover. As of
+2026-05-29 the cutover is implemented (see §3.1 backend decision and the
+per-ticket `Status:` lines).
 
-`LanceDB` is used here as the external planning label because that is the
-desired destination. The concrete Rust dependency choice (`lancedb` crate vs
-lower-level `lance*` crates) stays adapter-internal and is frozen by
-`LDB-00`.
+`LanceDB` is used here as the external planning label for the destination
+*shape* (persisted, generation-scoped, columnar semantic generations). The
+concrete adapter-internal dependency posture is frozen by `LDB-00` (§3.1).
 
 ---
 
@@ -81,6 +81,48 @@ Forbidden:
 - per-query warm-up rebuilds or hidden "populate cache on first query"
 - broadening this packet into search-owned embedding derivation or hybrid
   ranking redesign
+
+## 3.1 Backend Decision (LDB-00 outcome)
+
+Frozen 2026-05-29.
+
+**Decision: an in-house, generation-scoped, columnar durable semantic store
+inside `quanta-index-semantic`. The heavyweight async `lance` / `lancedb`
+crates are NOT pulled in.**
+
+Rationale — this repo's current port/runtime shape makes the in-house store the
+better engineering choice, not a shortcut:
+
+- **Sync port surface.** `SemanticBatchBuildPort`, `SemanticIndexOpenPort`, and
+  `SemanticSearcher` are all synchronous (`-> Result<_, CoreError>`). `lance` /
+  `lancedb` are async-first (tokio + `object_store`). Adopting them forces a
+  `block_on` bridge and a tokio runtime *inside* the adapter — exactly the kind
+  of hidden runtime coupling the hexagonal rules push against.
+- **Supply-chain policy.** `deny.toml` runs `unmaintained = all`,
+  `unsound = all`, `yanked = deny`. The arrow / datafusion / lance dependency
+  tree (hundreds of transitive crates) would require a pile of advisory
+  `ignore` exceptions to go green — which violates the spirit of the policy.
+- **Build hygiene.** The repo deliberately bounds cold-build seconds (derive
+  allowlist, llvm-lines budget, no-proc-macro-serde). Arrow + datafusion add
+  minutes of cold-build cost and a large proc-macro-derive footprint.
+- **Verifiability.** Compile/behaviour claims require a real `cargo` run. A
+  ~400-crate native dependency (with `protoc` / C++ build steps) makes a green
+  result environment-fragile; the in-house store compiles and tests
+  deterministically with `ciborium` as its only new dependency.
+
+What the decision keeps faithful to the packet objective: the durable *shape*
+is exactly the "Lance-family" target — one columnar generation directory per
+`(repo, revision, generation)`, a manifest beside the dataset, explicit
+readiness/seal markers, direct open of a sealed generation with no boot replay,
+and fail-closed open on missing / incomplete / mismatched state. "Lance" stays
+the planning label for that shape; the bytes are an in-house CBOR columnar
+shard plus a persisted HNSW graph (built once at seal, loaded — never rebuilt —
+at open).
+
+Cutover rule (frozen): `state_root/semantic/journal.cbor` is legacy migration
+input only (LDB-04). After migration it is never a second live semantic
+authority; the durable generation directories under
+`state_root/indexes/semantic` are the sole serve-time semantic authority.
 
 ## 4. In Scope
 

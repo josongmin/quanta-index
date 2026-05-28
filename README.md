@@ -10,7 +10,11 @@ Phase 1–3 status (lexical path closed; semantic deferred to Phase 3.5):
 - control-plane adapter (SQLite; manifest catalog, activation, generation pin,
   delta-apply governance with stale/active/missing-manifest guards)
 - `quanta-index-lexical` Tantivy 0.22 adapter with reader caching
-- `quanta-index-semantic` Lance adapter (build + open)
+- `quanta-index-semantic` persisted, generation-scoped semantic adapter:
+  durable build + direct open from sealed generations (in-house CBOR columnar
+  shard plus a persisted HNSW graph), no boot-time replay. See
+  `docs/plans/may-28-lancedb-adoption/` — "Lance" is the planning label for
+  this durable shape; the `lance` crate is intentionally not a dependency.
 - `quanta-index-ipc` CBOR wire codec (16 MiB frame cap)
 - `searchd` binary that actually runs: tokio current-thread UDS listener,
   `DomainQueryEngine` wired to lexical + semantic + control, SIGINT/SIGTERM
@@ -86,8 +90,10 @@ Repo layout:
   - schema bootstrap
   - outbox/activation/readiness plumbing
 - `crates/quanta-index-lexical`, `quanta-index-semantic`
-  - driven adapters (Tantivy + Lance live inside each crate, names stay
-    purpose-driven so the backend can swap without renaming)
+  - driven adapters; the lexical backend is Tantivy and the semantic backend is
+    an in-house persisted columnar shard plus an HNSW graph, each living inside
+    its crate. Names stay purpose-driven so the backend can swap without
+    renaming.
 - `crates/quanta-index-ipc`
   - IPC wire codec (CBOR framing via `ciborium`, 16 MiB cap, manual error
     enum — no proc-macro derives)
