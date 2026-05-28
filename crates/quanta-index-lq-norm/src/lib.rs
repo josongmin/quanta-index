@@ -10,7 +10,7 @@
 //! Status: **Wave-0 prerequisite, partial bootstrap.** The AST module
 //! ([`ast`]) was landed by a TDD-step agent; the tokenizer, parser,
 //! normalizer, hasher, and limits modules are pending — see ticket spec
-//! `docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-NORM.md`
+//! `docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-NORM.md`
 //! §5 for the remaining step ordering.
 //!
 //! Surface guarantees:

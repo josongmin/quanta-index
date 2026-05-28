@@ -3,7 +3,7 @@
 //! BRIDGE-01 — Sourcegraph → LQ translator plus bridge packet export helpers.
 //!
 //! This crate is the `sg2lq` surface from
-//! [BRIDGE-01](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md).
+//! [BRIDGE-01](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md).
 //! It accepts a Sourcegraph-syntax query string, lowers the
 //! documented subset into a canonical typed `LqQuery`, emits a
 //! [`BridgeCandidate`] envelope stamped with [`TRANSLATOR_VERSION`],
@@ -36,7 +36,7 @@
 //!
 //! ## p99 envelope
 //!
-//! Translate is pure CPU + bounded; the [BRIDGE-01 § 9](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md)
+//! Translate is pure CPU + bounded; the [BRIDGE-01 § 9](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md)
 //! `≤ 1 ms p99` target is the consumer of this crate's perf budget.
 //! No async, no I/O, no allocator hot spots beyond `Box<str>` /
 //! `Vec` clones.

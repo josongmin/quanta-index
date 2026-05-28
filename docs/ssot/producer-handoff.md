@@ -18,7 +18,7 @@ Current-tree note (2026-05-27):
   removed and semantic query/hybrid are text-only
 
 This is a historical archive of the old producer/search channel contract that
-was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
+was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
 
 If anything here conflicts with live source, live source wins. For the current
 tree use `SearchPlaneIngestIpcRequest::{PublishHistoryBatch, PublishDirtyBatch,
@@ -53,8 +53,8 @@ PublishStructuralBatch}` plus the persisted authority stores in
 | Status | Proposed, pending producer agreement. Becomes authoritative when both teams sign off per §8. |
 | Owners | Producer lead (`semantica-codegraph-v2` repo) + search-side lead (this repo). |
 | Parent SSOT | [channel-architecture.md](channel-architecture.md) — particularly [§0 Scope](channel-architecture.md), [§3.1 Op enums + Authorship rule lock](channel-architecture.md), [§5.2 Generation state authority](channel-architecture.md). |
-| Authoritativeness | This doc is the single source of truth for the wire shape, emission ordering, and error semantics of every op listed in §3. Downstream ticket specs ([LEX-05](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md), [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md), [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md), [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md)) reference this doc; conflicts resolve in favour of this doc. |
-| Trigger | The producer-authorship correction in [INDEX.md §3.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md) inverted four tickets to consume producer-emitted records. The 9 ops + 11 AMB-PROD-* questions in [INDEX.md §3.7](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md) need a single coherent answer. This doc is it. |
+| Authoritativeness | This doc is the single source of truth for the wire shape, emission ordering, and error semantics of every op listed in §3. Downstream ticket specs ([LEX-05](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md), [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md)) reference this doc; conflicts resolve in favour of this doc. |
+| Trigger | The producer-authorship correction in [INDEX.md §3.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) inverted four tickets to consume producer-emitted records. The 9 ops + 11 AMB-PROD-* questions in [INDEX.md §3.7](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) need a single coherent answer. This doc is it. |
 | Cutover gate | LEX-07 / RT-01 / STR-01 integration cutover is blocked on producer sign-off of this doc per §8. |
 | Posture | Breaking-first per [../../CLAUDE.md](../../CLAUDE.md). No long-lived compatibility shims; one canonical wire shape per generation; cross-team cutover is lock-step. |
 
@@ -99,7 +99,7 @@ For every op below: channel, wire shape, emission ordering guarantee, idempotenc
 ### 3.1 History Track — UpsertCommit / UpsertRef / UpsertTag / DeleteRef / DeleteTag
 
 **Channel:** [`LexicalChannelOp`](../../crates/quanta-index-contract/src/channel/ops.rs).
-**Consumed by:** [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md).
+**Consumed by:** [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md).
 
 #### 3.1.1 Wire shapes
 
@@ -137,7 +137,7 @@ The producer MUST guarantee, per `(repo, revision, generation)` window:
 2. **Ref / tag ordering** — `UpsertRef` / `UpsertTag` MUST follow the `UpsertCommit` whose `sha` they reference. A ref pointing at an absent sha is a producer bug; the search side raises `HISTORY_REF_NOT_FOUND` and does not buffer.
 3. **Channel seq monotonicity** — already guaranteed by the channel ([channel-architecture.md §4.2 frame format](channel-architecture.md)).
 
-This lets the search side ([LEX-07 §5.0 Step Pre-A](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md)) insert each commit into the local `CommitGraph` in arrival order without a separate buffer-and-replay phase.
+This lets the search side ([LEX-07 §5.0 Step Pre-A](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md)) insert each commit into the local `CommitGraph` in arrival order without a separate buffer-and-replay phase.
 
 Search-side enforcement: on `UpsertCommit` whose `commit.parents` references an unknown sha → typed `HISTORY_COMMIT_PARENT_UNKNOWN`; track marked degraded per [channel-architecture.md §4.6](channel-architecture.md). No silent buffering, no heuristic fallback.
 
@@ -158,7 +158,7 @@ No mutation of an existing commit row is ever permitted on the wire. Generations
 
 #### 3.1.4 Diff hunk authorship (AMB-PROD-4)
 
-[LEX-07 §4.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) ships a per-generation `diff_hunks/` sibling shard with fields `{commit_id, repo_relative_path, hunk_id, side, added_text, removed_text, touched_text}`. There is currently no op that carries this payload. Two options:
+[LEX-07 §4.5](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) ships a per-generation `diff_hunks/` sibling shard with fields `{commit_id, repo_relative_path, hunk_id, side, added_text, removed_text, touched_text}`. There is currently no op that carries this payload. Two options:
 
 | Option | Shape | Op count | Per-op size | Streaming behaviour |
 |---|---|---|---|---|
@@ -182,7 +182,7 @@ DiffHunkRecord {
 DiffSide = Added | Removed | Touched
 ```
 
-**Recommendation: Option Y.** Smaller per-op payloads keep frame size under the 16 MiB cap ([channel-architecture.md §4.2](channel-architecture.md)) for large commits, preserve streaming hygiene, and align with the per-record incremental boundary already locked in [LEX-05 §3.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md).
+**Recommendation: Option Y.** Smaller per-op payloads keep frame size under the 16 MiB cap ([channel-architecture.md §4.2](channel-architecture.md)) for large commits, preserve streaming hygiene, and align with the per-record incremental boundary already locked in [LEX-05 §3.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md).
 
 Ordering under Option Y: every `UpsertDiffHunk { commit_sha }` MUST follow the corresponding `UpsertCommit { commit.sha == commit_sha }` in the same generation window. Producer decides the final call; this doc records the recommendation. Tracked in §7 as `AMB-PROD-4`.
 
@@ -193,7 +193,7 @@ Re-applying any of `UpsertCommit` / `UpsertRef` / `UpsertTag` / `DeleteRef` / `D
 ### 3.2 Runtime Track — UpsertDirty / EvictDirty
 
 **Channel:** [`LexicalChannelOp`](../../crates/quanta-index-contract/src/channel/ops.rs).
-**Consumed by:** [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md).
+**Consumed by:** [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md).
 
 #### 3.2.1 Wire shapes
 
@@ -238,13 +238,13 @@ Search-side guarantee: the dispatcher applies ops in seq order ([channel-archite
 
 #### 3.2.4 Generation alignment
 
-`UpsertDirty` MUST carry the currently-active `generation`. If the producer emits an `UpsertDirty` with a `generation` strictly less than the search-side currently-active gen, the search side raises `DIRTY_STALE_GEN` per [RT-01 §4.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) and drops the entry from the buffer (channel cursor still advances; this is not a corruption).
+`UpsertDirty` MUST carry the currently-active `generation`. If the producer emits an `UpsertDirty` with a `generation` strictly less than the search-side currently-active gen, the search side raises `DIRTY_STALE_GEN` per [RT-01 §4.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) and drops the entry from the buffer (channel cursor still advances; this is not a corruption).
 
 On `Seal` for `generation = N+1`, the search side evicts all dirty entries pinned to `N` — the producer is expected to re-emit `UpsertDirty` against the new generation if the dirty state persists across the seal.
 
 #### 3.2.5 WAL retention horizon (AMB-PROD-9)
 
-[Channel-architecture.md §4.3](channel-architecture.md) says segment GC happens after subscriber ack at a rotation boundary. [RT-01 §4.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) sets the search-side TTL default at **300 seconds**.
+[Channel-architecture.md §4.3](channel-architecture.md) says segment GC happens after subscriber ack at a rotation boundary. [RT-01 §4.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) sets the search-side TTL default at **300 seconds**.
 
 Rule: the producer-side WAL segment retention horizon MUST be greater than or equal to `max(subscriber_lag, search_side_dirty_ttl)`. With default TTL of 300 s, the producer keeps segments alive for at least 300 s past subscriber ack so a search-side restart within the TTL window can replay the buffer.
 
@@ -252,19 +252,19 @@ This is a producer-side configuration concern; the channel SSOT does not enforce
 
 #### 3.2.6 Validation timing (AMB-PROD-10)
 
-`DIRTY_BAD_IDENTITY` (an `UpsertDirty.doc_id` that does not correspond to any known chunk in the active generation) is enforced **synchronously at decode + apply time** in `DirtyBuffer::apply`, per [RT-01 §8 / §4.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md). This is NOT eventually-consistent.
+`DIRTY_BAD_IDENTITY` (an `UpsertDirty.doc_id` that does not correspond to any known chunk in the active generation) is enforced **synchronously at decode + apply time** in `DirtyBuffer::apply`, per [RT-01 §8 / §4.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md). This is NOT eventually-consistent.
 
 Rejected ops never enter the buffer; the typed event `runtime.dirty.rejected{reason=DIRTY_BAD_IDENTITY}` surfaces on the observability rail; the channel cursor still advances (the op was structurally valid but semantically rejected).
 
 #### 3.2.7 Idempotency
 
-`EvictDirty` for an absent `doc_id` is a no-op `Ok(None)` (per [RT-01 §5.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md)). Channel at-least-once delivery makes this expected on restart.
+`EvictDirty` for an absent `doc_id` is a no-op `Ok(None)` (per [RT-01 §5.5](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md)). Channel at-least-once delivery makes this expected on restart.
 
 ### 3.3 Structural Track — UpsertParseTree / DeleteParseTree (gated)
 
 **Channel:** [`LexicalChannelOp`](../../crates/quanta-index-contract/src/channel/ops.rs).
-**Consumed by:** [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md).
-**Gating:** This op only fires if STR-01 Option A is chosen ([STR-01 §1.1](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md)). If STR-01 ships under Option B (v2 deferral), this op never appears on the wire. The integrator picks Option A vs B at wave-5 entry; tracked as `AMB-PROD-11` in §7.
+**Consumed by:** [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md).
+**Gating:** This op only fires if STR-01 Option A is chosen ([STR-01 §1.1](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md)). If STR-01 ships under Option B (v2 deferral), this op never appears on the wire. The integrator picks Option A vs B at wave-5 entry; tracked as `AMB-PROD-11` in §7.
 
 #### 3.3.1 Wire shapes
 
@@ -301,12 +301,12 @@ DeleteParseTree { repo, revision, generation, chunk_id: ChunkId }
 
 #### 3.3.4 Capacity
 
-Per-record limits inherited from [STR-01 §3](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md): there is no producer-side cap on parse tree depth or node count, but search-side query-time limits apply (256 nodes / 16 depth for the **pattern**, not the tree being matched). A pathological tree (e.g. > 1 MiB encoded) approaches the 16 MiB frame cap ([channel-architecture.md §4.2](channel-architecture.md)); the producer is responsible for splitting chunks if needed.
+Per-record limits inherited from [STR-01 §3](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md): there is no producer-side cap on parse tree depth or node count, but search-side query-time limits apply (256 nodes / 16 depth for the **pattern**, not the tree being matched). A pathological tree (e.g. > 1 MiB encoded) approaches the 16 MiB frame cap ([channel-architecture.md §4.2](channel-architecture.md)); the producer is responsible for splitting chunks if needed.
 
 ### 3.4 SymbolRecord (extends existing UpsertSymbol payload)
 
 **Channel:** [`LexicalChannelOp::UpsertSymbol`](../../crates/quanta-index-contract/src/channel/ops.rs) (already shipped).
-**Consumed by:** [LEX-05](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md).
+**Consumed by:** [LEX-05](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md).
 
 The current shipped `UpsertSymbol` struct in [crates/quanta-index-contract/src/channel/ops.rs](../../crates/quanta-index-contract/src/channel/ops.rs) carries `payload: Vec<u8>` — opaque at the transport layer. This section formalises the CBOR decoded shape.
 
@@ -333,7 +333,7 @@ SymbolSpan {
 }
 ```
 
-The CBOR `payload` bytes inside `UpsertSymbol.payload` decode to a `SymbolRecord` value. The decoder lives at `crates/quanta-index-lexical/src/symbol/decode.rs` per [LEX-05 §4.1](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md).
+The CBOR `payload` bytes inside `UpsertSymbol.payload` decode to a `SymbolRecord` value. The decoder lives at `crates/quanta-index-lexical/src/symbol/decode.rs` per [LEX-05 §4.1](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md).
 
 The wire-shape identity carrier of `UpsertSymbol` is `symbol_id` (assigned by the producer). Search-side index identity is the dedup key per §3.5.1; the search side records the wire `symbol_id` in its sidecar so producer-driven `DeleteSymbol { symbol_id }` resolves to the correct shard entry.
 
@@ -353,7 +353,7 @@ SymbolKind = function | method | class | struct | enum
 
 12 variants. The producer emits exactly one per `SymbolRecord`. An out-of-set value is `SYMBOL_RECORD_INVALID{field=kind}` per §6.
 
-Note: [LEX-05 §3.3](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md) lists 20 variants for a longer-term landing. This doc pins the **v1 wire set** at 12. Variants 13..20 are reserved; emitting them requires a coordinated `wire_version` bump per §5.
+Note: [LEX-05 §3.3](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md) lists 20 variants for a longer-term landing. This doc pins the **v1 wire set** at 12. Variants 13..20 are reserved; emitting them requires a coordinated `wire_version` bump per §5.
 
 #### 3.4.3 SymbolRelationship
 
@@ -361,7 +361,7 @@ Note: [LEX-05 §3.3](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05
 SymbolRelationship = Def | Ref
 ```
 
-This is the boundary lock from [LEX-05 §3.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md): the producer distinguishes definition records from reference records. The search side does not resolve cross-file `Def → Ref` edges in v1; that is downstream (SEM-01 / cross-ref planner family).
+This is the boundary lock from [LEX-05 §3.5](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md): the producer distinguishes definition records from reference records. The search side does not resolve cross-file `Def → Ref` edges in v1; that is downstream (SEM-01 / cross-ref planner family).
 
 #### 3.4.4 Versioning policy (AMB-PROD-5)
 
@@ -371,7 +371,7 @@ Every `SymbolRecord` carries `wire_version: u32`. Bumping requires a coordinated
 
 This section is the authoritative contract for **delta-handling semantics** across every op in §3.1–§3.4 plus the already-shipped `Upsert*` / `Delete*` family. It exists because the channel transport guarantees at-least-once delivery and replay (per [channel-architecture.md §4.5](channel-architecture.md), [§4.7](channel-architecture.md)), but the per-builder application semantics on the search side need an explicit identity / cascade / replay rule. Without this section, two valid-looking producer emissions can drive a search-side builder into accumulated duplicates or orphaned shard entries.
 
-Round-5 builder hardening (`upsert_X`, `remove_X`, `from_prior(...)` APIs across trigram / positions / symbol / scorer) is the search-side implementation of these rules. Code-level surface lives in the LQ builder crates ([SHIPPED.md §7 item 2](../plans/may-24-lexical-indexing-sorucegraph/SHIPPED.md)) and is not normative; this section is.
+Round-5 builder hardening (`upsert_X`, `remove_X`, `from_prior(...)` APIs across trigram / positions / symbol / scorer) is the search-side implementation of these rules. Code-level surface lives in the LQ builder crates ([SHIPPED.md §7 item 2](../plans/may-24-lexical-indexing-sourcegraph/SHIPPED.md)) and is not normative; this section is.
 
 #### 3.5.1 Identity rules per record type
 
@@ -383,7 +383,7 @@ The producer carries one wire identity per op; the search side has a correspondi
 | `UpsertSymbol { symbol: SymbolRecord }` | `symbol.symbol_id` | `(doc_id, name, kind, span.byte_start)` per `SymbolIndexBuilder::upsert_symbol` | overwrite at the wire-identity slot; the shard identity is the dedup key inside that slot |
 | `UpsertCommit { commit: CommitRecord }` | `commit.sha` | `(generation, sha)` per §3.1.5 | overwrite allowed but rare; force-push triggers fresh generation per §3.1.3 (AMB-PROD-3) |
 | `UpsertRef { name, sha }` / `UpsertTag { name, sha }` | `(generation, name)` | same | overwrite — last-write-wins per generation |
-| `UpsertDirty { doc_id, applied_at_ms, payload_hash }` | `doc_id` | `doc_id` | overwrite — RT-01 dirty buffer is idempotent per [RT-01 §5.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) |
+| `UpsertDirty { doc_id, applied_at_ms, payload_hash }` | `doc_id` | `doc_id` | overwrite — RT-01 dirty buffer is idempotent per [RT-01 §5.5](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) |
 | `UpsertParseTree { chunk_id, tree }` | `chunk_id` | `chunk_id` | overwrite — replaces the structural sibling entry |
 | `UpsertEmbedding { embedding: EmbeddingRecord }` | `embedding.embedding_id` | `embedding_id` | overwrite — HNSW idempotent insert |
 
@@ -395,7 +395,7 @@ Deletes are typed at the wire level; some cascade across sibling shards, others 
 
 | Op | Direct shard | Cascades to |
 |---|---|---|
-| `DeleteChunk { chunk_id }` | lexical text shard | trigram shard (per-doc trigram set removed) + positions shard (per-doc positions removed) + scorer shard (per-doc length/term-freq contribution removed) + symbol shard via `SymbolIndexBuilder::remove_doc(doc_id)` (every symbol whose `(doc_id, …)` matches is purged) + structural shard (every `ParseTreeRecord { chunk_id == this }` is purged) + semantic shard via `SemanticIndexBuilder::remove_embedding(doc_id)` (every embedding whose `embedding_id == chunk_id` per §3.5.1 wire-identity equivalence is tombstoned; gated on Round 7a HNSW delta API landing per [tickets/RFC-SEM-02.md §12 Q-RFC-SEM-02-3](../plans/may-24-lexical-indexing-sorucegraph/tickets/RFC-SEM-02.md)) |
+| `DeleteChunk { chunk_id }` | lexical text shard | trigram shard (per-doc trigram set removed) + positions shard (per-doc positions removed) + scorer shard (per-doc length/term-freq contribution removed) + symbol shard via `SymbolIndexBuilder::remove_doc(doc_id)` (every symbol whose `(doc_id, …)` matches is purged) + structural shard (every `ParseTreeRecord { chunk_id == this }` is purged) + semantic shard via `SemanticIndexBuilder::remove_embedding(doc_id)` (every embedding whose `embedding_id == chunk_id` per §3.5.1 wire-identity equivalence is tombstoned; gated on Round 7a HNSW delta API landing per [tickets/RFC-SEM-02.md §12 Q-RFC-SEM-02-3](../plans/may-24-lexical-indexing-sourcegraph/tickets/RFC-SEM-02.md)) |
 | `DeleteSymbol { symbol_id }` | symbol shard | **none** — only the named symbol_id is removed; other symbols in the same doc remain |
 | `DeleteRef { name }` / `DeleteTag { name }` | ref / tag index | none |
 | `EvictDirty { doc_id }` | RT-01 dirty buffer | none |
@@ -530,14 +530,14 @@ Typed codes the search side raises against producer-emitted ops. Per [channel-ar
 
 | Code | Cause | Site |
 |---|---|---|
-| `SYMBOL_PAYLOAD_DECODE_FAIL{at_seq, reason}` | CBOR decode of `UpsertSymbol.payload` fails (truncated / non-CBOR / type mismatch) | `crates/quanta-index-lexical/src/symbol/decode.rs` per [LEX-05 §8](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md). |
+| `SYMBOL_PAYLOAD_DECODE_FAIL{at_seq, reason}` | CBOR decode of `UpsertSymbol.payload` fails (truncated / non-CBOR / type mismatch) | `crates/quanta-index-lexical/src/symbol/decode.rs` per [LEX-05 §8](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md). |
 | `SYMBOL_RECORD_INVALID{at_seq, field}` | CBOR decode succeeds but a required field is missing / out of range (empty `name`, unknown `kind` enum, non-monotonic `span`, `lang` not in `LangId`, `wire_version` outside accepted range) | post-decode validation. |
 
 ### 6.2 History track
 
 | Code | Cause | Site |
 |---|---|---|
-| `HISTORY_COMMIT_DECODE_FAIL{at_seq, reason}` | CBOR decode of `UpsertCommit.commit` fails | [LEX-07 §5.0](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) decoder. |
+| `HISTORY_COMMIT_DECODE_FAIL{at_seq, reason}` | CBOR decode of `UpsertCommit.commit` fails | [LEX-07 §5.0](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) decoder. |
 | `HISTORY_COMMIT_PARENT_UNKNOWN{at_seq, sha}` | `commit.parents` references a sha not seen in the same generation window — violates §3.1.2 ordering | `CommitGraph::add_commit`. |
 | `HISTORY_REF_DECODE_FAIL{at_seq, reason}` | `UpsertRef` / `UpsertTag` / `DeleteRef` / `DeleteTag` payload malformed | ref/tag decoder. |
 | `HISTORY_REF_NOT_FOUND{name}` | `UpsertRef` / `UpsertTag` references an unknown sha (producer ordering violation per §3.1.2) | ref index. |
@@ -546,16 +546,16 @@ Typed codes the search side raises against producer-emitted ops. Per [channel-ar
 
 | Code | Cause | Site |
 |---|---|---|
-| `STR_PARSE_TREE_DECODE_FAIL{at_seq, reason}` | `UpsertParseTree.tree` CBOR decode fails or `source_hash` mismatch | `quanta-index-structural` decode adapter per [STR-01 §3.1](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md). |
+| `STR_PARSE_TREE_DECODE_FAIL{at_seq, reason}` | `UpsertParseTree.tree` CBOR decode fails or `source_hash` mismatch | `quanta-index-structural` decode adapter per [STR-01 §3.1](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md). |
 | `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` | structural query against a chunk for which no `ParseTreeRecord` was ever emitted; surfaced under Option B as the default failure of `match_pattern` | query path. |
 
 ### 6.4 Runtime / dirty track
 
 | Code | Cause | Site |
 |---|---|---|
-| `DIRTY_PAYLOAD_DECODE_FAIL{at_seq, reason}` | `UpsertDirty` / `EvictDirty` payload malformed | dispatcher decode site per [RT-01 §5.5](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md). |
+| `DIRTY_PAYLOAD_DECODE_FAIL{at_seq, reason}` | `UpsertDirty` / `EvictDirty` payload malformed | dispatcher decode site per [RT-01 §5.5](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md). |
 | `DIRTY_STALE_GEN{op_gen, active_gen}` | `UpsertDirty` carries `generation < active_gen` — §3.2.4 violation | `DirtyBuffer::apply`. |
-| `DIRTY_BUFFER_FULL` | per-tenant per-repo buffer at capacity ceiling; offending op dropped, existing entries preserved | `DirtyBuffer::apply` per [RT-01 §4.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md). |
+| `DIRTY_BUFFER_FULL` | per-tenant per-repo buffer at capacity ceiling; offending op dropped, existing entries preserved | `DirtyBuffer::apply` per [RT-01 §4.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md). |
 | `DIRTY_BAD_IDENTITY{doc_id}` | `UpsertDirty.doc_id` does not name a known chunk in the active generation — §3.2.6 enforced sync at apply | `DirtyBuffer::apply`. |
 | `DIRTY_TTL_EXPIRED` | (search-side only; not a producer-facing code) sweep evicted a dirty entry past TTL | sweep worker. |
 
@@ -581,17 +581,17 @@ Per [../../CLAUDE.md](../../CLAUDE.md) and [channel-architecture.md §4.6](chann
 
 | AMB-ID | Producer decision needed | Recommended default | Blocking ticket | This doc § |
 |---|---|---|---|---|
-| AMB-PROD-1 | Commit emission ordering (topological vs buffered) | Topological per-generation; parents always precede children | [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) | §3.1.2 |
-| AMB-PROD-2 | `CommitRecord` full wire shape | Locked here: `{sha, parents, applied_at_ms, author, committer, message, is_merge, tags}` | [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) + contract pin | §3.1.1 |
-| AMB-PROD-3 | `DeleteCommit` op — present? force-push handling | NOT in v1. Force-push → fresh generation | [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) | §3.1.3 |
-| AMB-PROD-4 | Diff hunk authorship — inline (X) vs separate op (Y) | **Option Y** — new `UpsertDiffHunk` op for streaming hygiene | [LEX-07](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) | §3.1.4 |
-| AMB-PROD-5 | `SymbolRecord` wire-shape versioning policy | Embedded `wire_version: u32` per record; producer ADR per revision; search-side pins `[min,max]` range; breaking-first cutover | [LEX-05](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md) | §3.4.4, §5 |
-| AMB-PROD-6 | `ParseTreeRecord` wire-shape + version field policy | Embedded `wire_version: u32`; recursive `ParseNode` with `source_hash` integrity check | [STR-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) | §3.3.1, §5 |
-| AMB-PROD-7 | Producer `UpsertDirty` emission cadence (per-edit / batched / debounce) | Producer chooses. Recommended default: per-edit with 100 ms debounce ceiling | [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) | §3.2.2 |
-| AMB-PROD-8 | `EvictDirty` vs `UpsertDirty` ordering at same doc_id | Channel seq monotonicity is authority; producer MUST emit new `UpsertDirty` at seq > any prior `EvictDirty` for the same doc | [RT-01](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) | §3.2.3 |
+| AMB-PROD-1 | Commit emission ordering (topological vs buffered) | Topological per-generation; parents always precede children | [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) | §3.1.2 |
+| AMB-PROD-2 | `CommitRecord` full wire shape | Locked here: `{sha, parents, applied_at_ms, author, committer, message, is_merge, tags}` | [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) + contract pin | §3.1.1 |
+| AMB-PROD-3 | `DeleteCommit` op — present? force-push handling | NOT in v1. Force-push → fresh generation | [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) | §3.1.3 |
+| AMB-PROD-4 | Diff hunk authorship — inline (X) vs separate op (Y) | **Option Y** — new `UpsertDiffHunk` op for streaming hygiene | [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) | §3.1.4 |
+| AMB-PROD-5 | `SymbolRecord` wire-shape versioning policy | Embedded `wire_version: u32` per record; producer ADR per revision; search-side pins `[min,max]` range; breaking-first cutover | [LEX-05](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md) | §3.4.4, §5 |
+| AMB-PROD-6 | `ParseTreeRecord` wire-shape + version field policy | Embedded `wire_version: u32`; recursive `ParseNode` with `source_hash` integrity check | [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md) | §3.3.1, §5 |
+| AMB-PROD-7 | Producer `UpsertDirty` emission cadence (per-edit / batched / debounce) | Producer chooses. Recommended default: per-edit with 100 ms debounce ceiling | [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) | §3.2.2 |
+| AMB-PROD-8 | `EvictDirty` vs `UpsertDirty` ordering at same doc_id | Channel seq monotonicity is authority; producer MUST emit new `UpsertDirty` at seq > any prior `EvictDirty` for the same doc | [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) | §3.2.3 |
 | AMB-PROD-9 | WAL retention horizon vs RT-01 TTL (300 s default) | Producer keeps segments alive for at least `max(subscriber_lag, dirty_ttl)`; default ≥ 300 s | [channel-architecture.md §4.3](channel-architecture.md) | §3.2.5 |
-| AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing (sync vs async) | Sync at decode + apply in `DirtyBuffer::apply` | [RT-01 §8](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) | §3.2.6 |
-| AMB-PROD-11 | Q-STR-01-OPTION — Option A (v1 with `UpsertParseTree`) vs Option B (v2 deferral) | Integrator decision at wave-5 entry; recommendation: Option A only if producer commits to shipping parse trees in time, else Option B with `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` typed failure | [STR-01 §1.1](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) | §3.3 |
+| AMB-PROD-10 | `DIRTY_BAD_IDENTITY` validation timing (sync vs async) | Sync at decode + apply in `DirtyBuffer::apply` | [RT-01 §8](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) | §3.2.6 |
+| AMB-PROD-11 | Q-STR-01-OPTION — Option A (v1 with `UpsertParseTree`) vs Option B (v2 deferral) | Integrator decision at wave-5 entry; recommendation: Option A only if producer commits to shipping parse trees in time, else Option B with `STR_PRODUCER_PARSE_TREE_UNAVAILABLE` typed failure | [STR-01 §1.1](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md) | §3.3 |
 
 ### 7.1 New ambiguity surfaced during authoring
 
@@ -611,7 +611,7 @@ The cutover from "proposed" ([channel-architecture.md §3.1 status](channel-arch
 | 2 | Producer commits to `wire_version = 1` for the new ops + amended `UpsertSymbol` shape | producer lead | producer-side release notes |
 | 3 | Search side pins `[min_wire_version=1, max_wire_version=1]` consumers in [`quanta-index-contract::channel`](../../crates/quanta-index-contract/src/channel/ops.rs) | search lead | PR landing the contract pin |
 | 4 | Joint test corpus: producer publishes a fixture stream covering every op in §3 against a known repo snapshot | producer lead | `tests/fixtures/producer-handoff-v1/*.wal` + `expected.json` |
-| 5 | Search side runs the conformance corpus ([PRE-CONF](../plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONF.md)) against the producer fixture stream | search lead | conformance run report (junit XML) |
+| 5 | Search side runs the conformance corpus ([PRE-CONF](../plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONF.md)) against the producer fixture stream | search lead | conformance run report (junit XML) |
 | 6 | Both teams sign off the conformance result | both leads | mutual sign-off recorded in this doc + producer release notes |
 | 7 | Cutover locks: producer flips `wire_version = 1` emission on; search side flips the new-op handlers on; old "proposed" status flips to "shipped" in [channel-architecture.md §3.1](channel-architecture.md) | both | coordinated release |
 
@@ -643,15 +643,15 @@ Once cutover is locked:
 
 ### 9.2 Corrected ticket specs (downstream consumers)
 
-- [LEX-05.md](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-05.md) — `SymbolRecord` decoder + symbol shard. Consumes §3.4.
-- [LEX-07.md](../plans/may-24-lexical-indexing-sorucegraph/tickets/LEX-07.md) — commit / ref / tag callbacks + history sidecar. Consumes §3.1.
-- [STR-01.md](../plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) — parse tree consumer (Option A) or scaffold-only (Option B). Consumes §3.3.
-- [RT-01.md](../plans/may-24-lexical-indexing-sorucegraph/tickets/RT-01.md) — dirty buffer channel-subscriber callback. Consumes §3.2.
+- [LEX-05.md](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-05.md) — `SymbolRecord` decoder + symbol shard. Consumes §3.4.
+- [LEX-07.md](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md) — commit / ref / tag callbacks + history sidecar. Consumes §3.1.
+- [STR-01.md](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md) — parse tree consumer (Option A) or scaffold-only (Option B). Consumes §3.3.
+- [RT-01.md](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md) — dirty buffer channel-subscriber callback. Consumes §3.2.
 
 ### 9.3 Index of corrections
 
-- [INDEX.md §3.6](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md) — producer-authorship correction table; this doc is the agreement artefact for the corrected specs.
-- [INDEX.md §3.7](../plans/may-24-lexical-indexing-sorucegraph/tickets/INDEX.md) — the 11 `AMB-PROD-*` items resolved in §7 above.
+- [INDEX.md §3.6](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) — producer-authorship correction table; this doc is the agreement artefact for the corrected specs.
+- [INDEX.md §3.7](../plans/may-24-lexical-indexing-sourcegraph/tickets/INDEX.md) — the 11 `AMB-PROD-*` items resolved in §7 above.
 
 ### 9.4 Current shipped surface
 

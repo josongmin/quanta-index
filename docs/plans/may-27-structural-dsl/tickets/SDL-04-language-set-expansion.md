@@ -21,7 +21,7 @@ closing the main correctness gap.
 - `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
 - `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`
 - `docs/ssot/producer-handoff.md`
-- `docs/plans/may-24-lexical-indexing-sorucegraph/feature-scope.md`
+- `docs/plans/may-24-lexical-indexing-sourcegraph/feature-scope.md`
 
 ## File-level work breakdown
 

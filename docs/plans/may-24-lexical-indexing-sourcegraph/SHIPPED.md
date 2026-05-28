@@ -419,4 +419,4 @@ Major decisions locked during the program. Each row is a final, non-revisitable 
 
 ## End of SHIPPED record
 
-This document is the authoritative "where we landed" doc for the May-24 Lexical Kernel program. Per CLAUDE.md generated-doc rules, this file is hand-authored (not produced by `tools/prompt-manager/`) and is checked into `docs/plans/may-24-lexical-indexing-sorucegraph/` alongside the source spec sheets it summarises. Any post-completion drift between this doc and the per-ticket spec sheets / SSOTs / RFC must be filed as a follow-up against this file's owner.
+This document is the authoritative "where we landed" doc for the May-24 Lexical Kernel program. Per CLAUDE.md generated-doc rules, this file is hand-authored (not produced by `tools/prompt-manager/`) and is checked into `docs/plans/may-24-lexical-indexing-sourcegraph/` alongside the source spec sheets it summarises. Any post-completion drift between this doc and the per-ticket spec sheets / SSOTs / RFC must be filed as a follow-up against this file's owner.

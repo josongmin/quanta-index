@@ -7,7 +7,7 @@ Each ticket carries: Owner files / Acceptance / Blockers / Proof.
 Cross-repo proof for semantica is tracked separately as `SM-VRF-01` in the semantica repo. This document only records the quanta-index side.
 
 Follow-on packet:
-- [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sorucegraph/tickets/SDK-ENTRY-01.md)
+- [may-24 lexical ticket `SDK-ENTRY-01`](may-24-lexical-indexing-sourcegraph/tickets/SDK-ENTRY-01.md)
 - purpose: after the baseline SDK / ingest IPC cutover below, freeze the
   remaining history / runtime / structural source-authority entry to
   `quanta-index-sdk` only. That repo-local follow-on is now landed on the
@@ -351,7 +351,7 @@ Demote `quanta-index-contract` / `quanta-index-channel` / `quanta-index-ipc` fro
 - [crates/quanta-index-contract/src/lib.rs:30](../../crates/quanta-index-contract/src/lib.rs#L30) (trim `pub use`)
 - [crates/quanta-index-sdk/src/lib.rs](../../crates/quanta-index-sdk/src/lib.rs) (drop re-exports)
 - [tools/prompt-manager/sources/](../../tools/prompt-manager/sources/) (architectural docs)
-- [docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md](may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md)
+- [docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md](may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md)
 - [tools/ci/lint/baselines/public-api/quanta-index-contract.txt](../../tools/ci/lint/baselines/public-api/quanta-index-contract.txt) (reduced baseline)
 
 **Acceptance**

@@ -9,7 +9,7 @@
 //! Safety rules (no silent fallback to a generic / Unknown variant).
 //!
 //! Spec source: the per-crate code tables enumerated in
-//! [`docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md).
+//! [`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md).
 //! Final reconciliation against `usecase.md` §0 is the consuming ticket's job
 //! (PRE-NORM, LEX-01..05, LEX-07, STR-01, BRIDGE-01); this scaffold lists every
 //! variant claimed by the per-crate placeholders so they can route through one

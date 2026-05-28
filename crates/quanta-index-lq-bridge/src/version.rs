@@ -9,7 +9,7 @@
 //! [`TRANSLATOR_VERSION`] is stamped on every `BridgeCandidate` so a
 //! downstream consumer can correlate a refusal with the translator
 //! version that emitted it (per
-//! [BRIDGE-01 § 4 deliverable 3 / § 5.4 step 4](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md)).
+//! [BRIDGE-01 § 4 deliverable 3 / § 5.4 step 4](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md)).
 //!
 //! D18 — hand-rolled serde; no proc-macro derives.
 
@@ -20,7 +20,7 @@ use crate::errors::BridgeError;
 /// Currently-supported Sourcegraph reference release.
 ///
 /// Bump policy: every 6 months by default; emergency bumps require an
-/// RFC amendment per [BRIDGE-01 § 10 BR-R1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md).
+/// RFC amendment per [BRIDGE-01 § 10 BR-R1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md).
 pub const SUPPORTED_SG_VERSION: &str = "sg-5.5.0";
 
 /// Stable translator version stamped on every `BridgeCandidate`. Format

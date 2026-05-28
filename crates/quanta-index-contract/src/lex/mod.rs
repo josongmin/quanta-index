@@ -3,7 +3,7 @@
 //!
 //! This module lands the contract-side canonical shapes that the 16 `lq_*`
 //! crates currently duplicate as private placeholders (per
-//! [`docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/PRE-CONTRACT-EXT.md)).
+//! [`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md)).
 //! Wire shapes are pinned in
 //! [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
 //! (sections 3.1.1, 3.2, 3.3, 3.4 — `CommitRecord`, `DirtyRecord`,

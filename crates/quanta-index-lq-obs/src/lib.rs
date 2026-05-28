@@ -4,7 +4,7 @@
 //!
 //! This crate ships the **typed contract for emission** of the LQ
 //! observability surface per
-//! `docs/plans/may-24-lexical-indexing-sorucegraph/tickets/OBS-01.md`.
+//! `docs/plans/may-24-lexical-indexing-sourcegraph/tickets/OBS-01.md`.
 //! It does NOT ship a transport (no `OTel` wire, no Prometheus exporter)
 //! — that lives in the integration ticket which depends on this crate.
 //!

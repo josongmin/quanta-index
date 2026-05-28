@@ -386,7 +386,7 @@ All 13 rows shipped (32 tests in `quanta-index-corpus-smoke`).
    - expected: `100`
    - proof: closes [implementation-plan.md § 5.3 DoD bullet 2](../implementation-plan.md).
 3. ✓ shipped — **Every `UC-*` and `AC-*` row from [usecase.md § 2](../usecase.md) + § 4 has exactly one `.toml` file.**
-   - command: `for id in $(grep -oE '(UC|AC)-[A-Z]+-[0-9]+' docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md | sort -u); do test -f "usecase-corpus/$id.toml" || echo "MISSING: $id"; done`
+   - command: `for id in $(grep -oE '(UC|AC)-[A-Z]+-[0-9]+' docs/plans/may-24-lexical-indexing-sourcegraph/usecase.md | sort -u); do test -f "usecase-corpus/$id.toml" || echo "MISSING: $id"; done`
    - expected: empty stdout (no MISSING lines)
    - proof: closes 1:1 row mapping.
 4. ✓ shipped — **Agent output validates against the schema.**

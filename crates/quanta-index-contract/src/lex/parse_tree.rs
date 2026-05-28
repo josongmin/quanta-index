@@ -1,7 +1,7 @@
 //! `ParseTreeRecord` + `ParseNode` (recursive).
 //!
 //! PROPOSED: gated on STR-01 Option A integration decision
-//! ([`docs/plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md`](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/STR-01.md)
+//! ([`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md)
 //! §1.1; [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
 //! §3.3 + AMB-PROD-11). If Option B is selected at wave-5 entry, this op
 //! never appears on the wire and these types remain a scaffold-only shape so

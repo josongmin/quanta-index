@@ -4,7 +4,7 @@
 //! [`crate::version`], and [`crate::candidate`] maps to exactly one
 //! [`BridgeErrorCode`] variant. No silent failure, no silent fallback,
 //! no panic. Per CLAUDE.md § Agent change posture (`breaking-first`)
-//! and per FS-GAP-2 closure ([feature-scope.md § 1.5](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/feature-scope.md)).
+//! and per FS-GAP-2 closure ([feature-scope.md § 1.5](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/feature-scope.md)).
 //!
 //! D18 — every wire shape is hand-rolled `impl serde::Serialize` /
 //! `Deserialize`; no proc-macro derives.
@@ -15,7 +15,7 @@ use core::fmt;
 ///
 /// Wire form is `SCREAMING_SNAKE_CASE`. The five variants here cover the
 /// translator-local refusals locked in
-/// [BRIDGE-01 § 8.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md);
+/// [BRIDGE-01 § 8.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md);
 /// downstream sink / overflow / provenance codes from § 8.1 are out of scope
 /// for this translator crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

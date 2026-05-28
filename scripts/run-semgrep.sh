@@ -10,4 +10,8 @@ if [[ $# -eq 0 ]]; then
   set -- .
 fi
 
-exec semgrep --config "${CONFIG_PATH}" --error "$@"
+# --timeout 300: raise the per-file analysis budget from semgrep's 30s default so the
+# largest production files (query_dispatcher.rs ~5.4k LOC, lexical/lib.rs ~3.4k LOC) are
+# fully scanned instead of being silently skipped on timeout, which would hide
+# silent-fallback findings in exactly the hottest files.
+exec semgrep --config "${CONFIG_PATH}" --error --timeout 300 "$@"

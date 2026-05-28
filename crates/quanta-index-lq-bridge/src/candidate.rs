@@ -2,7 +2,7 @@
 //! already-translated Sourcegraph query.
 //!
 //! Per [BRIDGE-01 § 4 deliverable
-//! 3](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md),
+//! 3](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md),
 //! every bridge output carries:
 //!
 //! - `source_syntax`: the original Sourcegraph input string (retained

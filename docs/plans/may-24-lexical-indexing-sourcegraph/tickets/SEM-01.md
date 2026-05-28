@@ -340,7 +340,7 @@ Each item must be provable via the artifact listed; missing artifact = `blocked`
 | 3 | ✓ shipped | `SemanticIndexBuildPort::build` writes a real shard | `cargo test -p quanta-index-lq-semantic --test build_search_roundtrip` |
 | 4 | ✓ shipped | `SemanticIndexOpenPort::open` honors `MARKER_OK` and generation pin | `cargo test -p quanta-index-lq-semantic --test marker_and_pin` |
 | 5 | ✓ shipped | `SemanticSearcher::search` returns deterministically ordered top-k (HNSW + SipHasher24 seed) | `cargo test -p quanta-index-lq-semantic --test deterministic_topk` |
-| 6 | ✓ shipped | All 12 `UC-SEM-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-SEM-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category I+1; `tools/ci/conformance/lq/UC-SEM-*.toml` files exist |
+| 6 | ✓ shipped | All 12 `UC-SEM-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-SEM-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sourcegraph/usecase.md` shows category I+1; `tools/ci/conformance/lq/UC-SEM-*.toml` files exist |
 | 7 | ✓ shipped | Cross-instance reproducibility CI step is green for semantic queries | `ci/lq-cross-instance-semantic` CI rail |
 | 8 | ✓ shipped | Vector validation rejects NaN/non-finite at write and read | `cargo test -p quanta-index-lq-semantic --test vector_validation` |
 | 9 | ✓ shipped | Index version pin round-trips through manifest (HNSW format) | `cargo test -p quanta-index-lq-semantic --test index_version_pin` |

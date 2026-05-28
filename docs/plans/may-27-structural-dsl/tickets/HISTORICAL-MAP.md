@@ -7,9 +7,9 @@ without moving the original files.
 
 Normative parent docs:
 
-- [../../may-24-lexical-indexing-sorucegraph/dsl.md](../../may-24-lexical-indexing-sorucegraph/dsl.md)
-- [../../may-24-lexical-indexing-sorucegraph/feature-scope.md](../../may-24-lexical-indexing-sorucegraph/feature-scope.md)
-- [../../may-24-lexical-indexing-sorucegraph/implementation-plan.md](../../may-24-lexical-indexing-sorucegraph/implementation-plan.md)
+- [../../may-24-lexical-indexing-sourcegraph/dsl.md](../../may-24-lexical-indexing-sourcegraph/dsl.md)
+- [../../may-24-lexical-indexing-sourcegraph/feature-scope.md](../../may-24-lexical-indexing-sourcegraph/feature-scope.md)
+- [../../may-24-lexical-indexing-sourcegraph/implementation-plan.md](../../may-24-lexical-indexing-sourcegraph/implementation-plan.md)
 
 ---
 
@@ -17,7 +17,7 @@ Normative parent docs:
 
 | Historical doc | Current truth | New owner here | Note |
 | --- | --- | --- | --- |
-| [STR-01](../../may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) | `partial-live[truthful-subset; broader semantics deferred]` | `SDL-01`, `SDL-02`, `SDL-04`, `SDL-05` | foundational structural engine spec; deferred semantics move here |
+| [STR-01](../../may-24-lexical-indexing-sourcegraph/tickets/STR-01.md) | `partial-live[truthful-subset; broader semantics deferred]` | `SDL-01`, `SDL-02`, `SDL-04`, `SDL-05` | foundational structural engine spec; deferred semantics move here |
 | [LXE-09](../../may-25-lexical-enhancement/tickets/LXE-09-structural-live-integration.md) | `implemented[truthful-subset]` | `SDL-01`, `SDL-E2E-01` | live runtime route already landed; successor work is semantics expansion |
 | [E2E-04](../../may-25-lexical-enhancement/tickets/E2E-04-history-structural-e2e.md) | `completed` | `SDL-E2E-01` | baseline structural e2e rows are carried forward here |
 | [STR-02](../../may-26-indexing-residue-tasks/tickets/STR-02-authority-matcher-tree-walk-expansion.md) | `shipped` | `SDL-01` | current matcher breadth is the predecessor surface |
@@ -28,8 +28,8 @@ Normative parent docs:
 
 | Historical doc | Current truth | New owner here | Note |
 | --- | --- | --- | --- |
-| [BRIDGE-01](../../may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md) | `shipped` for Sourcegraph to LQ | `SDL-03` | SG translator base; structural richer subset continues here |
-| [RFC-BRIDGE-01-CodeQL](../../may-24-lexical-indexing-sorucegraph/tickets/RFC-BRIDGE-01-CodeQL.md) | `deferred to v2` | `SDL-05` | direct predecessor for structural `into:codeql` |
+| [BRIDGE-01](../../may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md) | `shipped` for Sourcegraph to LQ | `SDL-03` | SG translator base; structural richer subset continues here |
+| [RFC-BRIDGE-01-CodeQL](../../may-24-lexical-indexing-sourcegraph/tickets/RFC-BRIDGE-01-CodeQL.md) | `deferred to v2` | `SDL-05` | direct predecessor for structural `into:codeql` |
 | [BRIDGE-02](../../may-26-indexing-residue-tasks/tickets/BRIDGE-02-sourcegraph-structural-honesty-gate.md) | `shipped` | `SDL-03` | honesty gate remains a prerequisite |
 | [BRIDGE-03](../../may-26-indexing-residue-tasks/tickets/BRIDGE-03-sourcegraph-structural-syntax-and-lowering.md) | `shipped` subset | `SDL-03` | quoted/keyword SG structural subset is the current baseline |
 

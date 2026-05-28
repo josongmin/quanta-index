@@ -2,7 +2,7 @@
 //!
 //! Scope lock: this is a **v1 parser**. The full Sourcegraph grammar is
 //! large; we only accept the documented subset listed in [BRIDGE-01 §
-//! 6.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md).
+//! 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md).
 //! Unknown filter names are rejected with `BRIDGE_UNSUPPORTED_FILTER`
 //! at parse time; refused-but-known filters surface during
 //! [`crate::translate_query`].
@@ -36,7 +36,7 @@ use crate::errors::{BridgeError, BridgeErrorCode};
 
 /// Closed set of v1-recognized Sourcegraph filter names.
 ///
-/// Order matches [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md);
+/// Order matches [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md);
 /// every filter here either reaches [`crate::translate_query`] as
 /// adopted/normalized or is refused there.
 ///

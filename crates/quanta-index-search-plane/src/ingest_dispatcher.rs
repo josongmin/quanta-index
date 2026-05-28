@@ -192,8 +192,7 @@ impl SemanticAuthorityStore {
             let mut guard = ledger.write().map_err(|err| {
                 CoreError::Storage(format!("semantic authority replay: ledger poisoned: {err}"))
             })?;
-            guard.semantic_materialize(batch.generation, Some(batch.manifest_digest.as_str()));
-            guard.record_track_materialized(
+            guard.materialize_track(
                 &batch.repo_id,
                 &batch.revision_id,
                 SearchPlaneTrackKind::Semantic,
@@ -201,8 +200,7 @@ impl SemanticAuthorityStore {
                 Some(batch.manifest_digest.as_str()),
             );
             if batch.seal {
-                guard.semantic_seal_with_digest(batch.generation, batch.manifest_digest.as_str());
-                guard.record_track_seal_with_digest(
+                guard.seal_track_with_digest(
                     &batch.repo_id,
                     &batch.revision_id,
                     SearchPlaneTrackKind::Semantic,
@@ -271,8 +269,7 @@ impl LexicalIngestPort for DirectLexicalMaterializer {
             ))
         })?;
         guard.apply_lexical_batch(batch);
-        guard.lexical_materialize(batch.generation, Some(batch.manifest_digest.as_str()));
-        guard.record_track_materialized(
+        guard.materialize_track(
             &batch.repo_id,
             &batch.revision_id,
             SearchPlaneTrackKind::Lexical,
@@ -280,8 +277,7 @@ impl LexicalIngestPort for DirectLexicalMaterializer {
             Some(batch.manifest_digest.as_str()),
         );
         if batch.seal {
-            guard.lexical_seal_with_digest(batch.generation, batch.manifest_digest.as_str());
-            guard.record_track_seal_with_digest(
+            guard.seal_track_with_digest(
                 &batch.repo_id,
                 &batch.revision_id,
                 SearchPlaneTrackKind::Lexical,
@@ -444,8 +440,7 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
                 "direct semantic materialize: ledger poisoned: {err}"
             ))
         })?;
-        guard.semantic_materialize(batch.generation, Some(batch.manifest_digest.as_str()));
-        guard.record_track_materialized(
+        guard.materialize_track(
             &batch.repo_id,
             &batch.revision_id,
             SearchPlaneTrackKind::Semantic,
@@ -453,8 +448,7 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
             Some(batch.manifest_digest.as_str()),
         );
         if batch.seal {
-            guard.semantic_seal_with_digest(batch.generation, batch.manifest_digest.as_str());
-            guard.record_track_seal_with_digest(
+            guard.seal_track_with_digest(
                 &batch.repo_id,
                 &batch.revision_id,
                 SearchPlaneTrackKind::Semantic,

@@ -19,7 +19,7 @@ ownership to the master closeout packet.
 
 | Historical doc | Current truth | New owner here | Note |
 | --- | --- | --- | --- |
-| [STR-01](../../may-24-lexical-indexing-sorucegraph/tickets/STR-01.md) | partial live | `MSTR-03`, `MSTR-04` | foundational structural engine spec; broader semantics move here |
+| [STR-01](../../may-24-lexical-indexing-sourcegraph/tickets/STR-01.md) | partial live | `MSTR-03`, `MSTR-04` | foundational structural engine spec; broader semantics move here |
 | [LXE-09](../../may-25-lexical-enhancement/tickets/LXE-09-structural-live-integration.md) | implemented truthful subset | `MSTR-03`, `MSTR-05` | runtime route is landed; successor work is semantics + proof |
 | [STR-02](../../may-26-indexing-residue-tasks/tickets/STR-02-authority-matcher-tree-walk-expansion.md) | shipped | `MSTR-03` | current matcher breadth predecessor |
 | [STR-03](../../may-26-indexing-residue-tasks/tickets/STR-03-native-structural-semantics-ast-ir-expansion.md) | shipped | `MSTR-03` | substrate for composition / richer semantics |

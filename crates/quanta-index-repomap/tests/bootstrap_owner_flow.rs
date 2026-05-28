@@ -446,10 +446,15 @@ fn activate_generation_tracks_latest_owner_state() {
         "activate should succeed: {activation_result:?}"
     );
 
-    assert_eq!(
-        store.activated_generation_for(&bundle.repo_id, &bundle.revision_id),
-        Some(7)
+    let activated = store.activated_generation_for(&bundle.repo_id, &bundle.revision_id);
+    assert!(
+        activated.is_ok(),
+        "activated_generation_for should succeed: {activated:?}"
     );
+    let Ok(activated) = activated else {
+        return;
+    };
+    assert_eq!(activated, Some(7));
 }
 
 #[test]
@@ -555,10 +560,15 @@ fn persistent_store_reloads_snapshot_and_activation() {
 
     assert_eq!(response.snapshot_meta.snapshot_id, "snap-7");
     assert_eq!(response.entries.len(), 5);
-    assert_eq!(
-        reloaded.activated_generation_for(&bundle.repo_id, &bundle.revision_id),
-        Some(7)
+    let activated = reloaded.activated_generation_for(&bundle.repo_id, &bundle.revision_id);
+    assert!(
+        activated.is_ok(),
+        "activated_generation_for should succeed: {activated:?}"
     );
+    let Ok(activated) = activated else {
+        return;
+    };
+    assert_eq!(activated, Some(7));
 }
 
 #[test]

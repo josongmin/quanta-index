@@ -445,7 +445,7 @@ Each item provable via the artifact listed; missing artifact = `blocked` per CLA
 | 3 | ✓ shipped | DSL parser accepts `hybrid(lex, sem, weights={...}, strategy=...)` per §3.2 grammar | `cargo test -p quanta-index-core --test hybrid_parser` |
 | 4 | ✓ shipped | RRF strategy (default `k=60`) produces the §4.6 worked example output exactly | `cargo test -p quanta-index-core --test rrf_worked_example` |
 | 5 | ✓ shipped | WeightedScore strategy (opt-in) produces L1-normalized score blend | `cargo test -p quanta-index-core --test weighted_score_strategy` |
-| 6 | ✓ shipped | All 22 `UC-HYB-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-HYB-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` shows category J; `tools/ci/conformance/lq/UC-HYB-*.toml` exist |
+| 6 | ✓ shipped | All 22 `UC-HYB-*` corpus rows land in `usecase.md` §2 + 1:1 golden files in `tools/ci/conformance/lq/UC-HYB-*.toml` | `git ls-files docs/plans/may-24-lexical-indexing-sourcegraph/usecase.md` shows category J; `tools/ci/conformance/lq/UC-HYB-*.toml` exist |
 | 7 | ✓ shipped | `UC-GAP-1` in [../implementation-plan.md](../implementation-plan.md) Appendix A.3 resolves (text updated to "Resolved by SEM-02") | git diff on implementation-plan.md |
 | 8 | ✓ shipped | Lexical-universe filter pushdown is complete for every hybrid plan | `cargo test -p quanta-index-core --test hybrid_pushdown_invariant` |
 | 9 | ✓ shipped | Cross-instance reproducibility CI step green for hybrid queries | `ci/lq-cross-instance-hybrid` CI rail |

@@ -265,25 +265,8 @@ impl Ledger {
             .record_materialized(generation, manifest_digest);
     }
 
-    pub fn semantic_materialize(
-        &mut self,
-        generation: ManifestGeneration,
-        manifest_digest: Option<&str>,
-    ) {
-        self.semantic
-            .record_materialized(generation, manifest_digest);
-    }
-
     pub fn lexical_seal(&mut self, generation: ManifestGeneration) {
         self.lexical.record_seal(generation, None);
-    }
-
-    pub fn lexical_seal_with_digest(
-        &mut self,
-        generation: ManifestGeneration,
-        manifest_digest: &str,
-    ) {
-        self.lexical.record_seal(generation, Some(manifest_digest));
     }
 
     pub fn semantic_seal(&mut self, generation: ManifestGeneration) {
@@ -379,6 +362,52 @@ impl Ledger {
         {
             self.record_semantic_generation_sealed(repo_id, revision_id, generation, digest);
         }
+    }
+
+    /// Materialize a track in a single call: updates the global lexical/semantic
+    /// ledger (for those tracks) and the per-(repo,revision,track) authority map
+    /// together, so a caller cannot update one and silently forget the other.
+    pub fn materialize_track(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+        manifest_digest: Option<&str>,
+    ) {
+        if track == SearchPlaneTrackKind::Lexical {
+            self.lexical
+                .record_materialized(generation, manifest_digest);
+        } else if track == SearchPlaneTrackKind::Semantic {
+            self.semantic
+                .record_materialized(generation, manifest_digest);
+        }
+        self.record_track_materialized(repo_id, revision_id, track, generation, manifest_digest);
+    }
+
+    /// Seal a track in a single call, mirroring [`Ledger::materialize_track`]:
+    /// updates the global lexical/semantic ledger (for those tracks) and the
+    /// per-(repo,revision,track) authority map together.
+    pub fn seal_track_with_digest(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        track: SearchPlaneTrackKind,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        if track == SearchPlaneTrackKind::Lexical {
+            self.lexical.record_seal(generation, Some(manifest_digest));
+        } else if track == SearchPlaneTrackKind::Semantic {
+            self.semantic.record_seal(generation, Some(manifest_digest));
+        }
+        self.record_track_seal_with_digest(
+            repo_id,
+            revision_id,
+            track,
+            generation,
+            manifest_digest,
+        );
     }
 
     #[must_use]

@@ -203,19 +203,20 @@ impl RepoMapGenerationStore {
         RepoMapQueryEngine::query(&snapshot, request)
     }
 
-    #[must_use]
     pub fn activated_generation_for(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
-    ) -> Option<u64> {
+    ) -> Result<Option<u64>, CoreError> {
         let key = (
             repo_id.as_str().to_string(),
             revision_id.as_str().to_string(),
         );
-        self.activated
+        let guard = self
+            .activated
             .read()
-            .map_or_else(|_| None, |guard| guard.get(&key).copied())
+            .map_err(|err| CoreError::Storage(format!("repomap activation map poisoned: {err}")))?;
+        Ok(guard.get(&key).copied())
     }
 
     fn ensure_generation_activated(&self, request: &RepoMapQueryRequest) -> Result<(), CoreError> {

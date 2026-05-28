@@ -1,7 +1,7 @@
 //! Golden corpus — 5 Sourcegraph syntax → expected LQ shape (or
 //! expected typed reject).
 //!
-//! Each row is one [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sorucegraph/tickets/BRIDGE-01.md)
+//! Each row is one [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md)
 //! subset-table outcome. Reading the rows in source order:
 //!
 //! 1. `repo:` filter — **adopted** (1:1 LQ `repo:`).

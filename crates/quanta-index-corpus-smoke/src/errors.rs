@@ -3,7 +3,7 @@
 //! `ConformanceError` is the placeholder for the closed-set
 //! `LexicalErrorCode` that PRE-CONTRACT-EXT will add to
 //! `quanta-index-contract`. Every code listed in
-//! `docs/plans/may-24-lexical-indexing-sorucegraph/usecase.md` §0
+//! `docs/plans/may-24-lexical-indexing-sourcegraph/usecase.md` §0
 //! has exactly one variant here, so cutover to the real contract enum
 //! is a structural rename, not a behavior change.
 
