@@ -47,6 +47,14 @@
 - core crate must not import vendor storage/index libraries (e.g. `tantivy`) or raw filesystem layout
 - storage/query vendor choices belong to adapters only
 
+### Search-plane authority
+
+- `generation_activation_state` is the only query-time serve-head authority; `generation_catalog` may contain future generations and does not become serve-head by itself
+- generation resolution order is fixed: explicit request generation -> query-time pin -> active generation; if no ready generation exists, return typed `NOT_READY` / `UNKNOWN_GENERATION` and never fall back to empty hits or a different generation
+- `apply_bundle_delta(...)` mutates the target generation staging surface only; never patch the active query indexes in place
+- producer is the sole authority for source bytes, git history, parse trees, and embeddings; search-plane code must not read repo source, shell out to `git`, run `tree-sitter`, or compute embeddings as fallback
+- `BundleChannelPublisher::publish` is the only producer -> search ingress path; do not add side-band apply/legacy socket ingress
+
 ### Code shape discipline (write-time SOLID, no god code)
 
 These checks apply **while you write**, not as a cleanup pass. Every diff should already satisfy them; if a nearby existing violation is visible, propose the fix in the same PR or flag it explicitly as a named follow-up — never silently leave it.
@@ -105,6 +113,16 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - prompt-manager claims require `pm.py lint`
 - behavior changes require tests
 - structured agent outputs must validate against `tools/ci/agent/agent_output.schema.json`
+- verification closeout must state covered vs excluded surface; a green targeted rail is not a repo-wide readiness verdict
+- ship-conditional policy findings, runtime/contract greens, and readiness/activation blockers must be reported as separate layers when they differ
+
+### Verification escalation by change surface
+
+- public contract / SDK shape changes: run `just rust-public-api`
+- IPC decoder, wire DTO, or error-envelope changes: run `just rust-fuzz-smoke`
+- crate/module/facade boundary changes: run `just rust-hexagonal` and `just rust-cargo-modules`
+- activation, generation resolution, query pin, state-root, or shared-ingress changes: run `just rust-profile test-daemon` and prove the owning `U/E/C/H-SP` scenario slice
+- generated agent-doc source changes: run `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, and `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
 
 ### Documentation
 
@@ -119,16 +137,17 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 ## CI Gates
 
-- Rust format: `cargo fmt --all -- --check`
-- Rust lint: `cargo clippy --workspace --all-targets -- -D warnings`
-- Rust tests: `cargo test --workspace`
-- Rust policy: `python3 scripts/check_workspace_lints.py` and `bash scripts/check-rust-allow-attributes.sh`
+- Rust format: `just fmt-check`
+- Rust lint: `just rust-clippy`
+- Rust tests: `just rust-test`
+- Rust policy: `just rust-workspace-lints`, `just rust-hexagonal`, `just rust-no-allow`, `just rust-derive-allowlist`, `just rust-cargo-toml-hygiene`, `just rust-module-discipline`, `just rust-error-shape`, `just rust-digest-fallibility`, `just rust-deny`
 - Rust derive allowlist: `python3 tools/ci/lint/check-rust-derive-allowlist.py`
 - Rust Cargo.toml hygiene: `python3 tools/ci/lint/check-cargo-toml-hygiene.py`
 - Rust module discipline: `python3 tools/ci/lint/check-module-discipline.py`
 - Rust error shape: `python3 tools/ci/lint/check-error-shape.py`
+- Rust digest fallibility: `python3 tools/ci/lint/check-digest-fallibility.py`
 - Rust supply chain: `bash scripts/run-cargo-deny.sh`
-- Semgrep: `bash scripts/run-semgrep.sh` (silent-fallback / serde-derive / unwrap / vendor-import rules)
+- Semgrep: `just semgrep` (silent-fallback / serde-derive / unwrap / vendor-import rules)
 - Prompt drift: `python3 tools/prompt-manager/pm.py lint`
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file> --skip-rust-gates`
@@ -136,8 +155,10 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 ### Heavy rail (correctness.yml, nightly + workflow_dispatch)
 
 - Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps (existing)
+- real-engine full corpus: `just rust-test-full-corpus`
 - Monomorphization budget: `python3 tools/ci/lint/check-llvm-lines.py`
 - Contract surface diff: `python3 tools/ci/lint/check-public-api.py`
 - Module-tree snapshot: `python3 tools/ci/lint/check-cargo-modules-snapshot.py`
-- IPC decoder fuzz smoke (60s each): `cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run <target>`
+- IPC decoder fuzz build: `just rust-fuzz-build`
+- IPC decoder fuzz smoke (60s each): `just rust-fuzz-smoke`
 

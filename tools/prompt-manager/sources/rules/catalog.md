@@ -16,6 +16,14 @@
 - core crate must not import vendor storage/index libraries (e.g. `tantivy`) or raw filesystem layout
 - storage/query vendor choices belong to adapters only
 
+### Search-plane authority
+
+- `generation_activation_state` is the only query-time serve-head authority; `generation_catalog` may contain future generations and does not become serve-head by itself
+- generation resolution order is fixed: explicit request generation -> query-time pin -> active generation; if no ready generation exists, return typed `NOT_READY` / `UNKNOWN_GENERATION` and never fall back to empty hits or a different generation
+- `apply_bundle_delta(...)` mutates the target generation staging surface only; never patch the active query indexes in place
+- producer is the sole authority for source bytes, git history, parse trees, and embeddings; search-plane code must not read repo source, shell out to `git`, run `tree-sitter`, or compute embeddings as fallback
+- `BundleChannelPublisher::publish` is the only producer -> search ingress path; do not add side-band apply/legacy socket ingress
+
 ### Code shape discipline (write-time SOLID, no god code)
 
 These checks apply **while you write**, not as a cleanup pass. Every diff should already satisfy them; if a nearby existing violation is visible, propose the fix in the same PR or flag it explicitly as a named follow-up — never silently leave it.
@@ -74,6 +82,16 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - prompt-manager claims require `pm.py lint`
 - behavior changes require tests
 - structured agent outputs must validate against `tools/ci/agent/agent_output.schema.json`
+- verification closeout must state covered vs excluded surface; a green targeted rail is not a repo-wide readiness verdict
+- ship-conditional policy findings, runtime/contract greens, and readiness/activation blockers must be reported as separate layers when they differ
+
+### Verification escalation by change surface
+
+- public contract / SDK shape changes: run `just rust-public-api`
+- IPC decoder, wire DTO, or error-envelope changes: run `just rust-fuzz-smoke`
+- crate/module/facade boundary changes: run `just rust-hexagonal` and `just rust-cargo-modules`
+- activation, generation resolution, query pin, state-root, or shared-ingress changes: run `just rust-profile test-daemon` and prove the owning `U/E/C/H-SP` scenario slice
+- generated agent-doc source changes: run `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, and `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
 
 ### Documentation
 

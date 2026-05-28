@@ -5,7 +5,8 @@
 핵심 강제:
 - 규칙과 실제 소스가 충돌하면 규칙이 아니라 소스를 다시 확인한다
 - build/test claim은 실행 결과 없이 하지 않는다
-- Rust verification은 raw `cargo` 또는 `Justfile`만 쓴다
+- Rust verification front door는 `just ...` 또는 `./scripts/cargow ...`다
+- bare `cargo`는 probe-only이거나 `scripts/quanta-index-env.sh`를 이미 source한 scope, 또는 `cargo +nightly fuzz` 같은 tool-owned rail에서만 예외적으로 쓴다
 - generated agent docs는 직접 수정하지 않고 `tools/prompt-manager/sources/`를 수정한다
 - breaking-first 기본; open-ended compat shim 금지
 - heuristic authority, naive fallback, silent downgrade 금지
@@ -16,6 +17,7 @@
 - structured output이 요구되면 `tools/ci/agent/agent_output.schema.json`을 만족하는 JSON만 낸다
 - `ok` 상태는 missing input, correctness-affecting assumption, failed check, error entry가 하나도 없을 때만 허용한다
 - `blocked` 또는 `error` 상태에서는 deployable artifact를 내지 않는다
+- 부분 green rail을 repo-wide closure로 승격하지 않는다
 
 운영 자세:
 - source-first
@@ -30,7 +32,8 @@ Never claim success on a best-effort path that dropped a real failure.
 
 ## 1. Tooling Authority
 
-- build/check/test front door: `cargo`, `just`
+- build/check/test front door: `just`, `./scripts/cargow`
+- bare `cargo` is not the default verification surface; use it only after `scripts/quanta-index-env.sh` is sourced or when an external nightly tool requires it
 - prompt/doc front door: `python3 tools/prompt-manager/pm.py`
 - generated docs drift gate: `python3 tools/prompt-manager/pm.py lint`
 
@@ -38,5 +41,7 @@ Never claim success on a best-effort path that dropped a real failure.
 
 Every verification closeout must report:
 - command used
+- covered surface
+- excluded surface or remaining seam
 - final status
 - failure class if failed

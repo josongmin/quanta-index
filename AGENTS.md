@@ -14,7 +14,7 @@ Read order:
 4. For full rule IDs and CI mapping, use [AGENT_RULE_CATALOG.md](AGENT_RULE_CATALOG.md).
 
 Canonical tooling:
-- Rust build/verification: raw `cargo` and `Justfile`
+- Rust build/verification: `Justfile` and `./scripts/cargow` (bare `cargo` only for env-sourced or tool-owned exception rails)
 - Prompt/doc control plane: `tools/prompt-manager/pm.py`
 
 Conflict rule:

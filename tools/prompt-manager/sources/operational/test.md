@@ -5,6 +5,9 @@
 - prompt-manager changes require `tools/prompt-manager/tests/test_pm.py`
 - core policy/validator changes require regression tests under `crates/quanta-index-core/tests/` (current files: `hybrid_policy.rs`, `lexical_policy.rs`, `semantic_policy.rs`)
 - property coverage for typed-translator / wire-format paths lives in the `lq-*` adapter crates' `tests/property_*.rs` (proptest)
+- public contract / SDK surface changes require `just rust-public-api`
+- IPC decoder / wire-shape changes require `just rust-fuzz-smoke`
+- activation / generation / readiness / ingress changes require the owning `U/E/C/H-SP` runtime scenario proof
 
 ## Test rails
 
@@ -24,5 +27,9 @@
 - `just rust-tsan` / `just rust-asan` — ThreadSanitizer / AddressSanitizer (nightly + `-Z build-std`)
 - `just rust-mutants` — cargo-mutants on `quanta-index-core`
 - `just rust-udeps` — unused-dep detection via rustc (nightly)
+- `just rust-llvm-lines` — monomorphization / IR growth budget
+- `just rust-public-api` — contract / SDK public API snapshot diff
+- `just rust-cargo-modules` — guarded module-tree snapshot diff
+- `just rust-fuzz-smoke` — IPC decoder fail-closed smoke
 - aggregate: `just rust-profile verify-rust-heavy`
 - CI: scheduled nightly + workflow_dispatch via `.github/workflows/correctness.yml`

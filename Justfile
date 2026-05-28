@@ -298,6 +298,7 @@ verify-rust-heavy:
     @just rust-public-api
     @just rust-cargo-modules
     @just rust-fuzz-build
+    @just rust-fuzz-smoke
 
 semgrep:
     bash scripts/run-semgrep.sh

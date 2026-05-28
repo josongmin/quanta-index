@@ -55,6 +55,7 @@ This file is a bootstrap, not the full handbook.
 Read the full catalog when:
 - changing public contracts
 - changing bundle/activation semantics
+- changing generation resolution, readiness, or query pin authority
 - changing core/adapter boundaries
 - changing generated agent docs
 
@@ -80,20 +81,21 @@ Canonical Rust commands:
 - `just rust-profile dev-daemon`
 - `just rust-profile dev-all-targets`
 - `just rust-profile validate-shared-surface`
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
+- `just fmt-check`
+- `just rust-clippy`
+- `just rust-policy`
 - `just rust-profile test-fast`
 - `just rust-profile test-integration`
 - `just rust-profile test-daemon`
-- `bash scripts/run-cargo-deny.sh`
-- `python3 scripts/check_workspace_lints.py`
-- `bash scripts/check-rust-allow-attributes.sh`
+- `./scripts/cargow check -p <crate>`
+- `./scripts/cargow test -p <crate>`
 
 Canonical developer shortcuts:
 - `just rust-profile-list`
 - `just rust-profile dev-fast`
 - `just rust-profile test-fast`
 - `just rust-profile verify-rust`
+- `just verify-rust-heavy`
 - `just rust-profile-history-summary`
 - `just verify`
 
