@@ -39,9 +39,7 @@ use quanta_index_core::{
 use crate::manifest::SemanticManifest;
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
 
-/// Bounded cache of opened sealed generations. Sealed generations are immutable,
-/// so a content-keyed cache can never go stale; a fresh process reloads from
-/// durable state and gets identical results.
+/// Capacity of the opened-generation cache.
 const OPEN_CACHE_CAPACITY: usize = 8;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -51,6 +49,16 @@ struct GenKey {
     generation: ManifestGeneration,
 }
 
+/// Bounded cache of opened sealed generations, keyed by `(repo, revision,
+/// generation)`.
+///
+/// Sealed generations are immutable, so a content-keyed entry can never go
+/// stale — a fresh process reloads from durable state and gets identical
+/// results, and eviction only costs a reload. Eviction is FIFO (not LRU) on
+/// purpose: a cache *hit* takes only a read lock (so concurrent opens of a hot
+/// generation proceed in parallel), whereas LRU recency tracking would force a
+/// write lock on every hit. With immutable values and a small capacity, FIFO's
+/// occasional reload of a hot generation is cheaper than serializing every read.
 #[derive(Default)]
 struct OpenCache {
     entries: BTreeMap<GenKey, Arc<LoadedGeneration>>,
@@ -146,7 +154,18 @@ impl SemanticIndexOpenPort for SemanticAdapter {
     }
 }
 
+/// The semantic sub-root within an overall daemon state root.
+///
+/// This crate owns the semantic on-disk layout, including where its generation
+/// tree is rooted, so the composition root derives the path here rather than
+/// hardcoding `indexes/semantic` itself.
+#[must_use]
+pub fn semantic_state_root(state_root: &Path) -> PathBuf {
+    state_root.join("indexes").join("semantic")
+}
+
 /// A sealed semantic generation discovered on disk, for readiness seeding.
+#[derive(Clone, Debug)]
 pub struct PersistedSemanticGeneration {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,

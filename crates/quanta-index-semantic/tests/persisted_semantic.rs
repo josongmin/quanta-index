@@ -3,6 +3,7 @@
 //! on-disk state root, so a green run is executable proof of durable open
 //! without replay, not just source inspection.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
@@ -546,5 +547,264 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     assert_eq!(record.generation, ManifestGeneration::new(1));
     assert_eq!(record.manifest_digest, "manifest:1");
     assert_eq!(record.repo_id.as_str(), "repo-sem");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts scoped search honors the allowlist via assert macros"
+)]
+fn search_scoped_restricts_to_allowlist() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:1".to_string(),
+        batch_digest: "batch:1".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(3),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("x.rs"),
+            scope_digest: "scope:x".to_string(),
+            embeddings: vec![
+                embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?,
+                embedding_record("emb-2", "x.rs", vec![0.9, 0.1, 0.0])?,
+            ],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    })?;
+
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let mut allow: BTreeSet<String> = BTreeSet::new();
+    let _new = allow.insert("emb-2".to_string());
+    // The global nearest to [1,0,0] is emb-1, but the allowlist excludes it.
+    let hits = searcher.search_scoped(&[1.0, 0.0, 0.0], &allow, 5)?;
+    let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
+    assert_eq!(ids, vec!["emb-2".to_string()]);
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts the content-checksum guard fires on decodable tampering via assert macros"
+)]
+fn tampered_graph_fails_checksum_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(8);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    // Flip the final byte of the persisted graph (the last node's `deleted`
+    // bool), which still decodes cleanly and keeps dim/row_count consistent —
+    // so the failure must come from the content checksum, not a decode error.
+    let graph_path = generation_dir(&root, generation)
+        .join("dataset")
+        .join("graph.cbor");
+    let mut bytes = std::fs::read(&graph_path)?;
+    let Some(last) = bytes.last_mut() else {
+        return Err("graph file unexpectedly empty".into());
+    };
+    *last ^= 0x01;
+    std::fs::write(&graph_path, &bytes)?;
+
+    let reopened = SemanticAdapter::with_state_root(root);
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("tampered graph must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("checksum mismatch"),
+                "expected checksum-guard failure, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected storage checksum error, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts a delta with an absent base fails closed via assert macros"
+)]
+fn delta_with_missing_base_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let batch = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: ManifestGeneration::new(10),
+        base_generation: Some(ManifestGeneration::new(99)),
+        manifest_digest: "manifest:10".to_string(),
+        batch_digest: "batch:10".to_string(),
+        mode: BatchIngestMode::Delta,
+        model_contract: model_contract(3),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("x.rs"),
+            scope_digest: "scope:x".to_string(),
+            embeddings: vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+
+    let Err(err) = adapter.build_batch(&batch) else {
+        return Err("delta with absent base must fail closed".into());
+    };
+    match err {
+        CoreError::NotReady(message) => {
+            assert!(message.contains("delta base generation 99 is absent"));
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected NotReady, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts an unsupported distance metric is rejected via assert macros"
+)]
+fn build_rejects_unsupported_distance_metric() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let mut batch = sealed_batch(
+        ManifestGeneration::new(1),
+        "x.rs",
+        vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    batch.model_contract.distance_metric = EmbeddingDistanceMetric::Euclidean;
+
+    let Err(err) = adapter.build_batch(&batch) else {
+        return Err("unsupported distance metric must be rejected".into());
+    };
+    match err {
+        CoreError::InvalidContract(message) => {
+            assert!(message.contains("unsupported distance metric"));
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected InvalidContract, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts evicted generations reload correctly via assert macros"
+)]
+fn open_cache_survives_eviction_beyond_capacity() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    // Build more sealed generations than the open-cache capacity (8) and open
+    // each so the early ones are evicted.
+    for generation in 1..=12_u64 {
+        adapter.build_batch(&sealed_batch(
+            ManifestGeneration::new(generation),
+            "x.rs",
+            vec![embedding_record(
+                &format!("emb-{generation}"),
+                "x.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ))?;
+        let warm = adapter.open(
+            &repo_id(),
+            &revision_id(),
+            ManifestGeneration::new(generation),
+        )?;
+        let _hits = warm.search(&[1.0, 0.0, 0.0], 1)?;
+    }
+
+    // The earliest generation was evicted; it must still reload from durable
+    // state and serve identical results.
+    let evicted = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(1))?;
+    let hits = evicted.search(&[1.0, 0.0, 0.0], 1)?;
+    let Some(hit) = hits.first() else {
+        return Err("evicted generation must reload and serve".into());
+    };
+    assert_eq!(hit.candidate_id.as_str(), "emb-1");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts concurrent opens are consistent via assert macros"
+)]
+fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
+    use std::sync::Arc;
+    use std::thread;
+
+    let temp = tempfile::tempdir()?;
+    let adapter = Arc::new(SemanticAdapter::with_state_root(temp.path().to_path_buf()));
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "x.rs",
+        vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    ))?;
+
+    let mut handles = Vec::new();
+    for _worker in 0..8 {
+        let adapter = Arc::clone(&adapter);
+        handles.push(thread::spawn(move || -> Result<String, String> {
+            let searcher = adapter
+                .open(&repo_id(), &revision_id(), generation)
+                .map_err(|err| format!("open: {err}"))?;
+            let hits = searcher
+                .search(&[1.0, 0.0, 0.0], 1)
+                .map_err(|err| format!("search: {err}"))?;
+            let hit = hits.first().ok_or_else(|| "no hit".to_string())?;
+            Ok(hit.candidate_id.clone())
+        }));
+    }
+
+    for handle in handles {
+        let outcome = match handle.join() {
+            Ok(inner) => inner,
+            Err(_panic) => return Err("open thread panicked".into()),
+        };
+        let id = outcome?;
+        assert_eq!(id, "emb-1");
+    }
     Ok(())
 }

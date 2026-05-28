@@ -142,17 +142,27 @@ pub(crate) fn le_bytes_to_f32_vec(bytes: &[u8]) -> Result<Vec<f32>, CoreError> {
     Ok(vector)
 }
 
+fn fnv1a64_fold(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// FNV-1a 64-bit content checksum over an ordered set of byte parts.
 ///
+/// Each part is length-framed (its byte length folded in before its bytes,
+/// preceded by the part count) so moving bytes across a part boundary changes
+/// the digest — a plain concatenation would alias such truncations.
 /// Deterministic and infallible by construction; used to fail closed on a
 /// corrupted or truncated persisted generation, not for cryptographic purposes.
 pub(crate) fn content_checksum(parts: &[&[u8]]) -> String {
     let mut hash = FNV_OFFSET;
+    hash = fnv1a64_fold(hash, &parts.len().to_le_bytes());
     for part in parts {
-        for &byte in *part {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
+        hash = fnv1a64_fold(hash, &part.len().to_le_bytes());
+        hash = fnv1a64_fold(hash, part);
     }
     format!("{hash:016x}")
 }

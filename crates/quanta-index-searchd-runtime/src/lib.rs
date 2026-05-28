@@ -20,7 +20,7 @@ use quanta_index_core::{
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::{
-    ActivationCatalog, AuxiliaryAuthorityStore, SemanticAuthorityStore,
+    ActivationCatalog, AuxiliaryAuthorityStore, LegacySemanticJournalStore,
 };
 use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
@@ -32,7 +32,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         state_root.join("indexes/lexical"),
     ));
     let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
-        state_root.join("indexes/semantic"),
+        quanta_index_semantic::semantic_state_root(&state_root),
     ));
     let repo_map_store = Arc::new(
         RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
@@ -42,8 +42,9 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let aux_authority_store = Arc::new(AuxiliaryAuthorityStore::open(
         state_root.join("authorities"),
     )?);
-    let semantic_authority_store =
-        Arc::new(SemanticAuthorityStore::open(state_root.join("semantic"))?);
+    let legacy_semantic_journal_store = Arc::new(LegacySemanticJournalStore::open(
+        state_root.join("semantic"),
+    )?);
 
     let lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync> = lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter;
@@ -67,7 +68,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             repo_map_generation_activate_port,
             activation_catalog,
             aux_authority_store,
-            semantic_authority_store,
+            legacy_semantic_journal_store,
         },
     )
 }

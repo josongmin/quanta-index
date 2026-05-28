@@ -1,9 +1,11 @@
 //! Columnar embedding row shard (LDB-01 §4 data contract).
 //!
-//! Rows carry everything required to rebuild a `LexicalCandidate` at query time
-//! without auxiliary replay: the embedding id, repo-relative path, line range,
-//! snippet, and the vector payload (stored as little-endian `f32` bytes for a
-//! compact, deterministic on-disk form). The generation directory itself is the
+//! Rows are the canonical generation data: embedding id, repo-relative path,
+//! line range, snippet, and the vector payload (little-endian `f32` bytes). At
+//! query time the candidate fields (path/line/snippet) come from here while the
+//! vector is served from the persisted graph; the row vector is retained for the
+//! data contract (rebuild fidelity, delta-base cloning, integrity checksum), not
+//! read on the serve path. The generation directory itself is the
 //! `(repo, revision, generation)` scope authority, so rows do not repeat it.
 
 #![expect(

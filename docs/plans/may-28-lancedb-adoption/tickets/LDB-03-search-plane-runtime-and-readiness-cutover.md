@@ -12,7 +12,7 @@ seed_persisted_semantic_readiness` seeds the ledger from sealed durable
 generations (via `quanta_index_semantic::scan_persisted_generations`, using each
 manifest digest). `searchd-runtime` now builds `SemanticAdapter::with_state_root
 (state_root/indexes/semantic)`. `DirectSemanticMaterializer` no longer holds the
-`SemanticAuthorityStore`: it builds the durable adapter first, then updates the
+`LegacySemanticJournalStore`: it builds the durable adapter first, then updates the
 ledger (a failed durable write leaves no SEALED marker and no ledger mutation).
 Activation/generation resolution unchanged. The daemon-level restart proof
 `reopen_preserves_semantic_scope_ids_and_explanation` passes on the durable

@@ -17,10 +17,25 @@ Depends on: [LDB-04-legacy-semantic-journal-migration.md](LDB-04-legacy-semantic
   asserts migrated results equal a clean durable build, plus idempotent re-run.
 - **Observability**: `SearchdRuntime.semantic_boot` (`SemanticBootReport`) exposes
   migration outcome, sealed-generation count, and cold-boot seed timing — bounded
-  enums/counts/duration only, no vectors/snippets/path text.
+  enums/counts/duration only, no vectors/snippets/path text. Asserted end-to-end
+  by `searchd-runtime` test `fresh_runtime_exposes_empty_semantic_boot_report`
+  (a fresh state root reports `NoLegacyJournal` + 0 seeded generations).
+- **Boot-cost evidence**: a literal old-vs-new boot benchmark is **not
+  constructible** — the replay path is *removed*, so there is no live "replay
+  boot" to time against. The cost claim is therefore (a) structural — seeding is
+  `O(sealed generations)` marker+manifest reads (`scan_persisted_generations`)
+  versus the former `O(all historical batches)` decode + HNSW rebuild — and (b)
+  live-measured via `SemanticBootReport.seed_micros`. Recorded here per the
+  "state covered vs excluded surface" closeout rule; §8 criterion 8 is met as
+  "replay structurally eliminated + cost observable", not as a head-to-head bench.
+- **Quality floor**: the now-durable in-house HNSW carries a recall-floor test
+  (`hnsw_recall_floor_against_brute_force`, mean recall@10 ≥ 0.8 vs brute-force
+  cosine) and a graph-tamper checksum test, so a graph-construction or
+  serialization regression fails a test rather than silently degrading recall.
 - **Doc closeout**: `README.md` semantic-backend lines corrected (no shipped
-  `lance`-crate claim); prompt-manager sources mention `lance` only as a
-  forbidden-token rule, so generated agent docs stayed in sync (`pm.py lint` ✓).
+  `lance`-crate claim); the prompt-manager source `buildctl.md` was updated to
+  describe the durable backend (was claiming the removed `replay_into` /
+  `bootstrap_persisted_semantic_state`) and regenerated (`pm.py sync`/`lint` ✓).
 
 ## 1. Purpose
 

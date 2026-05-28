@@ -135,13 +135,13 @@ impl_struct_serde!(SemanticAuthorityJournal {
 /// read legacy batches and record an idempotent completion marker. It is never
 /// a second live authority.
 #[derive(Debug)]
-pub struct SemanticAuthorityStore {
+pub struct LegacySemanticJournalStore {
     journal_path: PathBuf,
     migrated_marker_path: PathBuf,
     batches: Vec<SemanticIngestBatch>,
 }
 
-impl SemanticAuthorityStore {
+impl LegacySemanticJournalStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
         let root = root.as_ref();
         fs::create_dir_all(root).map_err(|err| {
@@ -897,9 +897,9 @@ mod tests {
     }
 
     #[test]
-    fn semantic_authority_store_exposes_migration_surface() -> TestRes {
+    fn legacy_semantic_journal_store_exposes_migration_surface() -> TestRes {
         let dir = tempfile::tempdir()?;
-        let store = SemanticAuthorityStore::open(dir.path())?;
+        let store = LegacySemanticJournalStore::open(dir.path())?;
         if store.has_legacy_journal() {
             return Err("fresh store must report no legacy journal".into());
         }

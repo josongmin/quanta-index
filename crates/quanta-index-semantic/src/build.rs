@@ -14,7 +14,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use quanta_index_contract::SemanticIngestBatch;
+use quanta_index_contract::{EmbeddingDistanceMetric, SemanticIngestBatch};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
 
@@ -25,6 +25,18 @@ use crate::{codec, graph, layout};
 
 fn fs_err(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
     CoreError::Storage(format!("semantic: {action} {}: {err}", path.display()))
+}
+
+/// Crash-atomic file write: stage to a sibling `*.tmp` then rename into place.
+///
+/// `rename` is atomic within a directory, so a reader (or a resumed build) never
+/// observes a torn file — it sees either the prior contents or the complete new
+/// contents. This keeps a multi-batch (unsealed) generation resumable across a
+/// crash mid-write instead of leaving an undecodable working shard.
+fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
+    let staging = path.with_extension("tmp");
+    fs::write(&staging, bytes).map_err(|err| fs_err(action, &staging, &err))?;
+    fs::rename(&staging, path).map_err(|err| fs_err(action, path, &err))
 }
 
 /// Apply a batch to the durable generation, sealing it when `batch.seal`.
@@ -42,6 +54,15 @@ pub(crate) fn build_batch(
         return Err(CoreError::Storage(format!(
             "semantic: generation {} is already sealed; refusing in-place mutation",
             batch.generation.get()
+        )));
+    }
+
+    // This backend serves cosine only (HNSW over L2-normalized vectors). Reject
+    // an unsupported metric at build rather than silently serving cosine for it.
+    if batch.model_contract.distance_metric != EmbeddingDistanceMetric::Cosine {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic: unsupported distance metric {:?}; this backend serves cosine only",
+            batch.model_contract.distance_metric
         )));
     }
 
@@ -110,12 +131,21 @@ fn load_or_init_working_set(
             base_generation,
         );
         let base_rows = layout::rows_path(&base_dir);
-        if base_rows.exists() {
-            let bytes = fs::read(&base_rows)
-                .map_err(|err| fs_err("read base dataset", &base_rows, &err))?;
-            let shard = DatasetShard::decode(&bytes)?;
-            return DatasetWorkingSet::from_shard(shard);
+        // A delta names a base generation; a missing base must fail closed
+        // rather than silently start from an empty working set (which would
+        // seal a smaller-than-intended generation under a valid checksum).
+        if !base_rows.exists() {
+            return Err(CoreError::NotReady(format!(
+                "semantic: delta base generation {} is absent for repo={} revision={}",
+                base_generation.get(),
+                batch.repo_id.as_str(),
+                batch.revision_id.as_str()
+            )));
         }
+        let bytes =
+            fs::read(&base_rows).map_err(|err| fs_err("read base dataset", &base_rows, &err))?;
+        let shard = DatasetShard::decode(&bytes)?;
+        return DatasetWorkingSet::from_shard(shard);
     }
     Ok(DatasetWorkingSet::empty())
 }
@@ -132,11 +162,9 @@ fn persist_working(
     let shard = working.to_shard();
     let bytes = shard.encode()?;
     let rows_path = layout::rows_path(generation_dir);
-    fs::write(&rows_path, &bytes)
-        .map_err(|err| fs_err("write working dataset", &rows_path, &err))?;
+    write_atomic(&rows_path, &bytes, "write working dataset")?;
     let ready_path = layout::ready_marker_path(generation_dir);
-    fs::write(&ready_path, b"ready")
-        .map_err(|err| fs_err("write ready marker", &ready_path, &err))?;
+    write_atomic(&ready_path, b"ready", "write ready marker")?;
     Ok(bytes)
 }
 
@@ -167,7 +195,7 @@ fn seal_generation(
         }
         let bytes = graph::encode_graph(&index)?;
         let graph_path = layout::graph_path(generation_dir);
-        fs::write(&graph_path, &bytes).map_err(|err| fs_err("write graph", &graph_path, &err))?;
+        write_atomic(&graph_path, &bytes, "write graph")?;
         bytes
     };
 
@@ -186,11 +214,13 @@ fn seal_generation(
     );
     let manifest_bytes = manifest.encode()?;
     let manifest_path = layout::manifest_path(generation_dir);
-    fs::write(&manifest_path, &manifest_bytes)
-        .map_err(|err| fs_err("write manifest", &manifest_path, &err))?;
+    write_atomic(&manifest_path, &manifest_bytes, "write manifest")?;
     let sealed_path = layout::sealed_marker_path(generation_dir);
-    fs::write(&sealed_path, batch.manifest_digest.as_bytes())
-        .map_err(|err| fs_err("write sealed marker", &sealed_path, &err))?;
+    write_atomic(
+        &sealed_path,
+        batch.manifest_digest.as_bytes(),
+        "write sealed marker",
+    )?;
     Ok(())
 }
 

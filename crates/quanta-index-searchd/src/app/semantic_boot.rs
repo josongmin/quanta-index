@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::{CoreError, SemanticBatchBuildPort};
-use quanta_index_search_plane::{Ledger, SemanticAuthorityStore};
+use quanta_index_search_plane::{Ledger, LegacySemanticJournalStore};
 use quanta_index_semantic::scan_persisted_generations;
 
 /// Outcome of the one-shot legacy semantic journal migration.
@@ -58,7 +58,7 @@ type GenerationKey = (RepoId, RevisionId, ManifestGeneration);
 /// sealed generation. The legacy journal is retained after success; only a
 /// completion marker is written.
 pub fn migrate_legacy_semantic_journal(
-    store: &SemanticAuthorityStore,
+    store: &LegacySemanticJournalStore,
     builder: &(dyn SemanticBatchBuildPort + Send + Sync),
     semantic_root: &Path,
 ) -> Result<SemanticMigrationOutcome, CoreError> {
@@ -159,8 +159,8 @@ mod tests {
     use quanta_index_semantic::SemanticAdapter;
 
     use super::{
-        Arc, BTreeSet, GenerationKey, Ledger, ManifestGeneration, RepoId, RevisionId, RwLock,
-        SearchPlaneTrackKind, SemanticAuthorityStore, SemanticMigrationOutcome,
+        Arc, BTreeSet, GenerationKey, Ledger, LegacySemanticJournalStore, ManifestGeneration,
+        RepoId, RevisionId, RwLock, SearchPlaneTrackKind, SemanticMigrationOutcome,
         migrate_legacy_semantic_journal, scan_persisted_generations,
         seed_persisted_semantic_readiness,
     };
@@ -338,7 +338,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
-        let store = SemanticAuthorityStore::open(temp.path().join("semantic"))?;
+        let store = LegacySemanticJournalStore::open(temp.path().join("semantic"))?;
         let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
         assert_eq!(outcome, SemanticMigrationOutcome::NoLegacyJournal);
         Ok(())
@@ -371,10 +371,10 @@ mod tests {
             vec![0.0, 1.0, 0.0],
             true,
         )?;
-        SemanticAuthorityStore::write_legacy_journal(&legacy_root, &[first, second])?;
+        LegacySemanticJournalStore::write_legacy_journal(&legacy_root, &[first, second])?;
 
         let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
-        let store = SemanticAuthorityStore::open(&legacy_root)?;
+        let store = LegacySemanticJournalStore::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 2 });
 
@@ -395,7 +395,7 @@ mod tests {
             .collect();
 
         // Re-running migration is idempotent (marker present -> AlreadyMigrated).
-        let store_again = SemanticAuthorityStore::open(&legacy_root)?;
+        let store_again = LegacySemanticJournalStore::open(&legacy_root)?;
         let outcome_again =
             migrate_legacy_semantic_journal(&store_again, &adapter, &semantic_root)?;
         assert_eq!(outcome_again, SemanticMigrationOutcome::AlreadyMigrated);
@@ -431,6 +431,132 @@ mod tests {
 
         assert_eq!(migrated_ids, clean_ids);
         assert!(migrated_ids.contains("emb-2"));
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts crash-resume skips already-sealed generations via assert macros"
+    )]
+    fn migration_resume_skips_already_sealed_generations() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let legacy_root = temp.path().join("semantic");
+        let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+
+        // Simulate a migration that crashed after sealing gen 1 but before
+        // writing the MIGRATED marker: gen 1 is durable on disk, marker absent.
+        build_durable(
+            &adapter,
+            &batch(
+                ManifestGeneration::new(1),
+                "emb-1",
+                "a.rs",
+                vec![1.0, 0.0, 0.0],
+                true,
+            )?,
+        )?;
+
+        // The legacy journal still carries BOTH generations.
+        let g1 = batch(
+            ManifestGeneration::new(1),
+            "emb-1",
+            "a.rs",
+            vec![1.0, 0.0, 0.0],
+            true,
+        )?;
+        let g2 = batch(
+            ManifestGeneration::new(2),
+            "emb-2",
+            "b.rs",
+            vec![0.0, 1.0, 0.0],
+            true,
+        )?;
+        LegacySemanticJournalStore::write_legacy_journal(&legacy_root, &[g1, g2])?;
+
+        let store = LegacySemanticJournalStore::open(&legacy_root)?;
+        let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
+        // gen 1 already sealed -> skipped; only gen 2 re-applied.
+        assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 1 });
+
+        let searcher = adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(2))?;
+        let hits = searcher.search(&[0.0, 1.0, 0.0], 5)?;
+        let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
+        assert_eq!(ids, vec!["emb-2".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts mid-generation crash resume equals a clean build via assert macros"
+    )]
+    fn migration_resume_mid_generation_matches_clean_build() -> TestResult {
+        // Crash BETWEEN batches of one generation: gen 7's first two (unsealed)
+        // batches were applied to disk, but the sealing batch never completed.
+        // Because replace/tombstone are absolute (remove-path-then-set), a resume
+        // that re-replays the full journal over the partial working set must
+        // converge to the same sealed generation a clean build produces.
+        // gen 7 = [A replace x.rs->emb-1 (no seal),
+        //          B replace x.rs->emb-2 (no seal, same path overwrites),
+        //          C replace y.rs->emb-3 (seal)]
+        let make_batch =
+            |generation: u64, id: &str, path: &str, vector: Vec<f32>, seal: bool, tag: &str| {
+                let mut b = batch(ManifestGeneration::new(generation), id, path, vector, seal)?;
+                b.batch_digest = format!("batch:{generation}:{tag}");
+                Ok::<SemanticIngestBatch, String>(b)
+            };
+        let a = make_batch(7, "emb-1", "x.rs", vec![1.0, 0.0, 0.0], false, "a")?;
+        let b = make_batch(7, "emb-2", "x.rs", vec![0.0, 1.0, 0.0], false, "b")?;
+        let c = make_batch(7, "emb-3", "y.rs", vec![0.0, 0.0, 1.0], true, "c")?;
+
+        // Resumed root: simulate the crash by applying A and B (unsealed) first,
+        // then migrate the full journal [A, B, C] with no MIGRATED marker.
+        let resumed = tempfile::tempdir()?;
+        let resumed_semantic: PathBuf = resumed.path().join("indexes").join("semantic");
+        let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone());
+        build_durable(&resumed_adapter, &a)?;
+        build_durable(&resumed_adapter, &b)?;
+        let store = LegacySemanticJournalStore::write_legacy_journal(
+            &resumed.path().join("semantic"),
+            &[a.clone(), b.clone(), c.clone()],
+        )
+        .and_then(|()| LegacySemanticJournalStore::open(resumed.path().join("semantic")))?;
+        let _outcome =
+            migrate_legacy_semantic_journal(&store, &resumed_adapter, &resumed_semantic)?;
+        let resumed_searcher =
+            resumed_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
+
+        // Clean root: a fresh linear build of [A, B, C].
+        let clean = tempfile::tempdir()?;
+        let clean_semantic: PathBuf = clean.path().join("indexes").join("semantic");
+        let clean_adapter = SemanticAdapter::with_state_root(clean_semantic);
+        build_durable(&clean_adapter, &a)?;
+        build_durable(&clean_adapter, &b)?;
+        build_durable(&clean_adapter, &c)?;
+        let clean_searcher =
+            clean_adapter.open(&repo_id(), &revision_id(), ManifestGeneration::new(7))?;
+
+        // Both must serve exactly the surviving embeddings {emb-2@x.rs, emb-3@y.rs}.
+        let resumed_ids: BTreeSet<String> = resumed_searcher
+            .search(&[0.0, 1.0, 0.0], 10)?
+            .iter()
+            .chain(resumed_searcher.search(&[0.0, 0.0, 1.0], 10)?.iter())
+            .map(|c| c.candidate_id.clone())
+            .collect();
+        let clean_ids: BTreeSet<String> = clean_searcher
+            .search(&[0.0, 1.0, 0.0], 10)?
+            .iter()
+            .chain(clean_searcher.search(&[0.0, 0.0, 1.0], 10)?.iter())
+            .map(|c| c.candidate_id.clone())
+            .collect();
+
+        assert_eq!(resumed_ids, clean_ids);
+        let mut expected: BTreeSet<String> = BTreeSet::new();
+        let _e2 = expected.insert("emb-2".to_string());
+        let _e3 = expected.insert("emb-3".to_string());
+        assert_eq!(resumed_ids, expected);
         Ok(())
     }
 }

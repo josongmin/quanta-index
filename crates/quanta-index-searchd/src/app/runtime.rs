@@ -35,9 +35,9 @@ use quanta_index_search_plane::{
     ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DirectHistoryMaterializer,
     DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
-    QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    LegacySemanticJournalStore, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, SemanticAuthorityStore, StructuralIngestPort,
+    SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -60,7 +60,7 @@ pub struct SearchdRuntimeParts {
     pub repo_map_generation_activate_port: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     pub activation_catalog: Arc<ActivationCatalog>,
     pub aux_authority_store: Arc<AuxiliaryAuthorityStore>,
-    pub semantic_authority_store: Arc<SemanticAuthorityStore>,
+    pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
 }
 
 struct ProviderUnavailableQueryTextEmbedder;
@@ -463,13 +463,13 @@ impl SearchdRuntime {
             repo_map_generation_activate_port,
             activation_catalog,
             aux_authority_store,
-            semantic_authority_store,
+            legacy_semantic_journal_store,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         bootstrap_persisted_lexical_state(&ledger, config.state_root())?;
-        let semantic_root = config.state_root().join("indexes").join("semantic");
+        let semantic_root = quanta_index_semantic::semantic_state_root(config.state_root());
         let migration = semantic_boot::migrate_legacy_semantic_journal(
-            semantic_authority_store.as_ref(),
+            legacy_semantic_journal_store.as_ref(),
             sem_build_port.as_ref(),
             &semantic_root,
         )

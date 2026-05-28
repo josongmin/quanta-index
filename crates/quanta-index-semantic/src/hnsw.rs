@@ -872,4 +872,103 @@ mod tests {
         })();
         assert_test_ok(&result);
     }
+
+    fn usize_to_f64(value: usize) -> f64 {
+        match u32::try_from(value) {
+            Ok(narrowed) => f64::from(narrowed),
+            Err(_overflow) => f64::from(u32::MAX),
+        }
+    }
+
+    /// Deterministic pseudo-random vector in roughly `[-1, 1]^dim`, seeded so the
+    /// recall test is reproducible across runs and platforms without a PRNG dep.
+    fn pseudo_vector(seed: u64, dim: usize) -> Vec<f32> {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+        let mut vector = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let bytes = state.to_le_bytes();
+            let low = bytes.first().copied().unwrap_or(0);
+            let high = bytes.get(1).copied().unwrap_or(0);
+            let lane = u16::from_le_bytes([low, high]);
+            vector.push(f32::from(lane) / 32768.0_f32 - 1.0);
+        }
+        vector
+    }
+
+    fn brute_force_topk(
+        vectors: &[(String, Vec<f32>)],
+        query: &[f32],
+        top_k: usize,
+    ) -> Vec<String> {
+        let Some(normalized_query) = l2_normalize(query) else {
+            return Vec::new();
+        };
+        let mut scored: Vec<(f32, String)> = Vec::with_capacity(vectors.len());
+        for (id, vector) in vectors {
+            if let Some(normalized) = l2_normalize(vector) {
+                scored.push((dot(&normalized, &normalized_query), id.clone()));
+            }
+        }
+        scored.sort_by(|lhs, rhs| {
+            rhs.0
+                .partial_cmp(&lhs.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| lhs.1.cmp(&rhs.1))
+        });
+        scored.truncate(top_k);
+        scored.into_iter().map(|(_score, id)| id).collect()
+    }
+
+    #[test]
+    fn hnsw_recall_floor_against_brute_force() {
+        let result = (|| -> TestRes {
+            let dim = 16;
+            let corpus = 200_u64;
+            let top_k = 10;
+            let mut index = HnswIndex::new(dim);
+            let mut vectors: Vec<(String, Vec<f32>)> = Vec::new();
+            for i in 0..corpus {
+                let vector = pseudo_vector(i, dim);
+                if l2_normalize(&vector).is_none() {
+                    continue;
+                }
+                let id = format!("v-{i}");
+                index.insert(id.clone(), &vector)?;
+                vectors.push((id, vector));
+            }
+
+            let queries = 8_u64;
+            let mut answered = 0_usize;
+            let mut recall_sum = 0.0_f64;
+            for q in 0..queries {
+                let query = pseudo_vector(q.wrapping_add(10_000), dim);
+                if l2_normalize(&query).is_none() {
+                    continue;
+                }
+                let truth: BTreeSet<String> = brute_force_topk(&vectors, &query, top_k)
+                    .into_iter()
+                    .collect();
+                let approx: BTreeSet<String> = index
+                    .search(&query, top_k)?
+                    .into_iter()
+                    .map(|(id, _score)| id)
+                    .collect();
+                let overlap = truth.intersection(&approx).count();
+                recall_sum += usize_to_f64(overlap) / usize_to_f64(top_k);
+                answered = answered.wrapping_add(1);
+            }
+
+            assert!(answered > 0, "recall test produced no answerable queries");
+            let mean_recall = recall_sum / usize_to_f64(answered);
+            assert!(
+                mean_recall >= 0.8,
+                "HNSW mean recall@{top_k} = {mean_recall} fell below the 0.8 floor"
+            );
+            Ok(())
+        })();
+        assert_test_ok(&result);
+    }
 }

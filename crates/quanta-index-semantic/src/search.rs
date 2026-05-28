@@ -150,13 +150,13 @@ pub(crate) fn open_generation(
 }
 
 impl LoadedGeneration {
-    fn collect_hits(
-        &self,
-        query_vector: &[f32],
-        limit: usize,
-    ) -> Result<Vec<(String, f32)>, CoreError> {
+    /// The serving graph when the query dimension matches; `None` for a
+    /// sealed-empty generation (caller yields no hits). `HnswIndex` re-checks
+    /// the dimension internally and would raise `InvalidContract`; this guard
+    /// upgrades that to the typed `SEM_DIM_MISMATCH` the query surface expects.
+    fn ready_index(&self, query_vector: &[f32]) -> Result<Option<&HnswIndex>, CoreError> {
         let Some(index) = self.graph.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         if index.dim() != query_vector.len() {
             return Err(CoreError::Typed {
@@ -169,7 +169,16 @@ impl LoadedGeneration {
                 ),
             });
         }
-        index.search(query_vector, limit)
+        Ok(Some(index))
+    }
+
+    fn collect_hits(
+        &self,
+        query_vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>, CoreError> {
+        self.ready_index(query_vector)?
+            .map_or_else(|| Ok(Vec::new()), |index| index.search(query_vector, limit))
     }
 
     fn collect_hits_scoped(
@@ -178,21 +187,10 @@ impl LoadedGeneration {
         allowed_ids: &BTreeSet<String>,
         limit: usize,
     ) -> Result<Vec<(String, f32)>, CoreError> {
-        let Some(index) = self.graph.as_ref() else {
-            return Ok(Vec::new());
-        };
-        if index.dim() != query_vector.len() {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
-                message: format!(
-                    "semantic: query vector dim {} does not match index dim {} for generation {}",
-                    query_vector.len(),
-                    index.dim(),
-                    self.generation.get()
-                ),
-            });
-        }
-        index.search_scoped(query_vector, allowed_ids, limit)
+        self.ready_index(query_vector)?.map_or_else(
+            || Ok(Vec::new()),
+            |index| index.search_scoped(query_vector, allowed_ids, limit),
+        )
     }
 
     fn to_candidates(&self, hits: Vec<(String, f32)>) -> Result<Vec<LexicalCandidate>, CoreError> {
