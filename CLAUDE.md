@@ -48,7 +48,7 @@
 ### Architecture
 
 - shared contract crate is the only producer/search-plane integration surface
-- core crate must not import `rusqlite`, `tantivy`, `lancedb`, or raw filesystem layout
+- core crate must not import vendor storage/index libraries (e.g. `tantivy`) or raw filesystem layout
 - storage/query vendor choices belong to adapters only
 
 ### Code shape discipline (write-time SOLID, no god code)
@@ -122,8 +122,8 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - default Rust test rail: `just rust-profile test-fast`
 - behavior changes require regression tests
 - prompt-manager changes require `tools/prompt-manager/tests/test_pm.py`
-- policy/validator changes require property tests in `crates/quanta-index-core/tests/property_policies.rs`
-- hot-path validator changes require updating `crates/quanta-index-core/benches/policy_bench.rs`
+- core policy/validator changes require regression tests under `crates/quanta-index-core/tests/` (current files: `hybrid_policy.rs`, `lexical_policy.rs`, `semantic_policy.rs`)
+- property coverage for typed-translator / wire-format paths lives in the `lq-*` adapter crates' `tests/property_*.rs` (proptest)
 
 ## Test rails
 
@@ -133,12 +133,12 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - e2e smoke: `just rust-profile test-daemon`
 - shared-surface validation: `just rust-profile validate-shared-surface`
 - pyramid: `just rust-test-pyramid`
-- property invariants: included in the integration rail (proptest)
-- benchmark regression guard: `just rust-bench` (criterion)
+- property invariants: included in the integration rail (proptest) — covers `lq-*` adapter crates; core policy validators are currently example-based
+- benchmark regression guard: `just rust-bench` (criterion) — covers `lq-norm` pipeline; core has no current bench rail
 
 ## Heavy correctness rail
 
-- `just rust-miri` — Miri UB detection (nightly, contract + core only; rusqlite FFI is excluded)
+- `just rust-miri` — Miri UB detection (nightly, contract + core only)
 - `just rust-careful` — cargo-careful stacked-borrows / debug-assert run (nightly)
 - `just rust-tsan` / `just rust-asan` — ThreadSanitizer / AddressSanitizer (nightly + `-Z build-std`)
 - `just rust-mutants` — cargo-mutants on `quanta-index-core`
@@ -181,11 +181,12 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 There is no build queue controller in this repo.
 
-Current control-plane meaning:
-- control-plane crate `quanta-index-control` (current backend: SQLite, kept as internal implementation detail)
-- prepared bundle outbox
-- generation catalog
-- activation/readiness state
+Current control-plane meaning (lives inline in `quanta-index-search-plane`, no separate `quanta-index-control` crate):
+- `SearchPlaneControlDispatcher` (`crates/quanta-index-search-plane/src/control_dispatcher.rs`) — control IPC surface
+- `ActivationCatalog` (`crates/quanta-index-search-plane/src/readiness.rs`) — `state_root/activations/*.json`, rehydrated by `ActivationCatalog::open`
+- `SemanticAuthorityStore` (`crates/quanta-index-search-plane/src/ingest_dispatcher.rs`) — `state_root/semantic/journal.cbor`, replayed into HNSW via `replay_into` on boot
+- `AuxiliaryAuthorityStore` (history / runtime-metadata / structural) — `state_root/authorities/`, restored via `restore_into(ledger)`
+- readiness `Ledger` bootstrapped by `quanta-index-searchd::app::runtime::assemble` (`bootstrap_persisted_lexical_state`, `bootstrap_persisted_semantic_state`)
 
 
 ---

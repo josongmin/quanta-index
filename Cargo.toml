@@ -96,13 +96,11 @@ ciborium = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 fs2 = "0.4.3"
-lance = { version = "6.0.1", default-features = false }
 memchr = "2.8"
 memmap2 = "0.9.5"
 proptest = "1.6.0"
 regex = "=1.10.6"
 regex-syntax = "=0.8.5"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 sha2 = "0.10"

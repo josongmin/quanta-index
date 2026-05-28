@@ -256,10 +256,6 @@ impl Ledger {
         &self.semantic
     }
 
-    pub fn lexical_mut(&mut self) -> &mut TrackLedger {
-        &mut self.lexical
-    }
-
     pub fn lexical_materialize(
         &mut self,
         generation: ManifestGeneration,
@@ -267,10 +263,6 @@ impl Ledger {
     ) {
         self.lexical
             .record_materialized(generation, manifest_digest);
-    }
-
-    pub fn semantic_mut(&mut self) -> &mut TrackLedger {
-        &mut self.semantic
     }
 
     pub fn semantic_materialize(

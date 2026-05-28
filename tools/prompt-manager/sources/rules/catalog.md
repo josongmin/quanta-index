@@ -13,7 +13,7 @@
 ### Architecture
 
 - shared contract crate is the only producer/search-plane integration surface
-- core crate must not import `rusqlite`, `tantivy`, `lancedb`, or raw filesystem layout
+- core crate must not import vendor storage/index libraries (e.g. `tantivy`) or raw filesystem layout
 - storage/query vendor choices belong to adapters only
 
 ### Code shape discipline (write-time SOLID, no god code)
