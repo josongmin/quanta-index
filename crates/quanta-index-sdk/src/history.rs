@@ -175,6 +175,7 @@ impl crate::NamespaceIngest for HistoryNs {
             SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

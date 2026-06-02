@@ -196,12 +196,14 @@ pub quanta_index_contract::channel::ChunkRecord::end_line: u32
 pub quanta_index_contract::channel::ChunkRecord::language: quanta_index_contract::lex::lang::LanguageCode
 pub quanta_index_contract::channel::ChunkRecord::parent_chunk_id: core::option::Option<quanta_index_contract::ChunkId>
 pub quanta_index_contract::channel::ChunkRecord::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::channel::ChunkRecord::source_repo_id: core::option::Option<quanta_index_contract_base::ids::RepoId>
 pub quanta_index_contract::channel::ChunkRecord::start_byte: u32
 pub quanta_index_contract::channel::ChunkRecord::start_line: u32
 pub quanta_index_contract::channel::ChunkRecord::structural: core::option::Option<quanta_index_contract::ChunkStructuralMetadata>
 pub quanta_index_contract::channel::ChunkRecord::text: alloc::boxed::Box<str>
 impl quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::derived_snippet(&self) -> &str
+pub fn quanta_index_contract::ChunkRecord::searchable_repo_id<'a>(&'a self, batch_repo_id: &'a quanta_index_contract_base::ids::RepoId) -> &'a quanta_index_contract_base::ids::RepoId
 impl core::clone::Clone for quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::clone(&self) -> quanta_index_contract::ChunkRecord
 impl core::cmp::Eq for quanta_index_contract::ChunkRecord
@@ -969,6 +971,7 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishDirtyBatch(q
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishHistoryBatch(quanta_index_contract::HistoryIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishLexicalBatch(quanta_index_contract::LexicalIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRepoMapBundle(quanta_index_contract::RepoMapSourceBundle)
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(quanta_index_contract::RuntimeCatalogIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -994,6 +997,7 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::Error(quanta_index
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::HistoryReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::LexicalReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RepoMapReceipt(quanta_index_contract::RepoMapMutationAck)
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse
@@ -1497,6 +1501,130 @@ impl core::marker::Unpin for quanta_index_contract::LexicalTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalTombstoneScope
+pub struct quanta_index_contract::ipc::RuntimeCatalogIngestBatch
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::affected_entries: alloc::vec::Vec<quanta_index_contract::RuntimeEdgeAuthorityRecord>
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::batch_digest: alloc::string::String
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::changed_entries: alloc::vec::Vec<quanta_index_contract::RuntimeChangedRecord>
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::facet_entries: alloc::vec::Vec<quanta_index_contract::RuntimeDocFacetRecord>
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::generation_materialized_at_ms: u64
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::invalidated_by_entries: alloc::vec::Vec<quanta_index_contract::RuntimeEdgeAuthorityRecord>
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::overlay_epoch_ms: u64
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::producer_head_applied_at_ms: u64
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::ipc::RuntimeCatalogIngestBatch::snapshot_entries: alloc::vec::Vec<quanta_index_contract::RuntimeSnapshotRecord>
+impl core::clone::Clone for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::clone(&self) -> quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::cmp::Eq for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::eq(&self, other: &quanta_index_contract::RuntimeCatalogIngestBatch) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeCatalogIngestBatch
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Send for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Sync for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Unpin for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeCatalogIngestBatch
+pub struct quanta_index_contract::ipc::RuntimeChangedRecord
+pub quanta_index_contract::ipc::RuntimeChangedRecord::applied_at_ms: u64
+pub quanta_index_contract::ipc::RuntimeChangedRecord::doc_id: quanta_index_contract::ChunkId
+pub quanta_index_contract::ipc::RuntimeChangedRecord::payload_hash: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::clone(&self) -> quanta_index_contract::RuntimeChangedRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeChangedRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::eq(&self, other: &quanta_index_contract::RuntimeChangedRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeChangedRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Send for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeChangedRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeChangedRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeChangedRecord
+pub struct quanta_index_contract::ipc::RuntimeDocFacetRecord
+pub quanta_index_contract::ipc::RuntimeDocFacetRecord::doc_id: quanta_index_contract::ChunkId
+pub quanta_index_contract::ipc::RuntimeDocFacetRecord::layer: core::option::Option<alloc::string::String>
+pub quanta_index_contract::ipc::RuntimeDocFacetRecord::owner: core::option::Option<alloc::string::String>
+pub quanta_index_contract::ipc::RuntimeDocFacetRecord::service: core::option::Option<alloc::string::String>
+pub quanta_index_contract::ipc::RuntimeDocFacetRecord::surface: core::option::Option<alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::clone(&self) -> quanta_index_contract::RuntimeDocFacetRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeDocFacetRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::eq(&self, other: &quanta_index_contract::RuntimeDocFacetRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeDocFacetRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Send for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeDocFacetRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeDocFacetRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeDocFacetRecord
+pub struct quanta_index_contract::ipc::RuntimeEdgeAuthorityRecord
+pub quanta_index_contract::ipc::RuntimeEdgeAuthorityRecord::doc_ids: alloc::vec::Vec<quanta_index_contract::ChunkId>
+pub quanta_index_contract::ipc::RuntimeEdgeAuthorityRecord::key: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::clone(&self) -> quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::eq(&self, other: &quanta_index_contract::RuntimeEdgeAuthorityRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Send for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub struct quanta_index_contract::ipc::RuntimeSnapshotRecord
+pub quanta_index_contract::ipc::RuntimeSnapshotRecord::doc_ids: alloc::vec::Vec<quanta_index_contract::ChunkId>
+pub quanta_index_contract::ipc::RuntimeSnapshotRecord::name: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::clone(&self) -> quanta_index_contract::RuntimeSnapshotRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeSnapshotRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::eq(&self, other: &quanta_index_contract::RuntimeSnapshotRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeSnapshotRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Send for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeSnapshotRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
 pub struct quanta_index_contract::ipc::SearchPlaneActivateGenerationRequest
 pub quanta_index_contract::ipc::SearchPlaneActivateGenerationRequest::manifest_digest: alloc::string::String
 pub quanta_index_contract::ipc::SearchPlaneActivateGenerationRequest::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -5314,6 +5442,7 @@ pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishHistoryBatch(quanta_index_contract::HistoryIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishLexicalBatch(quanta_index_contract::LexicalIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRepoMapBundle(quanta_index_contract::RepoMapSourceBundle)
+pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(quanta_index_contract::RuntimeCatalogIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -5339,6 +5468,7 @@ pub quanta_index_contract::SearchPlaneIngestIpcResponse::Error(quanta_index_cont
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::LexicalReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::RepoMapReceipt(quanta_index_contract::RepoMapMutationAck)
+pub quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse
@@ -5541,12 +5671,14 @@ pub quanta_index_contract::ChunkRecord::end_line: u32
 pub quanta_index_contract::ChunkRecord::language: quanta_index_contract::lex::lang::LanguageCode
 pub quanta_index_contract::ChunkRecord::parent_chunk_id: core::option::Option<quanta_index_contract::ChunkId>
 pub quanta_index_contract::ChunkRecord::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_contract::ChunkRecord::source_repo_id: core::option::Option<quanta_index_contract_base::ids::RepoId>
 pub quanta_index_contract::ChunkRecord::start_byte: u32
 pub quanta_index_contract::ChunkRecord::start_line: u32
 pub quanta_index_contract::ChunkRecord::structural: core::option::Option<quanta_index_contract::ChunkStructuralMetadata>
 pub quanta_index_contract::ChunkRecord::text: alloc::boxed::Box<str>
 impl quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::derived_snippet(&self) -> &str
+pub fn quanta_index_contract::ChunkRecord::searchable_repo_id<'a>(&'a self, batch_repo_id: &'a quanta_index_contract_base::ids::RepoId) -> &'a quanta_index_contract_base::ids::RepoId
 impl core::clone::Clone for quanta_index_contract::ChunkRecord
 pub fn quanta_index_contract::ChunkRecord::clone(&self) -> quanta_index_contract::ChunkRecord
 impl core::cmp::Eq for quanta_index_contract::ChunkRecord
@@ -6850,6 +6982,108 @@ impl core::marker::Unpin for quanta_index_contract::RepoMapSymbolNode
 impl core::marker::UnsafeUnpin for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepoMapSymbolNode
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepoMapSymbolNode
+pub struct quanta_index_contract::RuntimeCatalogIngestBatch
+pub quanta_index_contract::RuntimeCatalogIngestBatch::affected_entries: alloc::vec::Vec<quanta_index_contract::RuntimeEdgeAuthorityRecord>
+pub quanta_index_contract::RuntimeCatalogIngestBatch::batch_digest: alloc::string::String
+pub quanta_index_contract::RuntimeCatalogIngestBatch::changed_entries: alloc::vec::Vec<quanta_index_contract::RuntimeChangedRecord>
+pub quanta_index_contract::RuntimeCatalogIngestBatch::facet_entries: alloc::vec::Vec<quanta_index_contract::RuntimeDocFacetRecord>
+pub quanta_index_contract::RuntimeCatalogIngestBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::RuntimeCatalogIngestBatch::generation_materialized_at_ms: u64
+pub quanta_index_contract::RuntimeCatalogIngestBatch::invalidated_by_entries: alloc::vec::Vec<quanta_index_contract::RuntimeEdgeAuthorityRecord>
+pub quanta_index_contract::RuntimeCatalogIngestBatch::overlay_epoch_ms: u64
+pub quanta_index_contract::RuntimeCatalogIngestBatch::producer_head_applied_at_ms: u64
+pub quanta_index_contract::RuntimeCatalogIngestBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::RuntimeCatalogIngestBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::RuntimeCatalogIngestBatch::snapshot_entries: alloc::vec::Vec<quanta_index_contract::RuntimeSnapshotRecord>
+impl core::clone::Clone for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::clone(&self) -> quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::cmp::Eq for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::eq(&self, other: &quanta_index_contract::RuntimeCatalogIngestBatch) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeCatalogIngestBatch
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeCatalogIngestBatch
+pub fn quanta_index_contract::RuntimeCatalogIngestBatch::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Send for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Sync for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::Unpin for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeCatalogIngestBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeCatalogIngestBatch
+pub struct quanta_index_contract::RuntimeChangedRecord
+pub quanta_index_contract::RuntimeChangedRecord::applied_at_ms: u64
+pub quanta_index_contract::RuntimeChangedRecord::doc_id: quanta_index_contract::ChunkId
+pub quanta_index_contract::RuntimeChangedRecord::payload_hash: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::clone(&self) -> quanta_index_contract::RuntimeChangedRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeChangedRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::eq(&self, other: &quanta_index_contract::RuntimeChangedRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeChangedRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeChangedRecord
+pub fn quanta_index_contract::RuntimeChangedRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Send for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeChangedRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeChangedRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeChangedRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeChangedRecord
+pub struct quanta_index_contract::RuntimeDocFacetRecord
+pub quanta_index_contract::RuntimeDocFacetRecord::doc_id: quanta_index_contract::ChunkId
+pub quanta_index_contract::RuntimeDocFacetRecord::layer: core::option::Option<alloc::string::String>
+pub quanta_index_contract::RuntimeDocFacetRecord::owner: core::option::Option<alloc::string::String>
+pub quanta_index_contract::RuntimeDocFacetRecord::service: core::option::Option<alloc::string::String>
+pub quanta_index_contract::RuntimeDocFacetRecord::surface: core::option::Option<alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::clone(&self) -> quanta_index_contract::RuntimeDocFacetRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeDocFacetRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::eq(&self, other: &quanta_index_contract::RuntimeDocFacetRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeDocFacetRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeDocFacetRecord
+pub fn quanta_index_contract::RuntimeDocFacetRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Send for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeDocFacetRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeDocFacetRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeDocFacetRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeDocFacetRecord
+pub struct quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub quanta_index_contract::RuntimeEdgeAuthorityRecord::doc_ids: alloc::vec::Vec<quanta_index_contract::ChunkId>
+pub quanta_index_contract::RuntimeEdgeAuthorityRecord::key: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::clone(&self) -> quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::eq(&self, other: &quanta_index_contract::RuntimeEdgeAuthorityRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeEdgeAuthorityRecord
+pub fn quanta_index_contract::RuntimeEdgeAuthorityRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Send for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeEdgeAuthorityRecord
 pub struct quanta_index_contract::RuntimeMetadataQueryRequest
 pub quanta_index_contract::RuntimeMetadataQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::RuntimeMetadataQueryRequest
@@ -6871,6 +7105,28 @@ impl core::marker::Unpin for quanta_index_contract::RuntimeMetadataQueryRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeMetadataQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeMetadataQueryRequest
+pub struct quanta_index_contract::RuntimeSnapshotRecord
+pub quanta_index_contract::RuntimeSnapshotRecord::doc_ids: alloc::vec::Vec<quanta_index_contract::ChunkId>
+pub quanta_index_contract::RuntimeSnapshotRecord::name: alloc::string::String
+impl core::clone::Clone for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::clone(&self) -> quanta_index_contract::RuntimeSnapshotRecord
+impl core::cmp::Eq for quanta_index_contract::RuntimeSnapshotRecord
+impl core::cmp::PartialEq for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::eq(&self, other: &quanta_index_contract::RuntimeSnapshotRecord) -> bool
+impl core::fmt::Debug for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::RuntimeSnapshotRecord
+impl serde_core::ser::Serialize for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RuntimeSnapshotRecord
+pub fn quanta_index_contract::RuntimeSnapshotRecord::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Send for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Sync for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::Unpin for quanta_index_contract::RuntimeSnapshotRecord
+impl core::marker::UnsafeUnpin for quanta_index_contract::RuntimeSnapshotRecord
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RuntimeSnapshotRecord
 pub struct quanta_index_contract::SearchExplanation
 pub quanta_index_contract::SearchExplanation::contributions: alloc::vec::Vec<quanta_index_contract::ExplanationRow>
 pub quanta_index_contract::SearchExplanation::early_stop_reason: core::option::Option<quanta_index_contract::EarlyStopReason>

@@ -10,5 +10,6 @@ mod model;
 
 pub use loader::load_corpus;
 pub use model::{
-    Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeRoute, RuntimeSyntax,
+    Corpus, CorpusRow, ExpectedShape, ExpectedStructuralBinding, Gate, RowClassification,
+    RuntimeRoute, RuntimeSyntax,
 };

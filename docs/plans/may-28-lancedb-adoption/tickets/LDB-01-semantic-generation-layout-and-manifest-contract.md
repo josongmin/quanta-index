@@ -1,19 +1,24 @@
 # LDB-01 — Semantic Generation Layout and Manifest Contract
 
-Status: `done` (2026-05-29)
-Parent: [../README.md](../README.md)
-Depends on: [LDB-00-truth-freeze-and-backend-decision.md](LDB-00-truth-freeze-and-backend-decision.md)
+Status: `done` (lancedb rewrite 2026-05-30; R1+R2+R3 hardening 2026-05-31)
 
 ## 0. Outcome
 
-Implemented in `crates/quanta-index-semantic`: `layout.rs` owns the
-generation-local directory shape (`{semantic_root}/{repo}/{revision}/g{gen}/` +
-`dataset/` + `semantic-manifest.cbor` + `MARKER_READY` + `MARKER_SEALED`);
-`manifest.rs` defines `SemanticManifest` (LDB-01 §3 fields) with a manual
-`ciborium` codec and `validate_scope` fail-closed open guard; `dataset.rs`
-defines the columnar row shard (LDB-01 §4 data contract). Markers/manifest/
-checksum semantics covered by `tests/persisted_semantic.rs` (unsealed →
-not-ready, sealed-empty → empty hits, manifest/dataset corruption → fail-closed).
+`crates/quanta-index-semantic/src/layout.rs` owns the generation directory
+shape (`{semantic_root}/{repo}/{revision}/g{gen}/` + `dataset/` (lancedb-
+managed) + `semantic-build-contract.cbor` + `semantic-manifest.cbor` +
+`MARKER_READY` + `MARKER_SEALED`).
+`crates/quanta-index-semantic/src/manifest.rs` defines `SemanticManifest`
+(LDB-01 §3 field set, `FORMAT_VERSION=3` for the sidecar-backed lancedb era;
+sealed legacy `FORMAT_VERSION=2` generations stay openable for compatibility)
+with a manual `ciborium` codec and `validate_scope` fail-closed on
+format/scope/distance-metric mismatch. The in-house CBOR row shard from §3.1
+(`dataset.rs`) is deleted; lancedb's Arrow dataset is the row layer, with an
+Arrow schema defined in `build.rs::semantic_schema(dim)`. Markers, manifest,
+fail-closed open semantics, and all LDB-01 §6 test rows continue to apply
+(`tests/persisted_semantic.rs`).
+Parent: [../README.md](../README.md)
+Depends on: [LDB-00-truth-freeze-and-backend-decision.md](LDB-00-truth-freeze-and-backend-decision.md)
 
 ## 1. Purpose
 
@@ -27,6 +32,7 @@ Semantic generations move to a lexical-like layout:
 ```text
 {state_root}/indexes/semantic/{repo_id}/{revision_id}/g{generation}/
   dataset/...
+  semantic-build-contract.cbor
   semantic-manifest.cbor
   MARKER_READY
   MARKER_SEALED

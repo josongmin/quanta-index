@@ -1,20 +1,41 @@
 # LDB-02 — Lance Persisted Semantic Adapter
 
-Status: `done` (2026-05-29)
-Parent: [../README.md](../README.md)
-Depends on: [LDB-01-semantic-generation-layout-and-manifest-contract.md](LDB-01-semantic-generation-layout-and-manifest-contract.md)
+Status: `done` (lancedb rewrite 2026-05-30; R1+R2+R3 hardening 2026-05-31)
 
 ## 0. Outcome
 
-`SemanticAdapter` rewritten off the in-memory-only store onto durable,
-generation-scoped persistence (`build.rs` writes rows + READY per batch, builds
-the HNSW graph once and writes manifest + SEALED on seal; `search.rs` opens a
-sealed generation directly — manifest/shape/checksum validated — and loads the
-persisted graph rather than rebuilding it; `graph.rs` is the HNSW CBOR codec).
-Vendor/layout knowledge stays inside the crate. `tests/persisted_semantic.rs`
-covers build/open roundtrip, restart open by a fresh adapter, replace/tombstone,
-generation-pin isolation, contract + query dimension mismatch, and corruption
-fail-closed. Per LDB-00 the durable backend is in-house, not the `lance` crate.
+The semantic adapter is the **real `lancedb` 0.30** integration
+(`quanta-index-semantic`), not the in-house CBOR+HNSW from §3.1 (those files
+are deleted). Modules:
+
+- `lib.rs` — `SemanticAdapter` owns a `tokio::runtime::Runtime`; the single
+  `run_blocking` helper (one `#[expect(clippy::disallowed_methods)]`) is the
+  whole-crate async↔sync seam between the sync port surface and lancedb's
+  async API.
+- `build.rs` — `build_batch` validates every scope **before** any destructive
+  delete (R1 #1); `prepare_generation_dir` clones a delta base via crash-
+  atomic stage-then-rename **only** when the base carries `MARKER_SEALED`
+  (R1 #2 + R2 staging); `ensure_table` cross-checks the existing-table
+  FixedSizeList dimension against the batch contract dim (R3); `seal_generation`
+  builds the IVF_HNSW_SQ ANN index at seal when `row_count >= 256` (SOTA++).
+- `search.rs` — `open_generation` validates the manifest scope + distance
+  metric (R3) + row count vs lancedb's live count; `vector_search` runs with
+  `DistanceType::Cosine` and converts lancedb distance to historical cosine
+  similarity in the candidate score field; `search_scoped` uses lancedb's
+  `only_if` with a SQL-escaped IN filter from `sql.rs`.
+- `sql.rs` — shared SQL-escape helpers with unit-tested SQL-injection
+  resistance.
+
+Per LDB-00 §3.2, vendor + tokio runtime are localized to this crate. Tests
+under `tests/persisted_semantic.rs` cover durable roundtrip, restart, replace/
+tombstone, generation-pin isolation, sealed-empty, contract + query dimension
+mismatch, manifest corruption, manifest row-count cross-check, IVF index
+existence at seal (via `lancedb::Table::list_indices`), unsealed-base delta
+fail-closed, validate-before-delete preserves prior rows, missing-lancedb-
+dataset open fail-closed, search_scoped allowlist filter, concurrent open,
+delta-with-missing-base fail-closed, unsupported distance metric rejection.
+Parent: [../README.md](../README.md)
+Depends on: [LDB-01-semantic-generation-layout-and-manifest-contract.md](LDB-01-semantic-generation-layout-and-manifest-contract.md)
 
 ## 1. Purpose
 

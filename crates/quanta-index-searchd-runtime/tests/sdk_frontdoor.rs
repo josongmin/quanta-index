@@ -6,6 +6,9 @@
     reason = "integration polling uses explicit Result fallback checks"
 )]
 
+#[path = "common/frontdoor_scenarios.rs"]
+mod frontdoor_scenarios;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -25,10 +28,14 @@ use quanta_index_contract::{
     RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
     RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoMapSymbolNode, RevisionId, RuntimeMetadataQueryRequest,
-    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SemanticQueryRequest,
+    RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
+    RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
+    RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
     StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
     ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex, RepoRelativePath, SdkError,
@@ -38,9 +45,20 @@ use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
+use crate::frontdoor_scenarios::{
+    SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
+};
+
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<anyhow::Result<()>>;
 type SdkFrontdoorRuntime = (tempfile::TempDir, QuantaIndex, Arc<AtomicBool>, DriverJoin);
+type SdkFrontdoorRuntimeWithIngest = (
+    tempfile::TempDir,
+    QuantaIndex,
+    PathBuf,
+    Arc<AtomicBool>,
+    DriverJoin,
+);
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
@@ -147,6 +165,57 @@ fn start_sdk_frontdoor_runtime(thread_name: &str) -> Result<SdkFrontdoorRuntime,
         start_sdk_frontdoor_runtime_at_state_root(dir.path(), thread_name)?;
 
     Ok((dir, client, shutdown, join))
+}
+
+fn start_sdk_frontdoor_runtime_with_ingest(
+    thread_name: &str,
+) -> Result<SdkFrontdoorRuntimeWithIngest, Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = build_runtime(build_config(dir.path()))?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+
+    if !wait_until(SOCKET_TIMEOUT, || {
+        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
+    }) {
+        stop_runtime(&shutdown, join)?;
+        return Err("sdk frontdoor sockets never appeared".into());
+    }
+
+    let client = QuantaIndex::connect(
+        ConnectOptions::from_state_root(dir.path())
+            .with_query_socket(query_socket)
+            .with_control_socket(control_socket)
+            .with_ingest_socket(ingest_socket.clone()),
+    )?;
+    Ok((dir, client, ingest_socket, shutdown, join))
+}
+
+fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
+    let response: SearchPlaneIngestIpcResponseEnvelope = send_request(
+        socket,
+        &SearchPlaneIngestIpcRequestEnvelope {
+            request_id: NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed),
+            payload,
+        },
+    )?;
+    match response.payload {
+        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
+        SearchPlaneIngestIpcResponse::Error(err) => {
+            Err(format!("ingest failed code={} message={}", err.code, err.message).into())
+        }
+    }
 }
 
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
@@ -297,6 +366,25 @@ fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
     ))
 }
 
+fn lexical_frontdoor_matrix_batch() -> Result<LexicalBatch, Box<dyn Error>> {
+    Ok(lexical_batch()?.replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new("src/file_contains.rs"),
+        },
+        "scope:lexical-file-contains",
+        vec![lexical_chunk(
+            "chunk-file-contains",
+            "src/file_contains.rs",
+            "foo oo_ba file_contains_needle",
+            "text:file-contains",
+            "shape:file-contains",
+            29,
+        )?],
+        Vec::new(),
+    ))
+}
+
 fn lexical_batch_two() -> Result<LexicalBatch, Box<dyn Error>> {
     Ok(LexicalBatch::replace_generation(
         repo(),
@@ -368,6 +456,7 @@ fn lexical_chunk(
         text: snippet.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     })
 }
 
@@ -683,6 +772,45 @@ fn rust_language() -> Result<LanguageCode, Box<dyn Error>> {
     })
 }
 
+fn publish_runtime_catalog_batch(socket: &Path) -> TestResult {
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            overlay_epoch_ms: 20,
+            batch_digest: "batch:runtime-catalog-sdk".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("alpha"),
+                applied_at_ms: 25,
+                payload_hash: [0xaa; 32],
+            }],
+            facet_entries: vec![RuntimeDocFacetRecord {
+                doc_id: ChunkId::new("alpha"),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            }],
+            snapshot_entries: vec![RuntimeSnapshotRecord {
+                name: "active".to_string(),
+                doc_ids: vec![ChunkId::new("alpha")],
+            }],
+            affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("alpha")],
+            }],
+            invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("alpha")],
+            }],
+        }),
+    )
+}
+
 fn structural_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::Chunk,
@@ -831,6 +959,32 @@ where
                 thread::sleep(Duration::from_millis(10));
             }
             Err(err) => return Err(err),
+        }
+    }
+}
+
+fn wait_for_sdk_terminal_error<T, F>(
+    timeout: Duration,
+    retry_codes: &[&str],
+    mut run: F,
+) -> Result<SdkError, Box<dyn Error>>
+where
+    F: FnMut() -> Result<T, SdkError>,
+{
+    let start = Instant::now();
+    loop {
+        match run() {
+            Ok(_) => {
+                return Err("query unexpectedly succeeded while waiting for typed error".into());
+            }
+            Err(SdkError::Remote { code, message })
+                if retry_codes.iter().any(|candidate| code == *candidate)
+                    && start.elapsed() < timeout =>
+            {
+                drop(message);
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Ok(err),
         }
     }
 }
@@ -2136,6 +2290,214 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
 }
 
 #[test]
+fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResult {
+    let (_dir, client, ingest_socket, shutdown, join) =
+        start_sdk_frontdoor_runtime_with_ingest("sdk-frontdoor-widened-query-matrix")?;
+
+    let _lexical_receipt = client
+        .lexical()
+        .publish(&lexical_frontdoor_matrix_batch()?)?;
+    let _history_receipt = client.history().publish(&history_batch())?;
+    let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
+    publish_runtime_catalog_batch(&ingest_socket)?;
+    let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(revision())
+            .generation(generation())
+            .manifest_digest("manifest:sdk-frontdoor-matrix")
+            .tracks([SearchPlaneTrackKind::Lexical])?
+            .commit()
+    })?;
+
+    for &scenario in SDK_FRONTDOOR_SCENARIOS {
+        match scenario.expected {
+            SdkFrontdoorExpectation::CandidateIds(expected_ids) => match scenario.surface {
+                SdkFrontdoorSurface::Lexical => {
+                    let response = wait_for_sdk_observation(
+                        SOCKET_TIMEOUT,
+                        || match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .lexical()
+                                .query()
+                                .native(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .lexical()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                        },
+                        |response| response.generation == pin(),
+                    )?;
+                    let observed = response
+                        .results
+                        .iter()
+                        .map(|candidate| candidate.candidate_id.clone())
+                        .collect::<Vec<_>>();
+                    let expected = expected_ids
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect::<Vec<_>>();
+                    if observed != expected {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} lexical candidate drift: expected {:?}, got {:?}",
+                            scenario.name, expected, observed
+                        )
+                        .into());
+                    }
+                }
+                SdkFrontdoorSurface::RuntimeMetadata => {
+                    let response = wait_for_sdk_observation(
+                        SOCKET_TIMEOUT,
+                        || match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .runtime()
+                                .query()
+                                .native(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .runtime()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                        },
+                        |response| response.generation == pin(),
+                    )?;
+                    let observed = response
+                        .results
+                        .iter()
+                        .map(|candidate| candidate.candidate_id.clone())
+                        .collect::<Vec<_>>();
+                    let expected = expected_ids
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect::<Vec<_>>();
+                    if observed != expected {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} runtime candidate drift: expected {:?}, got {:?}",
+                            scenario.name, expected, observed
+                        )
+                        .into());
+                    }
+                }
+                SdkFrontdoorSurface::History => {
+                    stop_runtime(&shutdown, join)?;
+                    return Err(format!(
+                        "{} used candidate-id expectation on history surface",
+                        scenario.name
+                    )
+                    .into());
+                }
+            },
+            SdkFrontdoorExpectation::CommitShas(expected_shas) => {
+                if scenario.surface != SdkFrontdoorSurface::History {
+                    stop_runtime(&shutdown, join)?;
+                    return Err(format!(
+                        "{} used commit expectation on non-history surface",
+                        scenario.name
+                    )
+                    .into());
+                }
+                let response = wait_for_sdk_observation(
+                    SOCKET_TIMEOUT,
+                    || match scenario.syntax {
+                        TextQuerySyntax::Native => client
+                            .history()
+                            .query()
+                            .native(scenario.query_text)
+                            .active(repo(), revision())
+                            .top_k(10)
+                            .execute(),
+                        TextQuerySyntax::Sourcegraph => client
+                            .history()
+                            .query()
+                            .sourcegraph(scenario.query_text)
+                            .active(repo(), revision())
+                            .top_k(10)
+                            .execute(),
+                    },
+                    |response| response.generation == pin(),
+                )?;
+                let observed = response
+                    .commits
+                    .iter()
+                    .map(|commit| commit.sha.to_hex())
+                    .collect::<Vec<_>>();
+                let expected = expected_shas
+                    .iter()
+                    .map(|sha| (*sha).to_string())
+                    .collect::<Vec<_>>();
+                if observed != expected || !response.diffs.is_empty() {
+                    stop_runtime(&shutdown, join)?;
+                    return Err(format!(
+                        "{} history commit drift: expected {:?}, got commits={:?} diffs={:?}",
+                        scenario.name, expected, observed, response.diffs
+                    )
+                    .into());
+                }
+            }
+            SdkFrontdoorExpectation::TypedError(expected_error) => {
+                if scenario.surface != SdkFrontdoorSurface::History {
+                    stop_runtime(&shutdown, join)?;
+                    return Err(format!(
+                        "{} typed error expectation on unsupported SDK surface",
+                        scenario.name
+                    )
+                    .into());
+                }
+                let err =
+                    wait_for_sdk_terminal_error(SOCKET_TIMEOUT, &["NOT_READY"], || match scenario
+                        .syntax
+                    {
+                        TextQuerySyntax::Native => client
+                            .history()
+                            .query()
+                            .native(scenario.query_text)
+                            .active(repo(), revision())
+                            .top_k(10)
+                            .execute(),
+                        TextQuerySyntax::Sourcegraph => client
+                            .history()
+                            .query()
+                            .sourcegraph(scenario.query_text)
+                            .active(repo(), revision())
+                            .top_k(10)
+                            .execute(),
+                    })?;
+                match err {
+                    SdkError::Remote { code, message }
+                        if code == expected_error.code
+                            && message.contains(expected_error.message_contains) => {}
+                    other => {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} typed error drifted: expected code={} fragment={:?}, got {other:?}",
+                            scenario.name, expected_error.code, expected_error.message_contains
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
 fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestResult {
     let dir = tempfile::tempdir()?;
     let runtime = build_runtime(build_config(dir.path()))?;
@@ -2179,7 +2541,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
         client
             .history()
             .query()
-            .sourcegraph("todo")
+            .sourcegraph("type:commit todo")
             .pinned(pin())
             .top_k(5)
             .execute(),
@@ -2390,52 +2752,128 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         }
     }
 
-    let mixed_boolean = expect_sdk_error(
-        client
-            .structural()
-            .query()
-            .native("todo OR match { :[x] }")
-            .pinned(pin())
-            .top_k(2)
-            .execute(),
-        "mixed lexical/structural boolean must fail closed",
+    let mixed_boolean = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("main AND match { function_item :[x] }")
+                .pinned(pin())
+                .top_k(2)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
     )?;
-    match mixed_boolean {
-        SdkError::Remote { code, message }
-            if code == "STR_INVALID_REQUEST"
-                && message.contains("structural-only boolean tree") => {}
-        other @ (SdkError::Usage(_)
-        | SdkError::Protocol(_)
-        | SdkError::Serialization(_)
-        | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
-            stop_runtime(&shutdown, join)?;
-            return Err(format!("unexpected mixed-boolean error: {other:?}").into());
-        }
+    assert_structural_single_binding(
+        &mixed_boolean,
+        &pin(),
+        "chunk-tree",
+        "x",
+        0,
+        10,
+        "sdk mixed lexical/structural boolean AND",
+    )?;
+
+    let mixed_or = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("main OR match { function_item :[x] }")
+                .pinned(pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| {
+            response.generation == pin()
+                && response.results.len() == 1
+                && response
+                    .results
+                    .first()
+                    .map(|candidate| !candidate.bindings.is_empty())
+                    .unwrap_or(false)
+        },
+    )?;
+    if mixed_or.results.len() != 1 {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "sdk mixed lexical/structural OR expected one surviving candidate, got {:?}",
+            mixed_or.results
+        )
+        .into());
+    }
+    let mixed_or_candidate = mixed_or
+        .results
+        .first()
+        .ok_or_else(|| "sdk mixed lexical/structural boolean OR: missing candidate".to_string())?;
+    if mixed_or.generation != pin() || mixed_or_candidate.candidate_id != "chunk-tree" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "sdk mixed lexical/structural boolean OR: unexpected response {mixed_or:?}"
+        )
+        .into());
     }
 
-    let pure_negative = expect_sdk_error(
-        client
-            .structural()
-            .query()
-            .native("NOT match { function_item }")
-            .pinned(pin())
-            .top_k(2)
-            .execute(),
-        "pure-negative structural boolean must fail closed",
+    let mixed_and_not = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("main AND NOT match { trait_item }")
+                .pinned(pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
     )?;
-    match pure_negative {
-        SdkError::Remote { code, message }
-            if code == "STR_INVALID_REQUEST"
-                && message
-                    .contains("pure-negative structural boolean queries are not executable") => {}
-        other @ (SdkError::Usage(_)
-        | SdkError::Protocol(_)
-        | SdkError::Serialization(_)
-        | SdkError::Transport(_)
-        | SdkError::Remote { .. }) => {
+    let mixed_and_not_candidate = mixed_and_not.results.first().ok_or_else(|| {
+        "sdk mixed lexical/structural boolean AND NOT: missing candidate".to_string()
+    })?;
+    if mixed_and_not.generation != pin() || mixed_and_not_candidate.candidate_id != "chunk-tree" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "sdk mixed lexical/structural boolean AND NOT: unexpected response {mixed_and_not:?}"
+        )
+        .into());
+    }
+
+    let pure_negative = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .structural()
+                .query()
+                .native("NOT match { function_item }")
+                .pinned(pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| {
+            response.generation == pin()
+                && !response.results.is_empty()
+                && response
+                    .results
+                    .iter()
+                    .all(|candidate| candidate.candidate_id != "chunk-tree")
+        },
+    )?;
+    for candidate in &pure_negative.results {
+        if candidate.candidate_id == "chunk-tree" {
             stop_runtime(&shutdown, join)?;
-            return Err(format!("unexpected pure-negative error: {other:?}").into());
+            return Err(format!(
+                "pure-negative root must exclude function_item matches, got {candidate:?}"
+            )
+            .into());
+        }
+        if !candidate.bindings.is_empty() {
+            stop_runtime(&shutdown, join)?;
+            return Err(format!(
+                "pure-negative universe placeholder must not invent bindings, got {candidate:?}"
+            )
+            .into());
         }
     }
 

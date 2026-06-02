@@ -30,8 +30,13 @@ Repo-local closeout state on the current tree:
 - `searchd` public ingest truth is typed batch UDS intake routed to owner
   materializer ports; any legacy persistence mirror is an internal runtime
   durability detail, not an external entry or public-surface blocker
-- broader external producer adoption proof remains cross-repo in
-  `semantica-codegraph-v2`
+- no open cross-repo functional handoff residue remains on the current
+  Semantica source; history / runtime / structural query parity, dedicated
+  sender rails, and structural full-loop proof are all landed
+- `index-sdk-ingress` still exists as a compile-budget gate on Semantica's
+  featureless `quanta-runtime` lib lane, but current retrieval/search consumer
+  bundles already activate it transitively; that is not an open cross-repo
+  handoff blocker or a `quanta-index` repo-local ingest gap
 - `SEM-OWN` still remains a separate deferred packet because the full internal
   derivation worker / manifest / seal-proof program has not landed, even
   though the public semantic/hybrid query surface is already text-only on the

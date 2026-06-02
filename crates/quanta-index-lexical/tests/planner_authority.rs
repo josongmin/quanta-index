@@ -53,6 +53,7 @@ fn encode_chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     };
     let mut payload = Vec::new();
     ciborium::into_writer(&record, &mut payload)

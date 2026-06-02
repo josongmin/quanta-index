@@ -5,7 +5,7 @@ use serde::{
 };
 
 use crate::lex::{LanguageCode, SymbolKindCode};
-use crate::{ChunkId, EmbeddingId, RepoRelativePath};
+use crate::{ChunkId, EmbeddingId, RepoId, RepoRelativePath};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChunkStructuralMetadata {
@@ -161,6 +161,9 @@ pub struct ChunkRecord {
     pub text: Box<str>,
     pub structural: Option<ChunkStructuralMetadata>,
     pub parent_chunk_id: Option<ChunkId>,
+    /// Producer-carried searchable repo facet for federated chunks in one
+    /// generation pin. When absent, the batch `repo_id` is indexed.
+    pub source_repo_id: Option<RepoId>,
 }
 
 const CHUNK_RECORD_FIELDS: &[&str] = &[
@@ -174,6 +177,7 @@ const CHUNK_RECORD_FIELDS: &[&str] = &[
     "text",
     "structural",
     "parent_chunk_id",
+    "source_repo_id",
 ];
 
 impl Serialize for ChunkRecord {
@@ -181,7 +185,7 @@ impl Serialize for ChunkRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("ChunkRecord", 10)?;
+        let mut state = serializer.serialize_struct("ChunkRecord", 11)?;
         state.serialize_field("chunk_id", &self.chunk_id)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("language", &self.language)?;
@@ -192,6 +196,7 @@ impl Serialize for ChunkRecord {
         state.serialize_field("text", self.text.as_ref())?;
         state.serialize_field("structural", &self.structural)?;
         state.serialize_field("parent_chunk_id", &self.parent_chunk_id)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
         state.end()
     }
 }
@@ -219,6 +224,7 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
         let mut text: Option<String> = None;
         let mut structural: Option<Option<ChunkStructuralMetadata>> = None;
         let mut parent_chunk_id: Option<Option<ChunkId>> = None;
+        let mut source_repo_id: Option<Option<RepoId>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "chunk_id" => {
@@ -281,6 +287,12 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
                     }
                     parent_chunk_id = Some(map.next_value()?);
                 }
+                "source_repo_id" => {
+                    if source_repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("source_repo_id"));
+                    }
+                    source_repo_id = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, CHUNK_RECORD_FIELDS)),
             }
         }
@@ -299,6 +311,7 @@ impl<'de> Visitor<'de> for ChunkRecordVisitor {
             structural: structural.ok_or_else(|| de::Error::missing_field("structural"))?,
             parent_chunk_id: parent_chunk_id
                 .ok_or_else(|| de::Error::missing_field("parent_chunk_id"))?,
+            source_repo_id: source_repo_id.unwrap_or(None),
         })
     }
 }
@@ -316,6 +329,11 @@ impl ChunkRecord {
     #[must_use]
     pub fn derived_snippet(&self) -> &str {
         self.text.as_ref()
+    }
+
+    #[must_use]
+    pub fn searchable_repo_id<'a>(&'a self, batch_repo_id: &'a RepoId) -> &'a RepoId {
+        self.source_repo_id.as_ref().unwrap_or(batch_repo_id)
     }
 }
 
@@ -734,6 +752,33 @@ mod tests {
                 structural_matched_node: "fn main() {}".into(),
             }),
             parent_chunk_id: None,
+            source_repo_id: None,
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&record, &mut bytes)?;
+        let decoded: ChunkRecord = ciborium::from_reader(bytes.as_slice())?;
+        if decoded != record {
+            return Err(format!("decoded chunk record mismatch: {decoded:?} != {record:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chunk_record_source_repo_id_round_trip() -> TestRes {
+        use crate::RepoId;
+
+        let record = ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            language: rust_language()?,
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 2,
+            text: "fn main() {}".into(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: Some(RepoId::new("corp-a")),
         };
         let mut bytes = Vec::new();
         ciborium::into_writer(&record, &mut bytes)?;
@@ -757,6 +802,7 @@ mod tests {
             text: "fn main() {}".into(),
             structural: None,
             parent_chunk_id: None,
+            source_repo_id: None,
         };
         for (field, value) in [
             ("snippet", "legacy snippet"),

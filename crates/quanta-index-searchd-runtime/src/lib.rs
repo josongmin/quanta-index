@@ -4,7 +4,7 @@
 #![deny(clippy::map_err_ignore)]
 #![expect(
     clippy::multiple_crate_versions,
-    reason = "transitive duplicates from tantivy + tokio; tracked by cargo-deny skip-tree"
+    reason = "transitive duplicates from tantivy + tokio + lancedb (arrow/datafusion subtree); each is named-scoped in deny.toml via skip-tree"
 )]
 
 //! Concrete runtime wiring for the search-plane daemon.
@@ -33,7 +33,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     ));
     let sem_adapter: Arc<SemanticAdapter> = Arc::new(SemanticAdapter::with_state_root(
         quanta_index_semantic::semantic_state_root(&state_root),
-    ));
+    )?);
     let repo_map_store = Arc::new(
         RepoMapGenerationStore::with_persistence_root(state_root.join("repo-map"))
             .map_err(anyhow::Error::from)?,

@@ -1,7 +1,10 @@
 # Tickets — LanceDB Adoption
 
-Status: **all tickets `done` (2026-05-29)** — see each ticket's `Status:` line and
-the parent [../README.md](../README.md) §3.1 backend decision.
+Status: **all tickets `done` (lancedb rewrite + R1+R2+R3 hardening,
+2026-05-30 → 2026-05-31)** — the §3.1 in-house implementation was reversed;
+the §3.2 lancedb-backed implementation landed, and three rounds of
+adversarial+structural audits closed every verified finding. See each
+ticket's `Status:` line and parent [../README.md](../README.md) §3.2.
 
 Parent doc: [../README.md](../README.md)
 

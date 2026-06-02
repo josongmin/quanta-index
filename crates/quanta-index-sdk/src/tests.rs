@@ -243,6 +243,7 @@ fn sample_chunk() -> ChunkRecord {
         text: "fn sample() {}".into(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     }
 }
 

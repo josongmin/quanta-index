@@ -1,0 +1,8 @@
+[[doc]]
+id = "catalog_stale"
+path = "src/stale.rs"
+content = "fn catalog_window_needle() {}"
+
+[runtime_catalog]
+producer_head_applied_at_ms = 20
+generation_materialized_at_ms = 20

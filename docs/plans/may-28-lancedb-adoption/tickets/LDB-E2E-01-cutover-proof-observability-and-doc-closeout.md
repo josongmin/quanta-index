@@ -1,41 +1,43 @@
 # LDB-E2E-01 — Cutover Proof, Observability, and Doc Closeout
 
-Status: `done` (2026-05-29)
-Parent: [../README.md](../README.md)
-Depends on: [LDB-04-legacy-semantic-journal-migration.md](LDB-04-legacy-semantic-journal-migration.md)
+Status: `done` (lancedb rewrite 2026-05-30; R1+R2+R3 hardening 2026-05-31)
 
 ## 0. Outcome
 
-- **Cold-boot / restart proof**: `searchd-runtime` e2e
+- **Cold-boot / restart proof** (lancedb-backed): `searchd-runtime` e2e
   `reopen_preserves_semantic_scope_ids_and_explanation` serves a sealed
-  generation after restart from durable state (no replay);
-  `restart_opens_prior_generation_without_replay` proves a fresh adapter opens
-  prior durable state.
-- **Not-ready proof**: `unsealed_generation_open_fails_closed`,
-  `seed_skips_unsealed_generations`, and corruption tests fail closed.
-- **Migration proof**: `migration_imports_journal_idempotently_and_matches_clean_build`
-  asserts migrated results equal a clean durable build, plus idempotent re-run.
-- **Observability**: `SearchdRuntime.semantic_boot` (`SemanticBootReport`) exposes
-  migration outcome, sealed-generation count, and cold-boot seed timing — bounded
-  enums/counts/duration only, no vectors/snippets/path text. Asserted end-to-end
-  by `searchd-runtime` test `fresh_runtime_exposes_empty_semantic_boot_report`
-  (a fresh state root reports `NoLegacyJournal` + 0 seeded generations).
-- **Boot-cost evidence**: a literal old-vs-new boot benchmark is **not
-  constructible** — the replay path is *removed*, so there is no live "replay
-  boot" to time against. The cost claim is therefore (a) structural — seeding is
-  `O(sealed generations)` marker+manifest reads (`scan_persisted_generations`)
-  versus the former `O(all historical batches)` decode + HNSW rebuild — and (b)
-  live-measured via `SemanticBootReport.seed_micros`. Recorded here per the
-  "state covered vs excluded surface" closeout rule; §8 criterion 8 is met as
-  "replay structurally eliminated + cost observable", not as a head-to-head bench.
-- **Quality floor**: the now-durable in-house HNSW carries a recall-floor test
-  (`hnsw_recall_floor_against_brute_force`, mean recall@10 ≥ 0.8 vs brute-force
-  cosine) and a graph-tamper checksum test, so a graph-construction or
-  serialization regression fails a test rather than silently degrading recall.
-- **Doc closeout**: `README.md` semantic-backend lines corrected (no shipped
-  `lance`-crate claim); the prompt-manager source `buildctl.md` was updated to
-  describe the durable backend (was claiming the removed `replay_into` /
-  `bootstrap_persisted_semantic_state`) and regenerated (`pm.py sync`/`lint` ✓).
+  generation after restart from durable lancedb state (no replay);
+  `restart_opens_prior_generation_without_replay` (semantic crate integration)
+  proves a fresh adapter opens prior durable state.
+- **Not-ready proofs**: `unsealed_generation_open_fails_closed`,
+  `seed_skips_unsealed_generations`, `delta_with_unsealed_base_fails_closed`,
+  `delta_with_missing_base_fails_closed`, `missing_lancedb_dataset_open_fails_
+  closed`, `corrupt_manifest_open_fails_closed`,
+  `manifest_row_count_mismatch_fails_closed` (real CBOR re-encode hitting the
+  cross-check branch, not garbage-bytes covered by an adjacent test).
+- **Migration proof**:
+  `migration_imports_journal_idempotently_and_matches_clean_build` and
+  `migration_resume_mid_generation_matches_clean_build` (semantic_boot tests)
+  +`migrated_runtime_exposes_populated_semantic_boot_report` (runtime e2e).
+- **Observability**: `SearchdRuntime.semantic_boot` (`SemanticBootReport`)
+  exposes migration outcome, sealed-generation count, migration_micros,
+  seed_micros — bounded enums/counts/duration only, asserted in both e2e
+  tests (`fresh_runtime…` and `migrated_runtime…`).
+- **Quality floor**: `ivf_hnsw_sq_index_built_at_seal_serves_vector_search`
+  cross-checks `lancedb::Table::list_indices` to prove the IVF index actually
+  exists (not just that a self-query happens to work under brute-force).
+- **Boot-cost evidence**: a literal old-vs-new boot benchmark is not
+  constructible — the replay path is removed, so there is no live "replay
+  boot" to time against. The cost claim is therefore (a) structural —
+  seeding is `O(sealed generations)` marker+manifest reads versus the former
+  `O(all historical batches)` decode + rebuild — and (b) live-measured via
+  `SemanticBootReport.{seed,migration}_micros`.
+- **Doc closeout**: `README.md` semantic-backend lines describe the lancedb
+  backend; prompt-manager source `buildctl.md` references migration scaffolding
+  + durable backend (was claiming the removed `replay_into`); CLAUDE.md is
+  regenerated (`pm.py sync`/`lint` ✓).
+Parent: [../README.md](../README.md)
+Depends on: [LDB-04-legacy-semantic-journal-migration.md](LDB-04-legacy-semantic-journal-migration.md)
 
 ## 1. Purpose
 

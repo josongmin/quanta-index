@@ -1,216 +1,93 @@
 # May 25 Lexical Enhancement Closeout
 
-Status: `completed`
-Date: `2026-05-27`
-Scope: breaking-first closeout for lexical search, LQ DSL, Sourcegraph syntax,
-real-engine execution, and hard E2E proof.
+Status: `proof-accounted`
+Date: `2026-06-02`
+Scope: LQ DSL, Sourcegraph lowering, lexical/history/structural/runtime query rails, and bridge directive companion rails
 
----
+Whole-DSL execution ownership closed in
+[../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md) (`closed` 2026-06-02).
+This packet remains the authoritative proof inventory and capability matrix for
+all accounted surfaces.
 
-## 1. Objective
+이 pack은 더 이상 "전부 completed"로 닫지 않는다. 현재 목표는 `docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`의 각 표면이 정확히 하나의 proof state를 가지게 하는 것이다.
 
-Close the remaining gap between the public lexical/search DSL claims and the
-active repo implementation.
+## Current Contract
 
-This is not a docs-only cleanup. The program is complete only when:
+- authoritative proof inventory:
+  [lexical-capability-matrix.md](lexical-capability-matrix.md)
+- machine-readable proof inventory:
+  [dsl-proof-ledger.toml](dsl-proof-ledger.toml)
+- primary runtime closeout rail:
+  `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
+  `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
+- companion rails:
+  `dsl_scenarios.rs`
+  `e2e_lexical_full_fidelity.rs`
+  `e2e_dual_syntax_lowering_parity.rs`
+  `sdk_frontdoor.rs`
+  `end_to_end.rs`
+  `e2e_perf_chaos.rs`
+  `e2e_restart_replay_determinism.rs`
+  `crates/quanta-index-lq-bridge/tests/golden_bridge.rs`
 
-- every accepted LQ DSL and Sourcegraph expression is either executed by the
-  owning engine path or rejected with a typed error before execution
-- no active filter is silently dropped
-- regex and raw substring paths use the trigram/regex engines rather than a
-  query-string escape path
-- semantic and hybrid search consume materialized lexical scope rather than a
-  best-effort lexical side channel
-- history surfaces stay typed fail-closed until producer data exists
-- structural surfaces execute only against materialized parse-tree/chunk
-  authority already present in the readiness ledger
-- E2E tests persist real index data, reopen it, query it, and assert results
+## What Changed In This Closeout Pass
 
-## 1.5 Verification refresh (2026-05-27)
+- `runtime_rows.toml`를 executable query inventory로 확장했다.
+  text, history, structural, runtime-metadata row가 한 파일에서 닫힌다.
+- public front-door scenario authority를 추가했다.
+  `tests/common/frontdoor_scenarios.rs`가 widened predicate/history/runtime
+  surface를 한 번 정의하고 `dsl_scenarios`, `sdk_frontdoor`, `end_to_end`
+  companion rails가 이를 공유한다.
+- `e2e_full_corpus.rs`가 더 이상 set-like 비교를 하지 않는다.
+  exact ordered ids, duplicate-free success, typed runtime error, provenance contract를 강제한다.
+- low-signal runtime row를 걷어냈다.
+  single-repo fixture에서 base query와 구분되지 않던 `repo` positive, `repo.has.file` positive는 closeout inventory에서 내렸다.
+- code-first audit로 predicate truth를 다시 맞췄다.
+  `file.contains(...)`는 native runtime row + owner-local tantivy rail로 승격했고, `file.has.content(...)`는 SG alias runtime row + owner-local tantivy rail로 닫았다 (`jun-2` / `JFC-01` closeout).
+- closeout fixture를 same-path multi-chunk shape까지 확장했다.
+  `docs-select-file.toml`과 candidate-id 기반 mapping으로 `count:all` full recall과 `select:file` per-path collapse를 non-vacuous runtime rail로 승격했다.
+- runtime row schema를 path/snippet/binding assertion까지 올렸다.
+  `quanta-index-corpus-smoke` loader가 `expected_paths`, `expected_snippets`, `expected_bindings` 계약을 직접 검증하고,
+  `e2e_full_corpus.rs`는 text/runtime-metadata path+snippet, structural binding까지 exact ordered assertion을 건다.
+- `content:`, `type:repo`, `type:path`, `select:path`, `select:content`, `select:content.match`를 runtime closeout rail로 승격했다.
+  `type:repo`와 `type:path`는 lexical/core owner seam에서 deterministic representative collapse를 열고, runtime corpus에서 exact ids/paths/snippets로 닫았다.
+- `Phrase`, `patterntype:structural`, `timeout`, structural subset(`root capture`, `where`, `inside`, `outside`, named/anonymous/variadic holes, typed holes`)을 runtime closeout rail로 승격했다.
+  structural fixture는 fixed synthetic helper 대신 generic `structural_tree` carrier로 올렸고, runtime rail은 exact candidate ids와 binding spans를 같이 assert한다.
+- `e2e_lexical_full_fidelity.rs`를 specialized regression rail로 축소했다.
+  broad filter/type/select inventory duplicate는 `runtime_rows.toml`에만 남기고,
+  path leakage, repo predicate under `OR`, phrase adjacency, default casefold, trigram false-positive rejection만 유지한다.
+- `e2e_lexical_full_fidelity.rs`와 `e2e_dual_syntax_lowering_parity.rs`의 `sort + dedup` 허위-green을 제거했다.
+- lexical text front door가 raw searcher 순서를 그대로 노출하지 않도록
+  `crates/quanta-index-search-plane/src/query_dispatcher.rs`에서 결과 안정화 정렬을 적용했다.
+- `lexical-capability-matrix.md`를 `executed` 중심 문서에서
+  `active runtime / active owner-local / typed fail-closed / parser_only / blocked`
+  기준 proof ledger로 재작성했다.
+- companion E2E breadth를 widened surface family 기준으로 다시 맞췄다.
+  `sdk_frontdoor`는 builder/transport proof, `end_to_end`는 raw IPC proof,
+  `e2e_restart_replay_determinism`은 runtime-catalog sibling replay proof,
+  `e2e_perf_chaos`는 family-complete no-poison/metric proof를 맡는다.
 
-- Current live-source closeout rerun stayed green on:
-  - `cargo check -p quanta-index-contract`
-  - `cargo check -p quanta-index-sdk`
-  - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`
-  - `cargo test -p quanta-index-sdk --lib`
-  - `cargo test -p quanta-index-searchd-runtime`
-- Additional owner-local proof rails on the same current tree are also green:
-  - `cargo test -p quanta-index-searchd-runtime --test explain -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test dsl_scenarios -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
-  - `just rust-test-full-corpus`
-- That rerun covers the active lexical/Sourcegraph/structural daemon rails now
-  living under `searchd-runtime`, including `e2e_lexical_full_fidelity`,
-  `e2e_dual_syntax_lowering_parity`, `e2e_perf_chaos`, `sdk_frontdoor`, and
-  `repo_map_end_to_end`.
-- The narrower `may-26-indexing-residue-tasks` structural/bridge pack is
-  separately closed on the same current tree, and this broader May-25 pack is
-  now also closed on the same current tree.
-- Program status is now `completed` on the current tree: the older matrix
-  residue around request-shape cleanup, `select:path` /
-  `select:content.match`, and the split `E2E-04` proof shape has been retired
-  by live reruns and ticket/matrix refresh in this closeout pass.
-- This is a current live-source proof refresh, not a frozen-tree release claim.
+## Current Proof Split (post jun-2 closeout)
 
-## 1.6 Public-surface closure refresh (2026-05-27)
+- `active runtime`
+  lexical keyword/raw/regex/content; `repo:` allow-list (`source_repo_id` multi-repo oracle);
+  `repo.has.file` existence gate; `file.contains` native predicate; `file.has.content` SG alias; file/path/lang/case/count;
+  history commit/diff + date/window + qualified `since.time` / `since.commit` + diff-field filters; runtime catalog (`dirty`, `changed`, `stale`, `snapshot`, `meta.*`, `affected`, `invalidated_by`);
+  phrase, timeout; structural truthful subset; mixed lexical/structural boolean; pure-negative structural root
+- `public/replay/chaos breadth`
+  shipped widened predicate/history/runtime surfaces are no longer runtime-corpus-only:
+  `dsl_scenarios`, `sdk_frontdoor`, `end_to_end`, `e2e_perf_chaos`, and
+  `e2e_restart_replay_determinism` provide companion proof for transport, replay,
+  and no-poison behavior
+- `active owner-local`
+  bridge directives (`into:codeql`, `scope:results`, `with:lexical`); specialized regression rails (`e2e_lexical_full_fidelity`, etc.)
+- `typed fail-closed`
+  unsupported predicate extensions
+- `carrier split`
+  bridge-packet carriers are not runtime search-result rows; see `dsl-proof-ledger.toml` `carrier_kind`
 
-Landed in the same current-tree window:
+## Closeout Rule
 
-- `searchctl` now sends production lexical/semantic/hybrid/explain/repo-map
-  queries through `quanta-index-sdk`; raw query IPC assembly is no longer the
-  non-test consumer path
-- `sdk_frontdoor` owns the public SDK happy-path proof, including lexical,
-  semantic, hybrid, explain, repo-map, history, runtime, and structural rows
-- `repo_map_end_to_end` is narrowed to raw IPC transport/persistence
-  invariants instead of public happy-path authority
-- history authority now fails closed with exact codes
-  `HISTORY_GENERATION_NOT_READY`, `HISTORY_PRODUCER_UNAVAILABLE`,
-  `HISTORY_SHARD_UNAVAILABLE`
-
-This refresh closes the public-surface residue around the SDK front door and
-history taxonomy, and the broader engine/program residue in this ticket pack is
-now also closed on the same current tree.
-
-## 2. Current truth
-
-`LXE-00` produced the current executable matrix, and the current tree now
-satisfies the pack exit criteria against live-source proof.
-
-Current live-source truth on the latest local review:
-
-- lexical request intake is unified on `TextQuerySyntax` and
-  `TextQueryRequest`, with contract decode rejecting legacy semantic/hybrid
-  vector-ref fields and deleted dual-surface names.
-- semantic and hybrid search now consume text-based semantic query carriers and
-  materialized lexical scope instead of the older vector/handle request
-  contract.
-- regex/raw substring execute through materialized trigram/regex plans with
-  exact verify over authoritative indexed text.
-- `crates/quanta-index-search-plane/src/query_dispatcher.rs` now lowers one
-  top-level structural leaf plus the executable `repo:` / `file:` / `lang:`
-  filter subset into the live structural domain path instead of hard-closing
-  the happy path.
-- `crates/quanta-index-lq-structural/src/matcher.rs` and
-  `crates/quanta-index-searchd/src/app/runtime.rs` expose a truthful structural
-  subset over materialized parse-tree/chunk authority: root-kind exact,
-  root capture, root-kind plus capture, ordered direct-child tree-walk,
-  variadic sibling capture / wildcard skip, and `where` / `inside` /
-  `outside` constraints.
-- structural execution inside `quanta-index-core` / `searchd` now uses
-  internal `StructuralMatchBinding` / `StructuralMatchCandidate` carriers;
-  public `StructuralBinding` / `StructuralCandidate` projection happens only at
-  the search-plane response boundary.
-- structural shapes outside that subset, and structural queries with filters
-  outside `repo:` / `file:` / `lang:`, remain typed `STR_INVALID_REQUEST`.
-- existing hard-case tests are counted only when they write records into the
-  real storage/index path, reopen through runtime APIs, and assert public
-  query responses; that proof bar is now met by the owner rails listed above.
-
-Facts above are current live-source completion claims for this pack. They do
-not imply workspace-wide `clippy` or `cargo test --workspace`.
-
-## 3. Execution waves
-
-| Wave | Tickets | Goal |
-| --- | --- | --- |
-| 0 | `LXE-00` | freeze current truth and executable capability matrix |
-| 1 | `LXE-01`, `LXE-02` | finish active contract cleanup and planner authority split |
-| 2 | `LXE-03`..`LXE-06` | close lexical execution gaps across filters, regex, phrase, symbols |
-| 3 | `LXE-07`..`LXE-10` | wire semantic/hybrid/history/structural/bridge around the new lexical authority |
-| 4 | `E2E-00`..`E2E-07` | prove real storage/query/restart/perf behavior |
-
-Within a wave, tickets may run in parallel only when their owner files do not
-overlap. E2E harness work can start after `LXE-00`; when a new surface is
-intentionally behind implementation, its scenario row must stay
-expected-failing until the owning ticket lands. The current live lexical
-matrices no longer rely on expected-failing rows.
-
-## 4. Non-negotiable rules
-
-- Breaking-first. Remove legacy public query fields instead of keeping shims.
-- One lexical text request with explicit syntax enum. No syntax guessing.
-- No silent fallback. Unsupported syntax is a typed rejection at intake or
-  lowering.
-- Planner owns engine selection. `search-plane` may dispatch but must not own
-  lexical engine semantics.
-- Structural live success is allowed only against materialized parse-tree/chunk
-  authority already present in the readiness ledger.
-- No structural text/regex fallback. Unsupported structural shapes stay typed
-  `STR_INVALID_REQUEST`.
-- External producer gaps are explicit blockers, not green implementation claims.
-- E2E proof must exercise persisted/indexed data, not parser-only fixtures.
-
-## 5. Program exit criteria
-
-The program is complete only when all are true:
-
-1. `TextQuerySyntax { Native, Sourcegraph }` drives all lexical text intake.
-2. semantic and hybrid requests reference the same `TextQueryRequest` sub-struct.
-3. active `LqQuery` cannot encode removed legacy shapes such as raw passthrough,
-   match-all bypasses, or custom leaves.
-4. all accepted filters have an execution path or a typed fail-closed boundary.
-5. `repo`, `file`, `lang`, `case`, `count`, `select`, and `type` are covered by
-   live E2E scenarios.
-6. regex and raw substring tests prove trigram prefilter plus exact verify.
-7. phrase tests prove positional behavior instead of token coincidence.
-8. Sourcegraph tests prove translated queries match equivalent LQ behavior.
-9. semantic tests prove lexical scope materialization affects the candidate set.
-10. hybrid tests prove lexical universe first, then semantic fusion.
-11. history endpoints return typed not-ready/unavailable when producer data is
-    absent, and structural endpoints either execute against materialized
-    parse-tree/chunk authority or return typed fail-closed codes
-    (`STR_LANG_NOT_SUPPORTED`, `STR_GENERATION_NOT_READY`,
-    `STR_SHARD_UNAVAILABLE`, `STR_INVALID_REQUEST`).
-12. `SearchExplanation` carries planner trace, engines touched, early stop
-    reason, and summary for real executed queries.
-13. restart/replay E2E returns deterministic result IDs and ordering.
-14. CI has at least one full real-engine corpus rail, separate from unit tests.
-
-All items above are satisfied on the current tree.
-
-## 6. Ticket pack
-
-- [tickets/INDEX.md](tickets/INDEX.md)
-- [tickets/LXE-00-truth-freeze-and-executable-matrix.md](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
-- [tickets/LXE-01-active-contract-and-dead-route-cleanup.md](tickets/LXE-01-active-contract-and-dead-route-cleanup.md)
-- [tickets/LXE-02-planner-authority-ir.md](tickets/LXE-02-planner-authority-ir.md)
-- [tickets/LXE-03-lexical-filter-execution.md](tickets/LXE-03-lexical-filter-execution.md)
-- [tickets/LXE-04-regex-trigram-real-execution.md](tickets/LXE-04-regex-trigram-real-execution.md)
-- [tickets/LXE-05-phrase-position-real-execution.md](tickets/LXE-05-phrase-position-real-execution.md)
-- [tickets/LXE-06-symbol-select-type-execution.md](tickets/LXE-06-symbol-select-type-execution.md)
-- [tickets/LXE-07-semantic-hybrid-planner-provenance.md](tickets/LXE-07-semantic-hybrid-planner-provenance.md)
-- [tickets/LXE-08-history-live-integration.md](tickets/LXE-08-history-live-integration.md)
-- [tickets/LXE-09-structural-live-integration.md](tickets/LXE-09-structural-live-integration.md)
-- [tickets/LXE-10-observability-and-bridge-sink.md](tickets/LXE-10-observability-and-bridge-sink.md)
-- [tickets/E2E-00-live-dsl-matrix-harness.md](tickets/E2E-00-live-dsl-matrix-harness.md)
-- [tickets/E2E-01-lexical-full-fidelity-e2e.md](tickets/E2E-01-lexical-full-fidelity-e2e.md)
-- [tickets/E2E-02-sourcegraph-parity-e2e.md](tickets/E2E-02-sourcegraph-parity-e2e.md)
-- [tickets/E2E-03-semantic-hybrid-e2e.md](tickets/E2E-03-semantic-hybrid-e2e.md)
-- [tickets/E2E-04-history-structural-e2e.md](tickets/E2E-04-history-structural-e2e.md)
-- [tickets/E2E-05-restart-replay-determinism-e2e.md](tickets/E2E-05-restart-replay-determinism-e2e.md)
-- [tickets/E2E-06-full-corpus-real-engine-ci.md](tickets/E2E-06-full-corpus-real-engine-ci.md)
-- [tickets/E2E-07-performance-and-chaos.md](tickets/E2E-07-performance-and-chaos.md)
-
-## 7. Ticket contract
-
-Every ticket in this pack must be specific enough to implement without a second
-planning pass.
-
-Required sections:
-
-- `Purpose`: what correctness gap the ticket closes
-- `Owner files`: the bounded file set the ticket is allowed to change
-- `File-level work breakdown`: exact responsibility for each major file or file
-  group
-- `Work items`: behavior and interface changes
-- `Test plan`: unit, contract, or integration rails
-- `E2E plan`: real storage/query proof or explicit linkage to the owning E2E
-  ticket
-- `DoD`: completion gate, not progress wording
-- `Failure modes`: how the ticket can appear done while still being wrong
-
-If a ticket cannot name file ownership or exit evidence precisely, it is not
-ready for implementation.
+- `implemented subset green`과 `full spec accounting complete`는 다른 주장이다.
+- 현재 이 pack은 spec accounting은 완료 대상으로 관리하지만, 각 표면의 live status는 matrix에 적힌 그대로다.
+- workspace-wide green claim은 하지 않는다. 이 문서는 owner-local DSL closeout truth만 다룬다.

@@ -7,8 +7,7 @@
 
 #![forbid(unsafe_code)]
 
-#[path = "common/e2e_harness.rs"]
-mod e2e_harness;
+use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
@@ -16,7 +15,10 @@ use quanta_index_contract::{
     SearchExplanation, SearchPlaneTrackKind, TextQuerySyntax,
 };
 
-use crate::e2e_harness::{E2eRuntime, E2eTypedError};
+use crate::e2e_harness::{
+    E2eRuntime, E2eRuntimeCatalogSpec, E2eRuntimeChangedSpec, E2eRuntimeEdgeSpec,
+    E2eRuntimeFacetSpec, E2eRuntimeSnapshotSpec, E2eTypedError,
+};
 
 fn ingest_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     rt.ingest_text(
@@ -134,6 +136,106 @@ fn query_history_commit_ids(rt: &mut E2eRuntime, query_text: &str) -> AnyResult<
 fn query_runtime_dirty_ids(rt: &mut E2eRuntime, query_text: &str) -> AnyResult<Vec<String>> {
     let result = rt.query_runtime_metadata(TextQuerySyntax::Native, query_text, 10);
     require_no_typed_error(result.typed_error, "query_runtime_metadata")?;
+    Ok(result.candidate_ids)
+}
+
+fn query_runtime_catalog_ids(rt: &mut E2eRuntime, query_text: &str) -> AnyResult<Vec<String>> {
+    let result = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, query_text, 10);
+    require_no_typed_error(result.typed_error, "query_runtime_catalog")?;
+    Ok(result.candidate_ids)
+}
+
+fn ingest_runtime_catalog_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    for (path, content) in [
+        ("src/changed.rs", "fn catalog_changed_needle() {}"),
+        ("src/changed-other.rs", "fn catalog_changed_needle() {}"),
+        ("src/unchanged.rs", "fn catalog_unchanged_needle() {}"),
+        ("src/owner.rs", "fn catalog_owner_needle() {}"),
+        ("src/service.rs", "fn catalog_service_needle() {}"),
+        ("src/layer.rs", "fn catalog_layer_needle() {}"),
+        ("src/surface.rs", "fn catalog_surface_needle() {}"),
+        ("src/snap.rs", "fn catalog_snapshot_needle() {}"),
+        ("src/stale.rs", "fn catalog_stale_needle() {}"),
+    ] {
+        rt.ingest_text("repo-e2e", path, content)?;
+    }
+    rt.ingest_runtime_catalog(&E2eRuntimeCatalogSpec {
+        producer_head_applied_at_ms: 100,
+        generation_materialized_at_ms: 20,
+        changed: vec![
+            E2eRuntimeChangedSpec {
+                path: "src/changed.rs".to_string(),
+                applied_at_ms: 25,
+            },
+            E2eRuntimeChangedSpec {
+                path: "src/stale.rs".to_string(),
+                applied_at_ms: 15,
+            },
+        ],
+        facets: vec![
+            E2eRuntimeFacetSpec {
+                path: "src/owner.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/service.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/layer.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/surface.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+        ],
+        snapshots: vec![E2eRuntimeSnapshotSpec {
+            name: "active".to_string(),
+            paths: vec!["src/changed.rs".to_string(), "src/snap.rs".to_string()],
+        }],
+        affected: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+        invalidated_by: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+    })?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
+fn ingest_runtime_dirty_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    rt.ingest_text("repo-e2e", "src/dirty.rs", "todo dirty scope")?;
+    rt.ingest_text("repo-e2e", "src/clean.rs", "todo clean scope")?;
+    rt.ingest_dirty_for_path("src/dirty.rs", 100)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
+fn query_runtime_catalog_changed_ids(rt: &mut E2eRuntime) -> AnyResult<Vec<String>> {
+    let result = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "query_runtime_catalog_changed")?;
     Ok(result.candidate_ids)
 }
 
@@ -471,6 +573,279 @@ fn reopen_preserves_history_rev_delete_state_without_dropping_commit_matches() -
     if reopened_plain.len() != 1 || !reopened_rev_ref.is_empty() || !reopened_rev_tag.is_empty() {
         return Err(anyhow::anyhow!(
             "history delete-state changed after reopen: plain={reopened_plain:?} ref={reopened_rev_ref:?} tag={reopened_rev_tag:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_changed_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_changed_ids(&mut rt)?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog changed fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_changed_ids(&mut rt)?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog changed query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_invalidated_by_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(
+        &mut rt,
+        "invalidated_by:rebuild=lexical catalog_changed_needle",
+    )?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog invalidated_by fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_ids(
+        &mut rt,
+        "invalidated_by:rebuild=lexical catalog_changed_needle",
+    )?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog invalidated_by query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_affected_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before =
+        query_runtime_catalog_ids(&mut rt, "affected:rebuild=lexical catalog_changed_needle")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog affected fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened =
+        query_runtime_catalog_ids(&mut rt, "affected:rebuild=lexical catalog_changed_needle")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog affected query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_stale_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(
+        &mut rt,
+        "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_stale_needle",
+    )?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog stale fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_ids(
+        &mut rt,
+        "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_stale_needle",
+    )?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog stale query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_snapshot_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(
+        &mut rt,
+        "snapshot:active file:src/snap.rs catalog_snapshot_needle",
+    )?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog snapshot fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_ids(
+        &mut rt,
+        "snapshot:active file:src/snap.rs catalog_snapshot_needle",
+    )?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog snapshot query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_meta_owner_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(&mut rt, "meta.owner:team-a catalog_owner_needle")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.owner fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_ids(&mut rt, "meta.owner:team-a catalog_owner_needle")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.owner query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_meta_service_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(&mut rt, "meta.service:search catalog_service_needle")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.service fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened =
+        query_runtime_catalog_ids(&mut rt, "meta.service:search catalog_service_needle")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.service query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_meta_layer_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(&mut rt, "meta.layer:index catalog_layer_needle")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.layer fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_catalog_ids(&mut rt, "meta.layer:index catalog_layer_needle")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.layer query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_catalog_meta_surface_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+
+    let before = query_runtime_catalog_ids(&mut rt, "meta.surface:lexical catalog_surface_needle")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.surface fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened =
+        query_runtime_catalog_ids(&mut rt, "meta.surface:lexical catalog_surface_needle")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime catalog meta.surface query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_runtime_dirty_no_clean_complement() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_runtime_dirty_fixture(&mut rt)?;
+
+    let before = query_runtime_dirty_ids(&mut rt, "dirty:no clean")?;
+    if before.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime dirty:no fixture failed before reopen: {before:?}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_runtime_dirty_ids(&mut rt, "dirty:no clean")?;
+    if before != reopened {
+        return Err(anyhow::anyhow!(
+            "runtime dirty:no query drifted after reopen: before={before:?} reopened={reopened:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reopen_preserves_structural_mixed_lexical_boolean_ids() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_structural_fixture(&mut rt)?;
+
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let before = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "restart_structural_alpha AND match { function_item }",
+    )?;
+    if before != vec![expected_id.clone()] {
+        return Err(anyhow::anyhow!(
+            "structural mixed boolean fixture failed before reopen: {before:?} expected={expected_id}"
+        ));
+    }
+
+    let mut rt = rt.reopen();
+    let reopened = query_structural_ids(
+        &mut rt,
+        TextQuerySyntax::Native,
+        "restart_structural_alpha AND match { function_item }",
+    )?;
+    if reopened != vec![expected_id] {
+        return Err(anyhow::anyhow!(
+            "structural mixed boolean query drifted after reopen: {reopened:?}"
         ));
     }
     Ok(())

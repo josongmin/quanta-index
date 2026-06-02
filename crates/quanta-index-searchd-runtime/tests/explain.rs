@@ -72,6 +72,7 @@ fn chunk_record(id: &str, text: &str) -> Result<ChunkRecord, Box<dyn Error>> {
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     })
 }
 
@@ -196,6 +197,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
         SearchPlaneIngestIpcResponse::Error(err) => {
@@ -217,7 +219,7 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
                 "explain-lex-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             replace_scopes: vec![LexicalReplaceScope {
                 scope: scope_key(chunk.repo_relative_path.as_str()),
@@ -244,7 +246,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
                 "explain-lex-seal-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),

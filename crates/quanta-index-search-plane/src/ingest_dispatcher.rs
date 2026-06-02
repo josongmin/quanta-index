@@ -19,8 +19,9 @@ use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, EmbeddingDistanceMetric, EmbeddingId,
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, HistoryIngestBatch,
     HistoryRefMutation, LexicalIngestBatch, OwnerDocKind, RepoMapMutationAck,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneIpcError,
-    SearchPlaneTrackKind, SemanticIngestBatch, SemanticReplaceScope, StructuralIngestBatch,
+    RuntimeCatalogIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    SearchPlaneIpcError, SearchPlaneTrackKind, SemanticIngestBatch, SemanticReplaceScope,
+    StructuralIngestBatch,
 };
 use quanta_index_core::{
     CoreError, LexicalBatchBuildPort, LexicalIngestPort, RepoMapBundleIngestPort,
@@ -108,6 +109,11 @@ pub trait HistoryIngestPort: Send + Sync {
 
 pub trait RuntimeMetadataIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+
+    fn publish_catalog_batch(
+        &self,
+        batch: &RuntimeCatalogIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 pub trait StructuralIngestPort: Send + Sync {
@@ -557,6 +563,38 @@ impl RuntimeMetadataIngestPort for DirectRuntimeMetadataMaterializer {
         drop(guard);
         Ok(receipt)
     }
+
+    fn publish_catalog_batch(
+        &self,
+        batch: &RuntimeCatalogIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let mut receipt =
+            BatchPublishReceipt::empty_for(batch.generation, batch.batch_digest.clone());
+        let mut guard = self.ledger.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct runtime catalog materialize: ledger poisoned: {err}"
+            ))
+        })?;
+        guard.apply_runtime_catalog_batch(batch)?;
+        for _record in &batch.changed_entries {
+            receipt.accept_replace_scope();
+        }
+        for _record in &batch.facet_entries {
+            receipt.accept_replace_scope();
+        }
+        for _record in &batch.snapshot_entries {
+            receipt.accept_replace_scope();
+        }
+        for _record in &batch.affected_entries {
+            receipt.accept_replace_scope();
+        }
+        for _record in &batch.invalidated_by_entries {
+            receipt.accept_replace_scope();
+        }
+        self.authority_store.persist_from_ledger(&guard)?;
+        drop(guard);
+        Ok(receipt)
+    }
 }
 
 /// Direct structural materializer. Structural readiness is first-class and no
@@ -676,6 +714,12 @@ impl SearchPlaneIngestDispatcher {
             SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
                 match self.runtime.publish_batch(&batch) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::DirtyReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
+                match self.runtime.publish_catalog_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
@@ -872,6 +916,7 @@ mod tests {
             text: "typed semantic parser".to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
+            source_repo_id: None,
         })
     }
 

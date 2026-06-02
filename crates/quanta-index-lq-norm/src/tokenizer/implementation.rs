@@ -39,15 +39,16 @@ pub enum LqTokenKind {
     StructuralBlock(String),
     /// Filter value text following a `:` separator.
     ColonValue(String),
-    /// Predicate value following a `:` separator. `dotted` is the dotted
-    /// suffix (e.g. `has.file` for `repo:has.file(...)`); `args_raw` is
-    /// the parenthesised argument list with surrounding `(` / `)` removed
-    /// and trailing/leading whitespace preserved verbatim. The parser
-    /// joins `dotted` with the preceding filter-name token to construct
-    /// the canonical predicate name.
+    /// Dotted predicate token. `name` is the dotted predicate body at the
+    /// current token site (e.g. `has.file` for `repo:has.file(...)`, or
+    /// `file.contains` for `file.contains(...)`); `args_raw` is the
+    /// parenthesised argument list with surrounding `(` / `)` removed and
+    /// trailing/leading whitespace preserved verbatim. The parser may prefix
+    /// `name` with a preceding scope token when the predicate appeared after
+    /// `:`.
     Predicate {
-        /// Dotted predicate suffix after `:`.
-        dotted: String,
+        /// Dotted predicate name at the token site.
+        name: String,
         /// Raw argument body verbatim (no outer parens).
         args_raw: String,
     },
@@ -146,6 +147,9 @@ pub fn tokenize(input: &str) -> Result<Vec<LqToken>, LqParseError> {
                     }
                 } else if lex.starts_with(b"match") && lex.lookahead_after_match_is_brace() {
                     let tok = lex.read_structural_block(start)?;
+                    out.push(tok);
+                } else if lex.lookahead_is_predicate() {
+                    let tok = lex.read_predicate(start)?;
                     out.push(tok);
                 } else {
                     let tok = lex.read_identifier_or_filter(start)?;
@@ -354,7 +358,7 @@ impl<'a> Lexer<'a> {
                 "internal: predicate dotted slice invalid",
             ));
         };
-        let dotted = match core::str::from_utf8(dotted_bytes) {
+        let name = match core::str::from_utf8(dotted_bytes) {
             Ok(s) => s.to_owned(),
             Err(_e) => {
                 return Err(LqParseError::new(
@@ -411,7 +415,7 @@ impl<'a> Lexer<'a> {
                             }
                         };
                         return Ok(LqToken {
-                            kind: LqTokenKind::Predicate { dotted, args_raw },
+                            kind: LqTokenKind::Predicate { name, args_raw },
                             span: span_from(start, self.pos)?,
                         });
                     }
@@ -848,6 +852,36 @@ mod tests {
                 LqTokenKind::KeywordOrFilterName("repo".to_owned()),
                 LqTokenKind::Colon,
                 LqTokenKind::ColonValue("foo".to_owned()),
+                LqTokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn scoped_predicate_lexes_after_colon() {
+        assert_eq!(
+            ok_kinds("repo:has.file(path:src)"),
+            vec![
+                LqTokenKind::KeywordOrFilterName("repo".to_owned()),
+                LqTokenKind::Colon,
+                LqTokenKind::Predicate {
+                    name: "has.file".to_owned(),
+                    args_raw: "path:src".to_owned(),
+                },
+                LqTokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn top_level_dotted_predicate_lexes_directly() {
+        assert_eq!(
+            ok_kinds("file.contains('oo_ba')"),
+            vec![
+                LqTokenKind::Predicate {
+                    name: "file.contains".to_owned(),
+                    args_raw: "'oo_ba'".to_owned(),
+                },
                 LqTokenKind::Eof,
             ]
         );

@@ -10,6 +10,8 @@ target/
 
 # Local state / runtime artifacts
 /state/
+# Generated benchmark artifacts (baselines live under tools/benchmark/baselines/)
+/artifacts/
 *.sqlite3
 *.db
 *.db-*

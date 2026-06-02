@@ -1,6 +1,6 @@
 //! E2E-00 — live DSL matrix inventory.
 //!
-//! Self-tests for the harness defined in `common/e2e_harness.rs`. Each row
+//! Self-tests for the harness defined in the `quanta-index-searchd-harness` crate. Each row
 //! ingests through the real publish path, seals a generation, optionally
 //! reopens, then asserts against the live IPC response. No in-memory
 //! shortcut is permitted: a green here means storage + index + dispatcher
@@ -11,8 +11,7 @@
 
 #[path = "common/e2e_corpus.rs"]
 mod e2e_corpus;
-#[path = "common/e2e_harness.rs"]
-mod e2e_harness;
+use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;

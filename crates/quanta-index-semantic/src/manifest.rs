@@ -10,15 +10,34 @@
 )]
 
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingNormalization, ManifestGeneration,
-    RepoId, RevisionId,
+    EmbeddingDistanceMetric, EmbeddingNormalization, ManifestGeneration, RepoId, RevisionId,
 };
+
+/// Distance metric the lancedb adapter actually serves at query time.
+///
+/// The adapter pins `DistanceType::Cosine` everywhere; a manifest that records
+/// a different metric is rejected at open so a future producer that switches
+/// metric mid-flight cannot serve cosine-quantized data through a `dot` /
+/// `euclidean` contract.
+const SUPPORTED_DISTANCE_METRIC: &str = "cosine";
 use quanta_index_core::CoreError;
 
 use crate::codec::{self, cbor_serde};
+use crate::generation_contract::GenerationContract;
 
-/// Manifest + dataset shard format version. Bumped on any durable shape change.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+/// Current manifest format version. Bumped on any durable shape change.
+///
+/// `3` = lancedb-backed dataset plus `semantic-build-contract.cbor`, which
+/// keeps the pre-seal batch contract authoritative and lets open validate the
+/// sealed manifest against the accepted build contract.
+pub(crate) const FORMAT_VERSION: u32 = 3;
+
+/// Legacy lancedb manifest format that predates `semantic-build-contract.cbor`.
+///
+/// Sealed generations written at `2` remain openable for compatibility, but
+/// they do not get the stronger sidecar cross-check that `FORMAT_VERSION=3`
+/// provides.
+pub(crate) const LEGACY_LANCEDB_FORMAT_VERSION: u32 = 2;
 
 pub(crate) struct SemanticManifest {
     pub(crate) format_version: u32,
@@ -33,7 +52,6 @@ pub(crate) struct SemanticManifest {
     pub(crate) normalization: String,
     pub(crate) row_count: u64,
     pub(crate) built_at_unix_nanos: u64,
-    pub(crate) content_checksum: String,
 }
 
 cbor_serde!(SemanticManifest {
@@ -49,7 +67,6 @@ cbor_serde!(SemanticManifest {
     normalization: String,
     row_count: u64,
     built_at_unix_nanos: u64,
-    content_checksum: String,
 });
 
 #[must_use]
@@ -70,21 +87,14 @@ pub(crate) fn normalization_token(normalization: EmbeddingNormalization) -> &'st
 }
 
 impl SemanticManifest {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "manifest aggregates the full LDB-01 §3 field set from distinct build inputs; \
-                  bundling them into a transient struct would only move the surface, not reduce it"
-    )]
-    pub(crate) fn from_build(
+    pub(crate) fn from_generation_contract(
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
-        model_contract: &EmbeddingModelContract,
+        generation_contract: &GenerationContract,
         manifest_digest: &str,
-        dimension: u32,
         row_count: u64,
         built_at_unix_nanos: u64,
-        content_checksum: String,
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -92,14 +102,13 @@ impl SemanticManifest {
             revision_id: revision.as_str().to_owned(),
             generation: generation.get(),
             manifest_digest: manifest_digest.to_owned(),
-            model_id: model_contract.model_id.to_string(),
-            model_version: model_contract.model_version.as_deref().map(str::to_owned),
-            dimension,
-            distance_metric: distance_metric_token(model_contract.distance_metric).to_owned(),
-            normalization: normalization_token(model_contract.normalization).to_owned(),
+            model_id: generation_contract.model_id.clone(),
+            model_version: generation_contract.model_version.clone(),
+            dimension: generation_contract.dimension,
+            distance_metric: generation_contract.distance_metric.clone(),
+            normalization: generation_contract.normalization.clone(),
             row_count,
             built_at_unix_nanos,
-            content_checksum,
         }
     }
 
@@ -119,10 +128,12 @@ impl SemanticManifest {
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
-        if self.format_version != FORMAT_VERSION {
+        if self.format_version != FORMAT_VERSION
+            && self.format_version != LEGACY_LANCEDB_FORMAT_VERSION
+        {
             return Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION})",
-                self.format_version
+                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION} or legacy {LEGACY_LANCEDB_FORMAT_VERSION})",
+                self.format_version,
             )));
         }
         if self.repo_id != repo.as_str() {
@@ -144,6 +155,12 @@ impl SemanticManifest {
                 "semantic: manifest generation {} does not match requested {}",
                 self.generation,
                 generation.get()
+            )));
+        }
+        if self.distance_metric != SUPPORTED_DISTANCE_METRIC {
+            return Err(CoreError::Storage(format!(
+                "semantic: manifest distance_metric `{}` is not supported by this adapter (serves `{SUPPORTED_DISTANCE_METRIC}` only)",
+                self.distance_metric
             )));
         }
         Ok(())

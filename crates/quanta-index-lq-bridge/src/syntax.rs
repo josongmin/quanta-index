@@ -59,6 +59,15 @@ pub enum SgFilter {
     Count(Box<str>),
     Patterntype(Box<str>),
     Dirty(Box<str>),
+    Changed(Box<str>),
+    Stale(Box<str>),
+    Snapshot(Box<str>),
+    MetaOwner(Box<str>),
+    MetaService(Box<str>),
+    MetaLayer(Box<str>),
+    MetaSurface(Box<str>),
+    Affected(Box<str>),
+    InvalidatedBy(Box<str>),
     Fork(Box<str>),
     Archived(Box<str>),
     Content(Box<str>),
@@ -67,6 +76,13 @@ pub enum SgFilter {
     Index(Box<str>),
     Boost(Box<str>),
     Timeout(Box<str>),
+    Before(Box<str>),
+    After(Box<str>),
+    Since(Box<str>),
+    Until(Box<str>),
+    DiffAdded(Box<str>),
+    DiffRemoved(Box<str>),
+    DiffTouched(Box<str>),
 }
 
 impl SgFilter {
@@ -88,6 +104,15 @@ impl SgFilter {
             Self::Count(_) => "count",
             Self::Patterntype(_) => "patterntype",
             Self::Dirty(_) => "dirty",
+            Self::Changed(_) => "changed",
+            Self::Stale(_) => "stale",
+            Self::Snapshot(_) => "snapshot",
+            Self::MetaOwner(_) => "meta.owner",
+            Self::MetaService(_) => "meta.service",
+            Self::MetaLayer(_) => "meta.layer",
+            Self::MetaSurface(_) => "meta.surface",
+            Self::Affected(_) => "affected",
+            Self::InvalidatedBy(_) => "invalidated_by",
             Self::Fork(_) => "fork",
             Self::Archived(_) => "archived",
             Self::Content(_) => "content",
@@ -96,6 +121,13 @@ impl SgFilter {
             Self::Index(_) => "index",
             Self::Boost(_) => "boost",
             Self::Timeout(_) => "timeout",
+            Self::Before(_) => "before",
+            Self::After(_) => "after",
+            Self::Since(_) => "since",
+            Self::Until(_) => "until",
+            Self::DiffAdded(_) => "diff.added",
+            Self::DiffRemoved(_) => "diff.removed",
+            Self::DiffTouched(_) => "diff.touched",
         }
     }
 
@@ -117,6 +149,15 @@ impl SgFilter {
             | Self::Count(v)
             | Self::Patterntype(v)
             | Self::Dirty(v)
+            | Self::Changed(v)
+            | Self::Stale(v)
+            | Self::Snapshot(v)
+            | Self::MetaOwner(v)
+            | Self::MetaService(v)
+            | Self::MetaLayer(v)
+            | Self::MetaSurface(v)
+            | Self::Affected(v)
+            | Self::InvalidatedBy(v)
             | Self::Fork(v)
             | Self::Archived(v)
             | Self::Content(v)
@@ -124,7 +165,14 @@ impl SgFilter {
             | Self::Context(v)
             | Self::Index(v)
             | Self::Boost(v)
-            | Self::Timeout(v) => v,
+            | Self::Timeout(v)
+            | Self::Before(v)
+            | Self::After(v)
+            | Self::Since(v)
+            | Self::Until(v)
+            | Self::DiffAdded(v)
+            | Self::DiffRemoved(v)
+            | Self::DiffTouched(v) => v,
         }
     }
 
@@ -149,6 +197,15 @@ impl SgFilter {
             "count" => Self::Count(v),
             "patterntype" => Self::Patterntype(v),
             "dirty" => Self::Dirty(v),
+            "changed" => Self::Changed(v),
+            "stale" => Self::Stale(v),
+            "snapshot" => Self::Snapshot(v),
+            "meta.owner" => Self::MetaOwner(v),
+            "meta.service" => Self::MetaService(v),
+            "meta.layer" => Self::MetaLayer(v),
+            "meta.surface" => Self::MetaSurface(v),
+            "affected" => Self::Affected(v),
+            "invalidated_by" => Self::InvalidatedBy(v),
             "fork" => Self::Fork(v),
             "archived" => Self::Archived(v),
             "content" => Self::Content(v),
@@ -157,6 +214,13 @@ impl SgFilter {
             "index" => Self::Index(v),
             "boost" => Self::Boost(v),
             "timeout" => Self::Timeout(v),
+            "before" => Self::Before(v),
+            "after" => Self::After(v),
+            "since" => Self::Since(v),
+            "until" => Self::Until(v),
+            "diff.added" => Self::DiffAdded(v),
+            "diff.removed" => Self::DiffRemoved(v),
+            "diff.touched" => Self::DiffTouched(v),
             _ => return None,
         };
         Some(f)
@@ -1039,7 +1103,7 @@ fn filter_colon_index(run: &str) -> Option<usize> {
         return None;
     }
     for b in head.iter().skip(1) {
-        if !(b.is_ascii_alphanumeric() || *b == b'_') {
+        if !(b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.') {
             return None;
         }
     }

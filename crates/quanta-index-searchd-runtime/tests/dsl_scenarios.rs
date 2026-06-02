@@ -6,6 +6,9 @@
     reason = "integration response checks intentionally collapse non-target variants"
 )]
 
+#[path = "common/frontdoor_scenarios.rs"]
+mod frontdoor_scenarios;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +34,8 @@ use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use std::collections::BTreeMap;
+
+use crate::frontdoor_scenarios::DSL_FRONTDOOR_SCENARIOS;
 
 type TestResult = Result<(), Box<dyn Error>>;
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
@@ -99,6 +104,7 @@ fn chunk_record_with_metadata(
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     })
 }
 
@@ -229,6 +235,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
         SearchPlaneIngestIpcResponse::Error(err) => {
@@ -270,7 +277,7 @@ fn publish_lexical_chunks(
                 "dsl-lex-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload,
             replace_scopes,
             tombstone_scopes: Vec::new(),
@@ -292,7 +299,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
                 "dsl-lex-seal-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
@@ -535,68 +542,49 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
     )?;
     seal_lexical(&ingest_socket)?;
 
-    let request = lexical_request(
-        13,
-        TextQuerySyntax::Sourcegraph,
-        "repo:has.file(path:src/lib.rs) needle",
-    );
-    if !wait_for_non_error(&socket, &request) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("repo.has.file query never became ready".into());
-    }
-    let ids = match send_query_request(&socket, &request)?.payload {
-        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
-        | SearchPlaneQueryIpcResponse::Semantic(_)
-        | SearchPlaneQueryIpcResponse::Hybrid(_)
-        | SearchPlaneQueryIpcResponse::History(_)
-        | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-        | SearchPlaneQueryIpcResponse::Explain(_)
-        | SearchPlaneQueryIpcResponse::Error(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+    for (idx, &scenario) in DSL_FRONTDOOR_SCENARIOS.iter().enumerate() {
+        let request = lexical_request(
+            u64::try_from(13 + idx).map_err(|err| -> Box<dyn Error> {
+                format!("repo.has.file request id overflow: {err}").into()
+            })?,
+            scenario.syntax,
+            scenario.query_text,
+        );
+        if !wait_for_non_error(&socket, &request) {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Lexical, got {other:?}").into());
+            return Err(format!("{} never became ready", scenario.name).into());
         }
-    };
-    if sort_ids(ids.clone()) != ["alpha".to_string(), "beta".to_string()] {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("unexpected repo.has.file ids: {ids:?}").into());
-    }
-
-    let miss_request = lexical_request(
-        14,
-        TextQuerySyntax::Sourcegraph,
-        "repo:has.file(path:missing.rs) needle",
-    );
-    if !wait_for_non_error(&socket, &miss_request) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("repo.has.file miss query never became ready".into());
-    }
-    let miss_ids = match send_query_request(&socket, &miss_request)?.payload {
-        SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
-        other @ (SearchPlaneQueryIpcResponse::Symbol(_)
-        | SearchPlaneQueryIpcResponse::Semantic(_)
-        | SearchPlaneQueryIpcResponse::Hybrid(_)
-        | SearchPlaneQueryIpcResponse::History(_)
-        | SearchPlaneQueryIpcResponse::Structural(_)
-        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-        | SearchPlaneQueryIpcResponse::Explain(_)
-        | SearchPlaneQueryIpcResponse::Error(_)
-        | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+        let ids = match send_query_request(&socket, &request)?.payload {
+            SearchPlaneQueryIpcResponse::Text(lexical) => lexical_ids(&lexical.results),
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err(format!("{} expected Lexical, got {other:?}", scenario.name).into());
+            }
+        };
+        let expected = scenario
+            .expected_candidate_ids
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>();
+        if sort_ids(ids.clone()) != expected {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Lexical for miss case, got {other:?}").into());
+            return Err(format!(
+                "{} ids diverged: expected {:?}, got {:?}",
+                scenario.name, expected, ids
+            )
+            .into());
         }
-    };
-    if !miss_ids.is_empty() {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("expected 0 repo.has.file miss ids, got {miss_ids:?}").into());
     }
 
     stop_runtime(shutdown, join)

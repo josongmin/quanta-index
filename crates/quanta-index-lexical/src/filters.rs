@@ -23,9 +23,10 @@ use crate::symbol::{ResultSurface, SymbolPlannerError, resolve_result_surface};
 
 /// Pre-candidate repo constraint.
 ///
-/// Today the executor lowers `pattern` into a regex match over the `repo_id`
-/// field; `revs` is recorded but is not executable on the live Tantivy adapter
-/// until a history producer exists.
+/// Today the executor lowers `pattern` into a regex match over the indexed
+/// `repo_id` facet (`ChunkRecord::source_repo_id` when present, otherwise the
+/// batch `repo_id`); `revs` is recorded but is not executable on the live
+/// Tantivy adapter until a history producer exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoConstraint {
     pub pattern: String,
@@ -151,6 +152,7 @@ pub mod codes {
     pub const COMMITTER_UNAVAILABLE: &str = "LEX_FILTER_COMMITTER_UNAVAILABLE";
     pub const MESSAGE_UNAVAILABLE: &str = "LEX_FILTER_MESSAGE_UNAVAILABLE";
     pub const DIRTY_UNAVAILABLE: &str = "LEX_FILTER_DIRTY_UNAVAILABLE";
+    pub const RUNTIME_CATALOG_UNAVAILABLE: &str = "LEX_FILTER_RUNTIME_CATALOG_UNAVAILABLE";
     /// Matches the existing dispatcher code emitted for commit/diff/repo
     /// surfaces so producers and search-plane callers see one code per cause.
     pub const HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
@@ -277,11 +279,11 @@ fn normalize_lang_id(id: &str) -> Option<String> {
 /// today. Returns `None` for kinds the lexical rail can execute.
 const fn typed_unavailable_for_type(kind: LqType) -> Option<TypedUnavailable> {
     match kind {
-        LqType::Commit | LqType::Diff | LqType::Repo => Some(TypedUnavailable {
+        LqType::Commit | LqType::Diff => Some(TypedUnavailable {
             code: codes::HISTORY_PRODUCER_UNAVAILABLE,
             reason: "type: filter targets a surface with no producer on the lexical rail",
         }),
-        LqType::File | LqType::Path | LqType::Symbol => None,
+        LqType::File | LqType::Path | LqType::Symbol | LqType::Repo => None,
     }
 }
 
@@ -343,10 +345,24 @@ const fn typed_unavailable_for_message() -> TypedUnavailable {
     }
 }
 
+const fn typed_unavailable_for_history_date_diff() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::HISTORY_PRODUCER_UNAVAILABLE,
+        reason: "history date/diff filters require history producer",
+    }
+}
+
 const fn typed_unavailable_for_dirty() -> TypedUnavailable {
     TypedUnavailable {
         code: codes::DIRTY_UNAVAILABLE,
         reason: "dirty filter is not executable on the lexical rail",
+    }
+}
+
+const fn typed_unavailable_for_runtime_catalog() -> TypedUnavailable {
+    TypedUnavailable {
+        code: codes::RUNTIME_CATALOG_UNAVAILABLE,
+        reason: "runtime catalog filters are not executable on the lexical rail",
     }
 }
 
@@ -419,8 +435,28 @@ pub fn plan_filters(
             LqFilter::Message { .. } => {
                 typed_unavailable.push(typed_unavailable_for_message());
             }
+            LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => {
+                typed_unavailable.push(typed_unavailable_for_history_date_diff());
+            }
             LqFilter::Dirty { .. } => {
                 typed_unavailable.push(typed_unavailable_for_dirty());
+            }
+            LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. } => {
+                typed_unavailable.push(typed_unavailable_for_runtime_catalog());
             }
             LqFilter::Fork { mode } => {
                 typed_unavailable.push(typed_unavailable_for_fork(*mode));

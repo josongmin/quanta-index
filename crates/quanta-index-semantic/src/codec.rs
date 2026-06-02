@@ -1,10 +1,11 @@
-//! Manual CBOR (de)serialization helpers for the persisted semantic store.
+//! Manual CBOR (de)serialization helpers for the scope-level semantic
+//! manifest.
 //!
-//! The workspace bans proc-macro serde derives; durable shapes here get
-//! hand-written serde impls via the [`cbor_serde`] declarative macro (same
+//! The workspace bans proc-macro serde derives; the manifest gets a
+//! hand-written serde impl via the [`cbor_serde`] declarative macro (the same
 //! shape as the search-plane authority codecs), driven through `ciborium`.
-//! Nothing in this module performs unchecked arithmetic, indexing, or `as`
-//! casts so it satisfies the crate's deny-level lint posture.
+//! The lancedb dataset has its own on-disk integrity; this codec is *only*
+//! used for the scope-metadata manifest written beside it.
 
 #![expect(
     clippy::redundant_pub_crate,
@@ -14,9 +15,6 @@
 use quanta_index_core::CoreError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Generate manual `serde::Serialize` / `serde::Deserialize` impls for a struct.
 ///
@@ -113,56 +111,4 @@ pub(crate) fn encode<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>, Co
 pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T, CoreError> {
     ciborium::from_reader(bytes)
         .map_err(|err| CoreError::Storage(format!("semantic: decode {label}: {err}")))
-}
-
-/// Pack `f32` lanes as little-endian bytes for compact, deterministic storage.
-pub(crate) fn f32_slice_to_le_bytes(vector: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(vector.len().saturating_mul(4));
-    for lane in vector {
-        bytes.extend_from_slice(&lane.to_le_bytes());
-    }
-    bytes
-}
-
-/// Unpack little-endian `f32` lanes; rejects a length that is not a multiple of 4.
-pub(crate) fn le_bytes_to_f32_vec(bytes: &[u8]) -> Result<Vec<f32>, CoreError> {
-    if !bytes.len().is_multiple_of(4) {
-        return Err(CoreError::Storage(format!(
-            "semantic: vector byte length {} is not a multiple of 4",
-            bytes.len()
-        )));
-    }
-    let mut vector = Vec::with_capacity(bytes.len().saturating_div(4));
-    for lane in bytes.chunks_exact(4) {
-        let window: [u8; 4] = lane
-            .try_into()
-            .map_err(|err| CoreError::Storage(format!("semantic: vector lane slice: {err}")))?;
-        vector.push(f32::from_le_bytes(window));
-    }
-    Ok(vector)
-}
-
-fn fnv1a64_fold(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-/// FNV-1a 64-bit content checksum over an ordered set of byte parts.
-///
-/// Each part is length-framed (its byte length folded in before its bytes,
-/// preceded by the part count) so moving bytes across a part boundary changes
-/// the digest — a plain concatenation would alias such truncations.
-/// Deterministic and infallible by construction; used to fail closed on a
-/// corrupted or truncated persisted generation, not for cryptographic purposes.
-pub(crate) fn content_checksum(parts: &[&[u8]]) -> String {
-    let mut hash = FNV_OFFSET;
-    hash = fnv1a64_fold(hash, &parts.len().to_le_bytes());
-    for part in parts {
-        hash = fnv1a64_fold(hash, &part.len().to_le_bytes());
-        hash = fnv1a64_fold(hash, part);
-    }
-    format!("{hash:016x}")
 }

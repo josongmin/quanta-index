@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,8 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     ChunkId, DirtyIngestBatch, DirtyMutation, GenerationPin, HistoryIngestBatch,
     HistoryRefMutation, LexicalIngestBatch, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, StructuralIngestBatch,
+    RuntimeCatalogIngestBatch, SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
+    StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
@@ -28,6 +29,11 @@ pub(crate) const ERR_SEMANTIC_GENERATION_NOT_MATERIALIZED: &str =
     "SEMANTIC_GENERATION_NOT_MATERIALIZED";
 pub(crate) const ERR_SEMANTIC_GENERATION_NOT_SEALED: &str = "SEMANTIC_GENERATION_NOT_SEALED";
 pub(crate) const ERR_SEMANTIC_MANIFEST_DIGEST_MISMATCH: &str = "SEMANTIC_MANIFEST_DIGEST_MISMATCH";
+pub(crate) const ERR_RUNTIME_CATALOG_STALE_BATCH: &str = "RUNTIME_CATALOG_STALE_BATCH";
+pub(crate) const ERR_RUNTIME_CATALOG_CONFLICTING_BATCH: &str = "RUNTIME_CATALOG_CONFLICTING_BATCH";
+pub(crate) const ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID: &str = "RUNTIME_CATALOG_UNKNOWN_DOC_ID";
+pub(crate) const ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE: &str =
+    "RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE";
 
 macro_rules! impl_struct_serde {
     ($ty:ident { $($field:ident : $field_ty:ty),+ $(,)? }) => {
@@ -767,6 +773,105 @@ impl Ledger {
         }
     }
 
+    pub fn apply_runtime_catalog_batch(
+        &mut self,
+        batch: &RuntimeCatalogIngestBatch,
+    ) -> Result<(), CoreError> {
+        let chunk_universe = self
+            .structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
+            .map(|state| state.chunks.keys().cloned().collect::<BTreeSet<_>>())
+            .ok_or_else(|| {
+                runtime_catalog_typed(
+                    ERR_RUNTIME_CATALOG_CHUNK_UNIVERSE_UNAVAILABLE,
+                    "runtime catalog ingest: lexical chunk authority is not materialized for the pinned generation",
+                )
+            })?;
+        validate_runtime_catalog_doc_ids(batch, &chunk_universe)?;
+
+        let state = self.runtime_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
+        enforce_runtime_catalog_batch_order(state, batch)?;
+        state.catalog_overlay_epoch_ms = Some(batch.overlay_epoch_ms);
+        state.catalog_batch_digest = Some(batch.batch_digest.clone().into_boxed_str());
+        state.producer_head_applied_at_ms = Some(batch.producer_head_applied_at_ms);
+        state.generation_materialized_at_ms = Some(batch.generation_materialized_at_ms);
+        state.catalog_materialized = true;
+        state.changed_docs = batch
+            .changed_entries
+            .iter()
+            .map(|record| {
+                (
+                    record.doc_id.clone(),
+                    ChangedDocState {
+                        applied_at_ms: record.applied_at_ms,
+                        payload_hash: record.payload_hash,
+                    },
+                )
+            })
+            .collect();
+        state.doc_facets = batch
+            .facet_entries
+            .iter()
+            .map(|record| {
+                (
+                    record.doc_id.clone(),
+                    DocFacetState {
+                        owner: record
+                            .owner
+                            .as_deref()
+                            .map(str::to_owned)
+                            .map(String::into_boxed_str),
+                        service: record
+                            .service
+                            .as_deref()
+                            .map(str::to_owned)
+                            .map(String::into_boxed_str),
+                        layer: record
+                            .layer
+                            .as_deref()
+                            .map(str::to_owned)
+                            .map(String::into_boxed_str),
+                        surface: record
+                            .surface
+                            .as_deref()
+                            .map(str::to_owned)
+                            .map(String::into_boxed_str),
+                    },
+                )
+            })
+            .collect();
+        state.snapshots = batch
+            .snapshot_entries
+            .iter()
+            .map(|record| {
+                (
+                    record.name.clone().into_boxed_str(),
+                    record.doc_ids.iter().cloned().collect(),
+                )
+            })
+            .collect();
+        state.affected_docs = batch
+            .affected_entries
+            .iter()
+            .map(|record| {
+                (
+                    record.key.clone().into_boxed_str(),
+                    record.doc_ids.iter().cloned().collect(),
+                )
+            })
+            .collect();
+        state.invalidated_by_docs = batch
+            .invalidated_by_entries
+            .iter()
+            .map(|record| {
+                (
+                    record.key.clone().into_boxed_str(),
+                    record.doc_ids.iter().cloned().collect(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
     pub fn apply_structural_batch(
         &mut self,
         batch: &StructuralIngestBatch,
@@ -1293,9 +1398,67 @@ impl DirtyDocState {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ChangedDocState {
+    applied_at_ms: u64,
+    payload_hash: [u8; 32],
+}
+
+impl ChangedDocState {
+    #[must_use]
+    pub const fn applied_at_ms(&self) -> u64 {
+        self.applied_at_ms
+    }
+
+    #[must_use]
+    pub const fn payload_hash(&self) -> &[u8; 32] {
+        &self.payload_hash
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DocFacetState {
+    owner: Option<Box<str>>,
+    service: Option<Box<str>>,
+    layer: Option<Box<str>>,
+    surface: Option<Box<str>>,
+}
+
+impl DocFacetState {
+    #[must_use]
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.service.as_deref()
+    }
+
+    #[must_use]
+    pub fn layer(&self) -> Option<&str> {
+        self.layer.as_deref()
+    }
+
+    #[must_use]
+    pub fn surface(&self) -> Option<&str> {
+        self.surface.as_deref()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeMetadataState {
     dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
+    changed_docs: BTreeMap<ChunkId, ChangedDocState>,
+    doc_facets: BTreeMap<ChunkId, DocFacetState>,
+    snapshots: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    affected_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    invalidated_by_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    catalog_overlay_epoch_ms: Option<u64>,
+    catalog_batch_digest: Option<Box<str>>,
+    producer_head_applied_at_ms: Option<u64>,
+    generation_materialized_at_ms: Option<u64>,
+    catalog_materialized: bool,
 }
 
 impl RuntimeMetadataState {
@@ -1303,6 +1466,134 @@ impl RuntimeMetadataState {
     pub fn dirty_docs(&self) -> &BTreeMap<ChunkId, DirtyDocState> {
         &self.dirty_docs
     }
+
+    #[must_use]
+    pub fn changed_docs(&self) -> &BTreeMap<ChunkId, ChangedDocState> {
+        &self.changed_docs
+    }
+
+    #[must_use]
+    pub fn doc_facets(&self) -> &BTreeMap<ChunkId, DocFacetState> {
+        &self.doc_facets
+    }
+
+    #[must_use]
+    pub fn snapshots(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+        &self.snapshots
+    }
+
+    #[must_use]
+    pub fn affected_docs(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+        &self.affected_docs
+    }
+
+    #[must_use]
+    pub fn invalidated_by_docs(&self) -> &BTreeMap<Box<str>, BTreeSet<ChunkId>> {
+        &self.invalidated_by_docs
+    }
+
+    #[must_use]
+    pub const fn catalog_overlay_epoch_ms(&self) -> Option<u64> {
+        self.catalog_overlay_epoch_ms
+    }
+
+    #[must_use]
+    pub fn catalog_batch_digest(&self) -> Option<&str> {
+        self.catalog_batch_digest.as_deref()
+    }
+
+    #[must_use]
+    pub const fn producer_head_applied_at_ms(&self) -> Option<u64> {
+        self.producer_head_applied_at_ms
+    }
+
+    #[must_use]
+    pub const fn generation_materialized_at_ms(&self) -> Option<u64> {
+        self.generation_materialized_at_ms
+    }
+
+    #[must_use]
+    pub const fn catalog_materialized(&self) -> bool {
+        self.catalog_materialized
+    }
+}
+
+fn runtime_catalog_typed(code: &str, message: impl Into<String>) -> CoreError {
+    CoreError::Typed {
+        code: code.to_string(),
+        message: message.into(),
+    }
+}
+
+fn enforce_runtime_catalog_batch_order(
+    state: &RuntimeMetadataState,
+    batch: &RuntimeCatalogIngestBatch,
+) -> Result<(), CoreError> {
+    let Some(current_epoch) = state.catalog_overlay_epoch_ms() else {
+        return Ok(());
+    };
+    if batch.overlay_epoch_ms < current_epoch {
+        return Err(runtime_catalog_typed(
+            ERR_RUNTIME_CATALOG_STALE_BATCH,
+            format!(
+                "runtime catalog ingest: stale overlay epoch {} is older than materialized epoch {}",
+                batch.overlay_epoch_ms, current_epoch
+            ),
+        ));
+    }
+    if batch.overlay_epoch_ms == current_epoch
+        && state.catalog_batch_digest() != Some(batch.batch_digest.as_str())
+    {
+        return Err(runtime_catalog_typed(
+            ERR_RUNTIME_CATALOG_CONFLICTING_BATCH,
+            format!(
+                "runtime catalog ingest: conflicting batch digest `{}` for overlay epoch {}",
+                batch.batch_digest, batch.overlay_epoch_ms
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_catalog_doc_ids(
+    batch: &RuntimeCatalogIngestBatch,
+    chunk_universe: &BTreeSet<ChunkId>,
+) -> Result<(), CoreError> {
+    for doc_id in batch
+        .changed_entries
+        .iter()
+        .map(|record| &record.doc_id)
+        .chain(batch.facet_entries.iter().map(|record| &record.doc_id))
+        .chain(
+            batch
+                .snapshot_entries
+                .iter()
+                .flat_map(|record| record.doc_ids.iter()),
+        )
+        .chain(
+            batch
+                .affected_entries
+                .iter()
+                .flat_map(|record| record.doc_ids.iter()),
+        )
+        .chain(
+            batch
+                .invalidated_by_entries
+                .iter()
+                .flat_map(|record| record.doc_ids.iter()),
+        )
+    {
+        if !chunk_universe.contains(doc_id) {
+            return Err(runtime_catalog_typed(
+                ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID,
+                format!(
+                    "runtime catalog ingest: doc_id `{}` is not present in the pinned lexical chunk universe",
+                    doc_id.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1401,8 +1692,30 @@ impl_struct_serde!(DirtyDocState {
     payload_hash: [u8; 32],
 });
 
+impl_struct_serde!(ChangedDocState {
+    applied_at_ms: u64,
+    payload_hash: [u8; 32],
+});
+
+impl_struct_serde!(DocFacetState {
+    owner: Option<Box<str>>,
+    service: Option<Box<str>>,
+    layer: Option<Box<str>>,
+    surface: Option<Box<str>>,
+});
+
 impl_struct_serde!(RuntimeMetadataState {
     dirty_docs: BTreeMap<ChunkId, DirtyDocState>,
+    changed_docs: BTreeMap<ChunkId, ChangedDocState>,
+    doc_facets: BTreeMap<ChunkId, DocFacetState>,
+    snapshots: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    affected_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    invalidated_by_docs: BTreeMap<Box<str>, BTreeSet<ChunkId>>,
+    catalog_overlay_epoch_ms: Option<u64>,
+    catalog_batch_digest: Option<Box<str>>,
+    producer_head_applied_at_ms: Option<u64>,
+    generation_materialized_at_ms: Option<u64>,
+    catalog_materialized: bool,
 });
 
 impl_struct_serde!(StructuralAuthorityState {
@@ -1808,8 +2121,10 @@ mod tests {
     use quanta_index_contract::{
         BatchIngestMode, ChunkId, ChunkRecord, LexicalReplaceScope, ManifestGeneration,
         ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId,
-        SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind, SearchScopeKey,
-        SearchScopeSurface, StructuralReplaceScope, StructuralTreeRecord, UpsertParseTree,
+        RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+        RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest,
+        SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, StructuralReplaceScope,
+        StructuralTreeRecord, UpsertParseTree,
     };
     use quanta_index_core::CoreError;
 
@@ -1866,6 +2181,7 @@ mod tests {
             text: text.to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
+            source_repo_id: None,
         })
     }
 
@@ -1892,6 +2208,15 @@ mod tests {
     }
 
     fn install_chunk(ledger: &mut Ledger, path: &str, text: &str) -> TestResult {
+        install_chunk_with_id(ledger, "chunk-1", path, text)
+    }
+
+    fn install_chunk_with_id(
+        ledger: &mut Ledger,
+        chunk_id: &str,
+        path: &str,
+        text: &str,
+    ) -> TestResult {
         let op = LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
             repo_id: repo_id(),
             revision_id: revision_id(),
@@ -1902,7 +2227,11 @@ mod tests {
                 LexicalReplaceScope {
                     scope: scope(path),
                     scope_digest: "scope:lex".to_string(),
-                    chunks: vec![chunk_record(path, text)?],
+                    chunks: vec![{
+                        let mut record = chunk_record(path, text)?;
+                        record.chunk_id = ChunkId::new(chunk_id);
+                        record
+                    }],
                     symbols: Vec::new(),
                 },
             ))?,
@@ -2038,6 +2367,114 @@ mod tests {
         {
             return Err("runtime authority did not restore dirty-doc payload".into());
         }
+        install_chunk_with_id(
+            &mut ledger,
+            "changed-1",
+            "src/changed.rs",
+            "fn changed() {}",
+        )?;
+        install_chunk_with_id(&mut ledger, "facet-1", "src/facet.rs", "fn facet() {}")?;
+        install_chunk_with_id(&mut ledger, "snap-1", "src/snap.rs", "fn snap() {}")?;
+        install_chunk_with_id(
+            &mut ledger,
+            "affected-1",
+            "src/affected.rs",
+            "fn affected() {}",
+        )?;
+        install_chunk_with_id(
+            &mut ledger,
+            "invalidated-1",
+            "src/invalidated.rs",
+            "fn invalidated() {}",
+        )?;
+        ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 99,
+            batch_digest: "catalog-roundtrip".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-1"),
+                applied_at_ms: 25,
+                payload_hash: [0xbb; 32],
+            }],
+            facet_entries: vec![RuntimeDocFacetRecord {
+                doc_id: ChunkId::new("facet-1"),
+                owner: Some("team-a".to_string()),
+                service: None,
+                layer: None,
+                surface: None,
+            }],
+            snapshot_entries: vec![RuntimeSnapshotRecord {
+                name: "active".to_string(),
+                doc_ids: vec![ChunkId::new("snap-1")],
+            }],
+            affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("affected-1")],
+            }],
+            invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("invalidated-1")],
+            }],
+        })?;
+        store.persist_from_ledger(&ledger)?;
+        let mut restored_catalog = Ledger::default();
+        store.restore_into(&mut restored_catalog)?;
+        let runtime = restored_catalog
+            .runtime_state(&repo_id(), &revision_id(), generation())
+            .ok_or("runtime catalog state missing after restore")?;
+        if !runtime.catalog_materialized() {
+            return Err("runtime catalog materialization flag did not restore".into());
+        }
+        if runtime.catalog_overlay_epoch_ms() != Some(99) {
+            return Err("runtime catalog overlay epoch did not restore".into());
+        }
+        if runtime.catalog_batch_digest() != Some("catalog-roundtrip") {
+            return Err("runtime catalog batch digest did not restore".into());
+        }
+        if runtime.generation_materialized_at_ms() != Some(20) {
+            return Err("runtime catalog generation timestamp did not restore".into());
+        }
+        if runtime
+            .changed_docs()
+            .get(&ChunkId::new("changed-1"))
+            .map(super::ChangedDocState::applied_at_ms)
+            != Some(25)
+        {
+            return Err("runtime catalog changed-doc payload did not restore".into());
+        }
+        if runtime
+            .doc_facets()
+            .get(&ChunkId::new("facet-1"))
+            .and_then(super::DocFacetState::owner)
+            != Some("team-a")
+        {
+            return Err("runtime catalog facet payload did not restore".into());
+        }
+        if !runtime
+            .snapshots()
+            .get("active")
+            .is_some_and(|docs| docs.contains(&ChunkId::new("snap-1")))
+        {
+            return Err("runtime catalog snapshot membership did not restore".into());
+        }
+        if !runtime
+            .affected_docs()
+            .get("rebuild=lexical")
+            .is_some_and(|docs| docs.contains(&ChunkId::new("affected-1")))
+        {
+            return Err("runtime catalog affected edge payload did not restore".into());
+        }
+        if !runtime
+            .invalidated_by_docs()
+            .get("rebuild=lexical")
+            .is_some_and(|docs| docs.contains(&ChunkId::new("invalidated-1")))
+        {
+            return Err("runtime catalog invalidated_by edge payload did not restore".into());
+        }
         if restored
             .structural_state(&repo_id(), &revision_id(), generation())
             .map(|state| state.chunks().len())
@@ -2049,6 +2486,259 @@ mod tests {
             != Some(generation())
         {
             return Err("structural track seal did not restore".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_catalog_batch_replaces_previous_snapshot_state() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk_with_id(
+            &mut ledger,
+            "changed-1",
+            "src/changed.rs",
+            "fn changed() {}",
+        )?;
+        install_chunk_with_id(&mut ledger, "facet-1", "src/facet.rs", "fn facet() {}")?;
+        install_chunk_with_id(&mut ledger, "snap-1", "src/snap.rs", "fn snap() {}")?;
+        install_chunk_with_id(
+            &mut ledger,
+            "affected-1",
+            "src/affected.rs",
+            "fn affected() {}",
+        )?;
+        install_chunk_with_id(
+            &mut ledger,
+            "invalidated-1",
+            "src/invalidated.rs",
+            "fn invalidated() {}",
+        )?;
+        install_chunk_with_id(
+            &mut ledger,
+            "changed-2",
+            "src/changed2.rs",
+            "fn changed2() {}",
+        )?;
+
+        ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 10,
+            batch_digest: "catalog-v1".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-1"),
+                applied_at_ms: 25,
+                payload_hash: [0xbb; 32],
+            }],
+            facet_entries: vec![RuntimeDocFacetRecord {
+                doc_id: ChunkId::new("facet-1"),
+                owner: Some("team-a".to_string()),
+                service: None,
+                layer: None,
+                surface: None,
+            }],
+            snapshot_entries: vec![RuntimeSnapshotRecord {
+                name: "active".to_string(),
+                doc_ids: vec![ChunkId::new("snap-1")],
+            }],
+            affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("affected-1")],
+            }],
+            invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("invalidated-1")],
+            }],
+        })?;
+
+        ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 11,
+            batch_digest: "catalog-v2".to_string(),
+            producer_head_applied_at_ms: 101,
+            generation_materialized_at_ms: 21,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-2"),
+                applied_at_ms: 30,
+                payload_hash: [0xcc; 32],
+            }],
+            facet_entries: Vec::new(),
+            snapshot_entries: Vec::new(),
+            affected_entries: Vec::new(),
+            invalidated_by_entries: Vec::new(),
+        })?;
+
+        let runtime = ledger
+            .runtime_state(&repo_id(), &revision_id(), generation())
+            .ok_or("runtime catalog state missing")?;
+        if runtime
+            .changed_docs()
+            .contains_key(&ChunkId::new("changed-1"))
+        {
+            return Err("runtime catalog retained old changed-doc entry after replacement".into());
+        }
+        if !runtime
+            .changed_docs()
+            .contains_key(&ChunkId::new("changed-2"))
+        {
+            return Err("runtime catalog did not materialize new changed-doc entry".into());
+        }
+        if !runtime.doc_facets().is_empty()
+            || !runtime.snapshots().is_empty()
+            || !runtime.affected_docs().is_empty()
+            || !runtime.invalidated_by_docs().is_empty()
+        {
+            return Err("runtime catalog replacement failed to drop removed keyspaces".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_catalog_batch_rejects_older_epoch_replay() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk_with_id(
+            &mut ledger,
+            "changed-1",
+            "src/changed.rs",
+            "fn changed() {}",
+        )?;
+        ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 10,
+            batch_digest: "catalog-v1".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-1"),
+                applied_at_ms: 25,
+                payload_hash: [0xbb; 32],
+            }],
+            facet_entries: Vec::new(),
+            snapshot_entries: Vec::new(),
+            affected_entries: Vec::new(),
+            invalidated_by_entries: Vec::new(),
+        })?;
+
+        let err = ledger
+            .apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                overlay_epoch_ms: 9,
+                batch_digest: "catalog-stale".to_string(),
+                producer_head_applied_at_ms: 101,
+                generation_materialized_at_ms: 21,
+                changed_entries: Vec::new(),
+                facet_entries: Vec::new(),
+                snapshot_entries: Vec::new(),
+                affected_entries: Vec::new(),
+                invalidated_by_entries: Vec::new(),
+            })
+            .err()
+            .ok_or("expected stale runtime catalog replay to fail")?;
+        match err {
+            CoreError::Typed { code, .. } if code == super::ERR_RUNTIME_CATALOG_STALE_BATCH => {}
+            other => {
+                return Err(format!("expected stale batch typed error, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_catalog_batch_rejects_conflicting_same_epoch_replay() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk_with_id(
+            &mut ledger,
+            "changed-1",
+            "src/changed.rs",
+            "fn changed() {}",
+        )?;
+        ledger.apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation: generation(),
+            overlay_epoch_ms: 10,
+            batch_digest: "catalog-v1".to_string(),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed-1"),
+                applied_at_ms: 25,
+                payload_hash: [0xbb; 32],
+            }],
+            facet_entries: Vec::new(),
+            snapshot_entries: Vec::new(),
+            affected_entries: Vec::new(),
+            invalidated_by_entries: Vec::new(),
+        })?;
+
+        let err = ledger
+            .apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                overlay_epoch_ms: 10,
+                batch_digest: "catalog-v2".to_string(),
+                producer_head_applied_at_ms: 100,
+                generation_materialized_at_ms: 20,
+                changed_entries: Vec::new(),
+                facet_entries: Vec::new(),
+                snapshot_entries: Vec::new(),
+                affected_entries: Vec::new(),
+                invalidated_by_entries: Vec::new(),
+            })
+            .err()
+            .ok_or("expected conflicting runtime catalog replay to fail")?;
+        match err {
+            CoreError::Typed { code, .. }
+                if code == super::ERR_RUNTIME_CATALOG_CONFLICTING_BATCH => {}
+            other => {
+                return Err(
+                    format!("expected conflicting batch typed error, got {other:?}").into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_catalog_batch_rejects_unknown_doc_id() -> TestResult {
+        let mut ledger = Ledger::default();
+        install_chunk(&mut ledger, "src/lib.rs", "fn main() {}")?;
+        let err = ledger
+            .apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+                repo_id: repo_id(),
+                revision_id: revision_id(),
+                generation: generation(),
+                overlay_epoch_ms: 10,
+                batch_digest: "catalog-v1".to_string(),
+                producer_head_applied_at_ms: 100,
+                generation_materialized_at_ms: 20,
+                changed_entries: vec![RuntimeChangedRecord {
+                    doc_id: ChunkId::new("missing-doc"),
+                    applied_at_ms: 25,
+                    payload_hash: [0xbb; 32],
+                }],
+                facet_entries: Vec::new(),
+                snapshot_entries: Vec::new(),
+                affected_entries: Vec::new(),
+                invalidated_by_entries: Vec::new(),
+            })
+            .err()
+            .ok_or("expected unknown runtime catalog doc id to fail")?;
+        match err {
+            CoreError::Typed { code, .. } if code == super::ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID => {}
+            other => {
+                return Err(format!("expected unknown doc typed error, got {other:?}").into());
+            }
         }
         Ok(())
     }

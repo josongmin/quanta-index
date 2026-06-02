@@ -276,9 +276,25 @@ pub enum LqFilter {
     Author { pattern: String },
     Committer { pattern: String },
     Message { pattern: String },
+    Before { timeref: String },
+    After { timeref: String },
+    Since { timeref: String },
+    Until { timeref: String },
+    DiffAdded { pattern: String },
+    DiffRemoved { pattern: String },
+    DiffTouched { pattern: String },
     Type { kind: LqType },
     Select { dim: LqSelect },
     Dirty { mode: LqYesNoOnly },
+    Changed { scope: String },
+    Stale { scope: String },
+    Snapshot { name: String },
+    MetaOwner { id: String },
+    MetaService { id: String },
+    MetaLayer { id: String },
+    MetaSurface { id: String },
+    Affected { scope: String },
+    InvalidatedBy { source: String },
     Fork { mode: LqYesNoOnly },
     Archived { mode: LqYesNoOnly },
     Visibility { mode: LqVisibility },
@@ -1703,9 +1719,25 @@ impl serde::Serialize for LqFilter {
             Self::Author { .. } => "author",
             Self::Committer { .. } => "committer",
             Self::Message { .. } => "message",
+            Self::Before { .. } => "before",
+            Self::After { .. } => "after",
+            Self::Since { .. } => "since",
+            Self::Until { .. } => "until",
+            Self::DiffAdded { .. } => "diff.added",
+            Self::DiffRemoved { .. } => "diff.removed",
+            Self::DiffTouched { .. } => "diff.touched",
             Self::Type { .. } => "type",
             Self::Select { .. } => "select",
             Self::Dirty { .. } => "dirty",
+            Self::Changed { .. } => "changed",
+            Self::Stale { .. } => "stale",
+            Self::Snapshot { .. } => "snapshot",
+            Self::MetaOwner { .. } => "meta.owner",
+            Self::MetaService { .. } => "meta.service",
+            Self::MetaLayer { .. } => "meta.layer",
+            Self::MetaSurface { .. } => "meta.surface",
+            Self::Affected { .. } => "affected",
+            Self::InvalidatedBy { .. } => "invalidated_by",
             Self::Fork { .. } => "fork",
             Self::Archived { .. } => "archived",
             Self::Visibility { .. } => "visibility",
@@ -1730,9 +1762,25 @@ impl serde::Serialize for LqFilter {
             Self::Author { pattern } => outer.serialize_entry("v", pattern)?,
             Self::Committer { pattern } => outer.serialize_entry("v", pattern)?,
             Self::Message { pattern } => outer.serialize_entry("v", pattern)?,
+            Self::Before { timeref }
+            | Self::After { timeref }
+            | Self::Since { timeref }
+            | Self::Until { timeref } => outer.serialize_entry("v", timeref)?,
+            Self::DiffAdded { pattern }
+            | Self::DiffRemoved { pattern }
+            | Self::DiffTouched { pattern } => outer.serialize_entry("v", pattern)?,
             Self::Type { kind } => outer.serialize_entry("v", kind)?,
             Self::Select { dim } => outer.serialize_entry("v", dim)?,
             Self::Dirty { mode } => outer.serialize_entry("v", mode)?,
+            Self::Changed { scope } | Self::Stale { scope } | Self::Affected { scope } => {
+                outer.serialize_entry("v", scope)?
+            }
+            Self::Snapshot { name } => outer.serialize_entry("v", name)?,
+            Self::MetaOwner { id }
+            | Self::MetaService { id }
+            | Self::MetaLayer { id }
+            | Self::MetaSurface { id } => outer.serialize_entry("v", id)?,
+            Self::InvalidatedBy { source } => outer.serialize_entry("v", source)?,
             Self::Fork { mode } => outer.serialize_entry("v", mode)?,
             Self::Archived { mode } => outer.serialize_entry("v", mode)?,
             Self::Visibility { mode } => outer.serialize_entry("v", mode)?,
@@ -1852,6 +1900,41 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                             .deserialized()
                             .map_err(|e| A::Error::custom(format!("message: {e}")))?,
                     }),
+                    "before" => Ok(LqFilter::Before {
+                        timeref: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("before: {e}")))?,
+                    }),
+                    "after" => Ok(LqFilter::After {
+                        timeref: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("after: {e}")))?,
+                    }),
+                    "since" => Ok(LqFilter::Since {
+                        timeref: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("since: {e}")))?,
+                    }),
+                    "until" => Ok(LqFilter::Until {
+                        timeref: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("until: {e}")))?,
+                    }),
+                    "diff.added" => Ok(LqFilter::DiffAdded {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("diff.added: {e}")))?,
+                    }),
+                    "diff.removed" => Ok(LqFilter::DiffRemoved {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("diff.removed: {e}")))?,
+                    }),
+                    "diff.touched" => Ok(LqFilter::DiffTouched {
+                        pattern: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("diff.touched: {e}")))?,
+                    }),
                     "type" => Ok(LqFilter::Type {
                         kind: v
                             .deserialized()
@@ -1866,6 +1949,51 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                         mode: v
                             .deserialized()
                             .map_err(|e| A::Error::custom(format!("dirty: {e}")))?,
+                    }),
+                    "changed" => Ok(LqFilter::Changed {
+                        scope: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("changed: {e}")))?,
+                    }),
+                    "stale" => Ok(LqFilter::Stale {
+                        scope: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("stale: {e}")))?,
+                    }),
+                    "snapshot" => Ok(LqFilter::Snapshot {
+                        name: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("snapshot: {e}")))?,
+                    }),
+                    "meta.owner" => Ok(LqFilter::MetaOwner {
+                        id: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("meta.owner: {e}")))?,
+                    }),
+                    "meta.service" => Ok(LqFilter::MetaService {
+                        id: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("meta.service: {e}")))?,
+                    }),
+                    "meta.layer" => Ok(LqFilter::MetaLayer {
+                        id: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("meta.layer: {e}")))?,
+                    }),
+                    "meta.surface" => Ok(LqFilter::MetaSurface {
+                        id: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("meta.surface: {e}")))?,
+                    }),
+                    "affected" => Ok(LqFilter::Affected {
+                        scope: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("affected: {e}")))?,
+                    }),
+                    "invalidated_by" => Ok(LqFilter::InvalidatedBy {
+                        source: v
+                            .deserialized()
+                            .map_err(|e| A::Error::custom(format!("invalidated_by: {e}")))?,
                     }),
                     "fork" => Ok(LqFilter::Fork {
                         mode: v
@@ -1902,9 +2030,25 @@ impl<'de> serde::Deserialize<'de> for LqFilter {
                             "author",
                             "committer",
                             "message",
+                            "before",
+                            "after",
+                            "since",
+                            "until",
+                            "diff.added",
+                            "diff.removed",
+                            "diff.touched",
                             "type",
                             "select",
                             "dirty",
+                            "changed",
+                            "stale",
+                            "snapshot",
+                            "meta.owner",
+                            "meta.service",
+                            "meta.layer",
+                            "meta.surface",
+                            "affected",
+                            "invalidated_by",
                             "fork",
                             "archived",
                             "visibility",

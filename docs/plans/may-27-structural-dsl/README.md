@@ -1,12 +1,17 @@
 # May 27 Structural DSL Final Plan
 
-Status: `final-planning-packet`
-Date: `2026-05-27`
-Scope: structural DSL semantics beyond the shipped truthful subset.
+Status: `superseded-by-jfc`
+Date: `2026-06-02`
+Scope: historical structural planning packet kept for provenance and evidence only.
 
-This packet is the planning SSOT for the next structural DSL wave.
-Historical tickets stay in their original paths for evidence, but their current
-ownership is re-anchored here through [tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md).
+Active ownership for remaining structural DSL residue has moved to:
+
+- [../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md)
+
+This packet remains historical evidence for the structural subset and prior
+ticket framing. Historical tickets stay in their original paths for evidence via
+[tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md), but this file is no
+longer the planning SSOT.
 
 ---
 

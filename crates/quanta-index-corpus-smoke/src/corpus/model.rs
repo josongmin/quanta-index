@@ -46,7 +46,7 @@ pub struct CorpusRow {
     /// Optional named fixture bundle consumed by the runtime rail.
     pub fixture: Option<String>,
     /// Optional exact corpus-id set asserted by the runtime rail.
-    pub expected_ids: Vec<String>,
+    pub expected_ids: Option<Vec<String>>,
     /// Optional runtime `top_k` override for rows executed against the live
     /// daemon.
     pub top_k: Option<u32>,
@@ -54,6 +54,29 @@ pub struct CorpusRow {
     /// daemon. Kept separate from `ExpectedShape::Error`, which remains the
     /// parser/conformance placeholder enum surface.
     pub runtime_error_code: Option<String>,
+    /// Optional required substring for runtime typed-error messages.
+    pub runtime_error_message_contains: Option<String>,
+    /// Optional expected explanation engines for runtime-success rows.
+    pub expected_engines_touched: Vec<String>,
+    /// Optional required explanation summary substrings for runtime-success
+    /// rows.
+    pub expected_summary_substrings: Vec<String>,
+    /// Optional ordered path assertions for runtime-success rows.
+    pub expected_paths: Option<Vec<String>>,
+    /// Optional ordered snippet assertions for runtime-success rows.
+    pub expected_snippets: Option<Vec<String>>,
+    /// Optional ordered structural binding assertions for runtime-success rows.
+    pub expected_bindings: Option<Vec<Vec<ExpectedStructuralBinding>>>,
+}
+
+/// One expected structural binding in a runtime row assertion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpectedStructuralBinding {
+    pub metavariable: String,
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 /// Runtime syntax tag for rows promoted into the live daemon rail.
@@ -69,6 +92,7 @@ pub enum RuntimeRoute {
     Text,
     Structural,
     History,
+    RuntimeMetadata,
 }
 
 /// Runtime-corpus classification.

@@ -374,7 +374,23 @@ pub fn resolve_result_surface(filters: &[LqFilter]) -> Result<ResultSurface, Sym
             | LqFilter::Author { .. }
             | LqFilter::Committer { .. }
             | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Visibility { .. }

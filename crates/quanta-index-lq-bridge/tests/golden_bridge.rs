@@ -1,23 +1,44 @@
-//! Golden corpus — 5 Sourcegraph syntax → expected LQ shape (or
-//! expected typed reject).
+//! Golden corpus — Sourcegraph syntax → expected LQ shape (or typed reject).
 //!
 //! Each row is one [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md)
-//! subset-table outcome. Reading the rows in source order:
-//!
-//! 1. `repo:` filter — **adopted** (1:1 LQ `repo:`).
-//! 2. `fork:no` filter — **adopted** as LQ `fork:no`.
-//! 3. `content:hello` filter — **normalized** to LQ `Pattern{literal}`.
-//! 4. `index:no` directive — **refused** with `BRIDGE_UNSUPPORTED_DIRECTIVE`.
-//! 5. `colorscheme:dark` (post-pin Sourcegraph-future filter we have
-//!    not registered) — **refused** with `BRIDGE_UNSUPPORTED_FILTER`.
-//! 6. `repo:has.file(path:src/lib.rs)` predicate — **adopted** as active
-//!    LQ predicate placeholder.
+//! subset-table outcome. Rows 1–8 are the original bridge subset; rows 9–19
+//! cover JFC-05 widened history/runtime filter lowering (translator-only proof;
+//! executable SG/native parity lives in `e2e_dual_syntax_lowering_parity`).
 
-use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg};
+use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType};
 use quanta_index_lq_bridge::{
     BridgeCandidate, BridgeErrorCode, SourcegraphVersionTag, TRANSLATOR_VERSION, parse_sourcegraph,
     translate_query,
 };
+
+fn filters_for(raw: &str) -> Vec<LqFilter> {
+    let q = match parse_sourcegraph(raw) {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return Vec::new();
+        }
+    };
+    match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d.filters,
+        Err(e) => {
+            assert!(false, "{e}");
+            Vec::new()
+        }
+    }
+}
+
+fn assert_filter_present<F>(raw: &str, label: &str, predicate: F)
+where
+    F: Fn(&LqFilter) -> bool,
+{
+    let filters = filters_for(raw);
+    assert!(
+        filters.iter().any(|filter| predicate(filter)),
+        "expected {label} on `{raw}`, got {:?}",
+        filters
+    );
+}
 
 fn ver() -> SourcegraphVersionTag {
     match SourcegraphVersionTag::supported() {
@@ -164,6 +185,70 @@ fn candidate_envelope_stamps_translator_version() {
 }
 
 #[test]
+fn row7_adopted_history_before_filter() {
+    let raw = "type:commit before:1970-01-01T00:00:00.020Z needle";
+    let q = match parse_sourcegraph(raw) {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert!(
+        lq.filters.iter().any(|filter| matches!(
+            filter,
+            LqFilter::Before { timeref } if timeref == "1970-01-01T00:00:00.020Z"
+        )),
+        "expected before: filter, got {:?}",
+        lq.filters
+    );
+    assert!(
+        lq.filters.iter().any(|filter| matches!(
+            filter,
+            LqFilter::Type {
+                kind: LqType::Commit
+            }
+        )),
+        "expected type:commit filter, got {:?}",
+        lq.filters
+    );
+}
+
+#[test]
+fn row8_adopted_diff_added_filter() {
+    let raw = "type:diff diff.added:unwrap needle";
+    let q = match parse_sourcegraph(raw) {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert!(
+        lq.filters.iter().any(|filter| matches!(
+            filter,
+            LqFilter::DiffAdded { pattern } if pattern == "unwrap"
+        )),
+        "expected diff.added filter, got {:?}",
+        lq.filters
+    );
+}
+
+#[test]
 fn row6_repo_predicate_lowers_to_predicate_placeholder() {
     let q = match parse_sourcegraph("repo:has.file(path:src/lib.rs)") {
         Ok(q) => q,
@@ -189,5 +274,118 @@ fn row6_repo_predicate_lowers_to_predicate_placeholder() {
                 value: "src/lib.rs".to_string(),
             }],
         })
+    );
+}
+
+#[test]
+fn row9_adopted_history_since_filter() {
+    assert_filter_present(
+        "type:commit since:1970-01-01T00:00:00.022Z needle",
+        "since:",
+        |filter| matches!(filter, LqFilter::Since { timeref } if timeref == "1970-01-01T00:00:00.022Z"),
+    );
+}
+
+#[test]
+fn row10_adopted_history_after_filter() {
+    assert_filter_present(
+        "type:commit after:1970-01-01T00:00:00.015Z needle",
+        "after:",
+        |filter| matches!(filter, LqFilter::After { timeref } if timeref == "1970-01-01T00:00:00.015Z"),
+    );
+}
+
+#[test]
+fn row11_adopted_history_until_filter() {
+    assert_filter_present(
+        "type:commit until:1970-01-01T00:00:00.012Z needle",
+        "until:",
+        |filter| matches!(filter, LqFilter::Until { timeref } if timeref == "1970-01-01T00:00:00.012Z"),
+    );
+}
+
+#[test]
+fn row12_adopted_diff_removed_filter() {
+    assert_filter_present(
+        "type:diff diff.removed:parity_removed_marker needle",
+        "diff.removed:",
+        |filter| matches!(filter, LqFilter::DiffRemoved { pattern } if pattern == "parity_removed_marker"),
+    );
+}
+
+#[test]
+fn row13_adopted_diff_touched_filter() {
+    assert_filter_present(
+        "type:diff diff.touched:parity_touched_marker needle",
+        "diff.touched:",
+        |filter| matches!(filter, LqFilter::DiffTouched { pattern } if pattern == "parity_touched_marker"),
+    );
+}
+
+#[test]
+fn row14_adopted_runtime_changed_filter() {
+    assert_filter_present(
+        "changed:since=1970-01-01T00:00:00.010Z needle",
+        "changed:",
+        |filter| matches!(filter, LqFilter::Changed { scope } if scope == "since=1970-01-01T00:00:00.010Z"),
+    );
+}
+
+#[test]
+fn row15_adopted_runtime_stale_filter() {
+    assert_filter_present(
+        "stale:before=1970-01-01T00:00:00.030Z needle",
+        "stale:",
+        |filter| matches!(filter, LqFilter::Stale { scope } if scope == "before=1970-01-01T00:00:00.030Z"),
+    );
+}
+
+#[test]
+fn row16_adopted_runtime_snapshot_filter() {
+    assert_filter_present(
+        "snapshot:active needle",
+        "snapshot:",
+        |filter| matches!(filter, LqFilter::Snapshot { name } if name == "active"),
+    );
+}
+
+#[test]
+fn row17_adopted_runtime_meta_service_filter() {
+    assert_filter_present(
+        "meta.service:search needle",
+        "meta.service:",
+        |filter| matches!(filter, LqFilter::MetaService { id } if id == "search"),
+    );
+}
+
+#[test]
+fn row18_adopted_runtime_meta_layer_filter() {
+    assert_filter_present(
+        "meta.layer:index needle",
+        "meta.layer:",
+        |filter| matches!(filter, LqFilter::MetaLayer { id } if id == "index"),
+    );
+}
+
+#[test]
+fn row19_adopted_runtime_meta_surface_filter() {
+    assert_filter_present(
+        "meta.surface:lexical needle",
+        "meta.surface:",
+        |filter| matches!(filter, LqFilter::MetaSurface { id } if id == "lexical"),
+    );
+}
+
+#[test]
+fn row20_adopted_runtime_invalidated_by_filter() {
+    assert_filter_present(
+        "invalidated_by:rebuild=lexical needle",
+        "invalidated_by:",
+        |filter| {
+            matches!(
+                filter,
+                LqFilter::InvalidatedBy { source } if source == "rebuild=lexical"
+            )
+        },
     );
 }

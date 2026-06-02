@@ -2,8 +2,12 @@
 //!
 //! Table-driven. Every row in `SCENARIOS` ingests through the real publish
 //! path, seals, then issues a `TextQueryRequest` and asserts against the
-//! observed result. The harness supports two row categories; the current
-//! live matrix happens to use only `Candidates` and `TypedError` rows:
+//! observed result. Broad executable-query inventory now lives in
+//! `runtime_rows.toml`; this rail keeps only specialized regression shapes
+//! that the closeout corpus does not express well.
+//!
+//! The harness supports two row categories; the current live matrix happens
+//! to use only `Candidates` rows:
 //!
 //! - `ExpectedOutcome::Candidates` — wiring exists today; row must return
 //!   the exact ordered candidate-id set.
@@ -24,8 +28,7 @@
 
 #![forbid(unsafe_code)]
 
-#[path = "common/e2e_harness.rs"]
-mod e2e_harness;
+use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
@@ -46,12 +49,9 @@ enum ExpectedOutcome {
     Candidates {
         ids: &'static [&'static str],
     },
-    TypedError {
-        code: &'static str,
-    },
     #[expect(
         dead_code,
-        reason = "all current lexical full-fidelity rows are green or typed-error; keep closed-loop variant for future regressions"
+        reason = "all current lexical full-fidelity rows are green candidates; keep closed-loop variant for future regressions"
     )]
     ExpectedFailing {
         owner_ticket: &'static str,
@@ -164,19 +164,6 @@ const CORPUS: &[CorpusRow] = &[
 ];
 
 const SCENARIOS: &[LexicalScenario] = &[
-    // ──────── content term ────────
-    LexicalScenario {
-        id: "content_term_matches_content",
-        // The token `alpha_content_needle` lives in both alpha_content
-        // (rust) and gamma_py_same (python). The lang filter test below
-        // proves discrimination is missing; this row only proves content
-        // tokens hit content (and not the path-only beta row).
-        query_text: "alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "gamma_py_same"],
-        },
-    },
     LexicalScenario {
         id: "content_term_does_not_match_path_only",
         // The path "config/path_only_needle.toml" contains the token
@@ -190,34 +177,6 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
     },
-    // ──────── path / file ────────
-    LexicalScenario {
-        id: "path_query_matches_path",
-        // Native LQ path-as-content query on the live simple-leaf path-term
-        // surface backed by materialized path authority.
-        query_text: "path_only_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["beta_pathonly"],
-        },
-    },
-    LexicalScenario {
-        id: "file_filter_narrows_content_hits_by_path",
-        query_text: "file:src/lib.rs alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content"],
-        },
-    },
-    // ──────── repo ────────
-    LexicalScenario {
-        id: "repo_filter_excludes_other_repo",
-        // The harness publishes against a single repo (`repo-e2e`). A
-        // `repo:repo-other` filter must return zero matches.
-        query_text: "repo:repo-other alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &[] },
-    },
     LexicalScenario {
         id: "repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
         // `repo:has.file(path:src/lib.rs)` is true for this single test
@@ -227,62 +186,15 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &[
-                "alpha_content",
-                "beta_pathonly",
                 "delta_phrase",
-                "epsilon_regex",
-                "eta_trigram_bait",
+                "beta_pathonly",
                 "gamma_py_same",
-                "theta_symbol",
+                "eta_trigram_bait",
+                "alpha_content",
                 "zeta_raw",
+                "theta_symbol",
+                "epsilon_regex",
             ],
-        },
-    },
-    LexicalScenario {
-        id: "select_repo_projects_to_first_repo_representative",
-        // The lexical harness is single-repo, so `select:repo` must collapse
-        // matching text hits to one representative row for that repo.
-        query_text: "select:repo alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content"],
-        },
-    },
-    // ──────── lang ────────
-    LexicalScenario {
-        id: "lang_filter_picks_only_requested_language",
-        // `alpha_content_needle` exists in both `src/lib.rs` (rust) and
-        // `scripts/helper.py` (python). lang:rust must return alpha only.
-        query_text: "lang:rust alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content"],
-        },
-    },
-    // ──────── boolean ────────
-    LexicalScenario {
-        id: "boolean_and_intersection",
-        // Both tokens are in `alpha_content` content only.
-        query_text: "alpha_content_needle AND fn",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content"],
-        },
-    },
-    LexicalScenario {
-        id: "boolean_or_union",
-        query_text: "alpha_content_needle OR ripens",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "delta_phrase", "gamma_py_same"],
-        },
-    },
-    LexicalScenario {
-        id: "boolean_not_exclusion",
-        query_text: "alpha_content_needle NOT lib",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "gamma_py_same"],
         },
     },
     // ──────── case ────────
@@ -294,23 +206,6 @@ const SCENARIOS: &[LexicalScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_content", "gamma_py_same"],
-        },
-    },
-    LexicalScenario {
-        id: "case_sensitive_changes_result_set",
-        query_text: "case:yes ALPHA_CONTENT_NEEDLE",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &[] },
-    },
-    // ──────── count ────────
-    LexicalScenario {
-        id: "count_cap_returns_top_n",
-        // `count:2` must force full recall, then deterministic
-        // score/path/line/candidate_id stabilization before truncation.
-        query_text: "count:2 needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["beta_pathonly", "eta_trigram_bait"],
         },
     },
     // ──────── phrase ────────
@@ -333,14 +228,6 @@ const SCENARIOS: &[LexicalScenario] = &[
     },
     // ──────── regex ────────
     LexicalScenario {
-        id: "regex_only_match_not_reachable_by_token",
-        query_text: "/v\\d+\\.\\d+\\.\\d+/",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["epsilon_regex"],
-        },
-    },
-    LexicalScenario {
         id: "regex_trigram_false_positive_rejected",
         // Regex `needle_x[0-9]` should NOT match `needle_xx` (no digit).
         // A naive trigram prefilter would surface eta_trigram_bait; the
@@ -348,58 +235,6 @@ const SCENARIOS: &[LexicalScenario] = &[
         query_text: "/needle_x[0-9]/",
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
-    },
-    // ──────── raw substring ────────
-    LexicalScenario {
-        id: "raw_substring_token_boundary_crossing",
-        // Raw substring `oo_ba` crosses the tokenizer split on `_`. Token
-        // query for "oo_ba" cannot hit; raw substring must. Native LQ
-        // spells raw substring as a single-quoted raw string leaf.
-        query_text: "'oo_ba'",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates { ids: &["zeta_raw"] },
-    },
-    // ──────── symbol / select / type ────────
-    LexicalScenario {
-        id: "type_symbol_routes_to_symbol_docs",
-        query_text: "type:symbol MyTypeSymbol",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["theta_symbol"],
-        },
-    },
-    LexicalScenario {
-        id: "select_symbol_routes_to_symbol_docs",
-        query_text: "select:symbol MyTypeSymbol",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["theta_symbol"],
-        },
-    },
-    LexicalScenario {
-        id: "select_file_returns_file_only_results",
-        query_text: "select:file alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["alpha_content", "gamma_py_same"],
-        },
-    },
-    // ──────── producer-dependent typed unavailable ────────
-    LexicalScenario {
-        id: "fork_filter_typed_unavailable",
-        query_text: "fork:no alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_FILTER_FORK_UNAVAILABLE",
-        },
-    },
-    LexicalScenario {
-        id: "visibility_filter_typed_unavailable",
-        query_text: "visibility:public alpha_content_needle",
-        top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_FILTER_VISIBILITY_UNAVAILABLE",
-        },
     },
 ];
 
@@ -440,15 +275,20 @@ fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
     CORPUS.iter().find(|row| row.path == path).map(|row| row.id)
 }
 
-fn observed_corpus_ids(result: &E2eQueryResult) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = result
-        .candidates
-        .iter()
-        .filter_map(|c| corpus_id_for_candidate_id(&c.candidate_id))
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
+fn observed_corpus_ids(result: &E2eQueryResult) -> Result<Vec<&'static str>, Vec<String>> {
+    let mut observed = Vec::with_capacity(result.candidates.len());
+    let mut unmapped = Vec::new();
+    for candidate in &result.candidates {
+        match corpus_id_for_candidate_id(&candidate.candidate_id) {
+            Some(id) => observed.push(id),
+            None => unmapped.push(candidate.candidate_id.clone()),
+        }
+    }
+    if unmapped.is_empty() {
+        Ok(observed)
+    } else {
+        Err(unmapped)
+    }
 }
 
 /// One assertion outcome — either ok or a row-scoped failure to report.
@@ -458,7 +298,18 @@ struct RowReport {
 }
 
 fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
-    let observed = observed_corpus_ids(result);
+    let observed = match observed_corpus_ids(result) {
+        Ok(observed) => observed,
+        Err(unmapped_candidate_ids) => {
+            return RowReport {
+                id: scenario.id,
+                failure: Some(format!(
+                    "observed unmapped candidate ids={unmapped_candidate_ids:?}; raw candidates={:?}",
+                    result.candidates
+                )),
+            };
+        }
+    };
     match &scenario.expected {
         ExpectedOutcome::Candidates { ids } => {
             if let Some(err) = &result.typed_error {
@@ -470,9 +321,7 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                     )),
                 };
             }
-            let mut expected: Vec<&'static str> = (*ids).to_vec();
-            expected.sort_unstable();
-            expected.dedup();
+            let expected: Vec<&'static str> = (*ids).to_vec();
             if observed == expected {
                 RowReport {
                     id: scenario.id,
@@ -489,26 +338,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
                 }
             }
         }
-        ExpectedOutcome::TypedError { code } => match &result.typed_error {
-            Some(err) if err.code == *code => RowReport {
-                id: scenario.id,
-                failure: None,
-            },
-            Some(err) => RowReport {
-                id: scenario.id,
-                failure: Some(format!(
-                    "expected typed error code={code}, got code={err_code} message={err_message}",
-                    err_code = err.code,
-                    err_message = err.message
-                )),
-            },
-            None => RowReport {
-                id: scenario.id,
-                failure: Some(format!(
-                    "expected typed error code={code}, got candidates={observed:?}"
-                )),
-            },
-        },
         ExpectedOutcome::ExpectedFailing {
             owner_ticket,
             reason,
@@ -517,7 +346,6 @@ fn assess(scenario: &LexicalScenario, result: &E2eQueryResult) -> RowReport {
             // Assert against the CURRENT behavior. When the owner ticket
             // lands and the behavior moves toward the future expectation,
             // this assertion goes red and the row must be updated.
-            let observed = observed_corpus_ids(result);
             let observed_error = result.typed_error.as_ref().map(|e| e.code.as_str());
             match current_observation {
                 CurrentObservation::Empty => {

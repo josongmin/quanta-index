@@ -4,15 +4,21 @@ Parent packet: [../README.md](../README.md)
 
 ## Objective
 
-Promote producer-side history / runtime / structural ingest from fixture-only
-proof to real public typed-batch UDS proof with persisted reopen behavior.
+Build the remaining history/runtime executable query substrate on top of the
+already-landed producer-side typed-batch handoff and reopen proof.
 
 ## Covered Semantics
 
-- history: `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`,
+- landed producer handoff:
+  history `UpsertCommit`, `UpsertRef`, `UpsertTag`, `DeleteRef`, `DeleteTag`,
   `UpsertDiffHunk`
-- runtime: `UpsertDirty`, `EvictDirty`
-- structural: `UpsertParseTree`, `DeleteParseTree`
+  runtime `UpsertDirty`, `EvictDirty`
+  structural `UpsertParseTree`, `DeleteParseTree`
+- remaining query substrate:
+  history `before:`, `after:`, `since:`, `until:`, `diff.added:`,
+  `diff.removed:`, `diff.touched:`
+  runtime `changed:`, `stale:`, `affected:`, `invalidated_by:`, `snapshot:`,
+  `meta.*`
 
 ## Defaults To Freeze
 
@@ -23,18 +29,31 @@ proof to real public typed-batch UDS proof with persisted reopen behavior.
 
 ## Current Source Truth
 
+- this historical ticket has been retired by `JFC-02` and `JFC-03`; do not use
+  it as the active owner lane
 - public ingest truth is `SearchPlaneIngestIpcRequest::{PublishHistoryBatch,
   PublishDirtyBatch, PublishStructuralBatch}`, not direct channel-op IPC
 - history ref/tag deletes, runtime dirty evict, and structural tombstone
-  semantics now have repo-local end-to-end reopen proof through the public UDS
+  semantics have repo-local end-to-end reopen proof through the public UDS
   ingest surface
-- search-side readiness / authority persistence already restores these
-  auxiliary states across reopen
+- search-side readiness / authority persistence restores these auxiliary states
+  across reopen
+- query substrate on top of that authority is now materially wider:
+  history executes `type:commit|diff`, `rev`, `author`, `committer`, `message`,
+  `content`, `before:`, `after:`, `since:`, `until:`, qualified
+  `since.time:` / `since.commit:`, and `diff.added:` / `diff.removed:` /
+  `diff.touched:`
+  runtime metadata executes `dirty:{yes|only|no}`, `changed:`, `stale:`,
+  `snapshot:`, `meta.*`, `affected:`, and `invalidated_by:` with persisted
+  generation-pinned authority
 
 ## Remaining Closeout
 
-- external producer-repo handoff remains outside this repo-local packet
-- do not reintroduce a second ingest truth beside the typed batch surface
+- none on this historical ticket
+- active history/runtime substrate truth is owned by
+  [../../jun-2-dsl-final-cut/tickets/JFC-02-history-date-and-diff-filters.md](../../jun-2-dsl-final-cut/tickets/JFC-02-history-date-and-diff-filters.md)
+  and
+  [../../jun-2-dsl-final-cut/tickets/JFC-03-runtime-catalog-authority.md](../../jun-2-dsl-final-cut/tickets/JFC-03-runtime-catalog-authority.md)
 
 ## Guardrails
 

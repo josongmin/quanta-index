@@ -1,0 +1,742 @@
+version = 1
+status = "proof_accounted"
+date = "2026-06-02"
+authority_spec = "../may-24-lexical-indexing-sourcegraph/dsl.md"
+
+[[entry]]
+surface = "Keyword"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_content_term", "runtime_sourcegraph_patterntype_standard_casefold", "runtime_sourcegraph_patterntype_keyword_casefold", "runtime_sourcegraph_patterntype_literal_casefold_hit"]
+expected_live_behavior = "keyword search executes on lexical text rail with exact ordered ids"
+
+[[entry]]
+surface = "Phrase"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_sourcegraph_phrase_positive", "runtime_sourcegraph_phrase_negative", "e2e_lexical_full_fidelity:phrase_exact_adjacent_matches"]
+expected_live_behavior = "public phrase query surface is runtime-proved and parity/recovery details stay on companion rails"
+
+[[entry]]
+surface = "RawString"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_raw_substring"]
+expected_live_behavior = "raw substring executes on lexical raw-substring path"
+
+[[entry]]
+surface = "Regex"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_regex", "runtime_sourcegraph_regexp_option"]
+expected_live_behavior = "regex executes on lexical regex route"
+
+[[entry]]
+surface = "StructuralBlock"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_root_kind", "runtime_native_structural_root_capture", "runtime_sourcegraph_patterntype_structural_named_hole", "runtime_native_structural_where", "runtime_native_structural_inside", "runtime_native_structural_outside", "runtime_native_structural_variadic", "runtime_native_structural_typed_expr", "runtime_native_structural_typed_item", "runtime_native_structural_typed_stmt", "runtime_native_structural_typed_type", "runtime_native_structural_unsupported_lang"]
+expected_live_behavior = "runtime subset is live on structural route with exact candidate and binding assertions"
+
+[[entry]]
+surface = "Predicate repo.has.file(...)"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = [
+  "runtime_sourcegraph_repo_has_file_miss",
+  "runtime_sourcegraph_repo_has_file_miss_multi_repo",
+  "runtime_native_repo_has_file_true_gate_multi_repo",
+  "runtime_sourcegraph_repo_has_file_true_gate_multi_repo",
+  "runtime_native_repo_has_file_not_false_multi_repo",
+  "tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id",
+  "runtime_native_repo_allow_list_universe_baseline",
+  "dsl_scenarios:sourcegraph_repo_has_file_predicate_executes_live",
+  "e2e_perf_chaos:predicate_repo_has_file_executes_and_miss_does_not_poison_next_query",
+  "e2e_lexical_full_fidelity:repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
+  "tantivy_smoke",
+]
+expected_live_behavior = "repo-wide existence gate is runtime-proved via miss and NOT-false rows on docs-multi-repo.toml; per-path narrowing stays on companion OR/NOT rails"
+
+[[entry]]
+surface = "Predicate file.contains(...)"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = [
+  "runtime_native_file_contains_raw_hit",
+  "runtime_native_file_contains_phrase_hit",
+  "runtime_native_file_contains_phrase_miss",
+  "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  "e2e_perf_chaos:predicate_file_contains_executes_and_miss_does_not_poison_next_query",
+  "tantivy_smoke:file_has_content_predicate_phrase_and_regex",
+  "e2e_dual_syntax_lowering_parity:file_contains_raw_substring_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_phrase_parity",
+]
+expected_live_behavior = "native dotted predicate surface executes on the shipped raw/content leaf subset with direct runtime raw-hit, phrase-hit, and phrase-miss rows; SG alias parity remains companion coverage"
+
+[[entry]]
+surface = "Predicate file.has.content(...)"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_sourcegraph_file_has_content_regex_hit", "runtime_sourcegraph_file_has_content_phrase_miss", "tantivy_smoke:file_has_content_predicate_phrase_and_regex", "e2e_dual_syntax_lowering_parity:file_has_content_regex_parity"]
+expected_live_behavior = "SG alias executes on lexical content-leaf substrate with direct regex hit and phrase miss oracle rows; native predicate name is owner-local proved in tantivy_smoke"
+
+[[entry]]
+surface = "Predicate outside shipped subset"
+proof_status = "typed_fail_closed"
+authority_owner = "lexical_planner"
+proof_rail = ["quanta-index-lexical planner typed-unavailable paths", "golden_bridge"]
+expected_live_behavior = "unsupported predicate lowering does not silently widen"
+
+[[entry]]
+surface = "Empty"
+proof_status = "parser_only"
+authority_owner = "lq_norm"
+carrier_kind = "parser_shape"
+proof_rail = ["lq-norm parser/normalizer"]
+expected_live_behavior = "empty query stays parser shape only"
+
+[[entry]]
+surface = "Not"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_boolean_not"]
+expected_live_behavior = "lexical boolean negation executes with exact ordered ids"
+
+[[entry]]
+surface = "All"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_boolean_and"]
+expected_live_behavior = "lexical boolean AND executes on text rail"
+
+[[entry]]
+surface = "Any"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_boolean_or"]
+expected_live_behavior = "lexical boolean OR executes on text rail"
+
+[[entry]]
+surface = "patterntype:literal"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_patterntype_literal_casefold_hit"]
+expected_live_behavior = "literal mode executes on lexical text rail"
+
+[[entry]]
+surface = "patterntype:keyword"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_patterntype_keyword_casefold"]
+expected_live_behavior = "keyword mode executes on lexical text rail"
+
+[[entry]]
+surface = "patterntype:standard"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_patterntype_standard_casefold"]
+expected_live_behavior = "standard mode executes on lexical text rail"
+
+[[entry]]
+surface = "patterntype:regexp"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_regexp_option"]
+expected_live_behavior = "regexp mode executes on lexical regex route"
+
+[[entry]]
+surface = "patterntype:structural"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_sourcegraph_patterntype_structural_named_hole", "e2e_dual_syntax_lowering_parity"]
+expected_live_behavior = "structural mode is runtime-proved on the dedicated structural route"
+
+[[entry]]
+surface = "case"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_case_sensitive_miss"]
+expected_live_behavior = "case-sensitive mismatch is asserted on runtime rail"
+
+[[entry]]
+surface = "count:N"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_count_bound"]
+expected_live_behavior = "bounded count truncation is asserted with exact ordered ids"
+
+[[entry]]
+surface = "count:all"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_count_all", "tantivy_count_all_ignores_request_top_k_and_returns_full_recall"]
+expected_live_behavior = "count:all bypasses request top_k and returns full recall"
+
+[[entry]]
+surface = "timeout"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_timeout_typed", "e2e_perf_chaos", "sdk_frontdoor", "end_to_end"]
+expected_live_behavior = "runtime rail proves typed lexical timeout and recovery invariant stays on companion rails"
+
+[[entry]]
+surface = "repo:"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = [
+  "runtime_sourcegraph_repo_miss",
+  "runtime_native_repo_allow_list_corp_a",
+  "runtime_native_repo_allow_list_corp_b",
+  "runtime_native_repo_allow_list_universe_baseline",
+  "runtime_sourcegraph_patterntype_structural_named_hole",
+  "tantivy_smoke",
+]
+expected_live_behavior = "repo: allow-list matches indexed source_repo_id facets; miss and universe baselines are non-vacuous on docs-multi-repo.toml"
+
+[[entry]]
+surface = "file:"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_file_filter"]
+expected_live_behavior = "file filter narrows content hits by path"
+
+[[entry]]
+surface = "path:"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_path_filter"]
+expected_live_behavior = "path filter executes on runtime text rail"
+
+[[entry]]
+surface = "lang:"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_lang_filter"]
+expected_live_behavior = "language filter executes on runtime text rail"
+
+[[entry]]
+surface = "rev:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_sourcegraph_history_commit_rev_ref", "runtime_sourcegraph_history_commit_rev_tag"]
+expected_live_behavior = "rev is live on history type:commit"
+
+[[entry]]
+surface = "type:file"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_type_file_excludes_symbol_only"]
+expected_live_behavior = "file type excludes symbol-only matches"
+
+[[entry]]
+surface = "type:path"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_type_path_projection"]
+expected_live_behavior = "path type collapses same-path multi-chunk hits to one representative"
+
+[[entry]]
+surface = "type:symbol"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_type_symbol"]
+expected_live_behavior = "symbol type routes to symbol docs"
+
+[[entry]]
+surface = "type:commit"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_sourcegraph_history_commit", "runtime_native_history_author", "runtime_native_history_committer", "runtime_native_history_message", "sdk_frontdoor:native_history_missing_type_invalid_request", "sdk_frontdoor:native_history_commit_file_invalid_request", "sdk_frontdoor:native_history_predicate_leaf_not_implemented", "end_to_end:history_missing_type_invalid_request", "end_to_end:history_commit_file_invalid_request", "e2e_perf_chaos:history_missing_type_rejects_typed_and_does_not_poison_next_query", "e2e_perf_chaos:history_commit_file_filter_rejects_typed_and_does_not_poison_next_query", "e2e_perf_chaos:history_predicate_leaf_rejects_typed_and_does_not_poison_next_query"]
+expected_live_behavior = "commit history route executes with exact ids; history requires explicit type:commit or type:diff and rejects file:/diff.* or predicate-leaf misuse fail-closed"
+
+[[entry]]
+surface = "type:diff"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_native_history_diff", "end_to_end:history_diff_added_positive", "end_to_end:history_diff_removed_positive", "end_to_end:history_diff_touched_positive", "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query"]
+expected_live_behavior = "diff history route executes on live runtime rail and owns file:/diff.* narrowing"
+
+[[entry]]
+surface = "type:repo"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_type_repo", "tantivy_type_repo_collapses_to_repo_representative"]
+expected_live_behavior = "repo type collapses to one deterministic representative per repo"
+
+[[entry]]
+surface = "select:repo"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_select_repo", "tantivy_select_repo_uses_canonical_representative_when_scores_tie"]
+expected_live_behavior = "repo projection collapses to one representative"
+
+[[entry]]
+surface = "select:file"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_select_file_projection", "tantivy_select_file_collapses_multiple_chunks_per_path"]
+expected_live_behavior = "file projection collapses same-path multi-chunk hits to one representative"
+
+[[entry]]
+surface = "select:path"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_select_path_projection", "tantivy_select_path_collapses_multiple_chunks_per_path"]
+expected_live_behavior = "path projection collapses same-path multi-chunk hits to one representative"
+
+[[entry]]
+surface = "select:symbol"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_sourcegraph_select_symbol"]
+expected_live_behavior = "symbol projection executes through live symbol carrier"
+
+[[entry]]
+surface = "select:content"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_select_content_projection"]
+expected_live_behavior = "content projection is asserted with exact ids, paths, and snippets"
+
+[[entry]]
+surface = "select:content.match"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_select_content_match_projection"]
+expected_live_behavior = "content-match projection is asserted with exact ids, paths, and snippets"
+
+[[entry]]
+surface = "fork:"
+proof_status = "active_runtime"
+authority_owner = "split_runtime_and_companion"
+proof_rail = ["runtime_native_fork_filter_only_miss", "runtime_sourcegraph_fork_typed_unavailable"]
+expected_live_behavior = "metadata-backed exclusion is live and producerless path stays typed"
+
+[[entry]]
+surface = "archived:"
+proof_status = "active_runtime"
+authority_owner = "split_runtime_and_companion"
+proof_rail = ["runtime_sourcegraph_archived_filter_only_miss", "dsl_scenarios", "end_to_end"]
+expected_live_behavior = "metadata-backed exclusion is runtime-proved and positive path stays on companion rails"
+
+[[entry]]
+surface = "visibility:"
+proof_status = "active_runtime"
+authority_owner = "split_runtime_and_companion"
+proof_rail = ["runtime_sourcegraph_visibility_filter_miss", "runtime_sourcegraph_visibility_typed_unavailable"]
+expected_live_behavior = "mismatched visibility excludes hits and producerless path stays typed"
+
+[[entry]]
+surface = "context:"
+proof_status = "active_runtime"
+authority_owner = "split_runtime_and_companion"
+proof_rail = ["runtime_sourcegraph_context_filter_miss", "dsl_scenarios", "end_to_end"]
+expected_live_behavior = "context mismatch exclusion is runtime-proved and positive path stays on companion rails"
+
+[[entry]]
+surface = "content:"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+proof_rail = ["runtime_native_content_filter_positive", "runtime_native_content_filter_miss"]
+expected_live_behavior = "content filter has direct positive and path-leak negative proof"
+
+[[entry]]
+surface = "author:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_native_history_author"]
+expected_live_behavior = "commit author filter executes on history route"
+
+[[entry]]
+surface = "committer:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_native_history_committer"]
+expected_live_behavior = "commit committer filter executes on history route"
+
+[[entry]]
+surface = "message:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = ["runtime_native_history_message"]
+expected_live_behavior = "commit message filter executes on history route"
+
+[[entry]]
+surface = "before:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_before",
+  "runtime_sourcegraph_history_before",
+  "golden_bridge:row7_adopted_history_before_filter",
+  "e2e_dual_syntax_lowering_parity:history_before_filter_parity",
+  "e2e_perf_chaos",
+]
+expected_live_behavior = "committer_time_ms upper bound executes on history route; invalid timeref typed-fails"
+
+[[entry]]
+surface = "after:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_after",
+  "golden_bridge:row10_adopted_history_after_filter",
+  "e2e_dual_syntax_lowering_parity:history_after_filter_parity",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+]
+expected_live_behavior = "committer_time_ms lower bound executes on history route"
+
+[[entry]]
+surface = "since:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_since",
+  "runtime_sourcegraph_history_since",
+  "golden_bridge:row9_adopted_history_since_filter",
+  "e2e_dual_syntax_lowering_parity:history_since_filter_parity",
+  "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  "e2e_perf_chaos:history_since_time_and_commit_execute_and_unknown_commit_fails_closed",
+]
+expected_live_behavior = "since: is inclusive lower bound on committer_time_ms; qualified since.time:/since.commit: are executable on the same history authority with direct runtime success and unknown-ref typed-fail rails"
+
+[[entry]]
+surface = "until:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_until",
+  "golden_bridge:row11_adopted_history_until_filter",
+  "e2e_dual_syntax_lowering_parity:history_until_filter_parity",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+]
+expected_live_behavior = "bare until: is inclusive upper bound on committer_time_ms"
+
+[[entry]]
+surface = "diff.added:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_diff_added",
+  "runtime_native_history_diff_added_miss",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+]
+expected_live_behavior = "diff.added narrows against added_text only"
+
+[[entry]]
+surface = "diff.removed:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_diff_removed",
+  "golden_bridge:row12_adopted_diff_removed_filter",
+  "e2e_dual_syntax_lowering_parity:history_diff_removed_filter_parity",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+]
+expected_live_behavior = "diff.removed narrows against removed_text only"
+
+[[entry]]
+surface = "diff.touched:"
+proof_status = "active_runtime"
+authority_owner = "history_runtime"
+proof_rail = [
+  "runtime_native_history_diff_touched",
+  "runtime_native_history_diff_touched_secondary",
+  "golden_bridge:row13_adopted_diff_touched_filter",
+  "e2e_dual_syntax_lowering_parity:history_diff_touched_filter_parity",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_perf_chaos:history_after_until_and_diff_filters_execute_and_do_not_poison_next_query",
+]
+expected_live_behavior = "diff.touched narrows against touched_text only"
+
+[[entry]]
+surface = "dirty:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_dirty",
+  "runtime_sourcegraph_runtime_dirty_only_unsupported",
+  "runtime_sourcegraph_runtime_dirty_no",
+  "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  "e2e_perf_chaos:runtime_catalog_dirty_only_rejects_typed_and_does_not_poison_next_query",
+  "e2e_perf_chaos:runtime_catalog_dirty_no_executes_and_does_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_dirty_no_clean_complement",
+]
+expected_live_behavior = "runtime-metadata route executes dirty:yes over dirty_docs and dirty:no over the clean complement inside the pinned generation; dirty:only typed-fails with RUNTIME_DIRTY_ONLY_UNSUPPORTED and runtime metadata filters still require an authority predicate"
+
+[[entry]]
+surface = "changed:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_changed_positive",
+  "runtime_sourcegraph_runtime_changed_miss",
+  "runtime_sourcegraph_runtime_catalog_not_ready",
+  "golden_bridge:row14_adopted_runtime_changed_filter",
+  "e2e_dual_syntax_lowering_parity:runtime_changed_filter_parity",
+  "e2e_perf_chaos",
+  "e2e_restart_replay_determinism",
+]
+expected_live_behavior = "changed:since=<timeref> matches generation-pinned changed_docs; missing catalog typed-fails RUNTIME_CATALOG_NOT_READY"
+
+[[entry]]
+surface = "stale:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_stale_positive",
+  "runtime_sourcegraph_runtime_stale_miss",
+  "golden_bridge:row15_adopted_runtime_stale_filter",
+  "e2e_dual_syntax_lowering_parity:runtime_stale_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_stale_filter_miss_parity",
+  "e2e_perf_chaos",
+  "e2e_restart_replay_determinism",
+]
+expected_live_behavior = "stale:before=<timeref> matches when generation_materialized_at_ms is present and older than the bound"
+
+[[entry]]
+surface = "affected:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_affected_positive",
+  "runtime_sourcegraph_runtime_affected_miss",
+  "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_affected_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_affected_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_affected_executes_and_does_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_affected_query",
+]
+expected_live_behavior = "affected:<scope> matches generation-pinned edge-authority catalog entries keyed by scope and narrows the current runtime universe without lexical fallback"
+
+[[entry]]
+surface = "invalidated_by:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_invalidated_by_positive",
+  "runtime_sourcegraph_runtime_invalidated_by_miss",
+  "golden_bridge:row20_adopted_runtime_invalidated_by_filter",
+  "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_invalidated_by_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_invalidated_by_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_invalidated_by_executes_and_does_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_invalidated_by_query",
+]
+expected_live_behavior = "invalidated_by:<source> matches generation-pinned edge-authority catalog entries keyed by source and narrows the current runtime universe without lexical fallback"
+
+[[entry]]
+surface = "snapshot:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_snapshot_active",
+  "runtime_sourcegraph_runtime_snapshot_miss",
+  "runtime_sourcegraph_runtime_snapshot_unknown",
+  "golden_bridge:row16_adopted_runtime_snapshot_filter",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_snapshot_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_snapshot_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_snapshot_executes_and_metrics_are_bounded",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_snapshot_query",
+]
+expected_live_behavior = "snapshot:<name> matches persisted snapshot membership; unknown snapshot names typed-fail SNAPSHOT_UNKNOWN"
+
+[[entry]]
+surface = "meta.owner:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_meta_owner",
+  "runtime_sourcegraph_runtime_meta_owner_miss",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_owner_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_owner_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_meta_owner_query",
+]
+expected_live_behavior = "meta.owner:<id> requires exact owner facet match on doc_facets; missing facet row is a non-match"
+
+[[entry]]
+surface = "meta.service:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_meta_service",
+  "runtime_sourcegraph_runtime_meta_service_miss",
+  "golden_bridge:row17_adopted_runtime_meta_service_filter",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_service_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_service_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_meta_service_query",
+]
+expected_live_behavior = "meta.service:<id> requires exact service facet match on doc_facets; missing facet row is a non-match"
+
+[[entry]]
+surface = "meta.layer:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_meta_layer",
+  "runtime_sourcegraph_runtime_meta_layer_miss",
+  "golden_bridge:row18_adopted_runtime_meta_layer_filter",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_layer_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_layer_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_meta_layer_query",
+]
+expected_live_behavior = "meta.layer:<id> requires exact layer facet match on doc_facets; missing facet row is a non-match"
+
+[[entry]]
+surface = "meta.surface:"
+proof_status = "active_runtime"
+authority_owner = "runtime_metadata"
+proof_rail = [
+  "runtime_sourcegraph_runtime_meta_surface",
+  "runtime_sourcegraph_runtime_meta_surface_miss",
+  "golden_bridge:row19_adopted_runtime_meta_surface_filter",
+  "end_to_end:end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_surface_filter_parity",
+  "e2e_dual_syntax_lowering_parity:runtime_meta_surface_filter_miss_parity",
+  "e2e_perf_chaos:runtime_catalog_meta_facets_execute_and_do_not_poison_next_query",
+  "e2e_restart_replay_determinism:reopen_preserves_runtime_catalog_meta_surface_query",
+]
+expected_live_behavior = "meta.surface:<id> requires exact surface facet match on doc_facets; missing facet row is a non-match"
+
+[[entry]]
+surface = "structural root-kind and root capture"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_root_kind", "runtime_native_structural_root_capture"]
+expected_live_behavior = "root-kind and root-capture subset is runtime-proved with exact binding assertions"
+
+[[entry]]
+surface = "where"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_where"]
+expected_live_behavior = "constraint matching is runtime-proved with exact binding assertions"
+
+[[entry]]
+surface = "inside"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_inside"]
+expected_live_behavior = "inside scope matching is runtime-proved with exact binding assertions"
+
+[[entry]]
+surface = "outside"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_outside"]
+expected_live_behavior = "outside scope matching is runtime-proved with exact binding assertions"
+
+[[entry]]
+surface = "named/anonymous/variadic holes"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_sourcegraph_patterntype_structural_named_hole", "runtime_native_structural_anonymous_wildcard", "runtime_native_structural_variadic"]
+expected_live_behavior = "named capture, anonymous wildcard, and variadic tree-walk are runtime-proved"
+
+[[entry]]
+surface = "typed holes"
+proof_status = "active_runtime"
+authority_owner = "runtime_corpus"
+carrier_kind = "search_result"
+proof_rail = ["runtime_native_structural_typed_expr", "runtime_native_structural_typed_item", "runtime_native_structural_typed_stmt", "runtime_native_structural_typed_type", "e2e_dual_syntax_lowering_parity"]
+expected_live_behavior = "typed-hole subset is runtime-proved for expr, item, stmt, and type"
+
+[[entry]]
+surface = "mixed lexical + structural boolean AND"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "runtime_native_structural_mixed_lexical_and",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_lexical_and_parity",
+  "sdk_frontdoor",
+  "e2e_perf_chaos",
+  "e2e_restart_replay_determinism",
+]
+expected_live_behavior = "mixed-domain AND intersects lexical and structural candidate identity before projection"
+
+[[entry]]
+surface = "mixed lexical + structural boolean OR"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "runtime_native_structural_mixed_lexical_or",
+  "runtime_sourcegraph_structural_mixed_lexical_or",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_lexical_or_parity",
+  "quanta-index-search-plane lowering mixed OR",
+  "sdk_frontdoor",
+  "e2e_perf_chaos",
+]
+expected_live_behavior = "mixed-domain OR unions lexical and structural candidate identity; repo-scoped filters under mixed OR remain bridge fail-closed on the SG structural route"
+
+[[entry]]
+surface = "mixed lexical + structural boolean AND NOT"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "runtime_native_structural_mixed_lexical_and_not",
+  "runtime_sourcegraph_structural_mixed_lexical_and_not",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_lexical_and_not_parity",
+  "sdk_frontdoor",
+  "e2e_perf_chaos",
+]
+expected_live_behavior = "mixed-domain bounded NOT subtracts structural matches from lexical-positive candidates"
+
+[[entry]]
+surface = "pure negative structural root"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "runtime_native_structural_pure_negative_root",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_pure_negative_root_parity",
+  "sdk_frontdoor",
+  "e2e_perf_chaos",
+  "e2e_restart_replay_determinism",
+]
+expected_live_behavior = "pure-negative structural root subtracts from generation-pinned chunk universe"
+
+[[entry]]
+surface = "into:codeql"
+proof_status = "active_owner_local"
+authority_owner = "bridge"
+carrier_kind = "bridge_packet"
+proof_rail = ["bridge_directive_packet", "golden_bridge"]
+expected_live_behavior = "bridge export is live on companion rail"
+
+[[entry]]
+surface = "scope:results"
+proof_status = "active_owner_local"
+authority_owner = "bridge"
+carrier_kind = "bridge_packet"
+proof_rail = ["bridge_directive_packet", "golden_bridge"]
+expected_live_behavior = "directive carrier is proved on bridge rail"
+
+[[entry]]
+surface = "with:lexical"
+proof_status = "active_owner_local"
+authority_owner = "bridge"
+carrier_kind = "bridge_packet"
+proof_rail = ["bridge_directive_packet", "golden_bridge"]
+expected_live_behavior = "directive carrier is proved on bridge rail"

@@ -1,278 +1,154 @@
 # Lexical Capability Matrix
 
-Status: `completed`
-Owner ticket: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
+Status: `proof-accounted`
+Date: `2026-06-02`
+Program owner: [JFC-00](../jun-2-dsl-final-cut/tickets/JFC-00-truth-freeze-and-scope-lock.md)
+Evidence origin: [LXE-00](tickets/LXE-00-truth-freeze-and-executable-matrix.md)
+Authority spec: [docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md](../may-24-lexical-indexing-sourcegraph/dsl.md)
+Machine-readable ledger: [dsl-proof-ledger.toml](dsl-proof-ledger.toml)
 
-## Phase status summary
+이 문서는 `dsl.md` 항목별 현재 proof inventory다. 목적은 "전부 green" 선언이 아니라 각 표면이 현재 어떤 증거 상태인지 정확히 하나로 분류하는 것이다.
 
-- **Phase 0** — V1/V2 strip from ticket pack + matrix skeleton: DONE
-- **Phase 1** — LXE-02 planner IR scaffold + LXE-09 structural domain + E2E-00 harness skeleton: DONE (10 tests pass)
-- **Phase 2** — LXE-04 regex/trigram + LXE-05 phrase + LXE-06 symbol planner scaffolds: DONE (15 new tests pass)
-- **Phase 3** — LXE-03 filter execution + LXE-05/06 planner-arm integration: DONE (12 new tests, total 31 lexical lib tests pass)
-- **Phase 4** — execution-body wiring in `lexical/src/lib.rs::search` + search-plane integration of `LexicalPlanner::plan()`: DONE
-- **Phase 5 (E2E proof)** — `E2E-01`, `E2E-02`, `E2E-03`, `E2E-04`, `E2E-05`, `E2E-06`, and `E2E-07`: DONE
+## Status Legend
 
-## Current code-backed snapshot (2026-05-27)
+- `active runtime`: `e2e_full_corpus` closeout rail에서 실 query/실 carrier로 증명됨
+- `active owner-local`: 현재 tree에서 live proof는 있으나 owner-local companion rail에만 있음
+- `typed fail-closed`: 현재 구현이 typed error 또는 parse rejection으로 닫힘
+- `parser_only`: parser/normalizer shape는 있으나 실행 proof가 없음
+- `blocked`: 현재 tree에 직접 증명 레일이 없어서 closeout claim을 올리면 거짓이 됨
 
-- Green on live rails:
-  - `LXE-01`: semantic/hybrid public request intake now uses the canonical
-    text-based carriers, and deleted request fields are fail-closed by
-    contract decode tests
-  - `LXE-03`: repo/file/lang/case/count/select:file/select:repo/select:content and typed-unavailable producer-dependent filters
-  - `LXE-04`: materialized trigram-prefilter + authoritative indexed-text exact verify, including SG/native `patterntype:regexp` parity
-    and regex-backed `timeout:` fail-closed as `QUERY_TIMEOUT`
-  - `LXE-05`: positions-backed exact-adjacent phrase hit and reversed-order phrase miss
-  - `LXE-06`: text-route `type:file`/`select:file`/`select:path`/
-    `select:content`/`select:content.match` plus text-route/public-frontdoor
-    `type:symbol` and `select:symbol` symbol-doc routing, distinct
-    `SymbolQueryResponse`, and public `symbol_kind` truth
-  - `LXE-09`: structural live subset on materialized parse-tree/chunk
-    authority (`match { :[x] }`, `match { function_item }`,
-    variadic sibling capture / wildcard skip, and `where` / `inside` /
-    `outside` constraints), plus the dedicated Sourcegraph structural subset
-- Additional completed proof:
-  - `E2E-04` history/structural is complete on the current tree; history
-    positive and typed negative rows live in `sdk_frontdoor.rs` and
-    `end_to_end.rs`, and structural SG/native parity rows live in
-    `e2e_dual_syntax_lowering_parity.rs`
-- Proof rails:
-  - `cargo test -p quanta-index-contract --test lxe_unified_surface`
-  - `cargo test -p quanta-index-contract --test ipc_query_result_v2_contract`
-  - `cargo test -p quanta-index-lexical --test tantivy_smoke`
-  - `cargo test -p quanta-index-core --test lexical_policy`
-  - `cargo test -p quanta-index-search-plane`
-  - `cargo test -p quanta-index-sdk --lib`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_lexical_full_fidelity --test e2e_dual_syntax_lowering_parity -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_perf_chaos -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test end_to_end structural_sourcegraph_query_ -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime --test e2e_matrix_inventory -- --nocapture`
-  - `cargo test -p quanta-index-searchd-runtime`
-  - `just rust-test-full-corpus`
-- Closeout rerun refresh (2026-05-27):
-  - `cargo check -p quanta-index-contract`: green
-  - `cargo check -p quanta-index-sdk`: green
-  - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`: green
-  - `cargo test -p quanta-index-sdk --lib`: green
-  - `cargo test -p quanta-index-searchd-runtime`: green
-  - this refresh re-proves current live-source closure for `E2E-01`,
-    `E2E-02`, `E2E-03`, `E2E-04`, `E2E-05`, `E2E-06`, and `E2E-07`
+## Primary Rails
 
-Source-backed truth table for the LQ DSL surface, Sourcegraph syntax, planner
-lowering, engine execution, response carriers, and proof coverage.
+- Runtime closeout:
+  `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
+  `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
+- Text and SG parity companion rails:
+  `crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs`
+  `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- Structural/history/runtime companion rails:
+  `crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`
+  `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
+  `crates/quanta-index-searchd-runtime/tests/end_to_end.rs`
+  `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`
+  `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`
+- Bridge companion rail:
+  `crates/quanta-index-lq-bridge/tests/golden_bridge.rs`
 
-**Status legend** (one per row):
+## Leaves And Boolean
 
-- `executed` — accepted, planned, executed end-to-end, asserted by an E2E row
-- `typed-rejected` — accepted by parser, rejected with a typed code before
-  execution (no silent drop)
-- `executed[truthful-subset]` — live only for the explicitly documented subset;
-  all other accepted shapes stay typed fail-closed
-- `expected-failing[LXE-NN]` — wired through E2E harness as a failing row
-  pending the named owner ticket
-- `pending[LXE-NN]` — not yet exercised by any test; owner ticket carries it
-- `dead` — present in source but unreachable; deletion candidate
-
-**Evidence convention**: `file:line` link or owner-ticket id.
-
----
-
-## 1. Request intake (single front door)
-
-| Concern | Type | Evidence | Status |
+| Surface | Status | Proof rail | Current live behavior |
 | --- | --- | --- | --- |
-| Public syntax selector | `TextQuerySyntax { Native, Sourcegraph }` | [contract-base/src/query/syntax.rs:8](../../../crates/quanta-index-contract-base/src/query/syntax.rs#L8) | `executed` |
-| Lexical text request | `TextQueryRequest { syntax, query_text, generation, generation_selector, top_k }` | [contract-base/src/query/requests.rs:18](../../../crates/quanta-index-contract-base/src/query/requests.rs#L18) | `executed` |
-| Semantic lexical scope field | `lexical_scope: Option<TextQueryRequest>` | [contract/tests/lxe_unified_surface.rs:72](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L72), [contract/tests/ipc_query_result_v2_contract.rs:376](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L376) | `executed` |
-| Hybrid lexical field | `text_query: TextQueryRequest` | [contract/tests/lxe_unified_surface.rs:187](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L187), [contract/tests/ipc_query_result_v2_contract.rs:407](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L407) | `executed` |
-| Direct `LqQuery` request field absent | reflection + public builder tests | [contract/tests/lxe_unified_surface.rs:117](../../../crates/quanta-index-contract/tests/lxe_unified_surface.rs#L117), [sdk/src/tests.rs:541](../../../crates/quanta-index-sdk/src/tests.rs#L541) | `executed` |
-| Unknown-variant decode rejection | manual serde impls + legacy-field negative tests | [contract/tests/ipc_query_result_v2_contract.rs:591](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L591), [contract/tests/ipc_query_result_v2_contract.rs:610](../../../crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs#L610) | `executed` |
+| `Keyword` | `active runtime` | `runtime_native_content_term`, `runtime_sourcegraph_patterntype_standard_casefold`, `runtime_sourcegraph_patterntype_keyword_casefold`, `runtime_sourcegraph_patterntype_literal_casefold_hit` | bare keyword and explicit SG pattern modes execute on the lexical text rail with exact ordered ids for the current live subset |
+| `Phrase` | `active runtime` | `runtime_sourcegraph_phrase_positive`, `runtime_sourcegraph_phrase_negative`, `e2e_lexical_full_fidelity` (`phrase_exact_adjacent_matches`) | public phrase query surface is runtime-proved; parity/recovery details stay on companion rails |
+| `RawString` | `active runtime` | `runtime_native_raw_substring` | raw substring executes through lexical raw-substring path |
+| `Regex` | `active runtime` | `runtime_native_regex`, `runtime_sourcegraph_regexp_option` | regex executes on lexical route with exact verify |
+| `StructuralBlock` | `active runtime` | `runtime_native_structural_root_kind`, `runtime_sourcegraph_patterntype_structural_named_hole`, `runtime_native_structural_unsupported_lang` | runtime subset is live on structural route, and the closeout rail asserts exact structural bindings as well as candidate ids |
+| `Predicate repo.has.file(...)` | `active runtime` | `runtime_*_repo_has_file_true_gate_multi_repo`, `runtime_sourcegraph_repo_has_file_miss_multi_repo`, `runtime_native_repo_has_file_not_false_multi_repo`, `tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id`, `dsl_scenarios`, `e2e_perf_chaos`, `e2e_lexical_full_fidelity`, `tantivy_smoke` | true-gate narrows by indexed `source_repo_id` on `docs-multi-repo.toml`; executable arg subset remains `path:` / `name:` filters only |
+| `Predicate file.contains(...)` | `active runtime` | `runtime_native_file_contains_raw_hit`, `runtime_native_file_contains_phrase_hit`, `runtime_native_file_contains_phrase_miss`, `sdk_frontdoor`, `e2e_perf_chaos`, `tantivy_smoke` (`file_has_content_predicate_phrase_and_regex`), `e2e_dual_syntax_lowering_parity` (`file_contains_raw_substring_parity`, `file_contains_phrase_parity`) | native dotted predicate surface executes on the shipped raw/content leaf subset with direct runtime raw-hit, phrase-hit, and phrase-miss rows; public SDK front-door, parity, and chaos rails verify the same surface beyond runtime corpus closeout |
+| `Predicate file.has.content(...)` | `active runtime` | `runtime_sourcegraph_file_has_content_regex_hit`, `runtime_sourcegraph_file_has_content_phrase_miss`, `tantivy_smoke` (`file_has_content_predicate_phrase_and_regex`), `e2e_dual_syntax_lowering_parity` (`file_has_content_regex_parity`) | SG alias executes on lexical content-leaf substrate with regex hit and phrase miss oracle; native `file.has.content` predicate name is owner-local proved |
+| Predicate names / arg shapes outside shipped subset | `typed fail-closed` | `quanta-index-lexical` planner typed-unavailable paths + bridge rejection rails | unsupported predicate lowering does not silently widen |
+| `Empty` | `parser_only` | `lq-norm` parser/normalizer keep `LqExpr::Empty`; no runtime row | empty query is a parser shape, not a closeout-green runtime surface |
+| `Not` | `active runtime` | `runtime_native_boolean_not` | lexical boolean negation executes with exact ordered ids |
+| `All` | `active runtime` | `runtime_native_boolean_and` | lexical boolean AND executes on text rail |
+| `Any` | `active runtime` | `runtime_native_boolean_or` | lexical boolean OR executes on text rail |
 
-## 2. LQ leaves (`LqLeaf`)
+## Pattern Options
 
-Defined at [lq-norm/src/ast.rs:196](../../../crates/quanta-index-lq-norm/src/ast.rs#L196).
-
-| Leaf | Parser | Lowering | Planner | Engine | Result carrier | Unit test | E2E | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `Keyword(String)` | lq-norm/parser | search-plane/lowering | [planner.rs::plan() `LqLeaf::Keyword` arm](../../../crates/quanta-index-lexical/src/planner.rs) → `PlanLeaf::Content` | live lexical text rail executes against indexed content | `LexicalCandidate` | `planner::tests::single_keyword_leaf_produces_content_plan` | E2E-01 content/path/case/count rows green | `executed` |
-| `Phrase(String)` | lq-norm/parser | search-plane/lowering | [phrase.rs::plan_phrase](../../../crates/quanta-index-lexical/src/phrase.rs) → `PlanLeaf::Phrase { plan }` | live lexical rail executes through materialized `lq-positions` sidecars | `LexicalCandidate` | planner phrase tests + `tantivy_smoke` indexed-text/case proof | E2E-01 rows green | `executed` |
-| `RawString(String)` | lq-norm/parser | search-plane/lowering | [trigram_plan.rs::plan_raw_substring](../../../crates/quanta-index-lexical/src/trigram_plan.rs) → `PlanLeaf::RawSubstring { plan }` | live lexical rail executes through materialized trigram sidecars + exact verify over authoritative indexed text | `LexicalCandidate` | `planner::tests::raw_substring_plans_ok_on_minimum_needle` + `raw_substring_too_short_is_rejected_typed` | E2E-01 raw-substring row green | `executed` |
-| `Regex(String)` | lq-norm/parser + [regex_guard.rs](../../../crates/quanta-index-lq-norm/src/regex_guard.rs) | search-plane/lowering | [regex.rs::plan_regex](../../../crates/quanta-index-lexical/src/regex.rs) → `PlanLeaf::Regex { plan }` with `extract_required_literals` + `dialect_filter` | live lexical rail executes through materialized trigram sidecars + exact verify over authoritative indexed text | `LexicalCandidate` | `planner::tests::regex_leaf_with_extractable_literal_plans_ok` + `regex_leaf_with_lookbehind_is_rejected_typed` + `tantivy_smoke` authority proof | E2E-01 + E2E-07 rows green | `executed` |
-| `StructuralBlock(LqStructuralBlock)` | lq-norm/parser | search-plane lowers structural-only boolean trees over `match { ... }` leaves plus executable `repo:` / `file:` / `lang:` filters | routes through `StructuralService` with candidate-scope pruning, bounded `NOT`, and deterministic projection | truthful authority subset over parse-tree/chunk authority | internal `StructuralMatchBinding` / `StructuralMatchCandidate` -> projected `StructuralBinding` / `StructuralCandidate` | `quanta-index-lq-structural` authority tests + search-plane structural tests | `sdk_frontdoor.rs`, `end_to_end.rs`, `e2e_dual_syntax_lowering_parity.rs` | `executed[truthful-subset]` — root-kind exact, root capture, root-kind plus capture, ordered child tree-walk, variadic sibling capture / wildcard skip, `where` / `inside` / `outside`, structural-only boolean composition, and typed holes `expr|stmt|item|type`; filters outside `repo:` / `file:` / `lang:` stay typed fail-closed |
-| `Predicate { name, args }` | lq-norm/parser | committed predicate lowering (`lower_bridge_predicate` in search-plane + core/lexical) converts supported predicate forms into filters/plans before reaching the planner | `repo.has.file(path:...)` lowers to repo-gate execution on the lexical rail; `symbol.has.name(...)` lowers to `symbol::plan_symbol` → `PlanLeaf::Symbol { plan }`; unsupported names/arg shapes return `LexicalPlannerError::Unimplemented { owner_ticket: "LXE-03-predicate-extensions" }` | per-predicate route | varies | `planner::tests::predicate_symbol_has_name_plans_through_symbol_route` + lexical/runtime predicate proofs | E2E-01 + E2E-02 predicate rows green | `executed[truthful-subset]` |
-
-## 3. LQ boolean tree (`LqExpr`)
-
-Defined at [lq-norm/src/ast.rs:306](../../../crates/quanta-index-lq-norm/src/ast.rs#L306).
-
-| Node | Status | Owner |
-| --- | --- | --- |
-| `Empty` | `executed` (no-op identity) | — |
-| `Leaf(LqLeaf)` | per-leaf row above | — |
-| `Not(Box<LqExpr>)` | `executed[truthful-subset]` | live for the lexical subset admitted by planner/executor; unsupported predicate extensions stay typed-rejected |
-| `All(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
-| `Any(Vec<LqExpr>)` | `executed[truthful-subset]` | same truthful lexical subset |
-| retired semantic-vector leaf | removed from the canonical query AST; semantic/hybrid entry is now text-only and query embedding is search-owned before semantic execution | historical only |
-
-## 4. LQ filters (`LqFilter`)
-
-Defined at [lq-norm/src/ast.rs:223](../../../crates/quanta-index-lq-norm/src/ast.rs#L223). Current execution is split between live text-rail filters, doc-kind routing for `type` / `select`, and typed fail-closed surfaces for producer-dependent or cross-domain shapes.
-
-| Filter | Field ownership (per LXE-03) | Current behavior | Status |
+| Surface | Status | Proof rail | Current live behavior |
 | --- | --- | --- | --- |
-| `Repo { pattern, revs }` | pre-candidate constraint | live repo match on lexical rail; nested `revs` typed fail-closed to history-required | `executed[truthful-subset]` |
-| `File { pattern, scope }` | pre-candidate path constraint | live path/name constraint on lexical text rail | `executed` |
-| `Lang { id }` | pre-candidate metadata constraint | live language metadata constraint on lexical text rail | `executed` |
-| `Rev { spec }` | history-domain constraint | typed fail-closed (`REV_UNAVAILABLE`) on lexical rail | `typed-rejected` |
-| `Type { kind }` | route selector → content/path/symbol/commit/diff/structural | doc-kind routing: `file/path -> text`, `symbol -> symbol route with distinct public `SymbolQueryResponse`, `commit/diff/repo -> typed unavailable on lexical rail`; public runtime witness exists for native/Sourcegraph `type:symbol` on the symbol frontdoor with `symbol_kind` truth | `executed[truthful-subset]` |
-| `Select { dim }` | result-surface selector | live repo/file/path/content/content.match projection on the text rail plus native/Sourcegraph `select:symbol` on the symbol frontdoor with `SymbolCandidate` | `executed` |
-| `Fork { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
-| `Archived { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
-| `Visibility { mode }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
-| `Context { name }` | producer-dependent | executes when typed repo metadata bundle is present; otherwise typed fail-closed / not-ready | `executed[truthful-subset]` |
-| `Content { leaf }` | content engine | delegates to the active lexical leaf execution path, including public `select:content.match` proof on the text frontdoor | `executed` |
+| `patterntype:literal` | `active runtime` | `runtime_sourcegraph_patterntype_literal_casefold_hit` | explicit literal mode currently executes on the lexical text rail with the same case-folded behavior as the shipped subset |
+| `patterntype:keyword` | `active runtime` | `runtime_sourcegraph_patterntype_keyword_casefold` | explicit keyword mode executes on the lexical text rail |
+| `patterntype:standard` | `active runtime` | `runtime_sourcegraph_patterntype_standard_casefold` | explicit standard mode executes on the lexical text rail |
+| `patterntype:regexp` | `active runtime` | `runtime_sourcegraph_regexp_option` | regexp mode executes on lexical regex route |
+| `patterntype:structural` | `active runtime` | `runtime_sourcegraph_patterntype_structural_named_hole`, `e2e_dual_syntax_lowering_parity` | structural mode is runtime-proved on the dedicated structural route |
+| `case` | `active runtime` | `runtime_native_case_sensitive_miss` | case-sensitive mismatch is asserted on runtime rail |
+| `count:N` | `active runtime` | `runtime_native_count_bound` | bounded count truncation is asserted with exact ordered ids |
+| `count:all` | `active runtime` | `runtime_sourcegraph_count_all` | `count:all` now bypasses request `top_k` and returns full recall on the runtime rail |
+| `timeout` | `active runtime` | `runtime_native_timeout_typed`, `e2e_perf_chaos`, `sdk_frontdoor`, `end_to_end` | runtime rail proves typed lexical timeout; recovery invariant stays on companion rails |
 
-`type:` enum values from `LqType`: `File`, `Path`, `Symbol`, `Commit`, `Diff`, `Repo`. `File`/`Path`/`Symbol` have live route proof here. `Commit`/`Diff` execute on the dedicated history route with runtime proof under `LXE-08`, and `Repo` stays typed unavailable on the lexical rail.
+## Core Filters
 
-`select:` enum values from `LqSelect`: `Repo`, `File`, `Path`, `Symbol`, `Content`, `ContentMatch`. All six have live proof on the current tree; `Symbol` uses the distinct public symbol carrier and the rest project on the text rail.
-
-## 5. LQ options (`LqOptions`)
-
-Defined at [lq-norm/src/ast.rs:333](../../../crates/quanta-index-lq-norm/src/ast.rs#L333).
-
-| Option | Values | Status |
-| --- | --- | --- |
-| `pattern_type` | `Literal`, `Keyword`, `Standard`, `Regexp`, `Structural` | `executed[truthful-subset]` (literal/keyword/standard/regexp live on the lexical rail; structural executes on the dedicated structural route and is typed-rejected on the lexical SG route) |
-| `case` | `Sensitive`, `Insensitive` | `executed` |
-| `count` | `Bounded(u32)`, `All` | `executed` |
-| `timeout_ms` | `Option<u64>` | `executed[truthful-subset]` (native/Sourcegraph lexical surfaces lower `timeout:` into canonical options for regex-backed execution; structural/history/runtime keep timeout typed fail-closed) |
-
-## 6. LQ directives (`LqDirective`)
-
-Defined at [lq-norm/src/ast.rs:322](../../../crates/quanta-index-lq-norm/src/ast.rs#L322).
-
-| Directive | Status |
-| --- | --- |
-| `IntoCodeQl` | `executed` (bridge packet export from executed candidates is live, and the closed-label metrics surface is now proved on the same current tree) |
-| `ScopeResults` | `executed` (canonical default) |
-| `WithLexical` | `executed` (canonical default) |
-
-## 7. Sourcegraph syntax (`lq-bridge`)
-
-Translator at [lq-bridge/src/translator.rs](../../../crates/quanta-index-lq-bridge/src/translator.rs). In-flight changes add `path:` filter, `/ ... /` regex kind, predicate directives.
-
-| SG syntax | Translated to | Status |
-| --- | --- | --- |
-| `repo:<pattern>` | `LqFilter::Repo` | `executed` |
-| `file:<pattern>` | `LqFilter::File` | `executed` |
-| `path:<pattern>` | `LqFilter::File { scope: PathOnly }` | `executed` |
-| `lang:<id>` | `LqFilter::Lang` | `executed` |
-| `case:yes/no` | `LqCase` | `executed` |
-| `count:N` | `LqCountBound::Bounded` | `executed` |
-| `count:all` | `LqCountBound::All` | `executed` |
-| `timeout:<duration>` | `LqOptions.timeout_ms` | `executed[truthful-subset]` (native/Sourcegraph lexical regex-backed execution only; unsupported routes stay typed fail-closed) |
-| `type:file` / `type:symbol` / `type:commit` / `type:diff` | `LqFilter::Type` | `executed[truthful-subset]` (file live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth; commit/diff live on the dedicated history route with runtime proof) |
-| `select:file` / `select:content` / `select:symbol` | `LqFilter::Select` | `executed[truthful-subset]` (file/content live on text rail; symbol-doc routing now has native/Sourcegraph text-route + public symbol-frontdoor proof with distinct carrier and `symbol_kind` truth) |
-| `patterntype:literal` | `LqPatternType::Literal` + `LqLeaf::RawString` | `executed` |
-| `patterntype:regexp` | `LqPatternType::Regexp` + `LqLeaf::Regex` | `executed` |
-| Boolean `or` | `LqExpr::Any` | `executed[truthful-subset]` |
-| Boolean `and` (implicit) | `LqExpr::All` | `executed[truthful-subset]` |
-| Negation `-term` / `NOT` | `LqExpr::Not` | `executed[truthful-subset]` |
-| Unsupported SG feature | typed translator/bridge error | `executed[truthful-subset]` (`BRIDGE_UNSUPPORTED_FILTER` / `BRIDGE_UNSUPPORTED_DIRECTIVE` are live; broader engine/prod-data taxonomy is tracked elsewhere) |
-
-## 8. Result carriers (`results::*`)
-
-Most carrier types currently live in
-`quanta-index-contract-base/src/results/`; `CommitCandidate` still lives in
-`quanta-index-contract/src/results/commit_candidate.rs`.
-
-| Carrier | Location | Status |
-| --- | --- | --- |
-| `LexicalCandidate` | [contract-base/src/results/candidates.rs](../../../crates/quanta-index-contract-base/src/results/candidates.rs) | `executed` |
-| `SymbolCandidate` | [contract/src/results/query_responses.rs](../../../crates/quanta-index-contract/src/results/query_responses.rs) | `executed` |
-| `CommitCandidate` | [contract/src/results/commit_candidate.rs](../../../crates/quanta-index-contract/src/results/commit_candidate.rs) | `executed` |
-| `DiffCandidate` (+ `DiffHunkSide`) | [contract-base/src/results/diff_candidate.rs](../../../crates/quanta-index-contract-base/src/results/diff_candidate.rs) | `executed` |
-| `StructuralBinding` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L10) | `executed` |
-| `StructuralCandidate` | [contract-base/src/results/structural.rs](../../../crates/quanta-index-contract-base/src/results/structural.rs#L93) | `executed` |
-| `BridgeTarget` | contract bridge DTO surface (worktree-local file move in progress) | `executed` (CodeQl only) |
-| `BridgeCandidatePacket` | bridge packet carrier surface (worktree-local file move in progress) | `executed` |
-
-Internal structural match carriers are intentionally not public result DTOs:
-`quanta-index-core` / `searchd` execute on `StructuralMatchBinding` /
-`StructuralMatchCandidate`, and `search-plane` projects them into
-`StructuralBinding` / `StructuralCandidate` only at the response boundary.
-
-## 9. `SearchExplanation`
-
-Current shape at [contract/src/results/explanation.rs](../../../crates/quanta-index-contract/src/results/explanation.rs) carries `planner_trace`, `engines_touched`, `early_stop_reason`, `summary`, `contributions`, `ranker_weights_hash`, and `strategy`.
-
-| Field | Status |
-| --- | --- |
-| `contributions` | `executed` |
-| `ranker_weights_hash` | `executed` |
-| `strategy` | `executed` |
-| `planner_trace` | `executed` |
-| `engines_touched` | `executed` |
-| `early_stop_reason` | `executed[truthful-subset]` (`CountReached` is proved on bounded hybrid execution; non-early-stop paths remain `None`) |
-| `summary` | `executed` |
-
-## 10. Fail-closed surfaces
-
-| Surface | Typed code | Evidence | Status |
+| Surface | Status | Proof rail | Current live behavior |
 | --- | --- | --- | --- |
-| History generation not materialized | `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:823](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L823), [end_to_end.rs:632](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L632) | `executed` |
-| History producer-specific unavailable taxonomy | `HISTORY_PRODUCER_UNAVAILABLE`, `HISTORY_GENERATION_NOT_READY` | [query_dispatcher.rs:815](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L815), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:675](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L675) | `executed` |
-| History shard unavailable | `HISTORY_SHARD_UNAVAILABLE` | [query_dispatcher.rs:888](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L888), [sdk_frontdoor.rs:1606](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L1606), [end_to_end.rs:742](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L742) | `executed[truthful-subset]` — proven for required shard materialization absence; deeper authority-corruption taxonomy is not yet modeled |
-| Lexical regex timeout | `QUERY_TIMEOUT` | `e2e_perf_chaos.rs` timeout row + search-plane closed-metric taxonomy proof | `executed[truthful-subset]` — regex-backed lexical timeout is live; non-executable routes reject timeout before execution |
-| Structural unsupported lang | `STR_LANG_NOT_SUPPORTED` | [sdk_frontdoor.rs:656](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L656) | `executed` |
-| Structural generation not ready | `STR_GENERATION_NOT_READY` | [end_to_end.rs:2239](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2239) | `executed` |
-| Structural shard unavailable | `STR_SHARD_UNAVAILABLE` | [end_to_end.rs:2305](../../../crates/quanta-index-searchd-runtime/tests/end_to_end.rs#L2305) | `executed` |
-| Structural invalid request | `STR_INVALID_REQUEST` | [query_dispatcher.rs:816](../../../crates/quanta-index-search-plane/src/query_dispatcher.rs#L816), [sdk_frontdoor.rs:669](../../../crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs#L669) | `executed` |
+| `repo:` | `active runtime` | `runtime_sourcegraph_repo_miss`, `runtime_native_repo_allow_list_corp_a`, `runtime_native_repo_allow_list_corp_b`, `runtime_native_repo_allow_list_universe_baseline`, `tantivy_smoke` | `repo:` allow-list matches `ChunkRecord::source_repo_id` when present; `docs-multi-repo.toml` proves non-vacuous positive/miss/universe baselines |
+| `file:` | `active runtime` | `runtime_native_file_filter` | file filter narrows content hits by path |
+| `path:` | `active runtime` | `runtime_sourcegraph_path_filter` | path-only filter executes on runtime text rail |
+| `lang:` | `active runtime` | `runtime_native_lang_filter` | language filter executes on runtime text rail |
+| `rev:` | `active runtime` | `runtime_sourcegraph_history_commit_rev_ref`, `runtime_sourcegraph_history_commit_rev_tag` | rev is live on history `type:commit`; lexical text rail still fail-closes producerless shapes |
+| `type:file` | `active runtime` | `runtime_native_type_file_excludes_symbol_only` | file type excludes symbol-only matches on the live runtime rail |
+| `type:path` | `active runtime` | `runtime_native_type_path_projection` | path type now projects text hits down to one deterministic representative per path on the runtime rail |
+| `type:symbol` | `active runtime` | `runtime_native_type_symbol` | symbol type routes to symbol docs through live runtime rail |
+| `type:commit` | `active runtime` | `runtime_native_history_commit`, `runtime_native_history_author`, `runtime_native_history_committer`, `runtime_native_history_message`, `sdk_frontdoor`, `end_to_end`, `e2e_perf_chaos` | commit history route executes with exact ids; history now requires explicit `type:commit` or `type:diff`, and `type:commit file:/diff.*` combinations fail closed with `INVALID_REQUEST` |
+| `type:diff` | `active runtime` | `runtime_native_history_diff`, `end_to_end`, `e2e_perf_chaos` | diff history route executes on live runtime rail; `file:` and `diff.*` are owned by this route rather than silently emptying on commit queries |
+| `type:repo` | `active runtime` | `runtime_native_type_repo` | repo type now projects text hits down to one deterministic representative per repo on the runtime rail |
+| `select:repo` | `active runtime` | `runtime_native_select_repo` | repo projection collapses to one representative |
+| `select:file` | `active runtime` | `runtime_native_select_file_projection` | file projection collapses same-path multi-chunk hits to per-path representatives on the runtime rail |
+| `select:path` | `active runtime` | `runtime_native_select_path_projection` | path projection collapses same-path multi-chunk hits to per-path representatives on the runtime rail |
+| `select:symbol` | `active runtime` | `runtime_sourcegraph_select_symbol` | symbol projection executes through live symbol carrier |
+| `select:content` | `active runtime` | `runtime_native_select_content_projection` | content projection is now asserted on the runtime rail with exact ordered ids, paths, and snippets |
+| `select:content.match` | `active runtime` | `runtime_native_select_content_match_projection` | content-match projection is now asserted on the runtime rail with exact ordered ids, paths, and snippets |
+| `fork:` | `active runtime` | `runtime_native_fork_filter_only_miss`, `runtime_sourcegraph_fork_typed_unavailable` | `fork:only` excludes non-fork repos when metadata exists; producerless path stays typed-unavailable |
+| `archived:` | `active runtime` | `runtime_sourcegraph_archived_filter_only_miss`, `dsl_scenarios`, `end_to_end` | runtime rail proves metadata-backed exclusion on non-archived repos; positive metadata path remains exercised on companion rails |
+| `visibility:` | `active runtime` | `runtime_sourcegraph_visibility_filter_miss`, `runtime_sourcegraph_visibility_typed_unavailable` | mismatched visibility excludes hits when metadata exists; producerless path stays typed-unavailable |
+| `context:` | `active runtime` | `runtime_sourcegraph_context_filter_miss`, `dsl_scenarios`, `end_to_end` | runtime rail proves context mismatch exclusion; positive context match remains exercised on companion rails |
+| `content:` | `active runtime` | `runtime_native_content_filter_positive`, `runtime_native_content_filter_miss` | content filter now has direct positive and path-leak negative proof on the runtime rail |
 
-## 11. E2E harness
+## History Extension
 
-| Component | Location | Status |
-| --- | --- | --- |
-| Tempdir runtime harness | `crates/quanta-index-searchd-runtime/tests/common/e2e_harness.rs` | `executed` |
-| Corpus fixtures | `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
-| Matrix inventory test | `crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs` | `executed` |
-| Lexical full-fidelity | `tests/e2e_lexical_full_fidelity.rs` | `executed[E2E-01]` |
-| Sourcegraph parity | `tests/e2e_dual_syntax_lowering_parity.rs` | `executed[E2E-02]` |
-| Semantic/hybrid | existing `tests/end_to_end.rs` + `tests/dsl_scenarios.rs` + `tests/sdk_frontdoor.rs` | `executed[E2E-03]` |
-| History/structural | existing `tests/sdk_frontdoor.rs` + `tests/end_to_end.rs` plus structural parity rows in `tests/e2e_dual_syntax_lowering_parity.rs` | `executed[E2E-04]` |
-| Restart/replay | `tests/e2e_restart_replay_determinism.rs` | `executed[E2E-05]` |
-| Full corpus rail | `tests/e2e_full_corpus.rs` + `tests/fixtures/lexical_corpus/` | `executed[E2E-06]` |
-| Perf/chaos | `tests/e2e_perf_chaos.rs` | `executed[E2E-07]` |
+| Surface | Status | Proof rail | Current live behavior |
+| --- | --- | --- | --- |
+| `author:` | `active runtime` | `runtime_native_history_author` | commit author filter executes on history route |
+| `committer:` | `active runtime` | `runtime_native_history_committer` | commit committer filter executes on history route |
+| `message:` | `active runtime` | `runtime_native_history_message` | commit message filter executes on history route |
+| `before:` | `active runtime` | `runtime_native_history_before`, `runtime_native_history_before_invalid` | `committer_time_ms` upper bound; invalid timeref → `HISTORY_INVALID_TIMEREF` |
+| `after:` | `active runtime` | `runtime_native_history_after`, `end_to_end`, `e2e_perf_chaos` | `committer_time_ms` lower bound (strict) with raw IPC and no-poison companion proof |
+| `since:` | `active runtime` | `runtime_native_history_since`, `runtime_native_history_since_time`, `runtime_native_history_since_commit_ref`, `runtime_native_history_since_commit_unknown`, `sdk_frontdoor`, `e2e_perf_chaos` | `since:` is inclusive lower bound on `committer_time_ms`; qualified `since.time:` / `since.commit:` execute on the same history authority and unknown refs typed-fail `HISTORY_INVALID_TIMEREF`, with builder/transport proof on `sdk_frontdoor` |
+| `until:` | `active runtime` | `runtime_native_history_until`, `end_to_end`, `e2e_perf_chaos` | bare `until:` is inclusive upper bound on `committer_time_ms` with raw IPC and no-poison companion proof |
+| `diff.added:` | `active runtime` | `runtime_native_history_diff_added`, `runtime_native_history_diff_added_miss`, `end_to_end`, `e2e_perf_chaos` | narrows `added_text` only (not concat search buffer) |
+| `diff.removed:` | `active runtime` | `runtime_native_history_diff_removed`, `end_to_end`, `e2e_perf_chaos` | narrows `removed_text` only |
+| `diff.touched:` | `active runtime` | `runtime_native_history_diff_touched`, `runtime_native_history_diff_touched_secondary`, `end_to_end`, `e2e_perf_chaos` | narrows `touched_text` only |
 
-The full-corpus fixture is now route-aware: rows declare `runtime_route =
-text|structural|history`, and the shared fixture can carry repo metadata,
-structural parse trees, and history shards. Parser-only / typed-unavailable /
-deferred rows are no longer parked in `runtime_rows.toml`.
+## Runtime Extension
 
-## 12. Risk register
+| Surface | Status | Proof rail | Current live behavior |
+| --- | --- | --- | --- |
+| `dirty:` | `active runtime` | `runtime_sourcegraph_runtime_dirty`, `runtime_sourcegraph_runtime_dirty_missing_filter`, `runtime_sourcegraph_runtime_dirty_only_unsupported`, `runtime_sourcegraph_runtime_dirty_no`, `sdk_frontdoor`, `e2e_perf_chaos` (`runtime_catalog_dirty_only_rejects_typed_and_does_not_poison_next_query`, `runtime_catalog_dirty_no_executes_and_does_not_poison_next_query`), `e2e_restart_replay_determinism` | runtime-metadata route executes `dirty:yes` over `dirty_docs` and `dirty:no` over the clean complement inside the pinned generation; `dirty:only` typed-fails `RUNTIME_DIRTY_ONLY_UNSUPPORTED`, and authority-less queries still typed-fail |
+| `changed:` | `active runtime` | `runtime_sourcegraph_runtime_changed_positive`, `runtime_sourcegraph_runtime_changed_miss`, `runtime_sourcegraph_runtime_catalog_not_ready` | `changed:since=<timeref>` matches generation-pinned `changed_docs` by `applied_at_ms`; missing catalog typed-fails `RUNTIME_CATALOG_NOT_READY` |
+| `stale:` | `active runtime` | `runtime_sourcegraph_runtime_stale_positive`, `runtime_sourcegraph_runtime_stale_miss`, `runtime_sourcegraph_runtime_stale_head_not_ahead_miss`, `e2e_dual_syntax_lowering_parity` (`runtime_stale_filter_parity`, `runtime_stale_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `stale:before=<timeref>` matches only when `producer_head_applied_at_ms > generation_materialized_at_ms` and `generation_materialized_at_ms <` bound; proof uses both bound inversion and head-not-ahead miss rows so a no-op comparator cannot pass |
+| `affected:` | `active runtime` | `runtime_sourcegraph_runtime_affected_positive`, `runtime_sourcegraph_runtime_affected_miss`, `sdk_frontdoor`, `e2e_dual_syntax_lowering_parity` (`runtime_affected_filter_parity`, `runtime_affected_filter_miss_parity`), `e2e_perf_chaos` (`runtime_catalog_affected_executes_and_does_not_poison_next_query`), `e2e_restart_replay_determinism` | `affected:<scope>` matches generation-pinned edge-authority catalog entries keyed by scope and narrows the current runtime universe without lexical fallback |
+| `invalidated_by:` | `active runtime` | `runtime_sourcegraph_runtime_invalidated_by_positive`, `runtime_sourcegraph_runtime_invalidated_by_miss`, `sdk_frontdoor`, `e2e_dual_syntax_lowering_parity` (`runtime_invalidated_by_filter_parity`, `runtime_invalidated_by_filter_miss_parity`), `e2e_perf_chaos` (`runtime_catalog_invalidated_by_executes_and_does_not_poison_next_query`), `e2e_restart_replay_determinism` | `invalidated_by:<source>` matches generation-pinned edge-authority catalog entries keyed by source and narrows the current runtime universe without lexical fallback |
+| `snapshot:` | `active runtime` | `runtime_sourcegraph_runtime_snapshot_active`, `runtime_sourcegraph_runtime_snapshot_miss`, `runtime_sourcegraph_runtime_snapshot_unknown`, `end_to_end`, `e2e_dual_syntax_lowering_parity` (`runtime_snapshot_filter_parity`, `runtime_snapshot_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `snapshot:<name>` matches membership in persisted snapshot sets; proof uses shared-token member/non-member docs so a no-op membership filter cannot pass; unknown names typed-fail `SNAPSHOT_UNKNOWN` |
+| `meta.owner:` | `active runtime` | `runtime_sourcegraph_runtime_meta_owner`, `runtime_sourcegraph_runtime_meta_owner_miss`, `end_to_end`, `e2e_dual_syntax_lowering_parity` (`runtime_meta_owner_filter_parity`, `runtime_meta_owner_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `meta.owner:<id>` requires exact owner facet match on `doc_facets`; proof uses shared-token decoys with mismatched owner facets so a no-op facet filter cannot pass |
+| `meta.service:` | `active runtime` | `runtime_sourcegraph_runtime_meta_service`, `runtime_sourcegraph_runtime_meta_service_miss`, `end_to_end`, `e2e_dual_syntax_lowering_parity` (`runtime_meta_service_filter_parity`, `runtime_meta_service_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `meta.service:<id>` requires exact service facet match on `doc_facets`; proof uses shared-token decoys with mismatched service facets so a no-op facet filter cannot pass |
+| `meta.layer:` | `active runtime` | `runtime_sourcegraph_runtime_meta_layer`, `runtime_sourcegraph_runtime_meta_layer_miss`, `end_to_end`, `e2e_dual_syntax_lowering_parity` (`runtime_meta_layer_filter_parity`, `runtime_meta_layer_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `meta.layer:<id>` requires exact layer facet match on `doc_facets`; proof uses shared-token decoys with mismatched layer facets so a no-op facet filter cannot pass |
+| `meta.surface:` | `active runtime` | `runtime_sourcegraph_runtime_meta_surface`, `runtime_sourcegraph_runtime_meta_surface_miss`, `end_to_end`, `e2e_dual_syntax_lowering_parity` (`runtime_meta_surface_filter_parity`, `runtime_meta_surface_filter_miss_parity`), `e2e_perf_chaos`, `e2e_restart_replay_determinism` | `meta.surface:<id>` requires exact surface facet match on `doc_facets`; proof uses shared-token decoys with mismatched surface facets so a no-op facet filter cannot pass |
 
-- **Predicate lowering in-flight**: `lower_bridge_predicate` is currently being
-  added to [search-plane/lowering.rs](../../../crates/quanta-index-search-plane/src/lowering.rs)
-  and to the lexical lowering surface in `quanta-index-core/src/domains/lexical/lowering.rs` (historical path; removed in the current tree).
-  LXE-03 must integrate, not replace. **Open question**: keep the duplicated
-  predicate-parsing logic, or lift it into a single helper in lq-norm before
-  LXE-03 lands?
-- **Regex observability**: regex now routes through materialized trigram +
-  exact verify. Remaining risk is missing explain-grade prefilter counts and
-  engine trace, not query-string escape.
-- **Retired semantic-vector lexical row**: this packet no longer treats
-  `SemanticVector` as a live lexical capability row because the AST/public
-  query surface is text-only; semantic execution remains owned by semantic and
-  hybrid routes after search-owned query embedding.
-- **Type/select regression surface**: `type:symbol` / `select:symbol` keep a
-  distinct public carrier plus `symbol_kind` truth, history-owned
-  `type:commit` / `type:diff` keep public/runtime proof, and
-  `select:path` / `select:content.match` now have separate native/Sourcegraph
-  frontdoor proof.
-- **Structural live surface is still narrower than full public semantics**:
-  the current authority-owned matcher now executes root-anchored tree-walk,
-  variadic sibling capture / wildcard skip, and `where` / `inside` /
-  `outside`, but structural boolean composition and broader Sourcegraph
-  structural forms remain explicitly typed fail-closed.
+## Structural Mini-Language
+
+| Surface | Status | Proof rail | Current live behavior |
+| --- | --- | --- | --- |
+| root-kind and root capture | `active runtime` | `runtime_native_structural_root_kind`, `runtime_native_structural_root_capture` | runtime closeout rail asserts exact candidate ids and binding spans |
+| `where` | `active runtime` | `runtime_native_structural_where` | constraint matching is runtime-proved with exact binding spans |
+| `inside` | `active runtime` | `runtime_native_structural_inside` | inside scope matching is runtime-proved with exact binding spans |
+| `outside` | `active runtime` | `runtime_native_structural_outside` | outside scope matching is runtime-proved with exact binding spans |
+| named / anonymous / variadic holes | `active runtime` | `runtime_sourcegraph_patterntype_structural_named_hole`, `runtime_native_structural_anonymous_wildcard`, `runtime_native_structural_variadic` | named capture, anonymous wildcard, and variadic tree-walk are runtime-proved |
+| typed holes (`expr`, `stmt`, `item`, `type`) | `active runtime` | `runtime_native_structural_typed_expr`, `runtime_native_structural_typed_item`, `runtime_native_structural_typed_stmt`, `runtime_native_structural_typed_type` | typed-hole subset is runtime-proved with exact binding spans |
+| mixed lexical + structural boolean AND | `active_runtime` | `runtime_native_structural_mixed_lexical_and`, `e2e_dual_syntax_lowering_parity`, `sdk_frontdoor`, `e2e_perf_chaos` | lexical and structural leaves intersect on candidate-id set algebra before projection |
+| mixed lexical + structural boolean OR | `active_runtime` | `runtime_native_structural_mixed_lexical_or`, `runtime_sourcegraph_structural_mixed_lexical_or`, `e2e_dual_syntax_lowering_parity`, `sdk_frontdoor`, `e2e_perf_chaos` | OR unions mixed-domain candidates; SG route rejects repo-scoped filters under mixed OR |
+| mixed lexical + structural boolean AND NOT | `active_runtime` | `runtime_native_structural_mixed_lexical_and_not`, `runtime_sourcegraph_structural_mixed_lexical_and_not`, `e2e_dual_syntax_lowering_parity`, `sdk_frontdoor`, `e2e_perf_chaos` | bounded NOT subtracts structural branch from lexical-positive survivors |
+| pure negative structural root (`NOT match { ... }`) | `active_runtime` | `runtime_native_structural_pure_negative_root`, `sdk_frontdoor`, `e2e_perf_chaos` | root `NOT` subtracts from explicit generation-pinned chunk universe |
+
+## Directives
+
+| Surface | Status | Proof rail | Current live behavior |
+| --- | --- | --- | --- |
+| `into:codeql` | `active owner-local` | `crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs` | bridge-packet carrier only; intentionally excluded from runtime search-result corpus |
+| `scope:results` | `active owner-local` | `crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs` | bridge-packet carrier only; intentionally excluded from runtime search-result corpus |
+| `with:lexical` | `active owner-local` | `crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs` | bridge-packet carrier only; intentionally excluded from runtime search-result corpus |
+
+## Notes
+
+- `runtime_rows.toml`는 executable search-result inventory만 담는다. bridge packet, public SDK packet, parser-only grammar shape는 companion rail에 남긴다.
+- `active owner-local`은 green이지만 아직 main closeout rail로 승격되지 않은 표면이다. 이 상태를 `active runtime`으로 부풀려 적지 않는다.
+- `typed fail-closed`는 parser reject든 planner/runtime typed error든, 현재 tree가 silent success 대신 명시적 실패를 주는 경우를 뜻한다.
+- `dsl-proof-ledger.toml`의 `carrier_kind`는 `search_result`, `bridge_packet`, `parser_shape`를 구분한다. directive와 empty query는 closeout carrier가 다르므로 runtime corpus에 올리지 않는다.

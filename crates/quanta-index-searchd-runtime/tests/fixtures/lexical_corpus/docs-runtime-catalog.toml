@@ -1,0 +1,150 @@
+[[doc]]
+id = "catalog_changed"
+path = "src/changed.rs"
+content = "fn catalog_changed_needle() {}"
+
+[[doc]]
+id = "catalog_unchanged"
+path = "src/unchanged.rs"
+content = "fn catalog_unchanged_needle() {}"
+
+[[doc]]
+id = "catalog_changed_other"
+path = "src/changed-other.rs"
+content = "fn catalog_changed_needle() {}"
+
+[[doc]]
+id = "catalog_stale"
+path = "src/stale.rs"
+content = "fn catalog_window_needle() {}"
+
+[[doc]]
+id = "catalog_snapshot"
+path = "src/snap.rs"
+content = "fn catalog_snapshot_needle() {}"
+
+[[doc]]
+id = "catalog_fresh"
+path = "src/fresh.rs"
+content = "fn catalog_window_needle() {}"
+
+[[doc]]
+id = "catalog_snapshot_other"
+path = "src/snap-other.rs"
+content = "fn catalog_snapshot_needle() {}"
+
+[[doc]]
+id = "catalog_owner"
+path = "src/owner.rs"
+content = "fn catalog_owner_needle() {}"
+
+[[doc]]
+id = "catalog_owner_other"
+path = "src/owner-other.rs"
+content = "fn catalog_owner_needle() {}"
+
+[[doc]]
+id = "catalog_service"
+path = "src/service.rs"
+content = "fn catalog_service_needle() {}"
+
+[[doc]]
+id = "catalog_service_other"
+path = "src/service-other.rs"
+content = "fn catalog_service_needle() {}"
+
+[[doc]]
+id = "catalog_layer"
+path = "src/layer.rs"
+content = "fn catalog_layer_needle() {}"
+
+[[doc]]
+id = "catalog_layer_other"
+path = "src/layer-other.rs"
+content = "fn catalog_layer_needle() {}"
+
+[[doc]]
+id = "catalog_surface"
+path = "src/surface.rs"
+content = "fn catalog_surface_needle() {}"
+
+[[doc]]
+id = "catalog_surface_other"
+path = "src/surface-other.rs"
+content = "fn catalog_surface_needle() {}"
+
+[runtime_catalog]
+producer_head_applied_at_ms = 100
+generation_materialized_at_ms = 20
+
+[[runtime_catalog.changed]]
+path = "src/changed.rs"
+applied_at_ms = 25
+
+[[runtime_catalog.facet]]
+path = "src/owner.rs"
+owner = "team-a"
+service = "shared-service"
+layer = "shared-layer"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/owner-other.rs"
+owner = "team-b"
+service = "shared-service"
+layer = "shared-layer"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/service.rs"
+owner = "shared-owner"
+service = "search"
+layer = "shared-layer"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/service-other.rs"
+owner = "shared-owner"
+service = "billing"
+layer = "shared-layer"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/layer.rs"
+owner = "shared-owner"
+service = "shared-service"
+layer = "index"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/layer-other.rs"
+owner = "shared-owner"
+service = "shared-service"
+layer = "app"
+surface = "shared-surface"
+
+[[runtime_catalog.facet]]
+path = "src/surface.rs"
+owner = "shared-owner"
+service = "shared-service"
+layer = "shared-layer"
+surface = "lexical"
+
+[[runtime_catalog.facet]]
+path = "src/surface-other.rs"
+owner = "shared-owner"
+service = "shared-service"
+layer = "shared-layer"
+surface = "semantic"
+
+[[runtime_catalog.snapshot]]
+name = "active"
+paths = ["src/changed.rs", "src/snap.rs"]
+
+[[runtime_catalog.affected]]
+scope = "rebuild=lexical"
+paths = ["src/changed.rs"]
+
+[[runtime_catalog.invalidated_by]]
+source = "rebuild=lexical"
+paths = ["src/changed.rs"]

@@ -1,21 +1,30 @@
-//! Durable open + search path.
+//! Lancedb-backed durable open + search path.
 //!
-//! `open_generation` loads exactly one sealed generation directly from disk —
-//! manifest, columnar rows, and the persisted HNSW graph — validating scope,
-//! shape, and content checksum before it can serve. There is no cross-
-//! generation replay and no rebuild of the graph: the open cost is bounded by
-//! the single generation being served.
+//! `open_generation` opens exactly one sealed generation's lancedb dataset
+//! (manifest validated against requested scope, row count cross-checked
+//! against the manifest) and returns a `LoadedGeneration` ready to serve
+//! `vector_search`. There is no cross-generation replay; the open cost is
+//! bounded by reopening a single lancedb dataset.
+//!
+//! The searcher returns scores as cosine similarity in `[-1, 1]` (lancedb
+//! reports cosine *distance* in the `_distance` column; we convert
+//! `similarity = 1 - distance` so the historical query-time contract is
+//! preserved).
 
 #![expect(
     clippy::redundant_pub_crate,
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array};
+use futures::TryStreamExt as _;
+use lancedb::DistanceType;
+use lancedb::connect;
+use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
@@ -23,31 +32,71 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearcher};
 
-use crate::dataset::DatasetShard;
-use crate::hnsw::HnswIndex;
-use crate::manifest::SemanticManifest;
-use crate::{codec, graph, layout};
+use crate::build::{
+    COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
+    COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+};
+use crate::generation_contract::GenerationContract;
+use crate::layout;
+use crate::manifest::{FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION, SemanticManifest};
+use crate::sql::build_id_in_filter;
 
-struct RowMeta {
-    repo_relative_path: RepoRelativePath,
-    start_line: u32,
-    end_line: u32,
-    snippet: String,
+const COLUMN_DISTANCE: &str = "_distance";
+
+fn lancedb_err(action: &str, err: impl core::fmt::Display) -> CoreError {
+    CoreError::Storage(format!("semantic: lancedb {action}: {err}"))
 }
 
-/// One sealed generation loaded into memory from durable state.
+fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
+    let contract_path = layout::build_contract_path(generation_dir);
+    let bytes = std::fs::read(&contract_path).map_err(|err| {
+        CoreError::Storage(format!(
+            "semantic: read generation contract {}: {err}",
+            contract_path.display()
+        ))
+    })?;
+    GenerationContract::decode(&bytes)
+}
+
+fn load_generation_contract_for_manifest(
+    generation_dir: &Path,
+    manifest: &SemanticManifest,
+) -> Result<Option<GenerationContract>, CoreError> {
+    let contract_path = layout::build_contract_path(generation_dir);
+    if contract_path.exists() {
+        return load_generation_contract(generation_dir).map(Some);
+    }
+    match manifest.format_version {
+        FORMAT_VERSION => Err(CoreError::Storage(format!(
+            "semantic: manifest format version {} requires generation contract {}",
+            manifest.format_version,
+            contract_path.display()
+        ))),
+        LEGACY_LANCEDB_FORMAT_VERSION => Ok(None),
+        other => Err(CoreError::Storage(format!(
+            "semantic: manifest format version {other} unsupported during contract load"
+        ))),
+    }
+}
+
+/// One sealed generation loaded against its lancedb dataset.
+///
+/// Note: lancedb 0.30's `Table` is `Arc<dyn BaseTable>` + an injected
+/// `Arc<dyn Database>` (`connection.rs:337`, `table.rs:655-810`); it does
+/// **not** borrow from its parent `Connection`. Dropping the connection after
+/// `open_table` does not invalidate the table, so we hold only the table here
+/// and let the connection drop at end of `open_generation`.
 pub(crate) struct LoadedGeneration {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
-    /// `None` for an explicit sealed-empty generation.
-    graph: Option<HnswIndex>,
-    metadata: BTreeMap<String, RowMeta>,
+    dimension: usize,
+    table: lancedb::Table,
 }
 
 /// Open a sealed generation directly from durable state, failing closed on any
-/// absent marker, scope mismatch, shape mismatch, or content corruption.
-pub(crate) fn open_generation(
+/// absent marker, scope mismatch, or shape mismatch.
+pub(crate) async fn open_generation(
     semantic_root: &Path,
     repo: &RepoId,
     revision: &RevisionId,
@@ -62,9 +111,8 @@ pub(crate) fn open_generation(
             revision.as_str()
         )));
     }
-
     let manifest_path = layout::manifest_path(&generation_dir);
-    let manifest_bytes = fs::read(&manifest_path).map_err(|err| {
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read manifest {}: {err}",
             manifest_path.display()
@@ -72,160 +120,229 @@ pub(crate) fn open_generation(
     })?;
     let manifest = SemanticManifest::decode(&manifest_bytes)?;
     manifest.validate_scope(repo, revision, generation)?;
-
-    let rows_path = layout::rows_path(&generation_dir);
-    let rows_bytes = fs::read(&rows_path).map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: read dataset {}: {err}",
-            rows_path.display()
-        ))
-    })?;
-    let shard = DatasetShard::decode(&rows_bytes)?;
-    if shard.dimension != manifest.dimension {
-        return Err(CoreError::Storage(format!(
-            "semantic: dataset dimension {} != manifest dimension {}",
-            shard.dimension, manifest.dimension
-        )));
+    if let Some(generation_contract) =
+        load_generation_contract_for_manifest(&generation_dir, &manifest)?
+    {
+        generation_contract.validate_manifest(&manifest)?;
     }
-    let shard_row_count = u64::try_from(shard.rows.len()).map_err(|err| {
-        CoreError::Storage(format!("semantic: dataset row count overflow: {err}"))
+
+    let dimension = usize::try_from(manifest.dimension).map_err(|err| {
+        CoreError::Storage(format!("semantic: manifest dimension overflow: {err}"))
     })?;
-    if shard_row_count != manifest.row_count {
+
+    let uri = dataset_uri(&generation_dir)?;
+    let connection = connect(&uri)
+        .execute()
+        .await
+        .map_err(|err| lancedb_err(&format!("connect {uri}"), err))?;
+    let table = connection
+        .open_table(TABLE_NAME)
+        .execute()
+        .await
+        .map_err(|err| lancedb_err(&format!("open_table {TABLE_NAME}"), err))?;
+
+    let live_row_count = table
+        .count_rows(None)
+        .await
+        .map_err(|err| lancedb_err("count_rows", err))?;
+    let live_row_count_u64 = u64::try_from(live_row_count)
+        .map_err(|err| CoreError::Storage(format!("semantic: row count overflow: {err}")))?;
+    if live_row_count_u64 != manifest.row_count {
         return Err(CoreError::Storage(format!(
-            "semantic: dataset row count {shard_row_count} != manifest row count {}",
+            "semantic: lancedb row count {live_row_count_u64} != manifest row count {}",
             manifest.row_count
         )));
     }
 
-    let (graph, graph_bytes) = if manifest.row_count == 0 {
-        (None, Vec::new())
-    } else {
-        let graph_path = layout::graph_path(&generation_dir);
-        let graph_bytes = fs::read(&graph_path).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic: read graph {}: {err}",
-                graph_path.display()
-            ))
-        })?;
-        let index = graph::decode_graph(&graph_bytes)?;
-        let manifest_dim = usize::try_from(manifest.dimension).map_err(|err| {
-            CoreError::Storage(format!("semantic: manifest dimension overflow: {err}"))
-        })?;
-        if index.dim() != manifest_dim {
-            return Err(CoreError::Storage(format!(
-                "semantic: graph dimension {} != manifest dimension {manifest_dim}",
-                index.dim()
-            )));
-        }
-        (Some(index), graph_bytes)
-    };
-
-    let recomputed = codec::content_checksum(&[&rows_bytes, &graph_bytes]);
-    if recomputed != manifest.content_checksum {
-        return Err(CoreError::Storage(format!(
-            "semantic: content checksum mismatch for generation {} (manifest {}, recomputed {recomputed})",
-            generation.get(),
-            manifest.content_checksum
-        )));
-    }
-
-    let mut metadata: BTreeMap<String, RowMeta> = BTreeMap::new();
-    for row in shard.rows {
-        let meta = RowMeta {
-            repo_relative_path: RepoRelativePath::new(row.repo_relative_path),
-            start_line: row.start_line,
-            end_line: row.end_line,
-            snippet: row.snippet,
-        };
-        let _prior = metadata.insert(row.embedding_id, meta);
-    }
-
+    drop(connection);
     Ok(LoadedGeneration {
         repo_id: repo.clone(),
         revision_id: revision.clone(),
         generation,
-        graph,
-        metadata,
+        dimension,
+        table,
     })
 }
 
+fn column_as_string<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, CoreError> {
+    let column = batch.column_by_name(name).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` missing from lancedb result batch"
+        ))
+    })?;
+    column.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` has unexpected Arrow type (expected Utf8) in lancedb result batch"
+        ))
+    })
+}
+
+fn column_as_u32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, CoreError> {
+    let column = batch.column_by_name(name).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` missing from lancedb result batch"
+        ))
+    })?;
+    column.as_any().downcast_ref::<UInt32Array>().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` has unexpected Arrow type (expected UInt32) in lancedb result batch"
+        ))
+    })
+}
+
+fn column_as_f32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float32Array, CoreError> {
+    let column = batch.column_by_name(name).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` missing from lancedb result batch"
+        ))
+    })?;
+    column.as_any().downcast_ref::<Float32Array>().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` has unexpected Arrow type (expected Float32) in lancedb result batch"
+        ))
+    })
+}
+
+fn extract_candidates(
+    batch: &RecordBatch,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    generation: ManifestGeneration,
+    out: &mut Vec<LexicalCandidate>,
+) -> Result<(), CoreError> {
+    let id_col = column_as_string(batch, COLUMN_EMBEDDING_ID)?;
+    let path_col = column_as_string(batch, COLUMN_REPO_RELATIVE_PATH)?;
+    let start_col = column_as_u32(batch, COLUMN_START_LINE)?;
+    let end_col = column_as_u32(batch, COLUMN_END_LINE)?;
+    let snippet_col = column_as_string(batch, COLUMN_SNIPPET)?;
+    let distance_col = column_as_f32(batch, COLUMN_DISTANCE)?;
+    for row in 0..batch.num_rows() {
+        let id = id_col.value(row).to_owned();
+        let path = path_col.value(row).to_owned();
+        let snippet = snippet_col.value(row).to_owned();
+        let start_line = start_col.value(row);
+        let end_line = end_col.value(row);
+        let distance = distance_col.value(row);
+        // Lancedb returns cosine *distance* in [0, 2]; the historical query
+        // contract is cosine *similarity* in [-1, 1] (higher = better).
+        let score = 1.0_f32 - distance;
+        out.push(LexicalCandidate {
+            candidate_id: id,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            manifest_generation: generation,
+            repo_relative_path: RepoRelativePath::new(path),
+            start_line,
+            end_line,
+            score,
+            snippet,
+        });
+    }
+    Ok(())
+}
+
 impl LoadedGeneration {
-    /// The serving graph when the query dimension matches; `None` for a
-    /// sealed-empty generation (caller yields no hits). `HnswIndex` re-checks
-    /// the dimension internally and would raise `InvalidContract`; this guard
-    /// upgrades that to the typed `SEM_DIM_MISMATCH` the query surface expects.
-    fn ready_index(&self, query_vector: &[f32]) -> Result<Option<&HnswIndex>, CoreError> {
-        let Some(index) = self.graph.as_ref() else {
-            return Ok(None);
-        };
-        if index.dim() != query_vector.len() {
-            return Err(CoreError::Typed {
-                code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
-                message: format!(
-                    "semantic: query vector dim {} does not match index dim {} for generation {}",
-                    query_vector.len(),
-                    index.dim(),
-                    self.generation.get()
-                ),
-            });
+    fn check_query_dim(&self, query_vector: &[f32]) -> Result<(), CoreError> {
+        if query_vector.len() == self.dimension {
+            return Ok(());
         }
-        Ok(Some(index))
+        Err(CoreError::Typed {
+            code: LexicalErrorCode::SemDimMismatch.as_code_str().to_string(),
+            message: format!(
+                "semantic: query vector dim {} does not match index dim {} for generation {}",
+                query_vector.len(),
+                self.dimension,
+                self.generation.get()
+            ),
+        })
     }
 
-    fn collect_hits(
+    async fn run_vector_query(
         &self,
         query_vector: &[f32],
-        limit: usize,
-    ) -> Result<Vec<(String, f32)>, CoreError> {
-        self.ready_index(query_vector)?
-            .map_or_else(|| Ok(Vec::new()), |index| index.search(query_vector, limit))
+        top_k: usize,
+        filter: Option<String>,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        let query_owned: Vec<f32> = query_vector.to_vec();
+        let mut vector_query = self
+            .table
+            .vector_search(query_owned)
+            .map_err(|err| lancedb_err("vector_search build", err))?
+            .distance_type(DistanceType::Cosine)
+            .limit(top_k);
+        if let Some(predicate) = filter {
+            vector_query = vector_query.only_if(predicate);
+        }
+        let stream = vector_query
+            .execute()
+            .await
+            .map_err(|err| lancedb_err("vector_search execute", err))?;
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
+            .map_err(|err| lancedb_err("vector_search stream", err))?;
+
+        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(top_k);
+        for batch in batches {
+            extract_candidates(
+                &batch,
+                &self.repo_id,
+                &self.revision_id,
+                self.generation,
+                &mut out,
+            )?;
+            if out.len() >= top_k {
+                break;
+            }
+        }
+        out.truncate(top_k);
+        Ok(out)
     }
 
-    fn collect_hits_scoped(
+    pub(crate) async fn search_async(
+        &self,
+        query_vector: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        self.check_query_dim(query_vector)?;
+        self.run_vector_query(query_vector, top_k, None).await
+    }
+
+    pub(crate) async fn search_scoped_async(
         &self,
         query_vector: &[f32],
         allowed_ids: &BTreeSet<String>,
-        limit: usize,
-    ) -> Result<Vec<(String, f32)>, CoreError> {
-        self.ready_index(query_vector)?.map_or_else(
-            || Ok(Vec::new()),
-            |index| index.search_scoped(query_vector, allowed_ids, limit),
-        )
-    }
-
-    fn to_candidates(&self, hits: Vec<(String, f32)>) -> Result<Vec<LexicalCandidate>, CoreError> {
-        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
-        for (id, score) in hits {
-            let meta = self.metadata.get(&id).ok_or_else(|| {
-                CoreError::Storage(format!(
-                    "semantic: metadata missing candidate `{id}` at generation {}",
-                    self.generation.get()
-                ))
-            })?;
-            out.push(LexicalCandidate {
-                candidate_id: id,
-                repo_id: self.repo_id.clone(),
-                revision_id: self.revision_id.clone(),
-                manifest_generation: self.generation,
-                repo_relative_path: meta.repo_relative_path.clone(),
-                start_line: meta.start_line,
-                end_line: meta.end_line,
-                score,
-                snippet: meta.snippet.clone(),
-            });
+        top_k: usize,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        // Validate dim BEFORE the empty-allowlist early return so the typed
+        // `SemDimMismatch` contract is symmetric between `search` and
+        // `search_scoped` — an empty allowlist + wrong-dim query must still
+        // surface the dim-mismatch typed error, not a silent empty result.
+        self.check_query_dim(query_vector)?;
+        if allowed_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let filter = build_id_in_filter(allowed_ids);
+        self.run_vector_query(query_vector, top_k, Some(filter))
+            .await
     }
 }
 
 /// Searcher over a single loaded sealed generation.
+///
+/// Bridges the sync `SemanticSearcher` port surface to the async lancedb API
+/// via the adapter's shared tokio runtime — see [`crate::run_blocking`].
 pub(crate) struct PersistedSemanticSearcher {
-    generation: Arc<LoadedGeneration>,
+    loaded: Arc<LoadedGeneration>,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl PersistedSemanticSearcher {
-    pub(crate) fn new(generation: Arc<LoadedGeneration>) -> Self {
-        Self { generation }
+    pub(crate) fn new(
+        loaded: Arc<LoadedGeneration>,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
+        Self { loaded, runtime }
     }
 }
 
@@ -239,8 +356,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         SemanticPolicy::validate_top_k(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
-        let hits = self.generation.collect_hits(query_vector, limit)?;
-        self.generation.to_candidates(hits)
+        crate::run_blocking(&self.runtime, self.loaded.search_async(query_vector, limit))
     }
 
     fn search_scoped(
@@ -252,9 +368,10 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         SemanticPolicy::validate_top_k(top_k)?;
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
-        let hits = self
-            .generation
-            .collect_hits_scoped(query_vector, allowed_ids, limit)?;
-        self.generation.to_candidates(hits)
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded
+                .search_scoped_async(query_vector, allowed_ids, limit),
+        )
     }
 }

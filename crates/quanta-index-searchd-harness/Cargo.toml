@@ -1,0 +1,24 @@
+[package]
+name = "quanta-index-searchd-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dsl_cold_matrix"
+path = "src/bin/dsl_cold_matrix.rs"
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
+quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

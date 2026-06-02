@@ -17,6 +17,10 @@ ignore = [
   # tantivy 0.22 pins lru 0.12.5; upstream advisory RUSTSEC-2026-0002 reports an
   # IterMut soundness defect. We do not call IterMut from quanta-index code.
   { id = "RUSTSEC-2026-0002", reason = "tantivy 0.22 transitive: lru 0.12.5 IterMut unsound; not invoked by our code" },
+  # lancedb 0.30 -> datafusion 53 transitive: `paste` proc-macro is no longer
+  # maintained. It is a build-time-only macro with no runtime/security impact;
+  # widely used across the ecosystem and tracked for replacement upstream.
+  { id = "RUSTSEC-2024-0436", reason = "lancedb 0.30 transitive: paste proc-macro unmaintained; build-time only, no runtime/security surface" },
 ]
 
 [bans]
@@ -44,14 +48,33 @@ skip-tree = [
   # tantivy 0.22 -> uuid -> getrandom 0.3 is a second getrandom edge separate
   # from the rand 0.8 / 0.2 path. Scope to uuid.
   { crate = "uuid@1", reason = "tantivy 0.22 transitive duplicate of getrandom via uuid" },
+  # lancedb 0.30 -> lance + datafusion 53 + reqwest pulls in ~20 internal
+  # duplicate versions (arrow-array/arrow-buffer/hashbrown/itertools/thiserror
+  # /strum/nom/phf/...). The duplicates are entirely *inside* lancedb's tree
+  # and don't escape to our crates. Scope the bypass to the whole lancedb
+  # subtree rather than enumerating each transitive dep.
+  { crate = "lancedb@0.30", reason = "lancedb 0.30 transitive duplicates: contained inside the lancedb subtree" },
 ]
 
 [licenses]
 confidence-threshold = 0.93
+# Allow-list policy: every license here MUST be OSI-approved and permissive
+# (commercial-use-safe, no carry-over copyleft for typical linking).
+#
+# BSD-3-Clause, MPL-2.0, ISC, BSL-1.0 were added when the lancedb 0.30
+# subtree landed (LDB-00 packet outcome): lancedb -> lance + datafusion +
+# reqwest/rustls + lindera pulls in ~60 crates under these four additional
+# permissive licenses. Listing them globally (rather than 60 per-crate
+# exceptions) keeps the file reviewable; each license is independently
+# OSI-approved + FSF-libre and carries no risk above the existing allowlist.
 allow = [
   "Apache-2.0",
   "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
   "MIT",
+  "MPL-2.0",
   "Unicode-3.0",
 ]
 exceptions = [
@@ -59,8 +82,6 @@ exceptions = [
   # Permissive license but not in baseline allowlist; scope the exception
   # tightly to the crate.
   { name = "foldhash", allow = ["Zlib"] },
-  # tantivy 0.22 transitive: measure_time -> instant 0.1.13 is BSD-3-Clause.
-  { name = "instant", allow = ["BSD-3-Clause"] },
 ]
 
 [licenses.private]

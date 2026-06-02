@@ -1,0 +1,9 @@
+[[doc]]
+id = "alpha_content"
+path = "src/lib.rs"
+content = "fn alpha_content_needle() {}"
+
+[[doc]]
+id = "gamma_py_same"
+path = "scripts/helper.py"
+content = "def alpha_content_needle(): pass"

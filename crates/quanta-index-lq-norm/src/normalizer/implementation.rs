@@ -504,9 +504,33 @@ fn filter_canonical_key(f: &LqFilter) -> String {
         LqFilter::Author { pattern } => format!("author:{pattern}"),
         LqFilter::Committer { pattern } => format!("committer:{pattern}"),
         LqFilter::Message { pattern } => format!("message:{pattern}"),
+        LqFilter::Before { timeref } => format!("before:{timeref}"),
+        LqFilter::After { timeref } => format!("after:{timeref}"),
+        LqFilter::Since { timeref } => {
+            if let Some(value) = timeref.strip_prefix("time:") {
+                format!("since.time:{value}")
+            } else if let Some(value) = timeref.strip_prefix("commit:") {
+                format!("since.commit:{value}")
+            } else {
+                format!("since:{timeref}")
+            }
+        }
+        LqFilter::Until { timeref } => format!("until:{timeref}"),
+        LqFilter::DiffAdded { pattern } => format!("diff.added:{pattern}"),
+        LqFilter::DiffRemoved { pattern } => format!("diff.removed:{pattern}"),
+        LqFilter::DiffTouched { pattern } => format!("diff.touched:{pattern}"),
         LqFilter::Type { kind } => format!("type:{}", kind.as_str()),
         LqFilter::Select { dim } => format!("select:{}", dim.as_str()),
         LqFilter::Dirty { mode } => format!("dirty:{}", mode.as_str()),
+        LqFilter::Changed { scope } => format!("changed:{scope}"),
+        LqFilter::Stale { scope } => format!("stale:{scope}"),
+        LqFilter::Snapshot { name } => format!("snapshot:{name}"),
+        LqFilter::MetaOwner { id } => format!("meta.owner:{id}"),
+        LqFilter::MetaService { id } => format!("meta.service:{id}"),
+        LqFilter::MetaLayer { id } => format!("meta.layer:{id}"),
+        LqFilter::MetaSurface { id } => format!("meta.surface:{id}"),
+        LqFilter::Affected { scope } => format!("affected:{scope}"),
+        LqFilter::InvalidatedBy { source } => format!("invalidated_by:{source}"),
         LqFilter::Fork { mode } => format!("fork:{}", mode.as_str()),
         LqFilter::Archived { mode } => format!("archived:{}", mode.as_str()),
         LqFilter::Visibility { mode } => format!("visibility:{}", mode.as_str()),

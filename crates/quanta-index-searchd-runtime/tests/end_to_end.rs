@@ -15,6 +15,9 @@
     reason = "mixed migration: typed ingest helpers land before all channel setup blocks are cut over"
 )]
 
+#[path = "common/frontdoor_scenarios.rs"]
+mod frontdoor_scenarios;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
@@ -31,6 +34,8 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest,
     HybridQueryRequest, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
     LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+    RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -43,6 +48,10 @@ use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
+
+use crate::frontdoor_scenarios::{
+    IPC_FRONTDOOR_SCENARIOS, IpcFrontdoorExpectation, IpcFrontdoorSurface,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
@@ -118,6 +127,7 @@ fn chunk_record_with_metadata(
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     })
 }
 
@@ -152,6 +162,7 @@ fn chunk_payload_with_metadata(
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
+        source_repo_id: None,
     };
     let mut buf = Vec::new();
     ciborium::into_writer(&record, &mut buf)
@@ -393,6 +404,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         SearchPlaneIngestIpcResponse::LexicalReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
         SearchPlaneIngestIpcResponse::Error(err) => {
@@ -434,7 +446,7 @@ fn publish_lexical_chunks(
                 "e2e-lex-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload,
             replace_scopes,
             tombstone_scopes: Vec::new(),
@@ -456,7 +468,7 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
                 "e2e-lex-del-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: paths
@@ -483,7 +495,7 @@ fn seal_lexical(socket: &Path) -> TestResult {
                 "e2e-lex-seal-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
@@ -512,6 +524,158 @@ fn publish_history_commits(socket: &Path, commits: Vec<CommitRecord>) -> TestRes
     )
 }
 
+fn publish_history_authority_fixture(socket: &Path) -> TestResult {
+    use quanta_index_contract::lex::DiffHunkRecord;
+    use quanta_index_contract::{
+        DiffHunkSide, HistoryDiffHunkUpsert, HistoryRefMutation, HistoryRefUpsert,
+    };
+
+    let commit_sha = history_commit_sha();
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishHistoryBatch(HistoryIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            manifest_digest: Some(format!("e2e-history-authority-{}", generation().get())),
+            batch_digest: format!(
+                "e2e-history-authority-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            commits: vec![CommitRecord {
+                wire_version: 1,
+                sha: commit_sha,
+                parents: Vec::new(),
+                author_time_ms: 11,
+                committer_time_ms: 12,
+                applied_at_ms: 13,
+                author: "alice".to_string().into_boxed_str(),
+                committer: "alice".to_string().into_boxed_str(),
+                message: "fix: sample alpha_content_needle"
+                    .to_string()
+                    .into_boxed_str(),
+                is_merge: false,
+                tags: vec!["v1.0.0".to_string().into_boxed_str()],
+            }],
+            refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "refs/heads/main".to_string().into_boxed_str(),
+                sha: commit_sha,
+            })],
+            tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
+                name: "v1.0.0".to_string().into_boxed_str(),
+                sha: commit_sha,
+            })],
+            diff_hunks: vec![HistoryDiffHunkUpsert {
+                commit_sha,
+                file_path: "src/history.rs".to_string().into_boxed_str(),
+                record: DiffHunkRecord {
+                    wire_version: 1,
+                    hunk_header: "@@ -1 +1 @@".to_string().into_boxed_str(),
+                    side: DiffHunkSide::After,
+                    added_text: "history added token".to_string().into_boxed_str(),
+                    removed_text: "history removed token".to_string().into_boxed_str(),
+                    touched_text: "history touched token".to_string().into_boxed_str(),
+                    byte_start: 0,
+                    byte_end: 20,
+                },
+            }],
+        }),
+    )
+}
+
+fn publish_runtime_catalog_fixture(socket: &Path) -> TestResult {
+    dispatch_ingest(
+        socket,
+        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch {
+            repo_id: repo(),
+            revision_id: revision(),
+            generation: generation(),
+            overlay_epoch_ms: 20,
+            batch_digest: format!(
+                "e2e-runtime-catalog-batch-{}",
+                NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            producer_head_applied_at_ms: 100,
+            generation_materialized_at_ms: 20,
+            changed_entries: vec![RuntimeChangedRecord {
+                doc_id: ChunkId::new("changed"),
+                applied_at_ms: 25,
+                payload_hash: [0xaa; 32],
+            }],
+            facet_entries: vec![
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("owner"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("owner-other"),
+                    owner: Some("team-b".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("service"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("service-other"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("build".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("layer"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("layer-other"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("query".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("surface"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("lexical".to_string()),
+                },
+                RuntimeDocFacetRecord {
+                    doc_id: ChunkId::new("surface-other"),
+                    owner: Some("team-a".to_string()),
+                    service: Some("search".to_string()),
+                    layer: Some("index".to_string()),
+                    surface: Some("semantic".to_string()),
+                },
+            ],
+            snapshot_entries: vec![RuntimeSnapshotRecord {
+                name: "active".to_string(),
+                doc_ids: vec![ChunkId::new("changed"), ChunkId::new("snap")],
+            }],
+            affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("changed")],
+            }],
+            invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                key: "rebuild=lexical".to_string(),
+                doc_ids: vec![ChunkId::new("changed")],
+            }],
+        }),
+    )
+}
+
 fn publish_structural_scope(
     socket: &Path,
     path: &str,
@@ -529,7 +693,7 @@ fn publish_structural_scope(
                 "e2e-struct-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: vec![StructuralReplaceScope {
                 scope: scope_key(path),
                 scope_digest: format!("e2e-struct-scope:{path}"),
@@ -554,7 +718,7 @@ fn tombstone_structural_scopes(socket: &Path, paths: &[&str]) -> TestResult {
                 "e2e-struct-del-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: Vec::new(),
             tombstone_scopes: paths
                 .iter()
@@ -580,7 +744,7 @@ fn seal_structural(socket: &Path) -> TestResult {
                 "e2e-struct-seal-batch-{}",
                 NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed)
             ),
-            mode: BatchIngestMode::Delta,
+            mode: BatchIngestMode::ReplaceGeneration,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
             seal: true,
@@ -847,7 +1011,11 @@ fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -
         return Err("lexical fixture never became queryable".into());
     }
 
-    let err = wait_for_typed_error(&socket, &history_query("fix"), READINESS_TIMEOUT)?;
+    let err = wait_for_typed_error(
+        &socket,
+        &history_query("type:commit fix"),
+        READINESS_TIMEOUT,
+    )?;
     if err.code != "HISTORY_PRODUCER_UNAVAILABLE" {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
@@ -899,6 +1067,287 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("unexpected shard-unavailable message: {}", err.message).into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-frontdoor-history-runtime-matrix")?;
+    publish_lexical_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("history-lex", "history lexical proof")?,
+            chunk_record_with_metadata(
+                "changed",
+                "src/changed.rs",
+                "rust",
+                1,
+                1,
+                "catalog_changed_needle",
+            )?,
+            chunk_record_with_metadata(
+                "snap",
+                "src/snap.rs",
+                "rust",
+                1,
+                1,
+                "catalog_snapshot_needle",
+            )?,
+            chunk_record_with_metadata(
+                "snap-other",
+                "src/snap-other.rs",
+                "rust",
+                1,
+                1,
+                "catalog_snapshot_needle",
+            )?,
+            chunk_record_with_metadata(
+                "owner",
+                "src/owner.rs",
+                "rust",
+                1,
+                1,
+                "catalog_owner_needle",
+            )?,
+            chunk_record_with_metadata(
+                "owner-other",
+                "src/owner-other.rs",
+                "rust",
+                1,
+                1,
+                "catalog_owner_needle",
+            )?,
+            chunk_record_with_metadata(
+                "service",
+                "src/service.rs",
+                "rust",
+                1,
+                1,
+                "catalog_service_needle",
+            )?,
+            chunk_record_with_metadata(
+                "service-other",
+                "src/service-other.rs",
+                "rust",
+                1,
+                1,
+                "catalog_service_needle",
+            )?,
+            chunk_record_with_metadata(
+                "layer",
+                "src/layer.rs",
+                "rust",
+                1,
+                1,
+                "catalog_layer_needle",
+            )?,
+            chunk_record_with_metadata(
+                "layer-other",
+                "src/layer-other.rs",
+                "rust",
+                1,
+                1,
+                "catalog_layer_needle",
+            )?,
+            chunk_record_with_metadata(
+                "surface",
+                "src/surface.rs",
+                "rust",
+                1,
+                1,
+                "catalog_surface_needle",
+            )?,
+            chunk_record_with_metadata(
+                "surface-other",
+                "src/surface-other.rs",
+                "rust",
+                1,
+                1,
+                "catalog_surface_needle",
+            )?,
+        ],
+        Some(b"manifest".to_vec()),
+    )?;
+    publish_history_authority_fixture(&ingest_socket)?;
+    publish_runtime_catalog_fixture(&ingest_socket)?;
+    seal_lexical(&ingest_socket)?;
+
+    for &scenario in IPC_FRONTDOOR_SCENARIOS {
+        match scenario.expected {
+            IpcFrontdoorExpectation::TypedError(expected_error) => {
+                let request = match scenario.surface {
+                    IpcFrontdoorSurface::History => {
+                        history_query_with_syntax(scenario.syntax, scenario.query_text)
+                    }
+                    IpcFrontdoorSurface::RuntimeMetadata => {
+                        runtime_metadata_query_with_syntax(scenario.syntax, scenario.query_text)
+                    }
+                };
+                let err = wait_for_typed_error(&socket, &request, READINESS_TIMEOUT)?;
+                if err.code != expected_error.code
+                    || !err.message.contains(expected_error.message_contains)
+                {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!(
+                        "{} typed error drifted: expected code={} fragment={:?}, got code={} message={}",
+                        scenario.name,
+                        expected_error.code,
+                        expected_error.message_contains,
+                        err.code,
+                        err.message
+                    )
+                    .into());
+                }
+            }
+            IpcFrontdoorExpectation::CommitShas(expected_shas) => {
+                let request = history_query_with_syntax(scenario.syntax, scenario.query_text);
+                if !wait_until(READINESS_TIMEOUT, || {
+                    send_query_request(&socket, &request)
+                        .map(|resp| match resp.payload {
+                            SearchPlaneQueryIpcResponse::History(_) => true,
+                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            _ => false,
+                        })
+                        .unwrap_or(false)
+                }) {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!("{} never became ready", scenario.name).into());
+                }
+                let response = send_query_request(&socket, &request)?;
+                let history = match response.payload {
+                    SearchPlaneQueryIpcResponse::History(history) => history,
+                    other => {
+                        shutdown.store(true, Ordering::Release);
+                        drop(join.join());
+                        return Err(
+                            format!("{} expected History, got {other:?}", scenario.name).into()
+                        );
+                    }
+                };
+                let observed = history
+                    .commits
+                    .iter()
+                    .map(|commit| commit.sha.to_hex())
+                    .collect::<Vec<_>>();
+                let expected = expected_shas
+                    .iter()
+                    .map(|sha| (*sha).to_string())
+                    .collect::<Vec<_>>();
+                if observed != expected || !history.diffs.is_empty() {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!(
+                        "{} commit drifted: expected {:?}, got commits={:?} diffs={:?}",
+                        scenario.name, expected, observed, history.diffs
+                    )
+                    .into());
+                }
+            }
+            IpcFrontdoorExpectation::DiffPaths(expected_paths) => {
+                let request = history_query_with_syntax(scenario.syntax, scenario.query_text);
+                if !wait_until(READINESS_TIMEOUT, || {
+                    send_query_request(&socket, &request)
+                        .map(|resp| match resp.payload {
+                            SearchPlaneQueryIpcResponse::History(_) => true,
+                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            _ => false,
+                        })
+                        .unwrap_or(false)
+                }) {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!("{} never became ready", scenario.name).into());
+                }
+                let response = send_query_request(&socket, &request)?;
+                let history = match response.payload {
+                    SearchPlaneQueryIpcResponse::History(history) => history,
+                    other => {
+                        shutdown.store(true, Ordering::Release);
+                        drop(join.join());
+                        return Err(
+                            format!("{} expected History, got {other:?}", scenario.name).into()
+                        );
+                    }
+                };
+                let observed = history
+                    .diffs
+                    .iter()
+                    .map(|diff| diff.repo_relative_path.clone())
+                    .collect::<Vec<_>>();
+                let expected = expected_paths
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>();
+                if observed != expected || !history.commits.is_empty() {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!(
+                        "{} diff drifted: expected {:?}, got diffs={:?} commits={:?}",
+                        scenario.name, expected, observed, history.commits
+                    )
+                    .into());
+                }
+            }
+            IpcFrontdoorExpectation::CandidateIds(expected_ids) => {
+                let request =
+                    runtime_metadata_query_with_syntax(scenario.syntax, scenario.query_text);
+                if !wait_until(READINESS_TIMEOUT, || {
+                    send_query_request(&socket, &request)
+                        .map(|resp| match resp.payload {
+                            quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(
+                                _,
+                            ) => true,
+                            SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+                            _ => false,
+                        })
+                        .unwrap_or(false)
+                }) {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!("{} never became ready", scenario.name).into());
+                }
+                let response = send_query_request(&socket, &request)?;
+                let runtime = match response.payload {
+                    quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(
+                        runtime,
+                    ) => runtime,
+                    other => {
+                        shutdown.store(true, Ordering::Release);
+                        drop(join.join());
+                        return Err(format!(
+                            "{} expected RuntimeMetadata, got {other:?}",
+                            scenario.name
+                        )
+                        .into());
+                    }
+                };
+                let observed = runtime
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.clone())
+                    .collect::<Vec<_>>();
+                let expected = expected_ids
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect::<Vec<_>>();
+                if observed != expected {
+                    shutdown.store(true, Ordering::Release);
+                    drop(join.join());
+                    return Err(format!(
+                        "{} runtime candidate drifted: expected {:?}, got {:?}",
+                        scenario.name, expected, observed
+                    )
+                    .into());
+                }
+            }
+        }
     }
 
     stop_runtime(shutdown, join)
@@ -2813,11 +3262,40 @@ fn lex_query(needle: &str) -> SearchPlaneQueryIpcRequestEnvelope {
 }
 
 fn history_query(query_text: &str) -> SearchPlaneQueryIpcRequestEnvelope {
+    history_query_with_syntax(TextQuerySyntax::Sourcegraph, query_text)
+}
+
+fn history_query_with_syntax(
+    syntax: TextQuerySyntax,
+    query_text: &str,
+) -> SearchPlaneQueryIpcRequestEnvelope {
     SearchPlaneQueryIpcRequestEnvelope {
         request_id: 0,
         payload: SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
             text_query: TextQueryRequest {
-                syntax: TextQuerySyntax::Sourcegraph,
+                syntax,
+                query_text: query_text.to_string(),
+                generation: Some(GenerationPin::new(repo(), revision(), generation())),
+                generation_selector: None,
+                top_k: 50,
+            },
+        }),
+    }
+}
+
+fn runtime_metadata_query(query_text: &str) -> SearchPlaneQueryIpcRequestEnvelope {
+    runtime_metadata_query_with_syntax(TextQuerySyntax::Sourcegraph, query_text)
+}
+
+fn runtime_metadata_query_with_syntax(
+    syntax: TextQuerySyntax,
+    query_text: &str,
+) -> SearchPlaneQueryIpcRequestEnvelope {
+    SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 0,
+        payload: SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
                 query_text: query_text.to_string(),
                 generation: Some(GenerationPin::new(repo(), revision(), generation())),
                 generation_selector: None,

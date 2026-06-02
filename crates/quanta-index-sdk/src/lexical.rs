@@ -265,6 +265,7 @@ fn publish_lexical_batch<const SEALED: bool>(
         other @ (SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
         | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "lexical receipt",

@@ -36,8 +36,23 @@ content = "let needle_xx = 1;"
 [[doc]]
 id = "theta_symbol"
 path = "src/sym.rs"
-content = "pub fn MyTypeSymbol(arg: i32) -> i32 { arg }"
+content = "pub fn symbol_carrier(arg: i32) -> i32 { arg }"
 symbol_name = "MyTypeSymbol"
+
+[[doc]]
+id = "iota_dirty"
+path = "src/dirty.rs"
+content = "todo dirty scope"
+
+[[doc]]
+id = "kappa_dirty_other"
+path = "src/dirty-other.rs"
+content = "shadow dirty scope"
+
+[[doc]]
+id = "lambda_clean"
+path = "src/clean.rs"
+content = "todo clean scope"
 
 [repo_metadata]
 fork = false
@@ -50,4 +65,39 @@ path = "src/lib.rs"
 identifier = "alpha_content_needle"
 
 [[history]]
+commit_sha = "0123456789abcdef0123456789abcdef01234567"
 file_path = "src/lib.rs"
+author = "alice"
+committer = "alice"
+message = "fix: sample history alpha_content_needle"
+author_time_ms = 11
+committer_time_ms = 12
+applied_at_ms = 13
+ref_name = "refs/heads/main"
+tag_name = "v1.0.0"
+added_text = "history added line"
+removed_text = "history removed line"
+touched_text = "history touched line"
+
+[[history]]
+commit_sha = "89abcdef0123456789abcdef0123456789abcdef"
+file_path = "src/main.rs"
+author = "bob"
+committer = "bob"
+message = "chore: secondary alpha_content_needle"
+author_time_ms = 21
+committer_time_ms = 22
+applied_at_ms = 23
+ref_name = "refs/heads/release"
+tag_name = "v2.0.0"
+added_text = "secondary added line"
+removed_text = "secondary removed line"
+touched_text = "secondary touched line"
+
+[[dirty]]
+path = "src/dirty.rs"
+applied_at_ms = 100
+
+[[dirty]]
+path = "src/dirty-other.rs"
+applied_at_ms = 101

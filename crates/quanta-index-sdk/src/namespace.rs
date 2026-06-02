@@ -273,6 +273,7 @@ mod tests {
                 text: "fn main() {}".to_string().into_boxed_str(),
                 structural: None,
                 parent_chunk_id: None,
+                source_repo_id: None,
             }],
             Vec::new(),
         ))

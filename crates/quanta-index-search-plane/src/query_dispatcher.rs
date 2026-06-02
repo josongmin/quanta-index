@@ -9,22 +9,25 @@ use crate::{
     lower_lexical_text_query,
     lowering::lower_sourcegraph_structural_query_text,
     query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort},
-    readiness::{HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState},
+    readiness::{
+        DocFacetState, HistoryAuthorityState, RuntimeMetadataState, StructuralAuthorityState,
+    },
 };
 use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
-    ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched, GenerationPin,
-    GenerationSelector, HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse,
-    LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSpan,
-    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
-    LqStructuralHoleRef, LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage,
-    PlannerTraceEntry, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
-    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ChunkId, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched,
+    GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
+    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope, LqFilter,
+    LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
+    LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest,
+    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -40,6 +43,7 @@ use quanta_index_lq_obs::{
     CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
     validate_dimensions,
 };
+use quanta_index_lq_regex::RegexExecutor;
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
@@ -49,6 +53,12 @@ const ERR_INTERNAL: &str = "INTERNAL";
 const ERR_HISTORY_PRODUCER_UNAVAILABLE: &str = "HISTORY_PRODUCER_UNAVAILABLE";
 const ERR_HISTORY_GENERATION_NOT_READY: &str = "HISTORY_GENERATION_NOT_READY";
 const ERR_HISTORY_SHARD_UNAVAILABLE: &str = "HISTORY_SHARD_UNAVAILABLE";
+const ERR_HISTORY_INVALID_TIMEREF: &str = "HISTORY_INVALID_TIMEREF";
+const ERR_RUNTIME_CATALOG_NOT_READY: &str = "RUNTIME_CATALOG_NOT_READY";
+const ERR_RUNTIME_CATALOG_HEAD_MISSING: &str = "RUNTIME_CATALOG_HEAD_MISSING";
+const ERR_RUNTIME_INVALID_SCOPE: &str = "RUNTIME_INVALID_SCOPE";
+const ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED: &str = "RUNTIME_DIRTY_ONLY_UNSUPPORTED";
+const ERR_SNAPSHOT_UNKNOWN: &str = "SNAPSHOT_UNKNOWN";
 
 pub trait QueryObsSink {
     fn emit(&self, sample: MetricSample);
@@ -137,10 +147,12 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
             if code.contains("PARSE")
                 || code.contains("TRANSLATE_FAIL")
                 || code.contains("INVALID_VECTOR")
-                || code.contains("INVALID_REQUEST")
                 || code.contains("HOLE_KIND_UNSUPPORTED") =>
         {
             "lq_typed_error_parse_total"
+        }
+        CoreError::Typed { code, .. } if code.contains("DIRTY_ONLY_UNSUPPORTED") => {
+            "lq_typed_error_invalid_request_total"
         }
         CoreError::Typed { code, .. }
             if code.contains("UNAVAILABLE")
@@ -162,7 +174,7 @@ fn classify_error_metric_name(err: &CoreError) -> &'static str {
             "lq_typed_error_not_ready_total"
         }
         CoreError::Storage(_) => "lq_typed_error_internal_total",
-        CoreError::InvalidContract(_) => "lq_typed_error_invalid_total",
+        CoreError::InvalidContract(_) => "lq_typed_error_invalid_request_total",
         CoreError::NotImplemented(_) | CoreError::NotFound(_) => "lq_typed_error_unavailable_total",
         CoreError::Typed { .. } => "lq_typed_error_other_total",
     }
@@ -250,7 +262,8 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let results = searcher.search(&lowered, request.top_k)?;
+        let mut results = searcher.search(&lowered, request.top_k)?;
+        stabilize_ranked_candidates(&mut results);
         Ok(TextQueryResponse {
             generation: pin,
             results,
@@ -440,6 +453,10 @@ impl SearchPlaneDispatcher {
                     pin.manifest_generation.get()
                 ))
             })?;
+        if runtime_query_requires_catalog(&lowered) {
+            ensure_runtime_catalog_ready(runtime_state)?;
+            ensure_runtime_snapshot_names_known(&lowered, runtime_state)?;
+        }
         let structural_state = guard
             .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
             .ok_or_else(|| {
@@ -448,13 +465,14 @@ impl SearchPlaneDispatcher {
                     pin.manifest_generation.get()
                 ))
             })?;
-        let results = execute_runtime_metadata_query(
+        let mut results = execute_runtime_metadata_query(
             &pin,
             &lowered,
             runtime_state,
             structural_state,
             request.text_query.top_k,
         )?;
+        stabilize_ranked_candidates(&mut results);
         drop(guard);
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
             generation: pin,
@@ -591,11 +609,49 @@ impl SearchPlaneDispatcher {
         lowered: &LqQuery,
         top_k: u32,
     ) -> Result<Vec<quanta_index_contract::StructuralCandidate>, CoreError> {
-        let service = StructuralService::new(Arc::clone(&self.structural_producer));
-        let requested_lang = extract_structural_requested_lang(&lowered.expr)?;
+        if !structural_expr_has_structural_leaf(&lowered.expr) {
+            return Err(structural_invalid_request(
+                "query must include at least one structural `match { ... }` leaf",
+            ));
+        }
+        let has_lexical = structural_expr_has_non_structural_leaf(&lowered.expr);
+        let requested_lang = extract_structural_requested_lang(&lowered.expr, has_lexical)?;
         let (requested_lang, executable_filters) =
             extract_structural_filters(lowered, requested_lang.as_deref())?;
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|_poisoned| CoreError::Storage("search-plane ledger poisoned".to_string()))?;
+        let seed = if structural_expr_is_pure_negative_root(&lowered.expr) {
+            let structural_state = guard
+                .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+                .ok_or_else(|| {
+                    CoreError::NotReady(format!(
+                        "structural: generation {} chunk authority is not materialized",
+                        pin.manifest_generation.get()
+                    ))
+                })?;
+            Some(build_pinned_structural_universe(
+                pin,
+                structural_state,
+                requested_lang.as_deref(),
+                &executable_filters,
+            )?)
+        } else {
+            None
+        };
+        drop(guard);
+        let service = StructuralService::new(Arc::clone(&self.structural_producer));
         let mut ctx = StructuralEvalContext::default();
+        let lexical_eval = if has_lexical {
+            Some(LexicalSubexprEvaluator {
+                dispatcher: self,
+                pin,
+                query: lowered,
+            })
+        } else {
+            None
+        };
         let candidates = evaluate_structural_expr(
             &mut ctx,
             &service,
@@ -604,7 +660,8 @@ impl SearchPlaneDispatcher {
             requested_lang.as_deref(),
             &executable_filters,
             &lowered.options,
-            None,
+            seed.as_ref(),
+            lexical_eval.as_ref(),
         )?;
         let mut results = project_structural_query_results(candidates);
         results.truncate(top_k_limit(top_k));
@@ -993,7 +1050,7 @@ const fn default_top_k() -> u32 {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ExecutableTextPlaneValidationState {
-    saw_dirty: bool,
+    saw_runtime_authority_filter: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1031,11 +1088,27 @@ impl ExecutableTextPlanePolicy {
                 | LqFilter::Author { .. }
                 | LqFilter::Committer { .. }
                 | LqFilter::Message { .. }
+                | LqFilter::Before { .. }
+                | LqFilter::After { .. }
+                | LqFilter::Since { .. }
+                | LqFilter::Until { .. }
+                | LqFilter::DiffAdded { .. }
+                | LqFilter::DiffRemoved { .. }
+                | LqFilter::DiffTouched { .. }
                 | LqFilter::Content { .. } => Ok(()),
                 LqFilter::Repo { .. }
                 | LqFilter::Lang { .. }
                 | LqFilter::Select { .. }
                 | LqFilter::Dirty { .. }
+                | LqFilter::Changed { .. }
+                | LqFilter::Stale { .. }
+                | LqFilter::Snapshot { .. }
+                | LqFilter::MetaOwner { .. }
+                | LqFilter::MetaService { .. }
+                | LqFilter::MetaLayer { .. }
+                | LqFilter::MetaSurface { .. }
+                | LqFilter::Affected { .. }
+                | LqFilter::InvalidatedBy { .. }
                 | LqFilter::Fork { .. }
                 | LqFilter::Archived { .. }
                 | LqFilter::Visibility { .. }
@@ -1046,13 +1119,32 @@ impl ExecutableTextPlanePolicy {
             },
             Self::RuntimeMetadata => match filter {
                 LqFilter::Dirty { mode } => {
-                    state.saw_dirty = true;
-                    if matches!(mode, LqYesNoOnly::No) {
-                        return Err(CoreError::NotImplemented(
-                            "runtime metadata: dirty:no is not executable without a clean-document universe"
-                                .to_string(),
-                        ));
+                    state.saw_runtime_authority_filter = true;
+                    if matches!(mode, LqYesNoOnly::Only) {
+                        return Err(runtime_dirty_only_unsupported());
                     }
+                    Ok(())
+                }
+                LqFilter::Changed { scope } => {
+                    state.saw_runtime_authority_filter = true;
+                    let _ = parse_runtime_changed_scope_ms(scope)?;
+                    Ok(())
+                }
+                LqFilter::Stale { scope } => {
+                    state.saw_runtime_authority_filter = true;
+                    let _ = parse_runtime_stale_scope_ms(scope)?;
+                    Ok(())
+                }
+                LqFilter::Snapshot { .. }
+                | LqFilter::MetaOwner { .. }
+                | LqFilter::MetaService { .. }
+                | LqFilter::MetaLayer { .. }
+                | LqFilter::MetaSurface { .. } => {
+                    state.saw_runtime_authority_filter = true;
+                    Ok(())
+                }
+                LqFilter::Affected { .. } | LqFilter::InvalidatedBy { .. } => {
+                    state.saw_runtime_authority_filter = true;
                     Ok(())
                 }
                 LqFilter::File { .. } | LqFilter::Lang { .. } | LqFilter::Content { .. } => {
@@ -1063,6 +1155,13 @@ impl ExecutableTextPlanePolicy {
                 | LqFilter::Author { .. }
                 | LqFilter::Committer { .. }
                 | LqFilter::Message { .. }
+                | LqFilter::Before { .. }
+                | LqFilter::After { .. }
+                | LqFilter::Since { .. }
+                | LqFilter::Until { .. }
+                | LqFilter::DiffAdded { .. }
+                | LqFilter::DiffRemoved { .. }
+                | LqFilter::DiffTouched { .. }
                 | LqFilter::Type { .. }
                 | LqFilter::Select { .. }
                 | LqFilter::Fork { .. }
@@ -1080,9 +1179,10 @@ impl ExecutableTextPlanePolicy {
         match self {
             Self::History => Ok(()),
             Self::RuntimeMetadata => {
-                if !state.saw_dirty {
+                if !state.saw_runtime_authority_filter {
                     return Err(CoreError::InvalidContract(
-                        "runtime metadata: dirty:{yes|only} filter is required".to_string(),
+                        "runtime metadata: at least one runtime authority filter is required (dirty/changed/stale/snapshot/meta.*/affected/invalidated_by)"
+                            .to_string(),
                     ));
                 }
                 Ok(())
@@ -1106,17 +1206,66 @@ fn validate_executable_text_query(
         policy.validate_filter(filter, &mut state)?;
     }
     policy.finalize(state)?;
-    validate_executable_text_surface(&query.expr, policy.plane_name())?;
+    validate_executable_text_surface(&query.expr, policy)?;
     for filter in &query.filters {
         if let LqFilter::Content { leaf } = filter {
-            validate_leaf_surface(leaf, policy.plane_name())?;
+            validate_leaf_surface(leaf, policy)?;
         }
     }
     Ok(())
 }
 
 fn validate_history_query(query: &LqQuery) -> Result<(), CoreError> {
-    validate_executable_text_query(query, ExecutableTextPlanePolicy::History)
+    validate_executable_text_query(query, ExecutableTextPlanePolicy::History)?;
+    validate_history_timeref_filters(query)?;
+    let _ = resolve_history_query_kind(query)?;
+    Ok(())
+}
+
+fn validate_history_timeref_filters(query: &LqQuery) -> Result<(), CoreError> {
+    for filter in &query.filters {
+        let timeref = match filter {
+            LqFilter::Before { timeref }
+            | LqFilter::After { timeref }
+            | LqFilter::Since { timeref }
+            | LqFilter::Until { timeref } => timeref.as_str(),
+            LqFilter::Repo { .. }
+            | LqFilter::File { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. }
+            | LqFilter::Content { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => continue,
+        };
+        match filter {
+            LqFilter::Since { timeref } => validate_history_since_timeref(timeref)?,
+            LqFilter::Before { .. } | LqFilter::After { .. } | LqFilter::Until { .. } => {
+                let _ = parse_history_timeref_ms(timeref)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 #[expect(
@@ -1178,7 +1327,7 @@ fn ensure_history_shards_ready(
     state: &HistoryAuthorityState,
     query: &LqQuery,
 ) -> Result<(), CoreError> {
-    let requirements = history_shard_requirements(query);
+    let requirements = history_shard_requirements(query)?;
     if requirements.commits && !state.commits_materialized() {
         return Err(history_shard_unavailable(
             "history: commit shard is unavailable for the requested query",
@@ -1202,20 +1351,17 @@ fn ensure_history_shards_ready(
     Ok(())
 }
 
-fn history_shard_requirements(query: &LqQuery) -> HistoryShardRequirements {
-    let mut requirements = match history_query_type(query) {
-        Some(LqType::Commit) => HistoryShardRequirements {
+fn history_shard_requirements(query: &LqQuery) -> Result<HistoryShardRequirements, CoreError> {
+    let mut requirements = match resolve_history_query_kind(query)? {
+        HistoryQueryKind::Commit => HistoryShardRequirements {
             commits: true,
             ..HistoryShardRequirements::default()
         },
-        Some(LqType::Diff) | None => HistoryShardRequirements {
+        HistoryQueryKind::Diff => HistoryShardRequirements {
             commits: true,
             diff_hunks: true,
             ..HistoryShardRequirements::default()
         },
-        Some(LqType::File | LqType::Path | LqType::Symbol | LqType::Repo) => {
-            HistoryShardRequirements::default()
-        }
     };
     for filter in &query.filters {
         if let LqFilter::Rev { spec } = filter
@@ -1225,7 +1371,7 @@ fn history_shard_requirements(query: &LqQuery) -> HistoryShardRequirements {
             requirements.tags = true;
         }
     }
-    requirements
+    Ok(requirements)
 }
 
 fn history_shard_unavailable(message: impl Into<String>) -> CoreError {
@@ -1235,8 +1381,116 @@ fn history_shard_unavailable(message: impl Into<String>) -> CoreError {
     }
 }
 
+fn history_invalid_request(message: impl Into<String>) -> CoreError {
+    CoreError::InvalidContract(message.into())
+}
+
 fn validate_runtime_metadata_query(query: &LqQuery) -> Result<(), CoreError> {
-    validate_executable_text_query(query, ExecutableTextPlanePolicy::RuntimeMetadata)
+    validate_executable_text_query(query, ExecutableTextPlanePolicy::RuntimeMetadata)?;
+    if runtime_query_requires_catalog(query) {
+        // Scope parsing for changed/stale is validated in validate_filter; this
+        // pass is reserved for future cross-filter catalog constraints.
+    }
+    Ok(())
+}
+
+fn runtime_query_requires_catalog(query: &LqQuery) -> bool {
+    query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::Changed { .. }
+                | LqFilter::Stale { .. }
+                | LqFilter::Snapshot { .. }
+                | LqFilter::MetaOwner { .. }
+                | LqFilter::MetaService { .. }
+                | LqFilter::MetaLayer { .. }
+                | LqFilter::MetaSurface { .. }
+                | LqFilter::Affected { .. }
+                | LqFilter::InvalidatedBy { .. }
+        )
+    })
+}
+
+fn ensure_runtime_catalog_ready(state: &RuntimeMetadataState) -> Result<(), CoreError> {
+    if state.catalog_materialized() {
+        Ok(())
+    } else {
+        Err(CoreError::Typed {
+            code: ERR_RUNTIME_CATALOG_NOT_READY.to_string(),
+            message: "runtime metadata: catalog is not materialized for the pinned generation"
+                .to_string(),
+        })
+    }
+}
+
+fn runtime_invalid_scope(message: impl Into<String>) -> CoreError {
+    CoreError::Typed {
+        code: ERR_RUNTIME_INVALID_SCOPE.to_string(),
+        message: message.into(),
+    }
+}
+
+fn runtime_dirty_only_unsupported() -> CoreError {
+    CoreError::Typed {
+        code: ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED.to_string(),
+        message:
+            "runtime metadata: dirty:only is not executable on the current runtime-doc surface"
+                .to_string(),
+    }
+}
+
+fn runtime_catalog_head_missing(field: &str) -> CoreError {
+    CoreError::Typed {
+        code: ERR_RUNTIME_CATALOG_HEAD_MISSING.to_string(),
+        message: format!("runtime metadata: catalog field `{field}` is not materialized"),
+    }
+}
+
+fn runtime_snapshot_unknown(name: &str) -> CoreError {
+    CoreError::Typed {
+        code: ERR_SNAPSHOT_UNKNOWN.to_string(),
+        message: format!("runtime metadata: snapshot `{name}` is unknown in the pinned catalog"),
+    }
+}
+
+fn ensure_runtime_snapshot_names_known(
+    query: &LqQuery,
+    state: &RuntimeMetadataState,
+) -> Result<(), CoreError> {
+    for filter in &query.filters {
+        if let LqFilter::Snapshot { name } = filter
+            && !state.snapshots().contains_key(name.as_str())
+        {
+            return Err(runtime_snapshot_unknown(name));
+        }
+    }
+    Ok(())
+}
+
+fn parse_runtime_changed_scope_ms(scope: &str) -> Result<u64, CoreError> {
+    let Some(timeref) = scope.strip_prefix("since=") else {
+        return Err(runtime_invalid_scope(format!(
+            "runtime metadata: changed scope `{scope}` must use since=<timeref>"
+        )));
+    };
+    parse_history_timeref_ms(timeref).map_err(|_| {
+        runtime_invalid_scope(format!(
+            "runtime metadata: changed scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration"
+        ))
+    })
+}
+
+fn parse_runtime_stale_scope_ms(scope: &str) -> Result<u64, CoreError> {
+    let Some(timeref) = scope.strip_prefix("before=") else {
+        return Err(runtime_invalid_scope(format!(
+            "runtime metadata: stale scope `{scope}` must use before=<timeref>"
+        )));
+    };
+    parse_history_timeref_ms(timeref).map_err(|_| {
+        runtime_invalid_scope(format!(
+            "runtime metadata: stale scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration"
+        ))
+    })
 }
 
 fn lower_structural_query_request(
@@ -1390,6 +1644,158 @@ fn reject_typed_structural_hole_name(
 
 type StructuralCandidateBuckets = BTreeMap<String, Vec<StructuralMatchCandidate>>;
 
+struct LexicalSubexprEvaluator<'a> {
+    dispatcher: &'a SearchPlaneDispatcher,
+    pin: &'a GenerationPin,
+    query: &'a LqQuery,
+}
+
+impl LexicalSubexprEvaluator<'_> {
+    fn evaluate(&self, expr: &LqExpr) -> Result<StructuralCandidateBuckets, CoreError> {
+        let mut options = self.query.options.clone();
+        if options.pattern_type == LqPatternType::Structural {
+            options.pattern_type = LqPatternType::Standard;
+        }
+        let subquery = LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr: expr.clone(),
+            filters: self.query.filters.clone(),
+            directives: self.query.directives.clone(),
+            options,
+            source_span: self.query.source_span,
+        };
+        LexicalPolicy::validate_query(&subquery)?;
+        let materialized = self
+            .dispatcher
+            .snapshot_lex_materialized(&self.pin.repo_id, &self.pin.revision_id)?;
+        LexicalPolicy::validate_query_against_readiness(
+            self.pin.manifest_generation,
+            materialized,
+        )?;
+        let searcher = self.dispatcher.lex_opener.open(
+            &self.pin.repo_id,
+            &self.pin.revision_id,
+            self.pin.manifest_generation,
+        )?;
+        let results = searcher.search_all(&subquery)?;
+        Ok(lexical_hits_to_structural_buckets(results))
+    }
+}
+
+fn lexical_hits_to_structural_buckets(
+    results: Vec<LexicalCandidate>,
+) -> StructuralCandidateBuckets {
+    let mut buckets = StructuralCandidateBuckets::new();
+    for hit in results {
+        buckets
+            .entry(hit.candidate_id.clone())
+            .or_default()
+            .push(StructuralMatchCandidate {
+                candidate_id: hit.candidate_id,
+                pattern_start_byte: 0,
+                pattern_end_byte: 0,
+                bindings: Vec::new(),
+            });
+    }
+    for bucket in buckets.values_mut() {
+        normalize_structural_match_bucket(bucket);
+    }
+    buckets
+}
+
+fn compile_structural_filter_regex(
+    filter_name: &str,
+    pattern: &str,
+) -> Result<RegexExecutor, CoreError> {
+    RegexExecutor::compile(pattern).map_err(|err| {
+        structural_invalid_request(format!(
+            "{filter_name} filter pattern failed to compile as regex: {err}"
+        ))
+    })
+}
+
+fn repo_matches_structural_filters(
+    pin: &GenerationPin,
+    filters: &[StructuralExecutableFilter],
+) -> Result<bool, CoreError> {
+    for filter in filters {
+        if let StructuralExecutableFilter::RepoRegexNoRev { pattern } = filter {
+            let executor = compile_structural_filter_regex("repo", pattern)?;
+            if !executor.verify(pin.repo_id.as_str().as_bytes()) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn chunk_matches_structural_filters(
+    chunk: &ChunkRecord,
+    filters: &[StructuralExecutableFilter],
+) -> Result<bool, CoreError> {
+    for filter in filters {
+        match filter {
+            StructuralExecutableFilter::RepoRegexNoRev { .. } => {}
+            StructuralExecutableFilter::FileRegex { pattern, scope } => {
+                let executor = compile_structural_filter_regex("file", pattern)?;
+                let path = chunk.repo_relative_path.as_str();
+                let path_match = executor.verify(path.as_bytes());
+                let matched = match scope {
+                    LqFileScope::PathOnly => path_match,
+                    LqFileScope::NameAndPath => {
+                        path_match
+                            || path
+                                .rsplit('/')
+                                .next()
+                                .is_some_and(|name| executor.verify(name.as_bytes()))
+                    }
+                };
+                if !matched {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn build_pinned_structural_universe(
+    pin: &GenerationPin,
+    structural_state: &StructuralAuthorityState,
+    requested_lang: Option<&str>,
+    filters: &[StructuralExecutableFilter],
+) -> Result<StructuralCandidateBuckets, CoreError> {
+    if !repo_matches_structural_filters(pin, filters)? {
+        return Ok(StructuralCandidateBuckets::new());
+    }
+    let mut buckets = StructuralCandidateBuckets::new();
+    for (chunk_id, chunk) in structural_state.chunks() {
+        if let Some(lang) = requested_lang
+            && chunk.language.as_str() != lang
+        {
+            continue;
+        }
+        if !chunk_matches_structural_filters(chunk, filters)? {
+            continue;
+        }
+        let candidate_id = chunk_id.as_str().to_string();
+        let _prior =
+            buckets
+                .entry(candidate_id.clone())
+                .or_default()
+                .push(StructuralMatchCandidate {
+                    candidate_id,
+                    pattern_start_byte: chunk.start_byte,
+                    pattern_end_byte: chunk.end_byte,
+                    bindings: Vec::new(),
+                });
+    }
+    for bucket in buckets.values_mut() {
+        normalize_structural_match_bucket(bucket);
+    }
+    Ok(buckets)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct StructuralLeafExecutionKey {
     pattern: LqStructuralBlock,
@@ -1411,15 +1817,47 @@ struct StructuralEvalContext {
     leaf_cache: StructuralLeafCache,
 }
 
-fn extract_structural_requested_lang(expr: &LqExpr) -> Result<Option<String>, CoreError> {
+fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
+    match expr {
+        LqExpr::Empty => false,
+        LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => true,
+        LqExpr::Leaf(_) => false,
+        LqExpr::Not(inner) => structural_expr_has_structural_leaf(inner),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            children.iter().any(structural_expr_has_structural_leaf)
+        }
+    }
+}
+
+fn structural_expr_has_non_structural_leaf(expr: &LqExpr) -> bool {
+    match expr {
+        LqExpr::Empty => false,
+        LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => false,
+        LqExpr::Leaf(_) => true,
+        LqExpr::Not(inner) => structural_expr_has_non_structural_leaf(inner),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            children.iter().any(structural_expr_has_non_structural_leaf)
+        }
+    }
+}
+
+fn structural_expr_is_pure_negative_root(expr: &LqExpr) -> bool {
+    matches!(expr, LqExpr::Not(_))
+}
+
+fn extract_structural_requested_lang(
+    expr: &LqExpr,
+    allow_lexical_leaves: bool,
+) -> Result<Option<String>, CoreError> {
     let mut requested_lang = None;
-    collect_structural_requested_lang(expr, &mut requested_lang)?;
+    collect_structural_requested_lang(expr, &mut requested_lang, allow_lexical_leaves)?;
     Ok(requested_lang)
 }
 
 fn collect_structural_requested_lang(
     expr: &LqExpr,
     requested_lang: &mut Option<String>,
+    allow_lexical_leaves: bool,
 ) -> Result<(), CoreError> {
     match expr {
         LqExpr::Empty => Err(structural_invalid_request(
@@ -1428,10 +1866,18 @@ fn collect_structural_requested_lang(
         LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
             merge_structural_requested_lang(requested_lang, block.lang.as_deref())
         }
-        LqExpr::Leaf(_) => Err(structural_invalid_request(
-            "query must lower to a structural-only boolean tree of `match { ... }` leaves",
-        )),
-        LqExpr::Not(inner) => collect_structural_requested_lang(inner, requested_lang),
+        LqExpr::Leaf(_) => {
+            if allow_lexical_leaves {
+                Ok(())
+            } else {
+                Err(structural_invalid_request(
+                    "query must lower to a structural-only boolean tree of `match { ... }` leaves",
+                ))
+            }
+        }
+        LqExpr::Not(inner) => {
+            collect_structural_requested_lang(inner, requested_lang, allow_lexical_leaves)
+        }
         LqExpr::All(children) | LqExpr::Any(children) => {
             if children.is_empty() {
                 return Err(structural_invalid_request(
@@ -1439,7 +1885,7 @@ fn collect_structural_requested_lang(
                 ));
             }
             for child in children {
-                collect_structural_requested_lang(child, requested_lang)?;
+                collect_structural_requested_lang(child, requested_lang, allow_lexical_leaves)?;
             }
             Ok(())
         }
@@ -1476,6 +1922,7 @@ fn evaluate_structural_expr(
     filters: &[StructuralExecutableFilter],
     options: &LqOptions,
     seed: Option<&StructuralCandidateBuckets>,
+    lexical_eval: Option<&LexicalSubexprEvaluator<'_>>,
 ) -> Result<StructuralCandidateBuckets, CoreError> {
     match expr {
         LqExpr::Empty => Err(structural_invalid_request(
@@ -1491,9 +1938,14 @@ fn evaluate_structural_expr(
             options,
             seed,
         ),
-        LqExpr::Leaf(_) => Err(structural_invalid_request(
-            "query must lower to a structural-only boolean tree of `match { ... }` leaves",
-        )),
+        LqExpr::Leaf(_) => {
+            let Some(evaluator) = lexical_eval else {
+                return Err(structural_invalid_request(
+                    "query must lower to a structural-only boolean tree of `match { ... }` leaves",
+                ));
+            };
+            evaluator.evaluate(expr)
+        }
         LqExpr::Not(inner) => {
             let Some(seed) = seed else {
                 return Err(structural_invalid_request(
@@ -1509,6 +1961,7 @@ fn evaluate_structural_expr(
                 filters,
                 options,
                 Some(seed),
+                lexical_eval,
             )?;
             Ok(subtract_structural_buckets(seed, &blocked))
         }
@@ -1531,6 +1984,7 @@ fn evaluate_structural_expr(
                     filters,
                     options,
                     seed,
+                    lexical_eval,
                 )?;
                 for child in positives {
                     let next = evaluate_structural_expr(
@@ -1542,6 +1996,7 @@ fn evaluate_structural_expr(
                         filters,
                         options,
                         Some(&current),
+                        lexical_eval,
                     )?;
                     current = intersect_structural_buckets(&current, &next);
                     if current.is_empty() {
@@ -1567,6 +2022,7 @@ fn evaluate_structural_expr(
                         filters,
                         options,
                         Some(&current),
+                        lexical_eval,
                     )?;
                     if current.is_empty() {
                         return Ok(current);
@@ -1592,6 +2048,7 @@ fn evaluate_structural_expr(
                     filters,
                     options,
                     seed,
+                    lexical_eval,
                 )?;
                 union = union_structural_buckets(union, child_matches);
             }
@@ -1682,7 +2139,17 @@ fn intersect_structural_buckets(
         let Some(right_matches) = right.get(candidate_id) else {
             continue;
         };
-        let combined = merge_structural_match_sets(candidate_id, left_matches, right_matches);
+        let combined = if left_matches
+            .iter()
+            .all(|candidate| candidate.bindings.is_empty())
+        {
+            vec![merge_structural_identity_matches(
+                candidate_id,
+                right_matches,
+            )]
+        } else {
+            merge_structural_match_sets(candidate_id, left_matches, right_matches)
+        };
         if !combined.is_empty() {
             let _prior = merged.insert(candidate_id.clone(), combined);
         }
@@ -1715,6 +2182,35 @@ fn subtract_structural_buckets(
         }
     }
     remaining
+}
+
+fn merge_structural_identity_matches(
+    candidate_id: &str,
+    matches: &[StructuralMatchCandidate],
+) -> StructuralMatchCandidate {
+    let mut bindings = Vec::new();
+    let mut pattern_start_byte = matches
+        .first()
+        .map_or(0, |candidate| candidate.pattern_start_byte);
+    let mut pattern_end_byte = matches
+        .first()
+        .map_or(0, |candidate| candidate.pattern_end_byte);
+    for candidate in matches {
+        pattern_start_byte = pattern_start_byte.min(candidate.pattern_start_byte);
+        pattern_end_byte = pattern_end_byte.min(candidate.pattern_end_byte);
+        for binding in &candidate.bindings {
+            if !bindings.iter().any(|existing| existing == binding) {
+                bindings.push(binding.clone());
+            }
+        }
+    }
+    bindings.sort_by(compare_structural_bindings);
+    StructuralMatchCandidate {
+        candidate_id: candidate_id.to_string(),
+        pattern_start_byte,
+        pattern_end_byte,
+        bindings,
+    }
 }
 
 fn merge_structural_match_sets(
@@ -1824,9 +2320,25 @@ fn extract_structural_filters(
             | LqFilter::Author { .. }
             | LqFilter::Committer { .. }
             | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
             | LqFilter::Type { .. }
             | LqFilter::Select { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Content { .. }
@@ -1851,9 +2363,25 @@ fn structural_filter_label(filter: &LqFilter) -> &'static str {
         LqFilter::Author { .. } => "author",
         LqFilter::Committer { .. } => "committer",
         LqFilter::Message { .. } => "message",
+        LqFilter::Before { .. } => "before",
+        LqFilter::After { .. } => "after",
+        LqFilter::Since { .. } => "since",
+        LqFilter::Until { .. } => "until",
+        LqFilter::DiffAdded { .. } => "diff.added",
+        LqFilter::DiffRemoved { .. } => "diff.removed",
+        LqFilter::DiffTouched { .. } => "diff.touched",
         LqFilter::Type { .. } => "type",
         LqFilter::Select { .. } => "select",
         LqFilter::Dirty { .. } => "dirty",
+        LqFilter::Changed { .. } => "changed",
+        LqFilter::Stale { .. } => "stale",
+        LqFilter::Snapshot { .. } => "snapshot",
+        LqFilter::MetaOwner { .. } => "meta.owner",
+        LqFilter::MetaService { .. } => "meta.service",
+        LqFilter::MetaLayer { .. } => "meta.layer",
+        LqFilter::MetaSurface { .. } => "meta.surface",
+        LqFilter::Affected { .. } => "affected",
+        LqFilter::InvalidatedBy { .. } => "invalidated_by",
         LqFilter::Fork { .. } => "fork",
         LqFilter::Archived { .. } => "archived",
         LqFilter::Content { .. } => "content",
@@ -1954,21 +2482,28 @@ fn map_structural_error(
     }
 }
 
-fn validate_executable_text_surface(expr: &LqExpr, plane: &str) -> Result<(), CoreError> {
+fn validate_executable_text_surface(
+    expr: &LqExpr,
+    policy: ExecutableTextPlanePolicy,
+) -> Result<(), CoreError> {
     match expr {
         LqExpr::Empty => Ok(()),
-        LqExpr::Leaf(leaf) => validate_leaf_surface(leaf, plane),
-        LqExpr::Not(inner) => validate_executable_text_surface(inner, plane),
+        LqExpr::Leaf(leaf) => validate_leaf_surface(leaf, policy),
+        LqExpr::Not(inner) => validate_executable_text_surface(inner, policy),
         LqExpr::All(children) | LqExpr::Any(children) => {
             for child in children {
-                validate_executable_text_surface(child, plane)?;
+                validate_executable_text_surface(child, policy)?;
             }
             Ok(())
         }
     }
 }
 
-fn validate_leaf_surface(leaf: &LqLeaf, plane: &str) -> Result<(), CoreError> {
+fn validate_leaf_surface(
+    leaf: &LqLeaf,
+    policy: ExecutableTextPlanePolicy,
+) -> Result<(), CoreError> {
+    let plane = policy.plane_name();
     match leaf {
         LqLeaf::Keyword(_) | LqLeaf::Phrase(_) | LqLeaf::RawString(_) => Ok(()),
         LqLeaf::Regex(_) => Err(CoreError::NotImplemented(format!(
@@ -1989,8 +2524,9 @@ fn execute_history_query(
     state: &HistoryAuthorityState,
     top_k: u32,
 ) -> Result<(Vec<CommitCandidate>, Vec<DiffCandidate>), CoreError> {
-    let include_commits = !matches!(history_query_type(query), Some(LqType::Diff));
-    let include_diffs = !matches!(history_query_type(query), Some(LqType::Commit));
+    let kind = resolve_history_query_kind(query)?;
+    let include_commits = matches!(kind, HistoryQueryKind::Commit);
+    let include_diffs = matches!(kind, HistoryQueryKind::Diff);
     let limit = top_k_limit(top_k);
     let mut commits = Vec::new();
     let mut diffs = Vec::new();
@@ -2031,15 +2567,20 @@ fn execute_runtime_metadata_query(
 ) -> Result<Vec<quanta_index_contract::LexicalCandidate>, CoreError> {
     let limit = top_k_limit(top_k);
     let mut out = Vec::new();
-    for chunk_id in runtime_state.dirty_docs().keys() {
-        let Some(chunk) = structural_state.chunks().get(chunk_id) else {
+    let seed_ids = runtime_seed_ids(query, runtime_state, structural_state)?;
+    for chunk_id in seed_ids {
+        let chunk = structural_state.chunks().get(&chunk_id).ok_or_else(|| {
+            CoreError::InvalidContract(format!(
+                "runtime metadata: seeded chunk `{}` is missing from lexical chunk authority",
+                chunk_id.as_str()
+            ))
+        })?;
+        if !runtime_chunk_matches(query, runtime_state, &chunk_id, chunk)? {
             continue;
-        };
-        if runtime_candidate_matches(query, chunk)? {
-            out.push(lexical_candidate_from_chunk(pin, chunk));
-            if out.len() >= limit {
-                break;
-            }
+        }
+        out.push(lexical_candidate_from_chunk(pin, chunk));
+        if out.len() >= limit {
+            break;
         }
     }
     Ok(out)
@@ -2052,6 +2593,41 @@ fn history_query_type(query: &LqQuery) -> Option<LqType> {
         }
     }
     None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HistoryQueryKind {
+    Commit,
+    Diff,
+}
+
+fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreError> {
+    let has_diff_only_filters = query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::File { .. }
+                | LqFilter::DiffAdded { .. }
+                | LqFilter::DiffRemoved { .. }
+                | LqFilter::DiffTouched { .. }
+        )
+    });
+    match history_query_type(query) {
+        Some(LqType::Commit) => {
+            if has_diff_only_filters {
+                return Err(history_invalid_request(
+                    "history: `file:` and `diff.*` filters require `type:diff`",
+                ));
+            }
+            Ok(HistoryQueryKind::Commit)
+        }
+        Some(LqType::Diff) => Ok(HistoryQueryKind::Diff),
+        Some(LqType::File | LqType::Path | LqType::Symbol | LqType::Repo) => Err(
+            history_invalid_request("history: only `type:commit` and `type:diff` are executable"),
+        ),
+        None => Err(history_invalid_request(
+            "history: explicit `type:commit` or `type:diff` is required",
+        )),
+    }
 }
 
 fn history_commit_matches(
@@ -2092,10 +2668,44 @@ fn history_commit_matches(
                     return Ok(false);
                 }
             }
+            LqFilter::Before { timeref } => {
+                if !history_committer_time_before(record.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::After { timeref } => {
+                if !history_committer_time_after(record.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Since { timeref } => {
+                if !history_committer_time_since(state, record.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Until { timeref } => {
+                if !history_committer_time_until(record.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => {
+                return Ok(false);
+            }
             LqFilter::Repo { .. }
             | LqFilter::Lang { .. }
             | LqFilter::Select { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Visibility { .. }
@@ -2156,10 +2766,54 @@ fn history_diff_matches(
                     return Ok(false);
                 }
             }
+            LqFilter::Before { timeref } => {
+                if !history_committer_time_before(commit.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::After { timeref } => {
+                if !history_committer_time_after(commit.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Since { timeref } => {
+                if !history_committer_time_since(state, commit.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Until { timeref } => {
+                if !history_committer_time_until(commit.committer_time_ms, timeref)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::DiffAdded { pattern } => {
+                if !matches_text(pattern, record.added_text.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::DiffRemoved { pattern } => {
+                if !matches_text(pattern, record.removed_text.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::DiffTouched { pattern } => {
+                if !matches_text(pattern, record.touched_text.as_ref(), &query.options) {
+                    return Ok(false);
+                }
+            }
             LqFilter::Repo { .. }
             | LqFilter::Lang { .. }
             | LqFilter::Select { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Visibility { .. }
@@ -2172,11 +2826,97 @@ fn history_diff_matches(
     })
 }
 
-fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<bool, CoreError> {
+fn runtime_chunk_matches(
+    query: &LqQuery,
+    runtime_state: &RuntimeMetadataState,
+    chunk_id: &quanta_index_contract::ChunkId,
+    chunk: &ChunkRecord,
+) -> Result<bool, CoreError> {
     for filter in &query.filters {
         match filter {
             LqFilter::Dirty { mode } => {
-                if matches!(mode, LqYesNoOnly::No) {
+                let in_dirty = runtime_state.dirty_docs().contains_key(chunk_id);
+                match mode {
+                    LqYesNoOnly::No => {
+                        if in_dirty {
+                            return Ok(false);
+                        }
+                    }
+                    LqYesNoOnly::Yes => {
+                        if !in_dirty {
+                            return Ok(false);
+                        }
+                    }
+                    LqYesNoOnly::Only => return Err(runtime_dirty_only_unsupported()),
+                }
+            }
+            LqFilter::Changed { scope } => {
+                let since_ms = parse_runtime_changed_scope_ms(scope)?;
+                let Some(record) = runtime_state.changed_docs().get(chunk_id) else {
+                    return Ok(false);
+                };
+                if record.applied_at_ms() < since_ms {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Stale { scope } => {
+                let before_ms = parse_runtime_stale_scope_ms(scope)?;
+                if !runtime_generation_is_stale(runtime_state, before_ms)? {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Snapshot { name } => {
+                if let Some(docs) = runtime_state.snapshots().get(name.as_str()) {
+                    if !docs.contains(chunk_id) {
+                        return Ok(false);
+                    }
+                } else {
+                    return Err(runtime_snapshot_unknown(name));
+                }
+            }
+            LqFilter::MetaOwner { id } => {
+                if !runtime_doc_facet_matches(
+                    runtime_state.doc_facets().get(chunk_id),
+                    |facet| facet.owner(),
+                    id,
+                ) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::MetaService { id } => {
+                if !runtime_doc_facet_matches(
+                    runtime_state.doc_facets().get(chunk_id),
+                    |facet| facet.service(),
+                    id,
+                ) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::MetaLayer { id } => {
+                if !runtime_doc_facet_matches(
+                    runtime_state.doc_facets().get(chunk_id),
+                    |facet| facet.layer(),
+                    id,
+                ) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::MetaSurface { id } => {
+                if !runtime_doc_facet_matches(
+                    runtime_state.doc_facets().get(chunk_id),
+                    |facet| facet.surface(),
+                    id,
+                ) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::Affected { scope } => {
+                if !runtime_edge_matches(runtime_state.affected_docs(), scope, chunk_id) {
+                    return Ok(false);
+                }
+            }
+            LqFilter::InvalidatedBy { source } => {
+                if !runtime_edge_matches(runtime_state.invalidated_by_docs(), source, chunk_id) {
                     return Ok(false);
                 }
             }
@@ -2205,6 +2945,13 @@ fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<boo
             | LqFilter::Author { .. }
             | LqFilter::Committer { .. }
             | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
             | LqFilter::Type { .. }
             | LqFilter::Select { .. }
             | LqFilter::Fork { .. }
@@ -2221,6 +2968,170 @@ fn runtime_candidate_matches(query: &LqQuery, chunk: &ChunkRecord) -> Result<boo
             &query.options,
         )
     })
+}
+
+fn runtime_generation_is_stale(
+    runtime_state: &RuntimeMetadataState,
+    before_ms: u64,
+) -> Result<bool, CoreError> {
+    let Some(generation_materialized_at_ms) = runtime_state.generation_materialized_at_ms() else {
+        return Err(runtime_catalog_head_missing(
+            "generation_materialized_at_ms",
+        ));
+    };
+    let Some(producer_head_applied_at_ms) = runtime_state.producer_head_applied_at_ms() else {
+        return Err(runtime_catalog_head_missing("producer_head_applied_at_ms"));
+    };
+    Ok(producer_head_applied_at_ms > generation_materialized_at_ms
+        && generation_materialized_at_ms < before_ms)
+}
+
+fn runtime_seed_ids(
+    query: &LqQuery,
+    runtime_state: &RuntimeMetadataState,
+    structural_state: &StructuralAuthorityState,
+) -> Result<BTreeSet<ChunkId>, CoreError> {
+    let full_generation = structural_state
+        .chunks()
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut seed: Option<BTreeSet<ChunkId>> = None;
+    for filter in &query.filters {
+        let next = match filter {
+            LqFilter::Dirty { mode } => match mode {
+                LqYesNoOnly::Yes => Some(
+                    runtime_state
+                        .dirty_docs()
+                        .keys()
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                ),
+                LqYesNoOnly::No => Some(
+                    full_generation
+                        .iter()
+                        .filter(|chunk_id| !runtime_state.dirty_docs().contains_key(*chunk_id))
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                ),
+                LqYesNoOnly::Only => return Err(runtime_dirty_only_unsupported()),
+            },
+            LqFilter::Changed { .. } => Some(
+                runtime_state
+                    .changed_docs()
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            ),
+            LqFilter::Stale { scope } => {
+                let before_ms = parse_runtime_stale_scope_ms(scope)?;
+                Some(if runtime_generation_is_stale(runtime_state, before_ms)? {
+                    full_generation.clone()
+                } else {
+                    BTreeSet::new()
+                })
+            }
+            LqFilter::Snapshot { name } => Some(
+                runtime_state
+                    .snapshots()
+                    .get(name.as_str())
+                    .cloned()
+                    .ok_or_else(|| runtime_snapshot_unknown(name))?,
+            ),
+            LqFilter::MetaOwner { id } => Some(runtime_matching_facet_doc_ids(
+                runtime_state,
+                |facet| facet.owner(),
+                id,
+            )),
+            LqFilter::MetaService { id } => Some(runtime_matching_facet_doc_ids(
+                runtime_state,
+                |facet| facet.service(),
+                id,
+            )),
+            LqFilter::MetaLayer { id } => Some(runtime_matching_facet_doc_ids(
+                runtime_state,
+                |facet| facet.layer(),
+                id,
+            )),
+            LqFilter::MetaSurface { id } => Some(runtime_matching_facet_doc_ids(
+                runtime_state,
+                |facet| facet.surface(),
+                id,
+            )),
+            LqFilter::Affected { scope } => Some(
+                runtime_state
+                    .affected_docs()
+                    .get(scope.as_str())
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            LqFilter::InvalidatedBy { source } => Some(
+                runtime_state
+                    .invalidated_by_docs()
+                    .get(source.as_str())
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            LqFilter::File { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Content { .. }
+            | LqFilter::Repo { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => None,
+        };
+        if let Some(next) = next {
+            match &mut seed {
+                Some(current) => current.retain(|chunk_id| next.contains(chunk_id)),
+                None => seed = Some(next),
+            }
+        }
+    }
+    Ok(seed.unwrap_or(full_generation))
+}
+
+fn runtime_matching_facet_doc_ids(
+    runtime_state: &RuntimeMetadataState,
+    field: impl Fn(&DocFacetState) -> Option<&str>,
+    expected: &str,
+) -> BTreeSet<ChunkId> {
+    runtime_state
+        .doc_facets()
+        .iter()
+        .filter_map(|(chunk_id, facet)| (field(facet) == Some(expected)).then(|| chunk_id.clone()))
+        .collect()
+}
+
+fn runtime_doc_facet_matches(
+    facet: Option<&DocFacetState>,
+    field: impl Fn(&DocFacetState) -> Option<&str>,
+    expected: &str,
+) -> bool {
+    facet.is_some_and(|facet| field(facet).is_some_and(|value| value == expected))
+}
+
+fn runtime_edge_matches(
+    edges: &BTreeMap<Box<str>, BTreeSet<quanta_index_contract::ChunkId>>,
+    expected: &str,
+    chunk_id: &quanta_index_contract::ChunkId,
+) -> bool {
+    edges
+        .get(expected)
+        .is_some_and(|doc_ids| doc_ids.contains(chunk_id))
 }
 
 fn expr_matches<F>(expr: &LqExpr, leaf_matches: &mut F) -> Result<bool, CoreError>
@@ -2378,6 +3289,252 @@ fn top_k_limit(top_k: u32) -> usize {
 
 fn unix_seconds_from_ms(ms: u64) -> i64 {
     i64::try_from(ms.div_euclid(1_000)).map_or(i64::MAX, core::convert::identity)
+}
+
+fn history_invalid_timeref(message: impl Into<String>) -> CoreError {
+    CoreError::Typed {
+        code: ERR_HISTORY_INVALID_TIMEREF.to_string(),
+        message: message.into(),
+    }
+}
+
+fn history_committer_time_before(committer_time_ms: u64, timeref: &str) -> Result<bool, CoreError> {
+    let boundary_ms = parse_history_timeref_ms(timeref)?;
+    Ok(committer_time_ms < boundary_ms)
+}
+
+fn history_committer_time_after(committer_time_ms: u64, timeref: &str) -> Result<bool, CoreError> {
+    let boundary_ms = parse_history_timeref_ms(timeref)?;
+    Ok(committer_time_ms > boundary_ms)
+}
+
+fn history_committer_time_since(
+    state: &HistoryAuthorityState,
+    committer_time_ms: u64,
+    timeref: &str,
+) -> Result<bool, CoreError> {
+    let boundary_ms = resolve_history_since_timeref_ms(state, timeref)?;
+    Ok(committer_time_ms >= boundary_ms)
+}
+
+fn history_committer_time_until(committer_time_ms: u64, timeref: &str) -> Result<bool, CoreError> {
+    let boundary_ms = parse_history_timeref_ms(timeref)?;
+    Ok(committer_time_ms <= boundary_ms)
+}
+
+fn parse_history_timeref_ms(value: &str) -> Result<u64, CoreError> {
+    if let Some(ms) = parse_rfc3339_timeref_ms(value) {
+        return Ok(ms);
+    }
+    if let Some(ms) = parse_duration_timeref_ms(value) {
+        return Ok(ms);
+    }
+    Err(history_invalid_timeref(format!(
+        "history: timeref `{value}` is not a valid RFC3339 timestamp or duration"
+    )))
+}
+
+fn validate_history_since_timeref(timeref: &str) -> Result<(), CoreError> {
+    if let Some(spec) = timeref.strip_prefix("commit:") {
+        if spec.is_empty() {
+            return Err(history_invalid_timeref(
+                "history: since.commit requires a non-empty commit/ref/tag spec",
+            ));
+        }
+        return Ok(());
+    }
+    let timeref = timeref.strip_prefix("time:").unwrap_or(timeref);
+    let _ = parse_history_timeref_ms(timeref)?;
+    Ok(())
+}
+
+fn resolve_history_since_timeref_ms(
+    state: &HistoryAuthorityState,
+    timeref: &str,
+) -> Result<u64, CoreError> {
+    if let Some(spec) = timeref.strip_prefix("commit:") {
+        return resolve_history_commit_timeref_ms(state, spec);
+    }
+    let timeref = timeref.strip_prefix("time:").unwrap_or(timeref);
+    parse_history_timeref_ms(timeref)
+}
+
+fn resolve_history_commit_timeref_ms(
+    state: &HistoryAuthorityState,
+    spec: &str,
+) -> Result<u64, CoreError> {
+    if let Ok(sha) = CommitSha::from_hex(spec)
+        && let Some(record) = state.commits().get(&sha)
+    {
+        return Ok(record.committer_time_ms);
+    }
+    if let Some(sha) = state.refs().get(spec)
+        && let Some(record) = state.commits().get(sha)
+    {
+        return Ok(record.committer_time_ms);
+    }
+    if let Some(sha) = state.tags().get(spec)
+        && let Some(record) = state.commits().get(sha)
+    {
+        return Ok(record.committer_time_ms);
+    }
+    Err(history_invalid_timeref(format!(
+        "history: since.commit `{spec}` does not resolve to a materialized commit"
+    )))
+}
+
+fn parse_rfc3339_timeref_ms(value: &str) -> Option<u64> {
+    if let Some(ms) = parse_rfc3339_datetime_ms(value) {
+        return Some(ms);
+    }
+    parse_rfc3339_date_only_ms(value)
+}
+
+fn parse_rfc3339_date_only_ms(value: &str) -> Option<u64> {
+    let (year, rest) = parse_year_prefix(value)?;
+    let (month, day, rest) = parse_month_day(rest)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    unix_ms_from_utc_parts(year, month, day, 0, 0, 0, 0)
+}
+
+fn parse_rfc3339_datetime_ms(value: &str) -> Option<u64> {
+    let (year, rest) = parse_year_prefix(value)?;
+    let (month, day, rest) = parse_month_day(rest)?;
+    if !rest.starts_with('T') {
+        return None;
+    }
+    let rest = &rest[1..];
+    let (hour, minute, second, fraction_ms, rest) = parse_time_of_day(rest)?;
+    if rest != "Z" {
+        return None;
+    }
+    unix_ms_from_utc_parts(year, month, day, hour, minute, second, fraction_ms)
+}
+
+fn parse_year_prefix(value: &str) -> Option<(u32, &str)> {
+    if value.len() < 5 || !value.as_bytes().get(4).is_some_and(|b| *b == b'-') {
+        return None;
+    }
+    let year = value.get(..4)?.parse().ok()?;
+    Some((year, &value[5..]))
+}
+
+fn parse_month_day(rest: &str) -> Option<(u32, u32, &str)> {
+    if rest.len() < 5 || !rest.as_bytes().get(2).is_some_and(|b| *b == b'-') {
+        return None;
+    }
+    let month = rest.get(..2)?.parse().ok()?;
+    let day = rest.get(3..5)?.parse().ok()?;
+    Some((month, day, &rest[5..]))
+}
+
+fn parse_time_of_day(rest: &str) -> Option<(u32, u32, u32, u32, &str)> {
+    if rest.len() < 8 || rest.as_bytes().get(2) != Some(&b':') {
+        return None;
+    }
+    let hour = rest.get(..2)?.parse().ok()?;
+    if rest.as_bytes().get(5) != Some(&b':') {
+        return None;
+    }
+    let minute = rest.get(3..5)?.parse().ok()?;
+    let mut second_end = 6;
+    while second_end < rest.len() && rest.as_bytes()[second_end].is_ascii_digit() {
+        second_end += 1;
+    }
+    let second = rest.get(6..second_end)?.parse().ok()?;
+    let mut fraction_ms = 0u32;
+    let mut tail = &rest[second_end..];
+    if tail.starts_with('.') {
+        tail = &tail[1..];
+        let mut digits = 0u32;
+        let mut places = 0u32;
+        for ch in tail.chars() {
+            if !ch.is_ascii_digit() {
+                break;
+            }
+            digits = digits
+                .saturating_mul(10)
+                .saturating_add(u32::from(ch as u8 - b'0'));
+            places += 1;
+            tail = &tail[ch.len_utf8()..];
+        }
+        if places == 0 {
+            return None;
+        }
+        while places < 3 {
+            digits = digits.saturating_mul(10);
+            places += 1;
+        }
+        fraction_ms = digits;
+    }
+    Some((hour, minute, second, fraction_ms, tail))
+}
+
+fn unix_ms_from_utc_parts(
+    year: u32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    fraction_ms: u32,
+) -> Option<u64> {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    let seconds = u64::from(days)
+        .saturating_mul(86_400)
+        .saturating_add(u64::from(hour) * 3_600)
+        .saturating_add(u64::from(minute) * 60)
+        .saturating_add(u64::from(second));
+    seconds
+        .checked_mul(1_000)?
+        .checked_add(u64::from(fraction_ms))
+}
+
+fn days_from_civil(year: u32, month: u32, day: u32) -> Option<u32> {
+    let mut y = i64::from(year);
+    let m = i64::from(month);
+    y -= i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2).div_euclid(5) + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe.div_euclid(4) - yoe.div_euclid(100) + doy;
+    u32::try_from(era * 146_097 + doe - 719_468).ok()
+}
+
+fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
+    let split_at = value.as_bytes().iter().position(|b| !b.is_ascii_digit())?;
+    let (digits, unit) = value.split_at(split_at);
+    if digits.is_empty() {
+        return None;
+    }
+    let amount: u64 = digits.parse().ok()?;
+    let unit_ms = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "w" => 604_800_000,
+        "mo" => 2_592_000_000,
+        "y" => 31_536_000_000,
+        _ => return None,
+    };
+    let duration_ms = amount.checked_mul(unit_ms)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let now_ms = u64::try_from(now_ms).ok()?;
+    now_ms.checked_sub(duration_ms)
 }
 
 fn resolve_generation_selector_pin(
@@ -2741,25 +3898,33 @@ pub fn make_pin(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
         BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
-        ERR_HISTORY_SHARD_UNAVAILABLE, ERR_NOT_IMPLEMENTED, FailClosedStructuralProducer,
-        QueryObsSink, SearchPlaneDispatcher, classify_error_metric_name, make_pin,
+        ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID, ERR_NOT_IMPLEMENTED,
+        ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED, FailClosedStructuralProducer, QueryObsSink,
+        SearchPlaneDispatcher, classify_error_metric_name, make_pin, runtime_generation_is_stale,
+        runtime_seed_ids, validate_history_query, validate_runtime_metadata_query,
     };
     use crate::{
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
         SEARCH_OWNED_SEMANTIC_DIMENSION,
     };
-    use quanta_index_contract::channel::LexicalChannelOp;
-    use quanta_index_contract::lex::{CommitRecord, CommitSha, SymbolKindCode, SymbolKindFamily};
+    use quanta_index_contract::channel::{LexicalChannelOp, UpsertChunk};
+    use quanta_index_contract::lex::{
+        CommitRecord, CommitSha, DirtyRecord, LanguageCode, SymbolKindCode, SymbolKindFamily,
+    };
     use quanta_index_contract::{
-        GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-        LexicalCandidate, ManifestGeneration, RepoId, RepoMapDocType, RepoMapEntryDto,
-        RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
-        RepoMapQueryRequest, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
-        RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
+        ChunkId, ChunkRecord, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSelector,
+        HistoryQueryRequest, HybridQueryRequest, LQ_VERSION_TAG, LexicalCandidate, LqExpr,
+        LqFilter, LqLeaf, LqOptions, LqPredicateArg, LqQuery, LqSpan, LqType, ManifestGeneration,
+        RepoId, RepoMapDocType, RepoMapEntryDto, RepoMapExactnessSummary,
+        RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapQueryRequest,
+        RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta, RepoRelativePath,
+        RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+        RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
         SearchPlaneActivateGenerationRequest, SearchPlaneQueryIpcRequest,
         SearchPlaneQueryIpcResponse, SemanticQueryRequest, SymbolCandidate, TextQueryRequest,
         TextQuerySyntax, UpsertCommit,
@@ -2967,6 +4132,17 @@ mod tests {
         })
     }
 
+    fn manual_query(expr: LqExpr, filters: Vec<LqFilter>) -> LqQuery {
+        LqQuery {
+            lq_version: LQ_VERSION_TAG,
+            expr,
+            filters,
+            directives: Vec::new(),
+            options: LqOptions::defaults(),
+            source_span: LqSpan::synthetic(0),
+        }
+    }
+
     fn history_dispatcher_with_ledger(
         ledger: Arc<RwLock<Ledger>>,
     ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>> {
@@ -2978,6 +4154,34 @@ mod tests {
             ledger,
             test_activation_catalog()?,
         ))
+    }
+
+    fn runtime_metadata_dispatcher_with_ledger(
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>> {
+        Ok(SearchPlaneDispatcher::new(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger,
+            test_activation_catalog()?,
+        ))
+    }
+
+    fn runtime_query_request(
+        syntax: TextQuerySyntax,
+        query_text: &str,
+    ) -> SearchPlaneQueryIpcRequest {
+        SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
+            text_query: TextQueryRequest {
+                syntax,
+                query_text: query_text.to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            },
+        })
     }
 
     fn ledger_with_history_ops(
@@ -3362,6 +4566,73 @@ mod tests {
             .into());
         }
         drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
+        let make_candidate = |id: &str, path: &str, start_line: u32, score: f32| LexicalCandidate {
+            candidate_id: id.to_string(),
+            repo_id: RepoId::new("repo-map-ipc"),
+            revision_id: RevisionId::new("rev-map-ipc"),
+            manifest_generation: ManifestGeneration::new(9),
+            repo_relative_path: RepoRelativePath::new(path),
+            start_line,
+            end_line: start_line,
+            score,
+            snippet: String::new(),
+        };
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(StubLexicalOpener {
+                results: vec![
+                    make_candidate("z-last", "src/z.rs", 1, 0.5),
+                    make_candidate("b-second", "src/b.rs", 1, 1.0),
+                    make_candidate("a-third", "src/a.rs", 2, 1.0),
+                    make_candidate("a-first", "src/a.rs", 1, 1.0),
+                ],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "alpha".into(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+        }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Text(text) => {
+                let observed: Vec<&str> = text
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    .collect();
+                let expected = vec!["a-first", "a-third", "b-second", "z-last"];
+                if observed != expected {
+                    return Err(format!(
+                        "expected stabilized lexical text order {expected:?}, got {observed:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                return Err(format!("expected Text response, got {other:?}").into());
+            }
+        }
         Ok(())
     }
 
@@ -3887,14 +5158,208 @@ mod tests {
     where
         P: StructuralProducerPort + Send + Sync + 'static,
     {
+        structural_dispatcher_with_producer_and_ledger(producer, ready_ledger())
+    }
+
+    fn structural_dispatcher_with_producer_and_ledger<P>(
+        producer: Arc<P>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>>
+    where
+        P: StructuralProducerPort + Send + Sync + 'static,
+    {
         Ok(SearchPlaneDispatcher::new(
             Arc::new(RejectLexicalOpener),
             Arc::new(RejectSemanticOpener),
             Arc::new(StubRepoMapQueryPort),
             producer,
-            ready_ledger(),
+            ledger,
             test_activation_catalog()?,
         ))
+    }
+
+    fn structural_dispatcher_mixed<P>(
+        producer: Arc<P>,
+        lex_opener: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+    ) -> Result<SearchPlaneDispatcher, Box<dyn std::error::Error>>
+    where
+        P: StructuralProducerPort + Send + Sync + 'static,
+    {
+        Ok(SearchPlaneDispatcher::new(
+            lex_opener,
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            producer,
+            ledger,
+            test_activation_catalog()?,
+        ))
+    }
+
+    fn ready_ledger_with_structural_boolean_chunks() -> Arc<RwLock<Ledger>> {
+        let mut ledger = Ledger::default();
+        let repo_id = RepoId::new("repo-map-ipc");
+        let revision_id = RevisionId::new("rev-map-ipc");
+        let generation = ManifestGeneration::new(9);
+        ledger.lexical_seal(generation);
+        ledger.semantic_seal_with_digest(generation, "manifest-digest-9");
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Lexical,
+            generation,
+            None,
+        );
+        ledger.record_track_seal(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Lexical,
+            generation,
+        );
+        ledger.record_track_materialized(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            generation,
+            Some("manifest-digest-9"),
+        );
+        ledger.record_track_seal_with_digest(
+            &repo_id,
+            &revision_id,
+            SearchPlaneTrackKind::Semantic,
+            generation,
+            "manifest-digest-9",
+        );
+        for (chunk_id, path, text) in [
+            ("chunk-a", "src/a.rs", "alpha text"),
+            ("chunk-shared", "src/shared.rs", "alpha beta text"),
+            ("chunk-beta", "src/b.rs", "beta text"),
+        ] {
+            install_structural_test_chunk(&mut ledger, chunk_id, path, text)
+                .expect("structural test chunk install");
+        }
+        Arc::new(RwLock::new(ledger))
+    }
+
+    fn ready_runtime_metadata_ledger(
+        producer_head_applied_at_ms: u64,
+        generation_materialized_at_ms: u64,
+    ) -> Arc<RwLock<Ledger>> {
+        let ledger = ready_ledger();
+        {
+            let mut guard = ledger
+                .write()
+                .expect("runtime metadata test ledger poisoned");
+            for (chunk_id, path, text) in [
+                ("chunk-dirty", "src/dirty.rs", "todo dirty"),
+                ("chunk-clean", "src/clean.rs", "todo clean"),
+                ("chunk-changed", "src/changed.rs", "catalog changed"),
+                ("chunk-stale", "src/stale.rs", "catalog stale"),
+                ("chunk-snapshot", "src/snapshot.rs", "catalog snapshot"),
+                ("chunk-owner", "src/owner.rs", "catalog owner"),
+            ] {
+                install_structural_test_chunk(&mut guard, chunk_id, path, text)
+                    .expect("runtime metadata test chunk install");
+            }
+            guard.apply_runtime_batch(&DirtyIngestBatch {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("rev-map-ipc"),
+                generation: ManifestGeneration::new(9),
+                overlay_epoch_ms: 100,
+                batch_digest: "dirty:test".to_string(),
+                entries: vec![DirtyMutation::Upsert(DirtyRecord {
+                    wire_version: 1,
+                    doc_id: ChunkId::new("chunk-dirty"),
+                    applied_at_ms: 100,
+                    payload_hash: [0x5a; 32],
+                })],
+            });
+            guard
+                .apply_runtime_catalog_batch(&RuntimeCatalogIngestBatch {
+                    repo_id: RepoId::new("repo-map-ipc"),
+                    revision_id: RevisionId::new("rev-map-ipc"),
+                    generation: ManifestGeneration::new(9),
+                    overlay_epoch_ms: 20,
+                    batch_digest: "catalog:test".to_string(),
+                    producer_head_applied_at_ms,
+                    generation_materialized_at_ms,
+                    changed_entries: vec![RuntimeChangedRecord {
+                        doc_id: ChunkId::new("chunk-changed"),
+                        applied_at_ms: 25,
+                        payload_hash: [0xaa; 32],
+                    }],
+                    facet_entries: vec![RuntimeDocFacetRecord {
+                        doc_id: ChunkId::new("chunk-owner"),
+                        owner: Some("team-a".to_string()),
+                        service: Some("search".to_string()),
+                        layer: Some("index".to_string()),
+                        surface: Some("lexical".to_string()),
+                    }],
+                    snapshot_entries: vec![RuntimeSnapshotRecord {
+                        name: "active".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-snapshot")],
+                    }],
+                    affected_entries: vec![RuntimeEdgeAuthorityRecord {
+                        key: "rebuild=lexical".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-changed")],
+                    }],
+                    invalidated_by_entries: vec![RuntimeEdgeAuthorityRecord {
+                        key: "rebuild=lexical".to_string(),
+                        doc_ids: vec![ChunkId::new("chunk-changed")],
+                    }],
+                })
+                .expect("runtime metadata test catalog install");
+        }
+        ledger
+    }
+
+    fn install_structural_test_chunk(
+        ledger: &mut Ledger,
+        chunk_id: &str,
+        path: &str,
+        text: &str,
+    ) -> TestResult {
+        let mut record = structural_test_chunk_record(path, text);
+        record.chunk_id = ChunkId::new(chunk_id);
+        let op = LexicalChannelOp::UpsertChunk(UpsertChunk {
+            repo_id: RepoId::new("repo-map-ipc"),
+            revision_id: RevisionId::new("rev-map-ipc"),
+            generation: ManifestGeneration::new(9),
+            chunk_id: ChunkId::new(chunk_id),
+            payload: encode_cbor(&record)?,
+        });
+        ledger.apply_lexical_authority_op(&op)?;
+        Ok(())
+    }
+
+    fn structural_test_chunk_record(path: &str, text: &str) -> ChunkRecord {
+        ChunkRecord {
+            chunk_id: ChunkId::new("chunk-1"),
+            repo_relative_path: RepoRelativePath::new(path),
+            language: LanguageCode::from_code_str("rust").expect("rust language code"),
+            start_byte: 0,
+            end_byte: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            start_line: 1,
+            end_line: 1,
+            text: text.to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        }
+    }
+
+    fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidate {
+        LexicalCandidate {
+            candidate_id: candidate_id.to_string(),
+            repo_id: RepoId::new("repo-map-ipc"),
+            revision_id: RevisionId::new("rev-map-ipc"),
+            manifest_generation: ManifestGeneration::new(9),
+            repo_relative_path: RepoRelativePath::new("src/a.rs"),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+            snippet: candidate_id.to_string(),
+        }
     }
 
     fn dispatcher_with_obs(
@@ -4167,7 +5632,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_metadata_dispatch_unavailable_emits_closed_obs_metric() -> TestResult {
+    fn runtime_metadata_dispatch_not_ready_emits_closed_obs_metric() -> TestResult {
         let obs_sink = Arc::new(BoundedQueryObsStore::default());
         let dispatcher = dispatcher_with_obs(
             Arc::new(RejectLexicalOpener),
@@ -4179,7 +5644,7 @@ mod tests {
             RuntimeMetadataQueryRequest {
                 text_query: TextQueryRequest {
                     syntax: TextQuerySyntax::Native,
-                    query_text: "dirty:no runtime".to_string(),
+                    query_text: "changed:since=1970-01-01T00:00:00.010Z runtime".to_string(),
                     generation: Some(ready_pin()),
                     generation_selector: None,
                     top_k: 5,
@@ -4188,8 +5653,8 @@ mod tests {
         ));
         let (code, _message) =
             ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != ERR_NOT_IMPLEMENTED {
-            return Err(format!("expected {ERR_NOT_IMPLEMENTED}, got {code}").into());
+        if code != "NOT_READY" {
+            return Err(format!("expected NOT_READY, got {code}").into());
         }
         let names = obs_sink
             .snapshot()
@@ -4198,7 +5663,7 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = vec![
             "lq_query_intake_total".to_string(),
-            "lq_typed_error_unavailable_total".to_string(),
+            "lq_typed_error_not_ready_total".to_string(),
         ];
         if names != expected {
             return Err(format!("unexpected runtime-metadata obs metric names: {names:?}").into());
@@ -4206,6 +5671,159 @@ mod tests {
         let errors = obs_sink.errors();
         if !errors.is_empty() {
             return Err(format!("unexpected runtime-metadata obs errors: {errors:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_dispatch_dirty_only_rejects_typed_error() -> TestResult {
+        let dispatcher =
+            runtime_metadata_dispatcher_with_ledger(ready_runtime_metadata_ledger(100, 20))?;
+        let response = dispatcher.dispatch(runtime_query_request(
+            TextQuerySyntax::Native,
+            "dirty:only todo",
+        ));
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED {
+            return Err(
+                format!("expected {ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED}, got {code}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_dispatch_rejects_predicate_leaf_typed_error() -> TestResult {
+        let dispatcher = runtime_metadata_dispatcher_with_ledger(ready_ledger())?;
+        let response = dispatcher.dispatch(runtime_query_request(
+            TextQuerySyntax::Native,
+            "changed:since=1970-01-01T00:00:00.010Z file.contains('catalog_changed_needle')",
+        ));
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_NOT_IMPLEMENTED {
+            return Err(format!("expected {ERR_NOT_IMPLEMENTED}, got {code}").into());
+        }
+        if !message.contains("runtime metadata: predicate leaves are not executable") {
+            return Err(format!("unexpected predicate-leaf rejection message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_validate_rejects_content_predicate_leaf_upfront() -> TestResult {
+        let query = manual_query(
+            LqExpr::Leaf(LqLeaf::Keyword("catalog".to_string())),
+            vec![
+                LqFilter::Changed {
+                    scope: "since=1970-01-01T00:00:00.010Z".to_string(),
+                },
+                LqFilter::Content {
+                    leaf: LqLeaf::Predicate {
+                        name: "file.contains".to_string(),
+                        args: vec![LqPredicateArg::RawString("catalog".to_string())],
+                    },
+                },
+            ],
+        );
+        match validate_runtime_metadata_query(&query) {
+            Err(CoreError::NotImplemented(message))
+                if message.contains("runtime metadata: predicate leaves are not executable") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("expected predicate content reject, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn runtime_generation_is_stale_requires_producer_head_ahead() -> TestResult {
+        let ledger = ready_runtime_metadata_ledger(20, 20);
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("runtime metadata test ledger poisoned: {err}"))?;
+        let runtime = guard
+            .runtime_state(
+                &RepoId::new("repo-map-ipc"),
+                &RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )
+            .ok_or("missing runtime metadata state")?;
+        if runtime_generation_is_stale(runtime, 30)? {
+            return Err(
+                "stale relation unexpectedly matched when producer head did not advance".into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_seed_ids_use_direct_catalog_sets() -> TestResult {
+        let ledger = ready_runtime_metadata_ledger(100, 20);
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("runtime metadata test ledger poisoned: {err}"))?;
+        let runtime = guard
+            .runtime_state(
+                &RepoId::new("repo-map-ipc"),
+                &RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )
+            .ok_or("missing runtime metadata state")?;
+        let structural = guard
+            .structural_state(
+                &RepoId::new("repo-map-ipc"),
+                &RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )
+            .ok_or("missing structural state")?;
+
+        let changed = runtime_seed_ids(
+            &crate::lower_lexical_text_query(&TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "changed:since=1970-01-01T00:00:00.010Z catalog".to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            })?,
+            runtime,
+            structural,
+        )?;
+        if changed != BTreeSet::from([ChunkId::new("chunk-changed")]) {
+            return Err(format!("unexpected changed seed ids: {changed:?}").into());
+        }
+
+        let clean = runtime_seed_ids(
+            &crate::lower_lexical_text_query(&TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "dirty:no todo".to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            })?,
+            runtime,
+            structural,
+        )?;
+        if clean.contains(&ChunkId::new("chunk-dirty"))
+            || !clean.contains(&ChunkId::new("chunk-clean"))
+        {
+            return Err(format!("unexpected clean-complement seed ids: {clean:?}").into());
+        }
+
+        let affected = runtime_seed_ids(
+            &crate::lower_lexical_text_query(&TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "affected:rebuild=lexical catalog".to_string(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 5,
+            })?,
+            runtime,
+            structural,
+        )?;
+        if affected != BTreeSet::from([ChunkId::new("chunk-changed")]) {
+            return Err(format!("unexpected affected seed ids: {affected:?}").into());
         }
         Ok(())
     }
@@ -4403,7 +6021,14 @@ mod tests {
             ),
             (
                 CoreError::InvalidContract("wire".to_string()),
-                "lq_typed_error_invalid_total",
+                "lq_typed_error_invalid_request_total",
+            ),
+            (
+                CoreError::Typed {
+                    code: ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED.to_string(),
+                    message: "dirty".to_string(),
+                },
+                "lq_typed_error_invalid_request_total",
             ),
             (
                 CoreError::Typed {
@@ -4508,6 +6133,94 @@ mod tests {
             .into());
         }
         Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_rejects_missing_type_with_invalid_request() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
+        let response = dispatcher.dispatch(history_query_request("fix"));
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_INVALID {
+            return Err(format!("expected {ERR_INVALID}, got {code}").into());
+        }
+        if !message.contains("explicit `type:commit` or `type:diff` is required") {
+            return Err(format!("unexpected missing-type rejection message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_rejects_commit_file_filter_with_invalid_request() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
+        let response =
+            dispatcher.dispatch(history_query_request("type:commit file:src/lib.rs fix"));
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_INVALID {
+            return Err(format!("expected {ERR_INVALID}, got {code}").into());
+        }
+        if !message.contains("`file:` and `diff.*` filters require `type:diff`") {
+            return Err(format!("unexpected commit-file rejection message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_rejects_commit_diff_filter_with_invalid_request() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
+        let response =
+            dispatcher.dispatch(history_query_request("type:commit diff.added:history fix"));
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_INVALID {
+            return Err(format!("expected {ERR_INVALID}, got {code}").into());
+        }
+        if !message.contains("`file:` and `diff.*` filters require `type:diff`") {
+            return Err(format!("unexpected commit-diff rejection message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_dispatch_rejects_predicate_leaf_with_not_implemented() -> TestResult {
+        let dispatcher = history_dispatcher_with_ledger(ready_ledger())?;
+        let response =
+            dispatcher.dispatch(history_query_request("type:commit file.contains('fix')"));
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_NOT_IMPLEMENTED {
+            return Err(format!("expected {ERR_NOT_IMPLEMENTED}, got {code}").into());
+        }
+        if !message.contains("history: predicate leaves are not executable on this route") {
+            return Err(
+                format!("unexpected history predicate rejection message: {message}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn history_validate_rejects_content_regex_leaf_upfront() -> TestResult {
+        let query = manual_query(
+            LqExpr::Leaf(LqLeaf::Keyword("fix".to_string())),
+            vec![
+                LqFilter::Type {
+                    kind: LqType::Commit,
+                },
+                LqFilter::Content {
+                    leaf: LqLeaf::Regex("fix".to_string()),
+                },
+            ],
+        );
+        match validate_history_query(&query) {
+            Err(CoreError::NotImplemented(message))
+                if message.contains("history: regex leaves are not executable") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("expected regex content reject, got {other:?}").into()),
+        }
     }
 
     /// `rev:` remains fail-closed at the dispatcher boundary.
@@ -5329,10 +7042,20 @@ mod tests {
     }
 
     #[test]
-    fn structural_dispatch_rejects_mixed_lexical_and_structural_boolean_before_execution()
-    -> TestResult {
+    fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
-        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+        let lex_opener = Arc::new(RecordingLexicalOpener {
+            state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+            results: vec![
+                recording_lexical_candidate("chunk-a"),
+                recording_lexical_candidate("chunk-shared"),
+            ],
+        });
+        let dispatcher = structural_dispatcher_mixed(
+            Arc::clone(&producer),
+            lex_opener,
+            ready_ledger_with_structural_boolean_chunks(),
+        )?;
 
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
             quanta_index_contract::StructuralQueryRequest {
@@ -5346,28 +7069,66 @@ mod tests {
             },
         ));
 
-        let (code, message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "STR_INVALID_REQUEST" {
-            return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                let mut ids = results
+                    .results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    .collect::<Vec<_>>();
+                ids.sort_unstable();
+                if ids != ["chunk-a", "chunk-shared"] {
+                    return Err(format!(
+                        "expected mixed AND to keep chunk-a and chunk-shared, got {ids:?}"
+                    )
+                    .into());
+                }
+                let shared = results
+                    .results
+                    .iter()
+                    .find(|candidate| candidate.candidate_id == "chunk-shared")
+                    .ok_or_else(|| "missing chunk-shared structural binding".to_string())?;
+                let start_bytes: Vec<u32> = shared
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.start_byte)
+                    .collect();
+                if start_bytes != [5, 20] {
+                    return Err(format!(
+                        "expected canonical merged bindings [5, 20], got {start_bytes:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
         }
-        if !message.contains("structural-only boolean tree") {
-            return Err(format!("unexpected mixed-tree message: {message}").into());
+
+        if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+            return Err("mixed AND should consult structural readiness once".into());
         }
-        if producer.readiness_calls.load(Ordering::SeqCst) != 0
-            || producer.execute_calls.load(Ordering::SeqCst) != 0
-        {
-            return Err(
-                "mixed lexical/structural boolean must fail before producer execution".into(),
-            );
+        if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+            return Err("mixed AND should execute structural leaf once".into());
         }
         Ok(())
     }
 
     #[test]
-    fn structural_dispatch_rejects_pure_negative_boolean_before_execution() -> TestResult {
+    fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> TestResult {
         let producer = Arc::new(PatternRoutingStructuralProducer::new());
-        let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+        let dispatcher = structural_dispatcher_with_producer_and_ledger(
+            Arc::clone(&producer),
+            ready_ledger_with_structural_boolean_chunks(),
+        )?;
 
         let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Structural(
             quanta_index_contract::StructuralQueryRequest {
@@ -5381,20 +7142,46 @@ mod tests {
             },
         ));
 
-        let (code, message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != "STR_INVALID_REQUEST" {
-            return Err(format!("expected STR_INVALID_REQUEST, got {code}").into());
+        match response {
+            SearchPlaneQueryIpcResponse::Structural(results) => {
+                if results.results.len() != 1 {
+                    return Err(format!(
+                        "expected 1 pure-negative survivor, got {:?}",
+                        results.results
+                    )
+                    .into());
+                }
+                let candidate = results
+                    .results
+                    .first()
+                    .ok_or_else(|| "missing pure-negative candidate".to_string())?;
+                if candidate.candidate_id != "chunk-beta" {
+                    return Err(format!("expected chunk-beta, got {candidate:?}").into());
+                }
+                if !candidate.bindings.is_empty() {
+                    return Err(
+                        "pure-negative universe placeholder must not invent bindings".into(),
+                    );
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Structural response, got {other:?}").into());
+            }
         }
-        if !message.contains("pure-negative structural boolean queries are not executable") {
-            return Err(format!("unexpected pure-negative message: {message}").into());
+
+        if producer.readiness_calls.load(Ordering::SeqCst) != 1 {
+            return Err("pure-negative root should consult structural readiness once".into());
         }
-        if producer.readiness_calls.load(Ordering::SeqCst) != 0
-            || producer.execute_calls.load(Ordering::SeqCst) != 0
-        {
-            return Err(
-                "pure-negative structural boolean must fail before producer execution".into(),
-            );
+        if producer.execute_calls.load(Ordering::SeqCst) != 1 {
+            return Err("pure-negative root should execute inner structural leaf once".into());
         }
         Ok(())
     }

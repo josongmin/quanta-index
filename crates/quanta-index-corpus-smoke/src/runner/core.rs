@@ -287,9 +287,15 @@ mod tests {
             classification: None,
             runtime_route: None,
             fixture: None,
-            expected_ids: Vec::new(),
+            expected_ids: None,
             top_k: None,
             runtime_error_code: None,
+            runtime_error_message_contains: None,
+            expected_engines_touched: Vec::new(),
+            expected_summary_substrings: Vec::new(),
+            expected_paths: None,
+            expected_snippets: None,
+            expected_bindings: None,
         }
     }
 

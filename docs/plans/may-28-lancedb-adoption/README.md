@@ -1,18 +1,22 @@
 # May 28 LanceDB Adoption Plan
 
-Status: `implemented` (2026-05-29)
+Status: `in-progress` (real lancedb migration, 2026-05-30)
 Date: `2026-05-28`
 Scope: replace the current semantic `journal.cbor` plus boot-time full replay
 path with a persisted Lance-family semantic backend while preserving
 generation-pinned, fail-closed search-plane semantics.
 
-This packet was the planning SSOT for the semantic storage cutover. As of
-2026-05-29 the cutover is implemented (see §3.1 backend decision and the
-per-ticket `Status:` lines).
+This packet is the planning SSOT for the semantic storage cutover.
 
-`LanceDB` is used here as the external planning label for the destination
-*shape* (persisted, generation-scoped, columnar semantic generations). The
-concrete adapter-internal dependency posture is frozen by `LDB-00` (§3.1).
+History (2026-05-29 → 2026-05-30): an initial implementation landed an
+in-house CBOR + HNSW backend under the same generation-scoped layout, justified
+in §3.1 by cited engineering trade-offs. That implementation satisfied the
+*shape* obligations but did NOT use the `lancedb` crate the packet name asks
+for. The decision was re-opened: the real `lancedb` crate is now being wired
+in. See §3.2 for the revised backend decision. The runtime cutover, migration
+scaffolding, layout, manifest, fail-closed semantics, and full test/proof
+surface from the first attempt are preserved; only the storage backend is
+swapped from in-house CBOR+HNSW to lancedb.
 
 ---
 
@@ -82,12 +86,16 @@ Forbidden:
 - broadening this packet into search-owned embedding derivation or hybrid
   ranking redesign
 
-## 3.1 Backend Decision (LDB-00 outcome)
+## 3.1 Backend Decision — SUPERSEDED (LDB-00 initial outcome)
 
-Frozen 2026-05-29.
+Frozen 2026-05-29, **superseded by §3.2 on 2026-05-30**. Retained here as the
+historical record of the original decision and its stated rationale. The
+implementation that followed §3.1 ran on an in-house CBOR + HNSW backend and
+did not adopt the `lancedb` crate; that was the wrong call for a packet
+literally named "LanceDB adoption" and was reversed in §3.2.
 
-**Decision: an in-house, generation-scoped, columnar durable semantic store
-inside `quanta-index-semantic`. The heavyweight async `lance` / `lancedb`
+**Original Decision: an in-house, generation-scoped, columnar durable semantic
+store inside `quanta-index-semantic`. The heavyweight async `lance` / `lancedb`
 crates are NOT pulled in.**
 
 Rationale — this repo's current port/runtime shape makes the in-house store the
@@ -123,6 +131,65 @@ Cutover rule (frozen): `state_root/semantic/journal.cbor` is legacy migration
 input only (LDB-04). After migration it is never a second live semantic
 authority; the durable generation directories under
 `state_root/indexes/semantic` are the sole serve-time semantic authority.
+
+## 3.2 Backend Decision — REVISED (LDB-00 actual outcome)
+
+Frozen 2026-05-30. **Supersedes §3.1.**
+
+**Decision: adopt the real `lancedb` crate (currently 0.30) as the durable
+semantic backend, with explicit, scoped supply-chain exceptions for its
+dependency tree.** The §3.1 in-house argument was sound *if* the packet were
+"add a persisted semantic store of any shape." It is not. The packet is
+"adopt LanceDB." Refusing to use lancedb while keeping that packet name is a
+contradiction — the right action is to pay the supply-chain / async-bridge
+cost honestly and ship lancedb.
+
+How the §3.1 objections are actually resolved:
+
+- **Sync port surface.** The semantic adapter owns a `tokio::runtime::Runtime`
+  and bridges async lancedb calls into the sync port surface with
+  `Runtime::block_on`. The clippy `disallowed_methods` rule against
+  `block_on` is honored by a single, narrowly-scoped `#[expect(..., reason)]`
+  inside the adapter — the adapter *is* the async↔sync seam the rule names.
+  Core / contract / search-plane stay sync as before.
+- **Supply-chain policy.** `deny.toml` is extended with **named, scoped
+  exceptions** that follow the same pattern already established for the
+  `tantivy@0.22` subtree: one `lancedb@0.30` `skip-tree` entry for in-tree
+  multi-version dupes, one `RUSTSEC-2024-0436` advisory ignore for the
+  unmaintained `paste` proc-macro (build-time only), and four additional
+  permissive licenses (`BSD-3-Clause`, `MPL-2.0`, `ISC`, `BSL-1.0` — all
+  OSI-approved + FSF-libre) added to the workspace allowlist with grouped
+  justification. The supply-chain *posture* (deny-by-default, justified
+  exceptions only) is preserved.
+- **Build hygiene.** Cold build now takes ~4–5 minutes for the semantic crate
+  (vs ~10s in §3.1). Accepted cost. The llvm-lines budget remains scoped to
+  `contract` + `core` (semantic adapter is not snapshotted); the no-proc-
+  macro-serde rule remains binding in our own crates.
+- **Verifiability.** `cargo check -p quanta-index-semantic` succeeds locally
+  (probed before commit). `cargo deny check` passes with the four named
+  exceptions above. If the lancedb tree fails to build in a downstream
+  environment (e.g. missing `protoc`), the failure is loud and explicit, not
+  silent.
+
+What stays from the §3.1 implementation (reused, not thrown away):
+
+- runtime cutover (`searchd::app::runtime::assemble`, `searchd::app::semantic_boot`)
+- legacy-journal migration scaffolding (`LegacySemanticJournalStore`, one-shot
+  `migrate_legacy_semantic_journal` with idempotent `MIGRATED` marker)
+- generation directory layout (`{state_root}/indexes/semantic/{repo}/{rev}/g{gen}/`)
+- `SemanticManifest` (scope metadata: repo / rev / gen / manifest_digest /
+  model contract / row_count / built_at), with manual `ciborium` codec
+- `MARKER_READY` / `MARKER_SEALED` explicit lifecycle markers
+- `SemanticBootReport` observability surface
+- the full port contract surface and all fail-closed test scenarios
+
+What is replaced:
+
+- `dataset.rs` (CBOR columnar shard) → lancedb-managed Arrow dataset
+- `graph.rs` (CBOR HNSW persistence) → lancedb's own vector index (IVF_HNSW_SQ
+  or whatever lancedb chooses; we do not run our own ANN graph)
+- `hnsw.rs` (hand-rolled HNSW) → deleted
+- in-house `content_checksum` → dropped (lancedb has its own dataset integrity)
 
 ## 4. In Scope
 

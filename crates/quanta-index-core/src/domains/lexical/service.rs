@@ -80,9 +80,25 @@ fn filters_contain_structural(filters: &[LqFilter]) -> bool {
         | LqFilter::Author { .. }
         | LqFilter::Committer { .. }
         | LqFilter::Message { .. }
+        | LqFilter::Before { .. }
+        | LqFilter::After { .. }
+        | LqFilter::Since { .. }
+        | LqFilter::Until { .. }
+        | LqFilter::DiffAdded { .. }
+        | LqFilter::DiffRemoved { .. }
+        | LqFilter::DiffTouched { .. }
         | LqFilter::Type { .. }
         | LqFilter::Select { .. }
         | LqFilter::Dirty { .. }
+        | LqFilter::Changed { .. }
+        | LqFilter::Stale { .. }
+        | LqFilter::Snapshot { .. }
+        | LqFilter::MetaOwner { .. }
+        | LqFilter::MetaService { .. }
+        | LqFilter::MetaLayer { .. }
+        | LqFilter::MetaSurface { .. }
+        | LqFilter::Affected { .. }
+        | LqFilter::InvalidatedBy { .. }
         | LqFilter::Fork { .. }
         | LqFilter::Archived { .. }
         | LqFilter::Visibility { .. }
@@ -107,9 +123,25 @@ fn query_contains_timeout_executable_surface(query: &LqQuery) -> bool {
             | LqFilter::Author { .. }
             | LqFilter::Committer { .. }
             | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
             | LqFilter::Type { .. }
             | LqFilter::Select { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
             | LqFilter::Visibility { .. }
@@ -143,8 +175,8 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
                 ));
             }
             LqFilter::Type { kind } => match kind {
-                LqType::File | LqType::Path | LqType::Symbol => {}
-                LqType::Commit | LqType::Diff | LqType::Repo => {
+                LqType::File | LqType::Path | LqType::Symbol | LqType::Repo => {}
+                LqType::Commit | LqType::Diff => {
                     return Err(CoreError::NotImplemented(format!(
                         "lexical: type filter `{}` is not executable on the current adapter set",
                         kind.as_str()
@@ -180,6 +212,32 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
             LqFilter::Dirty { .. } => {
                 return Err(CoreError::NotImplemented(
                     "lexical: dirty filter is not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+            LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: runtime catalog filters are not executable on the current adapter set"
+                        .to_string(),
+                ));
+            }
+            LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => {
+                return Err(CoreError::NotImplemented(
+                    "lexical: history date/diff filters are not executable on the current adapter set"
                         .to_string(),
                 ));
             }

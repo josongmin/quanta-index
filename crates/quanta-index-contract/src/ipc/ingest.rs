@@ -1799,6 +1799,448 @@ impl<'de> Deserialize<'de> for DirtyIngestBatch {
 }
 
 // =============================================================================
+// Runtime catalog ingest batch
+// =============================================================================
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeChangedRecord {
+    pub doc_id: ChunkId,
+    pub applied_at_ms: u64,
+    pub payload_hash: [u8; 32],
+}
+
+const RUNTIME_CHANGED_RECORD_FIELDS: &[&str] = &["doc_id", "applied_at_ms", "payload_hash"];
+
+impl Serialize for RuntimeChangedRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeChangedRecord", 3)?;
+        state.serialize_field("doc_id", &self.doc_id)?;
+        state.serialize_field("applied_at_ms", &self.applied_at_ms)?;
+        state.serialize_field("payload_hash", &self.payload_hash)?;
+        state.end()
+    }
+}
+
+struct RuntimeChangedRecordVisitor;
+
+impl<'de> Visitor<'de> for RuntimeChangedRecordVisitor {
+    type Value = RuntimeChangedRecord;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeChangedRecord map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut doc_id: Option<ChunkId> = None;
+        let mut applied_at_ms: Option<u64> = None;
+        let mut payload_hash: Option<[u8; 32]> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "doc_id" => doc_id = Some(map.next_value()?),
+                "applied_at_ms" => applied_at_ms = Some(map.next_value()?),
+                "payload_hash" => payload_hash = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_CHANGED_RECORD_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeChangedRecord {
+            doc_id: doc_id.ok_or_else(|| de::Error::missing_field("doc_id"))?,
+            applied_at_ms: applied_at_ms
+                .ok_or_else(|| de::Error::missing_field("applied_at_ms"))?,
+            payload_hash: payload_hash.ok_or_else(|| de::Error::missing_field("payload_hash"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeChangedRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeChangedRecord",
+            RUNTIME_CHANGED_RECORD_FIELDS,
+            RuntimeChangedRecordVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeDocFacetRecord {
+    pub doc_id: ChunkId,
+    pub owner: Option<String>,
+    pub service: Option<String>,
+    pub layer: Option<String>,
+    pub surface: Option<String>,
+}
+
+const RUNTIME_DOC_FACET_RECORD_FIELDS: &[&str] =
+    &["doc_id", "owner", "service", "layer", "surface"];
+
+impl Serialize for RuntimeDocFacetRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeDocFacetRecord", 5)?;
+        state.serialize_field("doc_id", &self.doc_id)?;
+        state.serialize_field("owner", &self.owner)?;
+        state.serialize_field("service", &self.service)?;
+        state.serialize_field("layer", &self.layer)?;
+        state.serialize_field("surface", &self.surface)?;
+        state.end()
+    }
+}
+
+struct RuntimeDocFacetRecordVisitor;
+
+impl<'de> Visitor<'de> for RuntimeDocFacetRecordVisitor {
+    type Value = RuntimeDocFacetRecord;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeDocFacetRecord map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut doc_id: Option<ChunkId> = None;
+        let mut owner: Option<String> = None;
+        let mut service: Option<String> = None;
+        let mut layer: Option<String> = None;
+        let mut surface: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "doc_id" => doc_id = Some(map.next_value()?),
+                "owner" => owner = Some(map.next_value()?),
+                "service" => service = Some(map.next_value()?),
+                "layer" => layer = Some(map.next_value()?),
+                "surface" => surface = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_DOC_FACET_RECORD_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeDocFacetRecord {
+            doc_id: doc_id.ok_or_else(|| de::Error::missing_field("doc_id"))?,
+            owner,
+            service,
+            layer,
+            surface,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeDocFacetRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeDocFacetRecord",
+            RUNTIME_DOC_FACET_RECORD_FIELDS,
+            RuntimeDocFacetRecordVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeSnapshotRecord {
+    pub name: String,
+    pub doc_ids: Vec<ChunkId>,
+}
+
+const RUNTIME_SNAPSHOT_RECORD_FIELDS: &[&str] = &["name", "doc_ids"];
+
+impl Serialize for RuntimeSnapshotRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeSnapshotRecord", 2)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("doc_ids", &self.doc_ids)?;
+        state.end()
+    }
+}
+
+struct RuntimeSnapshotRecordVisitor;
+
+impl<'de> Visitor<'de> for RuntimeSnapshotRecordVisitor {
+    type Value = RuntimeSnapshotRecord;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeSnapshotRecord map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut name: Option<String> = None;
+        let mut doc_ids: Option<Vec<ChunkId>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => name = Some(map.next_value()?),
+                "doc_ids" => doc_ids = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_SNAPSHOT_RECORD_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeSnapshotRecord {
+            name: name.ok_or_else(|| de::Error::missing_field("name"))?,
+            doc_ids: doc_ids.ok_or_else(|| de::Error::missing_field("doc_ids"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeSnapshotRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeSnapshotRecord",
+            RUNTIME_SNAPSHOT_RECORD_FIELDS,
+            RuntimeSnapshotRecordVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeEdgeAuthorityRecord {
+    pub key: String,
+    pub doc_ids: Vec<ChunkId>,
+}
+
+const RUNTIME_EDGE_AUTHORITY_RECORD_FIELDS: &[&str] = &["key", "doc_ids"];
+
+impl Serialize for RuntimeEdgeAuthorityRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeEdgeAuthorityRecord", 2)?;
+        state.serialize_field("key", &self.key)?;
+        state.serialize_field("doc_ids", &self.doc_ids)?;
+        state.end()
+    }
+}
+
+struct RuntimeEdgeAuthorityRecordVisitor;
+
+impl<'de> Visitor<'de> for RuntimeEdgeAuthorityRecordVisitor {
+    type Value = RuntimeEdgeAuthorityRecord;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeEdgeAuthorityRecord map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut key: Option<String> = None;
+        let mut doc_ids: Option<Vec<ChunkId>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "key" => key = Some(map.next_value()?),
+                "doc_ids" => doc_ids = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_EDGE_AUTHORITY_RECORD_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeEdgeAuthorityRecord {
+            key: key.ok_or_else(|| de::Error::missing_field("key"))?,
+            doc_ids: doc_ids.ok_or_else(|| de::Error::missing_field("doc_ids"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeEdgeAuthorityRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeEdgeAuthorityRecord",
+            RUNTIME_EDGE_AUTHORITY_RECORD_FIELDS,
+            RuntimeEdgeAuthorityRecordVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeCatalogIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub overlay_epoch_ms: u64,
+    pub batch_digest: String,
+    pub producer_head_applied_at_ms: u64,
+    pub generation_materialized_at_ms: u64,
+    pub changed_entries: Vec<RuntimeChangedRecord>,
+    pub facet_entries: Vec<RuntimeDocFacetRecord>,
+    pub snapshot_entries: Vec<RuntimeSnapshotRecord>,
+    pub affected_entries: Vec<RuntimeEdgeAuthorityRecord>,
+    pub invalidated_by_entries: Vec<RuntimeEdgeAuthorityRecord>,
+}
+
+const RUNTIME_CATALOG_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "overlay_epoch_ms",
+    "batch_digest",
+    "producer_head_applied_at_ms",
+    "generation_materialized_at_ms",
+    "changed_entries",
+    "facet_entries",
+    "snapshot_entries",
+    "affected_entries",
+    "invalidated_by_entries",
+];
+
+impl Serialize for RuntimeCatalogIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RuntimeCatalogIngestBatch", 12)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("overlay_epoch_ms", &self.overlay_epoch_ms)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field(
+            "producer_head_applied_at_ms",
+            &self.producer_head_applied_at_ms,
+        )?;
+        state.serialize_field(
+            "generation_materialized_at_ms",
+            &self.generation_materialized_at_ms,
+        )?;
+        state.serialize_field("changed_entries", &self.changed_entries)?;
+        state.serialize_field("facet_entries", &self.facet_entries)?;
+        state.serialize_field("snapshot_entries", &self.snapshot_entries)?;
+        state.serialize_field("affected_entries", &self.affected_entries)?;
+        state.serialize_field("invalidated_by_entries", &self.invalidated_by_entries)?;
+        state.end()
+    }
+}
+
+struct RuntimeCatalogIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for RuntimeCatalogIngestBatchVisitor {
+    type Value = RuntimeCatalogIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RuntimeCatalogIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut overlay_epoch_ms: Option<u64> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut producer_head_applied_at_ms: Option<u64> = None;
+        let mut generation_materialized_at_ms: Option<u64> = None;
+        let mut changed_entries: Option<Vec<RuntimeChangedRecord>> = None;
+        let mut facet_entries: Option<Vec<RuntimeDocFacetRecord>> = None;
+        let mut snapshot_entries: Option<Vec<RuntimeSnapshotRecord>> = None;
+        let mut affected_entries: Option<Vec<RuntimeEdgeAuthorityRecord>> = None;
+        let mut invalidated_by_entries: Option<Vec<RuntimeEdgeAuthorityRecord>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "overlay_epoch_ms" => overlay_epoch_ms = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "producer_head_applied_at_ms" => {
+                    producer_head_applied_at_ms = Some(map.next_value()?);
+                }
+                "generation_materialized_at_ms" => {
+                    generation_materialized_at_ms = Some(map.next_value()?);
+                }
+                "changed_entries" => changed_entries = Some(map.next_value()?),
+                "facet_entries" => facet_entries = Some(map.next_value()?),
+                "snapshot_entries" => snapshot_entries = Some(map.next_value()?),
+                "affected_entries" => affected_entries = Some(map.next_value()?),
+                "invalidated_by_entries" => invalidated_by_entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        RUNTIME_CATALOG_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RuntimeCatalogIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            overlay_epoch_ms: overlay_epoch_ms
+                .ok_or_else(|| de::Error::missing_field("overlay_epoch_ms"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            producer_head_applied_at_ms: producer_head_applied_at_ms
+                .ok_or_else(|| de::Error::missing_field("producer_head_applied_at_ms"))?,
+            generation_materialized_at_ms: generation_materialized_at_ms
+                .ok_or_else(|| de::Error::missing_field("generation_materialized_at_ms"))?,
+            changed_entries: changed_entries
+                .ok_or_else(|| de::Error::missing_field("changed_entries"))?,
+            facet_entries: facet_entries
+                .ok_or_else(|| de::Error::missing_field("facet_entries"))?,
+            snapshot_entries: snapshot_entries
+                .ok_or_else(|| de::Error::missing_field("snapshot_entries"))?,
+            affected_entries: affected_entries
+                .ok_or_else(|| de::Error::missing_field("affected_entries"))?,
+            invalidated_by_entries: invalidated_by_entries
+                .ok_or_else(|| de::Error::missing_field("invalidated_by_entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeCatalogIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RuntimeCatalogIngestBatch",
+            RUNTIME_CATALOG_INGEST_BATCH_FIELDS,
+            RuntimeCatalogIngestBatchVisitor,
+        )
+    }
+}
+
+// =============================================================================
 // Structural ingest batch
 // =============================================================================
 
@@ -2366,6 +2808,7 @@ pub enum SearchPlaneIngestIpcRequest {
     PublishLexicalBatch(LexicalIngestBatch),
     PublishHistoryBatch(HistoryIngestBatch),
     PublishDirtyBatch(DirtyIngestBatch),
+    PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch),
     PublishStructuralBatch(StructuralIngestBatch),
     PublishRepoMapBundle(RepoMapSourceBundle),
 }
@@ -2374,6 +2817,7 @@ const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishLexicalBatch",
     "PublishHistoryBatch",
     "PublishDirtyBatch",
+    "PublishRuntimeCatalogBatch",
     "PublishStructuralBatch",
     "PublishRepoMapBundle",
 ];
@@ -2402,15 +2846,21 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishDirtyBatch",
                 payload,
             ),
-            Self::PublishStructuralBatch(payload) => serializer.serialize_newtype_variant(
+            Self::PublishRuntimeCatalogBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 4,
+                "PublishRuntimeCatalogBatch",
+                payload,
+            ),
+            Self::PublishStructuralBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                5,
                 "PublishStructuralBatch",
                 payload,
             ),
             Self::PublishRepoMapBundle(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
-                5,
+                6,
                 "PublishRepoMapBundle",
                 payload,
             ),
@@ -2442,6 +2892,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishDirtyBatch" => Ok(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
                 variant.newtype_variant()?,
             )),
+            "PublishRuntimeCatalogBatch" => Ok(
+                SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(variant.newtype_variant()?),
+            ),
             "PublishStructuralBatch" => Ok(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
                 variant.newtype_variant()?,
             )),
@@ -2475,6 +2928,7 @@ pub enum SearchPlaneIngestIpcResponse {
     LexicalReceipt(BatchPublishReceipt),
     HistoryReceipt(BatchPublishReceipt),
     DirtyReceipt(BatchPublishReceipt),
+    RuntimeCatalogReceipt(BatchPublishReceipt),
     StructuralReceipt(BatchPublishReceipt),
     RepoMapReceipt(RepoMapMutationAck),
     Error(SearchPlaneIpcError),
@@ -2484,6 +2938,7 @@ const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "LexicalReceipt",
     "HistoryReceipt",
     "DirtyReceipt",
+    "RuntimeCatalogReceipt",
     "StructuralReceipt",
     "RepoMapReceipt",
     "Error",
@@ -2513,21 +2968,27 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "DirtyReceipt",
                 payload,
             ),
-            Self::StructuralReceipt(payload) => serializer.serialize_newtype_variant(
+            Self::RuntimeCatalogReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 4,
+                "RuntimeCatalogReceipt",
+                payload,
+            ),
+            Self::StructuralReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                5,
                 "StructuralReceipt",
                 payload,
             ),
             Self::RepoMapReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                5,
+                6,
                 "RepoMapReceipt",
                 payload,
             ),
             Self::Error(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                6,
+                7,
                 "Error",
                 payload,
             ),
@@ -2557,6 +3018,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
                 variant.newtype_variant()?,
             )),
             "DirtyReceipt" => Ok(SearchPlaneIngestIpcResponse::DirtyReceipt(
+                variant.newtype_variant()?,
+            )),
+            "RuntimeCatalogReceipt" => Ok(SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(
                 variant.newtype_variant()?,
             )),
             "StructuralReceipt" => Ok(SearchPlaneIngestIpcResponse::StructuralReceipt(
@@ -2815,6 +3279,7 @@ mod tests {
             text: "fn main() {}".to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
+            source_repo_id: None,
         }
     }
 

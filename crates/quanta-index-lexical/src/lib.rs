@@ -1362,7 +1362,10 @@ impl LexicalAdapter {
                 let chunk = decode_chunk_payload(&upsert.payload)?;
                 let mut doc = TantivyDocument::new();
                 doc.add_text(self.fields.candidate_id, candidate_id);
-                doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                doc.add_text(
+                    self.fields.repo_id,
+                    chunk.searchable_repo_id(&key.repo_id).as_str(),
+                );
                 doc.add_text(self.fields.revision_id, key.revision_id.as_str());
                 doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
                 add_metadata_fields(
@@ -1437,7 +1440,10 @@ impl LexicalAdapter {
                 for chunk in &scope.chunks {
                     let mut doc = TantivyDocument::new();
                     doc.add_text(self.fields.candidate_id, chunk.chunk_id.as_str());
-                    doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                    doc.add_text(
+                        self.fields.repo_id,
+                        chunk.searchable_repo_id(&key.repo_id).as_str(),
+                    );
                     doc.add_text(self.fields.revision_id, key.revision_id.as_str());
                     doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
                     add_metadata_fields(
@@ -1768,6 +1774,7 @@ struct RepoHasFileConstraint {
 struct PreparedPredicatePlan {
     expr: LqExpr,
     allowed_paths: Option<BTreeSet<String>>,
+    allowed_repo_ids: Option<BTreeSet<String>>,
     force_empty: bool,
 }
 
@@ -1788,13 +1795,17 @@ impl TantivySearcher {
             Some(quanta_index_contract::LqCountBound::Bounded(bound)) => {
                 usize::try_from(bound).map_or(requested, |bound| requested.min(bound))
             }
-            Some(quanta_index_contract::LqCountBound::All) | None => requested,
+            Some(quanta_index_contract::LqCountBound::All) => {
+                self.full_recall_limit(requested, requested)
+            }
+            None => requested,
         }
     }
 
     fn collect_limit(&self, query: &LqQuery, requested: usize, limit: usize) -> usize {
         let full_recall_limit = self.full_recall_limit(requested, limit);
-        if Self::selects_repo_projection(query)
+        if Self::projects_repo_surface(query)
+            || Self::projects_path_surface(query)
             || Self::selects_file_projection(query)
             || matches!(
                 query.options.count,
@@ -1960,6 +1971,25 @@ impl TantivySearcher {
     fn enables_path_term_surface(expr: &LqExpr, options: &LqOptions) -> bool {
         options.pattern_type != LqPatternType::Regexp
             && matches!(expr, LqExpr::Leaf(LqLeaf::Keyword(_)))
+    }
+
+    fn repo_id_restriction_query(&self, repo_ids: &BTreeSet<String>) -> Box<dyn Query> {
+        if repo_ids.len() == 1
+            && let Some(repo_id) = repo_ids.iter().next()
+        {
+            return self.exact_text_query(self.fields.repo_id, repo_id);
+        }
+        Box::new(BooleanQuery::new(
+            repo_ids
+                .iter()
+                .map(|repo_id| {
+                    (
+                        Occur::Should,
+                        self.exact_text_query(self.fields.repo_id, repo_id),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     fn path_restriction_query(&self, paths: &BTreeSet<String>) -> Box<dyn Query> {
@@ -2237,7 +2267,10 @@ impl TantivySearcher {
         Ok(out)
     }
 
-    fn repo_has_file_matches(&self, constraint: &RepoHasFileConstraint) -> Result<bool, CoreError> {
+    fn repo_has_file_path_query(
+        &self,
+        constraint: &RepoHasFileConstraint,
+    ) -> Result<Box<dyn Query>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> =
             Vec::with_capacity(constraint.matchers.len());
         for matcher in &constraint.matchers {
@@ -2251,12 +2284,47 @@ impl TantivySearcher {
             };
             clauses.push((Occur::Must, query));
         }
-        let compiled = self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND);
+        Ok(self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND))
+    }
+
+    fn repo_has_file_matches(&self, constraint: &RepoHasFileConstraint) -> Result<bool, CoreError> {
+        let compiled = self.repo_has_file_path_query(constraint)?;
         let searcher = self.reader.searcher();
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(1))
             .map_err(|err| CoreError::Storage(format!("lexical: repo.has.file search: {err}")))?;
         Ok(!hits.is_empty())
+    }
+
+    fn collect_repo_ids_for_repo_has_file(
+        &self,
+        constraint: &RepoHasFileConstraint,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let compiled = self.repo_has_file_path_query(constraint)?;
+        let searcher = self.reader.searcher();
+        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while collecting repo.has.file scope: {err}"
+            ))
+        })?;
+        if limit == 0 {
+            return Ok(BTreeSet::new());
+        }
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| {
+                CoreError::Storage(format!("lexical: repo.has.file repo scope search: {err}"))
+            })?;
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for (_, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if let Some(repo_id) = stored_text(&doc, self.fields.repo_id) {
+                let _inserted: bool = out.insert(repo_id);
+            }
+        }
+        Ok(out)
     }
 
     fn predicate_content_leaf(
@@ -2446,15 +2514,40 @@ impl TantivySearcher {
     }
 
     fn prepare_predicate_plan(&self, query: &LqQuery) -> Result<PreparedPredicatePlan, CoreError> {
+        if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr
+            && matches!(name.as_str(), "file.contains" | "file.has.content")
+        {
+            return Ok(PreparedPredicatePlan {
+                expr: LqExpr::Leaf(self.predicate_content_leaf(name, args)?),
+                allowed_paths: None,
+                allowed_repo_ids: None,
+                force_empty: false,
+            });
+        }
         let (expr, repo_constraints, file_predicates) = self.extract_predicate_plan(&query.expr)?;
+        let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
-            if !self.repo_has_file_matches(constraint)? {
+            let repo_ids = self.collect_repo_ids_for_repo_has_file(constraint)?;
+            if repo_ids.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
                     allowed_paths: None,
+                    allowed_repo_ids: None,
                     force_empty: true,
                 });
             }
+            allowed_repo_ids = Some(match allowed_repo_ids.take() {
+                Some(existing) => existing.intersection(&repo_ids).cloned().collect(),
+                None => repo_ids,
+            });
+        }
+        if allowed_repo_ids.as_ref().is_some_and(BTreeSet::is_empty) {
+            return Ok(PreparedPredicatePlan {
+                expr: LqExpr::Empty,
+                allowed_paths: None,
+                allowed_repo_ids: None,
+                force_empty: true,
+            });
         }
         let mut allowed_paths: Option<BTreeSet<String>> = None;
         for predicate_leaf in &file_predicates {
@@ -2463,6 +2556,7 @@ impl TantivySearcher {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
                     allowed_paths: None,
+                    allowed_repo_ids: None,
                     force_empty: true,
                 });
             }
@@ -2475,12 +2569,14 @@ impl TantivySearcher {
             return Ok(PreparedPredicatePlan {
                 expr: LqExpr::Empty,
                 allowed_paths: None,
+                allowed_repo_ids: None,
                 force_empty: true,
             });
         }
         Ok(PreparedPredicatePlan {
             expr,
             allowed_paths,
+            allowed_repo_ids,
             force_empty: false,
         })
     }
@@ -2553,7 +2649,23 @@ impl TantivySearcher {
             | LqFilter::Author { .. }
             | LqFilter::Committer { .. }
             | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
             | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
             | LqFilter::Type { .. }
             | LqFilter::Select { .. }
             | LqFilter::Content { .. } => Ok(None),
@@ -2580,13 +2692,14 @@ impl TantivySearcher {
             // doc-kind routing path. The defensive arm here preserves the
             // same typed code for callers that bypass the planner (today
             // there are none on the live rail).
-            LqType::Commit | LqType::Diff | LqType::Repo => Err(CoreError::Typed {
+            LqType::Commit | LqType::Diff => Err(CoreError::Typed {
                 code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
                 message: format!(
                     "lexical: type filter `{}` targets a surface with no producer on the lexical rail",
                     kind.as_str()
                 ),
             }),
+            LqType::Repo => Ok(QueryDocKind::Text),
         }
     }
 
@@ -2604,13 +2717,24 @@ impl TantivySearcher {
         }
     }
 
-    fn selects_repo_projection(query: &LqQuery) -> bool {
+    fn projects_repo_surface(query: &LqQuery) -> bool {
         query.filters.iter().any(|filter| {
             matches!(
                 filter,
                 LqFilter::Select {
                     dim: LqSelect::Repo
-                }
+                } | LqFilter::Type { kind: LqType::Repo }
+            )
+        })
+    }
+
+    fn projects_path_surface(query: &LqQuery) -> bool {
+        query.filters.iter().any(|filter| {
+            matches!(
+                filter,
+                LqFilter::Select {
+                    dim: LqSelect::Path
+                } | LqFilter::Type { kind: LqType::Path }
             )
         })
     }
@@ -2630,7 +2754,7 @@ impl TantivySearcher {
         query: &LqQuery,
         hits: Vec<LexicalCandidate>,
     ) -> Vec<LexicalCandidate> {
-        if !Self::selects_repo_projection(query) {
+        if !Self::projects_repo_surface(query) {
             return hits;
         }
         let mut representatives: BTreeMap<RepoId, LexicalCandidate> = BTreeMap::new();
@@ -2654,6 +2778,40 @@ impl TantivySearcher {
         current: &LexicalCandidate,
     ) -> bool {
         Self::candidate_precedes(candidate, current)
+    }
+
+    fn collapse_path_projection(
+        query: &LqQuery,
+        hits: Vec<LexicalCandidate>,
+    ) -> Vec<LexicalCandidate> {
+        if !Self::projects_path_surface(query) {
+            return hits;
+        }
+        let mut representatives: BTreeMap<String, LexicalCandidate> = BTreeMap::new();
+        for hit in hits {
+            let key = hit.repo_relative_path.as_str().to_string();
+            match representatives.entry(key) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    let _inserted: &mut LexicalCandidate = slot.insert(hit);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    if Self::candidate_precedes(&hit, slot.get()) {
+                        let _replaced: LexicalCandidate = slot.insert(hit);
+                    }
+                }
+            }
+        }
+        let mut collapsed: Vec<LexicalCandidate> = representatives.into_values().collect();
+        collapsed.sort_by(|left, right| {
+            if Self::candidate_precedes(left, right) {
+                std::cmp::Ordering::Less
+            } else if Self::candidate_precedes(right, left) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+        collapsed
     }
 
     fn collapse_file_projection(
@@ -2694,7 +2852,8 @@ impl TantivySearcher {
         query: &LqQuery,
         hits: Vec<LexicalCandidate>,
     ) -> Vec<LexicalCandidate> {
-        let file_collapsed = Self::collapse_file_projection(query, hits);
+        let path_collapsed = Self::collapse_path_projection(query, hits);
+        let file_collapsed = Self::collapse_file_projection(query, path_collapsed);
         Self::collapse_repo_projection(query, file_collapsed)
     }
 
@@ -2770,6 +2929,35 @@ impl TantivySearcher {
                         message:
                             "lexical: dirty filter is not executable on the current adapter set"
                                 .to_string(),
+                    });
+                }
+                LqFilter::Changed { .. }
+                | LqFilter::Stale { .. }
+                | LqFilter::Snapshot { .. }
+                | LqFilter::MetaOwner { .. }
+                | LqFilter::MetaService { .. }
+                | LqFilter::MetaLayer { .. }
+                | LqFilter::MetaSurface { .. }
+                | LqFilter::Affected { .. }
+                | LqFilter::InvalidatedBy { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE.to_string(),
+                        message:
+                            "lexical: runtime catalog filters are not executable on the current adapter set"
+                                .to_string(),
+                    });
+                }
+                LqFilter::Before { .. }
+                | LqFilter::After { .. }
+                | LqFilter::Since { .. }
+                | LqFilter::Until { .. }
+                | LqFilter::DiffAdded { .. }
+                | LqFilter::DiffRemoved { .. }
+                | LqFilter::DiffTouched { .. } => {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                        message: "lexical: history date/diff filters require history producer"
+                            .to_string(),
                     });
                 }
                 other @ (LqFilter::Repo { .. }
@@ -2986,6 +3174,30 @@ impl TantivySearcher {
                 message: "lexical: dirty filter is not executable on the current adapter set"
                     .to_string(),
             }),
+            LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE.to_string(),
+                message:
+                    "lexical: runtime catalog filters are not executable on the current adapter set"
+                        .to_string(),
+            }),
+            LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                message: "lexical: history date/diff filters require history producer".to_string(),
+            }),
             // Type/Select are doc-kind routing concerns handled in
             // `prepare_query_for_doc_kind`; they should never reach
             // `compile_filter`. If a future caller bypasses that pipeline,
@@ -3024,6 +3236,9 @@ impl TantivySearcher {
         }
         if let Some(paths) = prepared.allowed_paths.as_ref() {
             clauses.push((Occur::Must, self.path_restriction_query(paths)));
+        }
+        if let Some(repo_ids) = prepared.allowed_repo_ids.as_ref() {
+            clauses.push((Occur::Must, self.repo_id_restriction_query(repo_ids)));
         }
         match clauses.len() {
             0 => Err(CoreError::InvalidContract(

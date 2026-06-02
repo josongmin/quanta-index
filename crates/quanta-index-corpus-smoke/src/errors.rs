@@ -129,6 +129,8 @@ pub enum CorpusLoadError {
     /// A `gate = "active"` row carries a `gating_ticket` — disallowed
     /// because the field is the marker of a non-active gate.
     UnexpectedGatingTicket { row_id: String },
+    /// A runtime-row contract invariant was violated.
+    InvalidRuntimeRow { row_id: String, message: String },
 }
 
 impl fmt::Display for CorpusLoadError {
@@ -179,6 +181,9 @@ impl fmt::Display for CorpusLoadError {
                 f,
                 "row `{row_id}` has gate = active but carries a `gating_ticket`",
             ),
+            Self::InvalidRuntimeRow { row_id, message } => {
+                write!(f, "row `{row_id}` violates runtime row contract: {message}")
+            }
         }
     }
 }

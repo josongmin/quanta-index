@@ -10,6 +10,7 @@ members = [
     "crates/quanta-index-search-plane",
     "crates/quanta-index-searchd",
     "crates/quanta-index-searchd-runtime",
+    "crates/quanta-index-searchd-harness",
     "crates/quanta-index-searchctl",
     "crates/quanta-index-sdk",
     "crates/quanta-index-lq-norm",
@@ -72,6 +73,11 @@ let_underscore_untyped = "deny"
 lossy_float_literal = "deny"
 map_err_ignore = "deny"
 match_wild_err_arm = "deny"
+# lancedb's transitive subtree carries multiple versions of bitflags / hashbrown /
+# syn / thiserror etc.; supply-chain policy is enforced in deny.toml via the
+# `lancedb@0.30` skip-tree (LDB-00 §3.2). `clippy::multiple_crate_versions` reads
+# Cargo.lock directly and would otherwise re-flag the same allowlisted state.
+multiple_crate_versions = "allow"
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
@@ -92,15 +98,24 @@ wildcard_enum_match_arm = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
+# arrow-array / arrow-schema pinned to the major version lancedb 0.30 uses
+# internally; mismatched majors silently fail downcast_ref::<StringArray>() etc.
+# at runtime. Bump in lockstep with lancedb on upgrade.
+arrow-array = "58"
+arrow-schema = "58"
 ciborium = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 fs2 = "0.4.3"
+futures = "0.3"
+# lancedb is the semantic-adapter backend (LDB-00 §3.2). Inline pin lives here,
+# in lockstep with deny.toml's `lancedb@0.30` skip-tree entry.
+lancedb = { version = "0.30", default-features = false }
 memchr = "2.8"
 memmap2 = "0.9.5"
 proptest = "1.6.0"
-regex = "=1.10.6"
-regex-syntax = "=0.8.5"
+regex = "1"
+regex-syntax = "0.8"
 serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -108,7 +123,7 @@ tantivy = "0.22"
 tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
-tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "net", "io-util", "macros", "signal", "sync", "time"] }
+tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
 unicode-normalization = "0.1"
 
 [profile.dev]

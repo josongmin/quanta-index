@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 use crate::corpus::{
-    Corpus, CorpusRow, ExpectedShape, Gate, RowClassification, RuntimeRoute, RuntimeSyntax,
+    Corpus, CorpusRow, ExpectedShape, ExpectedStructuralBinding, Gate, RowClassification,
+    RuntimeRoute, RuntimeSyntax,
 };
 use crate::errors::{ConformanceError, CorpusLoadError};
 
@@ -41,6 +42,12 @@ const ALLOWED_ROW_KEYS: &[&str] = &[
     "expected_ids",
     "top_k",
     "runtime_error_code",
+    "runtime_error_message_contains",
+    "expected_engines_touched",
+    "expected_summary_substrings",
+    "expected_paths",
+    "expected_snippets",
+    "expected_bindings",
     "expected",
 ];
 
@@ -171,9 +178,17 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
     let classification = optional_row_classification(table, path)?;
     let runtime_route = optional_runtime_route(table, path)?;
     let fixture = optional_string(table, "fixture", path)?;
-    let expected_ids = parse_string_array(table, "expected_ids", path)?;
+    let expected_ids = optional_string_array(table, "expected_ids", path)?;
     let top_k = optional_u32(table, "top_k", path)?;
     let runtime_error_code = optional_string(table, "runtime_error_code", path)?;
+    let runtime_error_message_contains =
+        optional_string(table, "runtime_error_message_contains", path)?;
+    let expected_engines_touched = parse_string_array(table, "expected_engines_touched", path)?;
+    let expected_summary_substrings =
+        parse_string_array(table, "expected_summary_substrings", path)?;
+    let expected_paths = optional_string_array(table, "expected_paths", path)?;
+    let expected_snippets = optional_string_array(table, "expected_snippets", path)?;
+    let expected_bindings = optional_binding_sets(table, "expected_bindings", path)?;
 
     let expected_val = table
         .get("expected")
@@ -183,7 +198,7 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
         })?;
     let expected = parse_expected(expected_val, path)?;
 
-    Ok(CorpusRow {
+    let row = CorpusRow {
         id,
         query,
         gate,
@@ -198,7 +213,15 @@ fn parse_row(value: &Value, path: &str) -> Result<CorpusRow, CorpusLoadError> {
         expected_ids,
         top_k,
         runtime_error_code,
-    })
+        runtime_error_message_contains,
+        expected_engines_touched,
+        expected_summary_substrings,
+        expected_paths,
+        expected_snippets,
+        expected_bindings,
+    };
+    validate_runtime_row_contract(&row)?;
+    Ok(row)
 }
 
 fn optional_runtime_syntax(
@@ -257,11 +280,12 @@ fn optional_runtime_route(
         "text" => Ok(Some(RuntimeRoute::Text)),
         "structural" => Ok(Some(RuntimeRoute::Structural)),
         "history" => Ok(Some(RuntimeRoute::History)),
+        "runtime_metadata" => Ok(Some(RuntimeRoute::RuntimeMetadata)),
         other => Err(CorpusLoadError::UnknownEnumValue {
             path: path.to_owned(),
             field: "runtime_route",
             value: other.to_owned(),
-            allowed: &["text", "structural", "history"],
+            allowed: &["text", "structural", "history", "runtime_metadata"],
         }),
     }
 }
@@ -478,6 +502,225 @@ fn parse_string_array(
     }
 }
 
+fn optional_string_array(
+    table: &toml::map::Map<String, Value>,
+    field: &'static str,
+    path: &str,
+) -> Result<Option<Vec<String>>, CorpusLoadError> {
+    match table.get(field) {
+        None => Ok(None),
+        Some(Value::Array(_)) => parse_string_array(table, field, path).map(Some),
+        Some(other) => Err(CorpusLoadError::TypeMismatch {
+            path: path.to_owned(),
+            field,
+            expected: "array of strings",
+            observed: type_name(other),
+        }),
+    }
+}
+
+fn optional_binding_sets(
+    table: &toml::map::Map<String, Value>,
+    field: &'static str,
+    path: &str,
+) -> Result<Option<Vec<Vec<ExpectedStructuralBinding>>>, CorpusLoadError> {
+    let Some(value) = table.get(field) else {
+        return Ok(None);
+    };
+    let Value::Array(binding_sets) = value else {
+        return Err(CorpusLoadError::TypeMismatch {
+            path: path.to_owned(),
+            field,
+            expected: "array of binding arrays",
+            observed: type_name(value),
+        });
+    };
+    let mut out = Vec::with_capacity(binding_sets.len());
+    for binding_set in binding_sets {
+        let Value::Array(bindings) = binding_set else {
+            return Err(CorpusLoadError::TypeMismatch {
+                path: path.to_owned(),
+                field,
+                expected: "array of binding arrays",
+                observed: type_name(binding_set),
+            });
+        };
+        let mut parsed_bindings = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let Value::Table(binding_table) = binding else {
+                return Err(CorpusLoadError::TypeMismatch {
+                    path: path.to_owned(),
+                    field,
+                    expected: "binding table",
+                    observed: type_name(binding),
+                });
+            };
+            parsed_bindings.push(ExpectedStructuralBinding {
+                metavariable: require_string(binding_table, "metavariable", path)?,
+                start_byte: require_u32(binding_table, "start_byte", path)?,
+                end_byte: require_u32(binding_table, "end_byte", path)?,
+                start_line: require_u32(binding_table, "start_line", path)?,
+                end_line: require_u32(binding_table, "end_line", path)?,
+            });
+        }
+        out.push(parsed_bindings);
+    }
+    Ok(Some(out))
+}
+
+fn validate_runtime_row_contract(row: &CorpusRow) -> Result<(), CorpusLoadError> {
+    let invalid = |message: String| CorpusLoadError::InvalidRuntimeRow {
+        row_id: row.id.clone(),
+        message,
+    };
+    match row.classification {
+        Some(RowClassification::Runtime) => {
+            if !matches!(row.gate, Gate::Active) {
+                return Err(invalid("runtime rows must use gate=active".to_string()));
+            }
+            if row.fixture.is_none()
+                || row.top_k.is_none()
+                || row.syntax.is_none()
+                || row.runtime_route.is_none()
+            {
+                return Err(invalid(
+                    "runtime rows require fixture, top_k, syntax, and runtime_route".to_string(),
+                ));
+            }
+            let has_expected_ids = row.expected_ids.is_some();
+            let has_runtime_error = row.runtime_error_code.is_some();
+            if has_expected_ids == has_runtime_error {
+                return Err(invalid(
+                    "runtime rows must carry exactly one of expected_ids or runtime_error_code"
+                        .to_string(),
+                ));
+            }
+            if row.runtime_error_message_contains.is_some() && row.runtime_error_code.is_none() {
+                return Err(invalid(
+                    "runtime_error_message_contains requires runtime_error_code".to_string(),
+                ));
+            }
+            if row.runtime_error_code.is_some()
+                && (row.expected_paths.is_some()
+                    || row.expected_snippets.is_some()
+                    || row.expected_bindings.is_some()
+                    || !row.expected_engines_touched.is_empty()
+                    || !row.expected_summary_substrings.is_empty())
+            {
+                return Err(invalid(
+                    "runtime error rows must not carry success-only path/snippet/binding/provenance assertions"
+                        .to_string(),
+                ));
+            }
+            if let Some(expected_paths) = row.expected_paths.as_ref() {
+                let expected_ids = row.expected_ids.as_ref().ok_or_else(|| {
+                    invalid(
+                        "expected_paths requires expected_ids on runtime success rows".to_string(),
+                    )
+                })?;
+                if expected_paths.len() != expected_ids.len() {
+                    return Err(invalid(format!(
+                        "expected_paths length {} must match expected_ids length {}",
+                        expected_paths.len(),
+                        expected_ids.len()
+                    )));
+                }
+                if matches!(
+                    row.runtime_route,
+                    Some(RuntimeRoute::Structural | RuntimeRoute::History)
+                ) {
+                    return Err(invalid(
+                        "expected_paths is only supported on text/runtime_metadata runtime routes"
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(expected_snippets) = row.expected_snippets.as_ref() {
+                let expected_ids = row.expected_ids.as_ref().ok_or_else(|| {
+                    invalid(
+                        "expected_snippets requires expected_ids on runtime success rows"
+                            .to_string(),
+                    )
+                })?;
+                if expected_snippets.len() != expected_ids.len() {
+                    return Err(invalid(format!(
+                        "expected_snippets length {} must match expected_ids length {}",
+                        expected_snippets.len(),
+                        expected_ids.len()
+                    )));
+                }
+                if !matches!(
+                    row.runtime_route,
+                    Some(RuntimeRoute::Text | RuntimeRoute::RuntimeMetadata)
+                ) {
+                    return Err(invalid(
+                        "expected_snippets is only supported on text/runtime_metadata runtime routes"
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(expected_bindings) = row.expected_bindings.as_ref() {
+                let expected_ids = row.expected_ids.as_ref().ok_or_else(|| {
+                    invalid(
+                        "expected_bindings requires expected_ids on runtime success rows"
+                            .to_string(),
+                    )
+                })?;
+                if expected_bindings.len() != expected_ids.len() {
+                    return Err(invalid(format!(
+                        "expected_bindings length {} must match expected_ids length {}",
+                        expected_bindings.len(),
+                        expected_ids.len()
+                    )));
+                }
+                if !matches!(row.runtime_route, Some(RuntimeRoute::Structural)) {
+                    return Err(invalid(
+                        "expected_bindings is only supported on structural runtime routes"
+                            .to_string(),
+                    ));
+                }
+            }
+            if matches!(
+                row.runtime_route,
+                Some(RuntimeRoute::History | RuntimeRoute::Structural)
+            ) && (!row.expected_engines_touched.is_empty()
+                || !row.expected_summary_substrings.is_empty())
+            {
+                return Err(invalid(
+                    "history/structural runtime rows must not carry explanation provenance assertions"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        }
+        Some(RowClassification::TypedUnavailable) => {
+            if !matches!(row.gate, Gate::Active) {
+                return Err(invalid(
+                    "typed_unavailable rows must use gate=active".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        Some(RowClassification::ParserOnly) => {
+            if !matches!(row.gate, Gate::Pending { .. }) {
+                return Err(invalid(
+                    "parser_only rows must use gate=pending".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        Some(RowClassification::DeferredExternalProducer) => {
+            if !matches!(row.gate, Gate::Blocked { .. }) {
+                return Err(invalid(
+                    "deferred_external_producer rows must use gate=blocked".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
 fn type_name(value: &Value) -> &'static str {
     match value {
         Value::String(_) => "string",
@@ -534,9 +777,15 @@ mod tests {
                     classification: None,
                     runtime_route: None,
                     fixture: None,
-                    expected_ids: Vec::new(),
+                    expected_ids: None,
                     top_k: None,
                     runtime_error_code: None,
+                    runtime_error_message_contains: None,
+                    expected_engines_touched: Vec::new(),
+                    expected_summary_substrings: Vec::new(),
+                    expected_paths: None,
+                    expected_snippets: None,
+                    expected_bindings: None,
                 }
             },
             Clone::clone,
@@ -591,9 +840,15 @@ mod tests {
         assert_eq!(row.syntax, None);
         assert_eq!(row.classification, None);
         assert_eq!(row.runtime_route, None);
-        assert!(row.expected_ids.is_empty());
+        assert_eq!(row.expected_ids, None);
         assert_eq!(row.top_k, None);
         assert_eq!(row.runtime_error_code, None);
+        assert_eq!(row.runtime_error_message_contains, None);
+        assert!(row.expected_engines_touched.is_empty());
+        assert!(row.expected_summary_substrings.is_empty());
+        assert_eq!(row.expected_paths, None);
+        assert_eq!(row.expected_snippets, None);
+        assert_eq!(row.expected_bindings, None);
     }
 
     #[test]
@@ -606,11 +861,14 @@ mod tests {
             engines = ["lexical_content"]
             syntax = "sourcegraph"
             classification = "runtime"
-            runtime_route = "text"
+            runtime_route = "runtime_metadata"
             fixture = "docs.toml"
             expected_ids = ["alpha", "beta"]
             top_k = 7
-            runtime_error_code = "LEX_FILTER_FORK_UNAVAILABLE"
+            expected_engines_touched = ["lexical"]
+            expected_summary_substrings = ["present", "dirty"]
+            expected_paths = ["src/lib.rs", "src/main.rs"]
+            expected_snippets = ["needle alpha", "needle beta"]
 
             [row.expected]
             kind = "multi"
@@ -621,17 +879,114 @@ mod tests {
         let row = first_row(&corpus);
         assert_eq!(row.syntax, Some(RuntimeSyntax::Sourcegraph));
         assert_eq!(row.classification, Some(RowClassification::Runtime));
-        assert_eq!(row.runtime_route, Some(RuntimeRoute::Text));
+        assert_eq!(row.runtime_route, Some(RuntimeRoute::RuntimeMetadata));
         assert_eq!(row.fixture.as_deref(), Some("docs.toml"));
         assert_eq!(
             row.expected_ids,
-            vec!["alpha".to_string(), "beta".to_string()]
+            Some(vec!["alpha".to_string(), "beta".to_string()])
         );
         assert_eq!(row.top_k, Some(7));
+        assert_eq!(row.runtime_error_code, None);
+        assert_eq!(row.runtime_error_message_contains, None);
+        assert_eq!(row.expected_engines_touched, vec!["lexical".to_string()]);
         assert_eq!(
-            row.runtime_error_code.as_deref(),
-            Some("LEX_FILTER_FORK_UNAVAILABLE")
+            row.expected_summary_substrings,
+            vec!["present".to_string(), "dirty".to_string()]
         );
+        assert_eq!(
+            row.expected_paths,
+            Some(vec!["src/lib.rs".to_string(), "src/main.rs".to_string()])
+        );
+        assert_eq!(
+            row.expected_snippets,
+            Some(vec!["needle alpha".to_string(), "needle beta".to_string()])
+        );
+    }
+
+    #[test]
+    fn runtime_binding_fields_parse() {
+        let raw = r#"
+            [[row]]
+            id = "RT-STR-01"
+            query = "match { :[name] }"
+            gate = "active"
+            engines = ["structural"]
+            syntax = "native"
+            classification = "runtime"
+            runtime_route = "structural"
+            fixture = "docs.toml"
+            expected_ids = ["alpha"]
+            expected_bindings = [[
+              { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+            ]]
+            top_k = 3
+
+            [row.expected]
+            kind = "single"
+        "#;
+        let corpus = expect_ok(parse_corpus(raw, p()));
+        let row = first_row(&corpus);
+        let expected = row.expected_bindings.unwrap_or_else(|| {
+            assert!(false, "bindings must parse");
+            Vec::new()
+        });
+        assert_eq!(expected.len(), 1);
+        assert_eq!(expected[0].len(), 1);
+        assert_eq!(expected[0][0].metavariable, "name");
+        assert_eq!(expected[0][0].start_byte, 3);
+    }
+
+    #[test]
+    fn runtime_error_row_rejects_success_only_fields() {
+        let raw = r#"
+            [[row]]
+            id = "RT-BAD-ERR"
+            query = "alpha"
+            gate = "active"
+            engines = ["lexical_content"]
+            syntax = "native"
+            classification = "runtime"
+            runtime_route = "text"
+            fixture = "docs.toml"
+            runtime_error_code = "PARSE_FAIL"
+            runtime_error_message_contains = "bad"
+            expected_paths = ["src/lib.rs"]
+            top_k = 5
+
+            [row.expected]
+            kind = "empty"
+        "#;
+        let err = expect_err(parse_corpus(raw, p()));
+        assert!(matches!(
+            err,
+            CorpusLoadError::InvalidRuntimeRow { row_id, .. } if row_id == "RT-BAD-ERR"
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_lengths_must_match_expected_ids() {
+        let raw = r#"
+            [[row]]
+            id = "RT-BAD-PATHS"
+            query = "alpha"
+            gate = "active"
+            engines = ["lexical_content"]
+            syntax = "native"
+            classification = "runtime"
+            runtime_route = "text"
+            fixture = "docs.toml"
+            expected_ids = ["alpha"]
+            expected_paths = ["src/lib.rs", "src/main.rs"]
+            top_k = 5
+
+            [row.expected]
+            kind = "single"
+        "#;
+        let err = expect_err(parse_corpus(raw, p()));
+        assert!(matches!(
+            err,
+            CorpusLoadError::InvalidRuntimeRow { row_id, .. } if row_id == "RT-BAD-PATHS"
+        ));
     }
 
     #[test]

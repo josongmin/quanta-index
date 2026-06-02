@@ -11,10 +11,12 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
     SemanticReplaceScope, lex::LanguageCode,
 };
+use quanta_index_core::SemanticBatchBuildPort as _;
 use quanta_index_search_plane::LegacySemanticJournalStore;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
 use quanta_index_searchd_runtime::build_runtime;
+use quanta_index_semantic::SemanticAdapter;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -135,5 +137,62 @@ fn migrated_runtime_exposes_populated_semantic_boot_report() -> TestResult {
         SemanticMigrationOutcome::Migrated { imported: 1 }
     );
     assert_eq!(runtime.semantic_boot.seed.sealed_generations, 1);
+    // Cold-boot cost surface must be populated: a real migration writes a
+    // lancedb dataset to disk + the MIGRATED marker — that is strictly more
+    // than 0 microseconds on any non-fake clock.
+    assert!(
+        runtime.semantic_boot.migration_micros > 0,
+        "migration_micros must be > 0 after a real migration ran; got 0"
+    );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts assembled runtime boot fails closed on corrupted sealed semantic state via assert macros"
+)]
+fn runtime_boot_rejects_corrupted_sealed_semantic_generation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let state_root = temp.path().to_path_buf();
+    let semantic_root = state_root.join("indexes").join("semantic");
+    let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+    let generation = ManifestGeneration::new(9);
+    adapter.build_batch(&fixture_batch(generation).map_err(|err| err.to_string())?)?;
+
+    let manifest_path = semantic_root
+        .join("repo-bootrep")
+        .join("rev-bootrep")
+        .join(format!("g{}", generation.get()))
+        .join("semantic-manifest.cbor");
+    let manifest_bytes = std::fs::read(&manifest_path)?;
+    let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
+        .map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let mut bumped = false;
+    if let ciborium::value::Value::Map(entries) = &mut value {
+        for (key, val) in entries.iter_mut() {
+            if key.as_text() == Some("row_count") {
+                *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(99_u64));
+                bumped = true;
+                break;
+            }
+        }
+    }
+    if !bumped {
+        return Err("expected `row_count` field in manifest CBOR".into());
+    }
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(&manifest_path, &tampered)?;
+
+    let Err(err) = build_runtime(build_config(&state_root)) else {
+        return Err("corrupted sealed semantic generation must fail runtime boot".into());
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains("row count"),
+        "expected row-count integrity failure during boot, got: {message}"
+    );
     Ok(())
 }

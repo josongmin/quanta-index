@@ -1,6 +1,7 @@
 # Quick Reference
 
 - `just rust-profile dev-fast`
+- `just rust-profile release-daemon`
 - `just rust-profile validate-shared-surface`
 - `just rust-profile test-fast`
 - `just rust-profile verify-rust`

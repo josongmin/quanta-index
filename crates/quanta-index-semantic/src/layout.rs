@@ -2,17 +2,18 @@
 //!
 //! One directory per `(repo, revision, generation)` under the adapter's
 //! semantic state root (`{state_root}/indexes/semantic` at the composition
-//! root). The manifest lives beside the dataset; readiness and seal are
-//! explicit, generation-local marker files:
+//! root). The lancedb dataset lives in a `dataset/` subdir (its own files +
+//! manifest are managed by lancedb itself); our scope-level manifest and
+//! readiness/seal markers sit alongside it:
 //!
 //! ```text
 //! {semantic_root}/{repo_id}/{revision_id}/g{generation}/
-//!   dataset/
-//!     rows.cbor          # columnar embedding rows (LDB-01 §4 data contract)
-//!     graph.cbor         # persisted HNSW graph (present iff row_count > 0)
-//!   semantic-manifest.cbor
-//!   MARKER_READY         # rows materialized durably
-//!   MARKER_SEALED        # generation finalized; openable for serving
+//!   dataset/                  # lancedb dataset root (managed by lancedb)
+//!   semantic-build-contract.cbor
+//!                            # pre-seal batch contract / base provenance
+//!   semantic-manifest.cbor    # our scope-level metadata + integrity gate
+//!   MARKER_READY              # rows materialized durably
+//!   MARKER_SEALED             # generation finalized; openable for serving
 //! ```
 
 #![expect(
@@ -25,8 +26,7 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 
 pub(crate) const DATASET_DIR_NAME: &str = "dataset";
-pub(crate) const ROWS_FILE_NAME: &str = "rows.cbor";
-pub(crate) const GRAPH_FILE_NAME: &str = "graph.cbor";
+pub(crate) const BUILD_CONTRACT_FILE_NAME: &str = "semantic-build-contract.cbor";
 pub(crate) const MANIFEST_FILE_NAME: &str = "semantic-manifest.cbor";
 pub(crate) const MARKER_READY_FILE_NAME: &str = "MARKER_READY";
 pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
@@ -48,12 +48,8 @@ pub(crate) fn dataset_dir(generation_dir: &Path) -> PathBuf {
     generation_dir.join(DATASET_DIR_NAME)
 }
 
-pub(crate) fn rows_path(generation_dir: &Path) -> PathBuf {
-    dataset_dir(generation_dir).join(ROWS_FILE_NAME)
-}
-
-pub(crate) fn graph_path(generation_dir: &Path) -> PathBuf {
-    dataset_dir(generation_dir).join(GRAPH_FILE_NAME)
+pub(crate) fn build_contract_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(BUILD_CONTRACT_FILE_NAME)
 }
 
 pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {

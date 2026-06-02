@@ -63,6 +63,27 @@ detect_lane() {
 
   case "$subcommand" in
     check|build)
+      if has_arg "--release" "$@"; then
+        if [[ "$package_name" == "quanta-index-searchd-runtime" ]]; then
+          printf '%s\n' "release-daemon-bin-lane"
+          return 0
+        fi
+        if [[ "$package_name" == "quanta-index-searchctl" || "$package_name" == "quanta-index-corpus-smoke" ]]; then
+          printf '%s\n' "release-bin-lane"
+          return 0
+        fi
+        if has_arg "--all-targets" "$@"; then
+          printf '%s\n' "release-all-targets-lane"
+          return 0
+        fi
+        if has_arg "--lib" "$@" && has_arg "--bins" "$@"; then
+          printf '%s\n' "release-fast-lane"
+          return 0
+        fi
+        printf '%s\n' "release-lane"
+        return 0
+      fi
+
       if has_arg "--timings" "$@"; then
         if [[ "$package_name" == "quanta-index-searchd-runtime" ]]; then
           printf '%s\n' "timings-daemon-lane"
@@ -160,6 +181,16 @@ elif [[ -z "$lane" ]]; then
   lane_source="auto"
 fi
 export QUANTA_INDEX_BUILD_LANE="$lane"
+
+# `scripts/quanta-index-env.sh` only fills `CARGO_TARGET_DIR` when it is unset.
+# Nested front doors (for example `just rust-profile ...` -> `scripts/cargow`)
+# may already carry a shared target dir from an outer scope, which would defeat
+# the inner lane selection and collapse distinct release/test caches into the
+# same root. Preserve the inherited target dir only when a caller explicitly
+# opts out.
+if [[ "${QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR:-0}" != "1" ]]; then
+  unset CARGO_TARGET_DIR
+fi
 
 source "${SCRIPT_DIR}/quanta-index-env.sh"
 

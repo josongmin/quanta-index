@@ -8,8 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-#[path = "common/e2e_harness.rs"]
-mod e2e_harness;
+use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
@@ -17,7 +16,10 @@ use quanta_index_contract::{
     TextQuerySyntax,
 };
 
-use crate::e2e_harness::{E2eRuntime, E2eTypedError};
+use crate::e2e_harness::{
+    E2eHistoryFixtureSpec, E2eRuntime, E2eRuntimeCatalogSpec, E2eRuntimeChangedSpec,
+    E2eRuntimeEdgeSpec, E2eRuntimeFacetSpec, E2eRuntimeSnapshotSpec, E2eTypedError,
+};
 
 fn require_no_typed_error(error: Option<E2eTypedError>, context: &str) -> AnyResult<()> {
     if let Some(error) = error {
@@ -122,7 +124,53 @@ fn seed_hybrid_tie_fixture(rt: &mut E2eRuntime, count: usize) -> AnyResult<()> {
     Ok(())
 }
 
-fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+fn ingest_structural_trait_tree(rt: &mut E2eRuntime, path: &str, content: &str) -> AnyResult<()> {
+    use quanta_index_contract::lex::compute_parse_tree_source_hash;
+    use quanta_index_contract::lex::{LanguageCode, ParseNode, ParseTreeRecord};
+
+    let identifier = "chaos_structural_trait";
+    let identifier_start = content.find(identifier).ok_or_else(|| {
+        anyhow::anyhow!("e2e chaos trait identifier `{identifier}` missing from `{content}`")
+    })?;
+    let identifier_end = identifier_start.saturating_add(identifier.len());
+    let byte_end = u32::try_from(content.len())
+        .map_err(|err| anyhow::anyhow!("structural trait content overflow: {err}"))?;
+    let identifier_start = u32::try_from(identifier_start)
+        .map_err(|err| anyhow::anyhow!("structural trait identifier start overflow: {err}"))?;
+    let identifier_end = u32::try_from(identifier_end)
+        .map_err(|err| anyhow::anyhow!("structural trait identifier end overflow: {err}"))?;
+    let block_start = byte_end.saturating_sub(2);
+    let tree = ParseTreeRecord {
+        wire_version: 1,
+        lang: LanguageCode::new("rust")
+            .map_err(|err| anyhow::anyhow!("invalid rust lang code: {err}"))?,
+        root: ParseNode {
+            kind: "trait_item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end,
+            children: vec![
+                ParseNode {
+                    kind: "identifier".to_string().into_boxed_str(),
+                    byte_start: identifier_start,
+                    byte_end: identifier_end,
+                    children: Vec::new(),
+                },
+                ParseNode {
+                    kind: "block".to_string().into_boxed_str(),
+                    byte_start: block_start,
+                    byte_end,
+                    children: Vec::new(),
+                },
+            ],
+        },
+        source_hash: compute_parse_tree_source_hash(content),
+        role_tag_schema_version: 1,
+        role_tags: Vec::new(),
+    };
+    rt.ingest_structural_tree(path, tree)
+}
+
+fn seed_structural_pure_negative_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let path = "src/structural.rs";
     let content = "fn chaos_structural_alpha() {}";
     rt.ingest_text("repo-e2e", path, content)?;
@@ -138,10 +186,46 @@ fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
+fn seed_structural_boolean_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let fn_path = "src/structural.rs";
+    let fn_content = "fn chaos_structural_alpha() {}";
+    rt.ingest_text("repo-e2e", fn_path, fn_content)?;
+    rt.ingest_structural_function_tree(fn_path, fn_content, "chaos_structural_alpha")?;
+
+    let trait_path = "src/structural_trait.rs";
+    let trait_content = "trait chaos_structural_trait {}";
+    rt.ingest_text("repo-e2e", trait_path, trait_content)?;
+    ingest_structural_trait_tree(rt, trait_path, trait_content)?;
+
+    _ = rt.seal_lexical_generation_for_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Structural,
+    ])?;
+    Ok(())
+}
+
 fn seed_history_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     let path = "src/history.rs";
     rt.ingest_text("repo-e2e", path, "history lexical proof")?;
-    rt.ingest_history_fixture(path)?;
+    rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
+        commit_sha: "0123456789abcdef0123456789abcdef01234567",
+        file_path: path,
+        author: "alice",
+        committer: "alice",
+        message: "fix: sample history alpha_content_needle",
+        author_time_ms: 11,
+        committer_time_ms: 12,
+        applied_at_ms: 13,
+        ref_name: "refs/heads/main",
+        tag_name: "v1.0.0",
+        added_text: "history added line",
+        removed_text: "history removed line",
+        touched_text: "history touched line",
+    })?;
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(())
@@ -228,12 +312,153 @@ fn seed_history_partial_shard_fixture(
 }
 
 fn seed_runtime_dirty_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
-    let path = "src/dirty.rs";
-    rt.ingest_text("repo-e2e", path, "todo dirty scope")?;
-    rt.ingest_dirty_for_path(path, 100)?;
+    let dirty_path = "src/dirty.rs";
+    rt.ingest_text("repo-e2e", dirty_path, "todo dirty scope")?;
+    rt.ingest_text("repo-e2e", "src/clean.rs", "todo clean scope")?;
+    rt.ingest_dirty_for_path(dirty_path, 100)?;
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(())
+}
+
+fn seed_runtime_catalog_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    for (path, content) in [
+        ("src/changed.rs", "fn catalog_changed_needle() {}"),
+        ("src/changed-other.rs", "fn catalog_changed_needle() {}"),
+        ("src/unchanged.rs", "fn catalog_unchanged_needle() {}"),
+        ("src/owner.rs", "fn catalog_owner_needle() {}"),
+        ("src/owner-other.rs", "fn catalog_owner_needle() {}"),
+        ("src/service.rs", "fn catalog_service_needle() {}"),
+        ("src/service-other.rs", "fn catalog_service_needle() {}"),
+        ("src/layer.rs", "fn catalog_layer_needle() {}"),
+        ("src/layer-other.rs", "fn catalog_layer_needle() {}"),
+        ("src/surface.rs", "fn catalog_surface_needle() {}"),
+        ("src/surface-other.rs", "fn catalog_surface_needle() {}"),
+        ("src/snap.rs", "fn catalog_snapshot_needle() {}"),
+        ("src/snap-other.rs", "fn catalog_snapshot_needle() {}"),
+        ("src/stale.rs", "fn catalog_stale_needle() {}"),
+    ] {
+        rt.ingest_text("repo-e2e", path, content)?;
+    }
+    rt.ingest_runtime_catalog(&E2eRuntimeCatalogSpec {
+        producer_head_applied_at_ms: 100,
+        generation_materialized_at_ms: 20,
+        changed: vec![E2eRuntimeChangedSpec {
+            path: "src/changed.rs".to_string(),
+            applied_at_ms: 25,
+        }],
+        facets: vec![
+            E2eRuntimeFacetSpec {
+                path: "src/owner.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/owner-other.rs".to_string(),
+                owner: Some("team-b".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/service.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/service-other.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("build".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/layer.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/layer-other.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("query".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/surface.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("lexical".to_string()),
+            },
+            E2eRuntimeFacetSpec {
+                path: "src/surface-other.rs".to_string(),
+                owner: Some("team-a".to_string()),
+                service: Some("search".to_string()),
+                layer: Some("index".to_string()),
+                surface: Some("semantic".to_string()),
+            },
+        ],
+        snapshots: vec![E2eRuntimeSnapshotSpec {
+            name: "active".to_string(),
+            paths: vec!["src/changed.rs".to_string(), "src/snap.rs".to_string()],
+        }],
+        affected: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+        invalidated_by: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+    })?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
+fn seed_predicate_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    rt.ingest_text(
+        "repo-e2e",
+        "src/file_contains.rs",
+        "foo oo_ba filecontainsmarker",
+    )?;
+    rt.ingest_text("repo-e2e", "src/lib.rs", "needle alpha")?;
+    rt.ingest_text("repo-e2e", "src/main.rs", "needle beta")?;
+    rt.ingest_text("repo-e2e", "docs/readme.md", "other text")?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(())
+}
+
+fn assert_success_runtime_metadata_metrics(
+    rt: &E2eRuntime,
+    leaked_terms: &[&str],
+) -> AnyResult<()> {
+    assert_closed_metric_suffix(
+        rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_typed_error_unavailable_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        leaked_terms,
+    )
 }
 
 fn oversized_raw_substring_query() -> String {
@@ -605,6 +830,7 @@ fn history_runtime_metrics_use_closed_labels_without_query_leakage() -> AnyResul
         ],
         &[
             "lq_query_intake_total",
+            "lq_typed_error_other_total",
             "lq_typed_error_not_ready_total",
             "lq_planner_total",
             "lq_engine_fanout_count",
@@ -870,36 +1096,27 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
 }
 
 #[test]
-fn structural_mixed_lexical_boolean_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()>
-{
+fn structural_mixed_lexical_boolean_executes_and_does_not_poison_next_query() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_structural_boolean_fixture(&mut rt)?;
 
-    let invalid = rt.query_structural(
+    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let mixed = rt.query_structural(
         TextQuerySyntax::Native,
         "chaos_structural_alpha AND match { function_item }",
         10,
     );
-    let error = invalid
-        .typed_error
-        .ok_or_else(|| anyhow::anyhow!("expected typed mixed lexical/structural rejection"))?;
-    if error.code != "STR_INVALID_REQUEST" {
+    require_no_typed_error(
+        mixed.typed_error,
+        "mixed lexical/structural boolean execution",
+    )?;
+    if mixed.candidate_ids != vec![expected_id.clone()] {
         return Err(anyhow::anyhow!(
-            "expected STR_INVALID_REQUEST, got {}",
-            error.code
-        ));
-    }
-    if !error
-        .message
-        .contains("structural-only boolean tree of `match { ... }` leaves")
-    {
-        return Err(anyhow::anyhow!(
-            "mixed lexical/structural rejection lost exact detail: {}",
-            error.message
+            "mixed lexical/structural boolean diverged: {:?}",
+            mixed.candidate_ids
         ));
     }
 
-    let expected_id = rt.candidate_id_for_path("src/structural.rs")?;
     let follow_up = rt.query_structural(
         TextQuerySyntax::Native,
         "match { function_item { { :[name.expr] } } }",
@@ -907,11 +1124,76 @@ fn structural_mixed_lexical_boolean_rejects_typed_and_does_not_poison_next_query
     );
     require_no_typed_error(
         follow_up.typed_error,
-        "follow-up structural query after mixed lexical/structural reject",
+        "follow-up structural query after mixed lexical/structural execution",
     )?;
     if follow_up.candidate_ids != vec![expected_id] {
         return Err(anyhow::anyhow!(
-            "follow-up structural query diverged after mixed lexical/structural reject: {:?}",
+            "follow-up structural query diverged after mixed lexical/structural execution: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "chaos_structural_alpha",
+            "function_item",
+            "name.expr",
+            "trait_item",
+        ],
+    )
+}
+
+#[test]
+fn structural_mixed_lexical_or_executes_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_boolean_fixture(&mut rt)?;
+
+    let fn_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let trait_id = rt.candidate_id_for_path("src/structural_trait.rs")?;
+    let mixed_or = rt.query_structural(
+        TextQuerySyntax::Native,
+        "chaos_structural_alpha OR match { trait_item }",
+        10,
+    );
+    require_no_typed_error(
+        mixed_or.typed_error,
+        "mixed lexical/structural OR execution",
+    )?;
+    let mut observed = mixed_or.candidate_ids;
+    observed.sort();
+    let mut expected = vec![fn_id.clone(), trait_id.clone()];
+    expected.sort();
+    if observed != expected {
+        return Err(anyhow::anyhow!(
+            "mixed lexical/structural OR diverged: observed={observed:?} expected={expected:?}"
+        ));
+    }
+
+    let follow_up = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up structural query after mixed OR execution",
+    )?;
+    if follow_up.candidate_ids != vec![fn_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up structural query diverged after mixed OR execution: {:?}",
             follow_up.candidate_ids
         ));
     }
@@ -919,28 +1201,60 @@ fn structural_mixed_lexical_boolean_rejects_typed_and_does_not_poison_next_query
 }
 
 #[test]
-fn structural_pure_negative_boolean_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()>
-{
+fn structural_mixed_lexical_and_not_executes_and_does_not_poison_next_query() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_structural_boolean_fixture(&mut rt)?;
 
-    let invalid = rt.query_structural(TextQuerySyntax::Native, "NOT match { function_item }", 10);
-    let error = invalid
-        .typed_error
-        .ok_or_else(|| anyhow::anyhow!("expected typed pure-negative structural rejection"))?;
-    if error.code != "STR_INVALID_REQUEST" {
+    let fn_id = rt.candidate_id_for_path("src/structural.rs")?;
+    let mixed_and_not = rt.query_structural(
+        TextQuerySyntax::Native,
+        "chaos_structural_alpha AND NOT match { trait_item }",
+        10,
+    );
+    require_no_typed_error(
+        mixed_and_not.typed_error,
+        "mixed lexical/structural AND NOT execution",
+    )?;
+    if mixed_and_not.candidate_ids != vec![fn_id.clone()] {
         return Err(anyhow::anyhow!(
-            "expected STR_INVALID_REQUEST, got {}",
-            error.code
+            "mixed lexical/structural AND NOT diverged: {:?}",
+            mixed_and_not.candidate_ids
         ));
     }
-    if !error
-        .message
-        .contains("pure-negative structural boolean queries are not executable")
-    {
+
+    let follow_up = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { :[name.expr] } } }",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up structural query after mixed AND NOT execution",
+    )?;
+    if follow_up.candidate_ids != vec![fn_id] {
         return Err(anyhow::anyhow!(
-            "pure-negative structural rejection lost exact detail: {}",
-            error.message
+            "follow-up structural query diverged after mixed AND NOT execution: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_pure_negative_boolean_executes_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_structural_pure_negative_fixture(&mut rt)?;
+
+    let pure_negative =
+        rt.query_structural(TextQuerySyntax::Native, "NOT match { function_item }", 10);
+    require_no_typed_error(
+        pure_negative.typed_error,
+        "pure-negative structural root execution",
+    )?;
+    if !pure_negative.candidate_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "single-function structural fixture should yield empty pure-negative survivors, got {:?}",
+            pure_negative.candidate_ids
         ));
     }
 
@@ -952,15 +1266,31 @@ fn structural_pure_negative_boolean_rejects_typed_and_does_not_poison_next_query
     );
     require_no_typed_error(
         follow_up.typed_error,
-        "follow-up structural query after pure-negative reject",
+        "follow-up structural query after pure-negative execution",
     )?;
     if follow_up.candidate_ids != vec![expected_id] {
         return Err(anyhow::anyhow!(
-            "follow-up structural query diverged after pure-negative reject: {:?}",
+            "follow-up structural query diverged after pure-negative execution: {:?}",
             follow_up.candidate_ids
         ));
     }
-    Ok(())
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["function_item", "name.expr", "NOT match"],
+    )
 }
 
 #[test]
@@ -1004,6 +1334,1053 @@ fn structural_typed_hole_kind_rejects_typed_and_does_not_poison_next_query() -> 
             "follow-up structural query diverged after typed-hole reject: {:?}",
             follow_up.candidate_ids
         ));
+    }
+    Ok(())
+}
+
+#[test]
+fn runtime_catalog_changed_executes_and_metrics_are_bounded() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let result = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "runtime catalog changed query")?;
+    if result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog changed query diverged: {:?}",
+            result.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &["catalog_changed_needle", "1970-01-01", "src/changed.rs"],
+    )
+}
+
+#[test]
+fn runtime_catalog_stale_executes_and_metrics_are_bounded() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let result = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_stale_needle",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "runtime catalog stale query")?;
+    if result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog stale query diverged: {:?}",
+            result.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &["catalog_stale_needle", "1970-01-01", "src/stale.rs"],
+    )
+}
+
+#[test]
+fn runtime_catalog_snapshot_executes_and_metrics_are_bounded() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let result = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "snapshot:active file:src/snap.rs catalog_snapshot_needle",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "runtime catalog snapshot query")?;
+    if result.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "runtime catalog snapshot query diverged: {:?}",
+            result.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &["catalog_snapshot_needle", "snapshot:active", "src/snap.rs"],
+    )
+}
+
+#[test]
+fn runtime_catalog_without_authority_fails_typed_and_metrics_are_bounded() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let path = "src/changed.rs";
+    rt.ingest_text("repo-e2e", path, "fn catalog_changed_needle() {}")?;
+    rt.ingest_dirty_for_path(path, 100)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+
+    let result = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    let error = result
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected RUNTIME_CATALOG_NOT_READY typed error"))?;
+    if error.code != "RUNTIME_CATALOG_NOT_READY" {
+        return Err(anyhow::anyhow!(
+            "expected RUNTIME_CATALOG_NOT_READY, got {}",
+            error.code
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
+        &["catalog_changed_needle", "1970-01-01", "src/changed.rs"],
+    )
+}
+
+#[test]
+fn runtime_catalog_dirty_no_executes_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_dirty_fixture(&mut rt)?;
+
+    let clean = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, "dirty:no todo", 10);
+    require_no_typed_error(clean.typed_error, "dirty:no query")?;
+    if clean.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "dirty:no query expected exactly one clean candidate, got {:?}",
+            clean.candidate_ids
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(TextQuerySyntax::Native, "dirty:yes todo", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime metadata query after dirty:no execution",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime metadata query diverged after dirty:no execution: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(&rt, &["dirty", "todo", "src/dirty.rs"])
+}
+
+#[test]
+fn runtime_catalog_dirty_only_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_dirty_fixture(&mut rt)?;
+
+    let rejected = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, "dirty:only todo", 10);
+    let error = rejected.typed_error.ok_or_else(|| {
+        anyhow::anyhow!("expected RUNTIME_DIRTY_ONLY_UNSUPPORTED typed rejection")
+    })?;
+    if error.code != "RUNTIME_DIRTY_ONLY_UNSUPPORTED" {
+        return Err(anyhow::anyhow!(
+            "expected RUNTIME_DIRTY_ONLY_UNSUPPORTED, got {}",
+            error.code
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(TextQuerySyntax::Native, "dirty:yes todo", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime metadata query after dirty:only reject",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime metadata query diverged after dirty:only reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_invalid_request_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["dirty:only", "todo"],
+    )
+}
+
+#[test]
+fn runtime_catalog_affected_executes_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let affected = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "affected:rebuild=lexical catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(affected.typed_error, "affected query")?;
+    if affected.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "affected query expected exactly one candidate, got {:?}",
+            affected.candidate_ids
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime catalog query after affected: execution",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime catalog query diverged after affected: execution: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &[
+            "affected:rebuild=lexical",
+            "catalog_changed_needle",
+            "src/changed.rs",
+        ],
+    )
+}
+
+#[test]
+fn runtime_catalog_invalidated_by_executes_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let invalidated = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "invalidated_by:rebuild=lexical catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(invalidated.typed_error, "invalidated_by query")?;
+    if invalidated.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "invalidated_by query expected exactly one candidate, got {:?}",
+            invalidated.candidate_ids
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime catalog query after invalidated_by: execution",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime catalog query diverged after invalidated_by: execution: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &[
+            "invalidated_by:rebuild=lexical",
+            "catalog_changed_needle",
+            "src/changed.rs",
+        ],
+    )
+}
+
+#[test]
+fn runtime_catalog_snapshot_unknown_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()>
+{
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let rejected = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "snapshot:missing file:src/snap.rs catalog_snapshot_needle",
+        10,
+    );
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected SNAPSHOT_UNKNOWN typed rejection"))?;
+    if error.code != "SNAPSHOT_UNKNOWN" {
+        return Err(anyhow::anyhow!(
+            "expected SNAPSHOT_UNKNOWN, got {}",
+            error.code
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "snapshot:active file:src/snap.rs catalog_snapshot_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime catalog query after snapshot:missing reject",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime catalog query diverged after snapshot:missing reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_typed_error_other_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["snapshot:missing", "catalog_snapshot_needle", "src/snap.rs"],
+    )
+}
+
+#[test]
+fn predicate_file_contains_executes_and_miss_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_predicate_fixture(&mut rt)?;
+
+    let expected_id = rt.candidate_id_for_path("src/file_contains.rs")?;
+    let hit = rt.query_text(TextQuerySyntax::Native, "file.contains('oo_ba')", 10);
+    require_no_typed_error(hit.typed_error, "file.contains hit query")?;
+    if hit.candidate_ids != vec![expected_id.clone()] {
+        return Err(anyhow::anyhow!(
+            "file.contains hit query diverged: {:?}",
+            hit.candidate_ids
+        ));
+    }
+
+    let miss = rt.query_text(
+        TextQuerySyntax::Native,
+        "file.contains(\"banana lemon\")",
+        10,
+    );
+    require_no_typed_error(miss.typed_error, "file.contains miss query")?;
+    if !miss.candidate_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "file.contains miss query expected zero candidates, got {:?}",
+            miss.candidate_ids
+        ));
+    }
+
+    let alpha_id = rt.candidate_id_for_path("src/lib.rs")?;
+    let beta_id = rt.candidate_id_for_path("src/main.rs")?;
+    let follow_up = rt.query_text(TextQuerySyntax::Sourcegraph, "needle", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up lexical query after file.contains miss",
+    )?;
+    if follow_up.candidate_ids != vec![alpha_id, beta_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up lexical query diverged after file.contains miss: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+        ],
+        &["oo_ba", "banana lemon", "needle"],
+    )
+}
+
+#[test]
+fn predicate_repo_has_file_executes_and_miss_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_predicate_fixture(&mut rt)?;
+
+    let alpha_id = rt.candidate_id_for_path("src/lib.rs")?;
+    let beta_id = rt.candidate_id_for_path("src/main.rs")?;
+
+    let hit = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/lib.rs) needle",
+        10,
+    );
+    require_no_typed_error(hit.typed_error, "repo.has.file hit query")?;
+    if hit.candidate_ids != vec![alpha_id.clone(), beta_id.clone()] {
+        return Err(anyhow::anyhow!(
+            "repo.has.file hit query diverged: {:?}",
+            hit.candidate_ids
+        ));
+    }
+
+    let miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:missing.rs) needle",
+        10,
+    );
+    require_no_typed_error(miss.typed_error, "repo.has.file miss query")?;
+    if !miss.candidate_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "repo.has.file miss query expected zero candidates, got {:?}",
+            miss.candidate_ids
+        ));
+    }
+
+    let follow_up = rt.query_text(TextQuerySyntax::Sourcegraph, "needle", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up lexical query after repo.has.file miss",
+    )?;
+    if follow_up.candidate_ids != vec![alpha_id, beta_id] {
+        return Err(anyhow::anyhow!(
+            "follow-up lexical query diverged after repo.has.file miss: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+        ],
+        &["repo:has.file", "missing.rs", "needle"],
+    )
+}
+
+#[test]
+fn runtime_catalog_meta_facets_execute_and_do_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    for (label, query_text, follow_up_query, leaked_terms) in [
+        (
+            "meta.owner",
+            "meta.owner:team-a catalog_owner_needle",
+            "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+            vec!["meta.owner:team-a", "catalog_owner_needle"],
+        ),
+        (
+            "meta.service",
+            "meta.service:search catalog_service_needle",
+            "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+            vec!["meta.service:search", "catalog_service_needle"],
+        ),
+        (
+            "meta.layer",
+            "meta.layer:index catalog_layer_needle",
+            "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+            vec!["meta.layer:index", "catalog_layer_needle"],
+        ),
+        (
+            "meta.surface",
+            "meta.surface:lexical catalog_surface_needle",
+            "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+            vec!["meta.surface:lexical", "catalog_surface_needle"],
+        ),
+    ] {
+        let result = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, query_text, 10);
+        require_no_typed_error(result.typed_error, label)?;
+        if result.candidate_ids.len() != 1 {
+            return Err(anyhow::anyhow!(
+                "{label} query expected exactly one candidate, got {:?}",
+                result.candidate_ids
+            ));
+        }
+
+        let follow_up =
+            rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, follow_up_query, 10);
+        require_no_typed_error(
+            follow_up.typed_error,
+            &format!("follow-up runtime catalog query after {label} execution"),
+        )?;
+        if follow_up.candidate_ids.len() != 1 {
+            return Err(anyhow::anyhow!(
+                "follow-up runtime catalog query diverged after {label} execution: {:?}",
+                follow_up.candidate_ids
+            ));
+        }
+        assert_success_runtime_metadata_metrics(&rt, leaked_terms.as_slice())?;
+    }
+    Ok(())
+}
+
+#[test]
+fn runtime_catalog_stale_miss_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let miss = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "stale:before=1970-01-01T00:00:00.010Z file:src/stale.rs catalog_stale_needle",
+        10,
+    );
+    require_no_typed_error(miss.typed_error, "runtime catalog stale miss query")?;
+    if !miss.candidate_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "runtime catalog stale miss query expected zero candidates, got {:?}",
+            miss.candidate_ids
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_stale_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime catalog query after stale miss",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime catalog query diverged after stale miss: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_success_runtime_metadata_metrics(
+        &rt,
+        &["catalog_stale_needle", "1970-01-01", "src/stale.rs"],
+    )
+}
+
+#[test]
+fn history_missing_type_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let rejected = rt.query_history(TextQuerySyntax::Native, "fix", 10);
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected INVALID_REQUEST for missing history type"))?;
+    if error.code != "INVALID_REQUEST" {
+        return Err(anyhow::anyhow!(
+            "expected INVALID_REQUEST, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("explicit `type:commit` or `type:diff` is required")
+    {
+        return Err(anyhow::anyhow!(
+            "history missing-type rejection lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up history query after missing type reject",
+    )?;
+    if follow_up.commit_ids.len() != 1 || !follow_up.diff_paths.is_empty() {
+        return Err(anyhow::anyhow!(
+            "follow-up history query diverged after missing type reject: commit_ids={:?} diff_paths={:?}",
+            follow_up.commit_ids,
+            follow_up.diff_paths
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_invalid_request_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["fix", "type:commit"],
+    )
+}
+
+#[test]
+fn history_commit_file_filter_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let rejected = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit file:src/history.rs fix",
+        10,
+    );
+    let error = rejected.typed_error.ok_or_else(|| {
+        anyhow::anyhow!("expected INVALID_REQUEST for commit history file filter")
+    })?;
+    if error.code != "INVALID_REQUEST" {
+        return Err(anyhow::anyhow!(
+            "expected INVALID_REQUEST, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("`file:` and `diff.*` filters require `type:diff`")
+    {
+        return Err(anyhow::anyhow!(
+            "history commit-file rejection lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up history query after commit file reject",
+    )?;
+    if follow_up.commit_ids.len() != 1 || !follow_up.diff_paths.is_empty() {
+        return Err(anyhow::anyhow!(
+            "follow-up history query diverged after commit file reject: commit_ids={:?} diff_paths={:?}",
+            follow_up.commit_ids,
+            follow_up.diff_paths
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_invalid_request_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["type:commit", "file:src/history.rs", "fix"],
+    )
+}
+
+#[test]
+fn history_predicate_leaf_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let rejected = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit file.contains('fix')",
+        10,
+    );
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for history predicate leaf"))?;
+    if error.code != "NOT_IMPLEMENTED" {
+        return Err(anyhow::anyhow!(
+            "expected NOT_IMPLEMENTED, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("history: predicate leaves are not executable")
+    {
+        return Err(anyhow::anyhow!(
+            "history predicate-leaf rejection lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up history query after predicate-leaf reject",
+    )?;
+    if follow_up.commit_ids.len() != 1 || !follow_up.diff_paths.is_empty() {
+        return Err(anyhow::anyhow!(
+            "follow-up history query diverged after predicate-leaf reject: commit_ids={:?} diff_paths={:?}",
+            follow_up.commit_ids,
+            follow_up.diff_paths
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_unavailable_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["file.contains", "type:commit", "fix"],
+    )
+}
+
+#[test]
+fn runtime_metadata_predicate_leaf_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_runtime_catalog_fixture(&mut rt)?;
+
+    let rejected = rt.query_runtime_metadata(
+        TextQuerySyntax::Native,
+        "changed:since=1970-01-01T00:00:00.010Z file.contains('catalog_changed_needle')",
+        10,
+    );
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected NOT_IMPLEMENTED for runtime predicate leaf"))?;
+    if error.code != "NOT_IMPLEMENTED" {
+        return Err(anyhow::anyhow!(
+            "expected NOT_IMPLEMENTED, got {}",
+            error.code
+        ));
+    }
+    if !error
+        .message
+        .contains("runtime metadata: predicate leaves are not executable")
+    {
+        return Err(anyhow::anyhow!(
+            "runtime predicate-leaf rejection lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_runtime_metadata(
+        TextQuerySyntax::Sourcegraph,
+        "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up runtime metadata query after predicate-leaf reject",
+    )?;
+    if follow_up.candidate_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up runtime metadata query diverged after predicate-leaf reject: {:?}",
+            follow_up.candidate_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_unavailable_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "file.contains",
+            "catalog_changed_needle",
+            "changed:since=",
+            "src/changed.rs",
+        ],
+    )
+}
+
+#[test]
+fn history_before_executes_and_metrics_are_bounded() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let result = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit before:1970-01-01T00:00:00.020Z alpha_content_needle",
+        10,
+    );
+    require_no_typed_error(result.typed_error, "history before query")?;
+    if result.commit_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "history before query diverged: commit_ids={:?}",
+            result.commit_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["alpha_content_needle", "1970-01-01", "alice"],
+    )
+}
+
+#[test]
+fn history_before_invalid_timeref_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let rejected = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit before:not-a-date alpha_content_needle",
+        10,
+    );
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected HISTORY_INVALID_TIMEREF typed error"))?;
+    if error.code != "HISTORY_INVALID_TIMEREF" {
+        return Err(anyhow::anyhow!(
+            "expected HISTORY_INVALID_TIMEREF, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("not a valid RFC3339") {
+        return Err(anyhow::anyhow!(
+            "history before invalid timeref lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up history query after invalid before: timeref",
+    )?;
+    if follow_up.commit_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up history query diverged after invalid before: timeref: {:?}",
+            follow_up.commit_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_not_ready_total",
+            "lq_typed_error_other_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &["not-a-date", "alpha_content_needle", "fix"],
+    )
+}
+
+#[test]
+fn history_since_time_and_commit_execute_and_unknown_commit_fails_closed() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    let since_time = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit since.time:1970-01-01T00:00:00.012Z alpha_content_needle",
+        10,
+    );
+    require_no_typed_error(since_time.typed_error, "since.time query")?;
+    if since_time.commit_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "since.time query expected one commit, got {:?}",
+            since_time.commit_ids
+        ));
+    }
+
+    let since_commit = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit since.commit:refs/heads/main alpha_content_needle",
+        10,
+    );
+    require_no_typed_error(since_commit.typed_error, "since.commit query")?;
+    if since_commit.commit_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "since.commit query expected one commit, got {:?}",
+            since_commit.commit_ids
+        ));
+    }
+
+    let rejected = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit since.commit:refs/heads/missing alpha_content_needle",
+        10,
+    );
+    let error = rejected
+        .typed_error
+        .ok_or_else(|| anyhow::anyhow!("expected typed error for since.commit unknown ref"))?;
+    if error.code != "HISTORY_INVALID_TIMEREF" {
+        return Err(anyhow::anyhow!(
+            "expected HISTORY_INVALID_TIMEREF for since.commit unknown ref, got {}",
+            error.code
+        ));
+    }
+    if !error.message.contains("since.commit") {
+        return Err(anyhow::anyhow!(
+            "since.commit unknown ref lost detail: {}",
+            error.message
+        ));
+    }
+
+    let follow_up = rt.query_history(
+        TextQuerySyntax::Native,
+        "type:commit since:1970-01-01T00:00:00.010Z alpha_content_needle",
+        10,
+    );
+    require_no_typed_error(
+        follow_up.typed_error,
+        "follow-up history query after since.commit failure",
+    )?;
+    if follow_up.commit_ids.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "follow-up history query diverged after since.commit failure: {:?}",
+            follow_up.commit_ids
+        ));
+    }
+    assert_closed_metric_suffix(
+        &rt,
+        &[
+            "lq_query_intake_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "lq_query_intake_total",
+            "lq_typed_error_other_total",
+            "lq_planner_total",
+            "lq_engine_fanout_count",
+            "lq_merge_result_count",
+        ],
+        &[
+            "since.commit:",
+            "refs/heads/missing",
+            "alpha_content_needle",
+        ],
+    )
+}
+
+#[test]
+fn history_after_until_and_diff_filters_execute_and_do_not_poison_next_query() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_history_fixture(&mut rt)?;
+
+    for (label, query_text, expect_commit_count, expect_diff_count, leaked_terms) in [
+        (
+            "after",
+            "type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle",
+            1usize,
+            0usize,
+            vec!["after:", "alpha_content_needle", "1970-01-01"],
+        ),
+        (
+            "until",
+            "type:commit until:1970-01-01T00:00:00.012Z alpha_content_needle",
+            1usize,
+            0usize,
+            vec!["until:", "alpha_content_needle", "1970-01-01"],
+        ),
+        (
+            "diff.added",
+            "type:diff diff.added:history",
+            0usize,
+            1usize,
+            vec!["diff.added:history", "src/history.rs"],
+        ),
+        (
+            "diff.removed",
+            "type:diff diff.removed:history",
+            0usize,
+            1usize,
+            vec!["diff.removed:history", "src/history.rs"],
+        ),
+        (
+            "diff.touched",
+            "type:diff diff.touched:history",
+            0usize,
+            1usize,
+            vec!["diff.touched:history", "src/history.rs"],
+        ),
+    ] {
+        let result = rt.query_history(TextQuerySyntax::Sourcegraph, query_text, 10);
+        require_no_typed_error(result.typed_error, label)?;
+        if result.commit_ids.len() != expect_commit_count
+            || result.diff_paths.len() != expect_diff_count
+        {
+            return Err(anyhow::anyhow!(
+                "{label} query diverged: commit_ids={:?} diff_paths={:?}",
+                result.commit_ids,
+                result.diff_paths
+            ));
+        }
+
+        let follow_up = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 10);
+        require_no_typed_error(
+            follow_up.typed_error,
+            &format!("follow-up history query after {label} execution"),
+        )?;
+        if follow_up.commit_ids.len() != 1 || !follow_up.diff_paths.is_empty() {
+            return Err(anyhow::anyhow!(
+                "follow-up history query diverged after {label} execution: commit_ids={:?} diff_paths={:?}",
+                follow_up.commit_ids,
+                follow_up.diff_paths
+            ));
+        }
+        assert_closed_metric_suffix(
+            &rt,
+            &[
+                "lq_query_intake_total",
+                "lq_planner_total",
+                "lq_engine_fanout_count",
+                "lq_merge_result_count",
+            ],
+            &[
+                "lq_query_intake_total",
+                "lq_typed_error_not_ready_total",
+                "lq_typed_error_other_total",
+                "lq_planner_total",
+                "lq_engine_fanout_count",
+                "lq_merge_result_count",
+            ],
+            leaked_terms.as_slice(),
+        )?;
     }
     Ok(())
 }

@@ -1,22 +1,26 @@
 # LDB-03 — Search-plane Runtime and Readiness Cutover
 
-Status: `done` (2026-05-29)
-Parent: [../README.md](../README.md)
-Depends on: [LDB-02-lance-persisted-semantic-adapter.md](LDB-02-lance-persisted-semantic-adapter.md)
+Status: `done` (lancedb rewrite 2026-05-30; R1+R2+R3 hardening 2026-05-31)
 
 ## 0. Outcome
 
-Boot-time `bootstrap_persisted_semantic_state(...).replay_into(...)` removed
-from `searchd::app::runtime::assemble`. New `searchd::app::semantic_boot::
+Boot replay (`bootstrap_persisted_semantic_state`) is removed from
+`searchd::app::runtime::assemble`. New `searchd::app::semantic_boot::
 seed_persisted_semantic_readiness` seeds the ledger from sealed durable
-generations (via `quanta_index_semantic::scan_persisted_generations`, using each
-manifest digest). `searchd-runtime` now builds `SemanticAdapter::with_state_root
-(state_root/indexes/semantic)`. `DirectSemanticMaterializer` no longer holds the
-`LegacySemanticJournalStore`: it builds the durable adapter first, then updates the
-ledger (a failed durable write leaves no SEALED marker and no ledger mutation).
-Activation/generation resolution unchanged. The daemon-level restart proof
-`reopen_preserves_semantic_scope_ids_and_explanation` passes on the durable
-path; boot seeding/incomplete-skip covered by `semantic_boot` unit tests.
+generations (via `quanta_index_semantic::scan_persisted_generations`, using
+each manifest's digest). `searchd-runtime` builds `SemanticAdapter::with_state_
+root(quanta_index_semantic::semantic_state_root(state_root))`.
+`DirectSemanticMaterializer` no longer holds the renamed
+`LegacySemanticJournalStore`: it builds the durable lancedb adapter first,
+then updates the ledger. Activation/generation resolution unchanged. Boot
+observability via `SearchdRuntime.semantic_boot` (`SemanticBootReport` —
+covers migration outcome, sealed-generation count, migration_micros,
+seed_micros). Daemon-level restart proof
+`reopen_preserves_semantic_scope_ids_and_explanation` passes on the lancedb
+path; boot seeding/incomplete-skip covered by `semantic_boot` unit tests +
+`searchd-runtime/tests/semantic_boot_report.rs` runtime-level assertions.
+Parent: [../README.md](../README.md)
+Depends on: [LDB-02-lance-persisted-semantic-adapter.md](LDB-02-lance-persisted-semantic-adapter.md)
 
 ## 1. Purpose
 

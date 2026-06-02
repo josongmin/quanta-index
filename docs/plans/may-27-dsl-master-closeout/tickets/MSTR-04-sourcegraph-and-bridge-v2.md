@@ -22,11 +22,15 @@ structural semantics already exist.
   authoritative node text rather than translator-side lexical fallback.
 - structural bridge packets preserve `BridgeScope::Structural` and structural
   candidates for native and SG structural queries.
+- bridge directives remain intentional bridge-packet carrier surfaces rather
+  than runtime search-result rows.
 
 ## Remaining Closeout
 
 - widen no further than native executable semantics
 - keep non-executable SG structural shapes typed
+- keep bridge directives as intentional bridge-packet carrier surfaces rather
+  than forcing them into runtime search-result inventory
 - add any missing matrix/doc proof rows instead of widening acceptance
 
 ## Guardrails

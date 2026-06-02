@@ -24,6 +24,10 @@ rust-profile-list:
         'test-integration    contract/core/channel/lexical/repomap integration rail' \
         'test-cli-smoke      CLI smoke tests for searchctl + corpus-smoke' \
         'test-daemon         searchd runtime scenario/e2e tests' \
+        'release-cli        optimized release build for quanta-index-searchctl' \
+        'release-cli-fresh  clean release-bin lane, then rebuild quanta-index-searchctl' \
+        'release-daemon     optimized release build for quanta-index-searchd daemon' \
+        'release-daemon-fresh clean release-daemon lane, then rebuild quanta-index-searchd daemon' \
         'verify-rust         standard merge gate' \
         'verify-rust-heavy   nightly/heavy correctness gate' \
         'timings-fast        fast-lane timing capture' \
@@ -43,6 +47,10 @@ rust-profile profile:
         test-integration) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-integration ;; \
         test-cli-smoke) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-cli-smoke ;; \
         test-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-e2e ;; \
+        release-cli) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli ;; \
+        release-cli-fresh) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli-fresh ;; \
+        release-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-daemon ;; \
+        release-daemon-fresh) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-daemon-fresh ;; \
         verify-rust) ./scripts/run-rust-profile.sh "{{profile}}" verify-rust ;; \
         verify-rust-heavy) ./scripts/run-rust-profile.sh "{{profile}}" verify-rust-heavy ;; \
         timings-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-timings-fast ;; \
@@ -90,6 +98,27 @@ rust-build-fast:
 
 rust-build-daemon:
     {{cargo}} --lane daemon-lane build -p quanta-index-searchd-runtime --all-features --locked
+
+# Canonical deployable CLI artifact. Uses a dedicated release lane so optimized
+# outputs do not share fingerprints with edit-loop targets.
+rust-build-release-cli:
+    {{cargo}} --lane release-bin-lane build -p quanta-index-searchctl --bin quanta-index-searchctl --all-features --locked --release
+
+# Fresh release build for stale-fingerprint recovery after source-layout cuts.
+rust-build-release-cli-fresh:
+    {{cargo}} --lane release-bin-lane clean --quiet
+    {{cargo}} --lane release-bin-lane build -p quanta-index-searchctl --bin quanta-index-searchctl --all-features --locked --release
+
+# Canonical deployable daemon artifact. The bin lives in
+# quanta-index-searchd-runtime, not the quanta-index-searchd library crate.
+rust-build-release-daemon:
+    {{cargo}} --lane release-daemon-bin-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --release
+
+# Fresh daemon release build for stale-fingerprint recovery after source-layout
+# cuts (for example semantic backend module replacement).
+rust-build-release-daemon-fresh:
+    {{cargo}} --lane release-daemon-bin-lane clean --quiet
+    {{cargo}} --lane release-daemon-bin-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --release
 
 # Full compile rail for every Rust target, including integration tests and benches.
 rust-build-all-targets:
@@ -191,6 +220,22 @@ rust-bench:
 
 rust-bench-build:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked --no-run
+
+# Layer-3 DSL query-latency matrix (docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
+# Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
+rust-bench-dsl-warm:
+    mkdir -p artifacts/dsl-bench
+    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.json" DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+      {{cargo}} --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
+
+rust-bench-dsl-cold samples="20":
+    mkdir -p artifacts/dsl-bench
+    python3 tools/benchmark/run_dsl_cold_matrix.py --samples {{samples}} --out artifacts/dsl-bench/cold-matrix.json
+
+# Phase B relative-regression gate (report-only until baselines are captured via --update-baseline).
+rust-bench-dsl-compare:
+    python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/warm-matrix.json artifacts/dsl-bench/warm-matrix.json
+    python3 tools/benchmark/compare_dsl_bench.py tools/benchmark/baselines/cold-matrix.json artifacts/dsl-bench/cold-matrix.json
 
 rust-machete:
     env QUANTA_INDEX_BUILD_LANE=machete-lane bash -lc 'source scripts/quanta-index-env.sh && cargo machete --with-metadata'

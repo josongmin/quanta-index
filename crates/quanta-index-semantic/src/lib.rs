@@ -3,29 +3,37 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
-//! Semantic adapter — persisted, generation-scoped vector index.
+//! Semantic adapter — persisted, generation-scoped vector index backed by the
+//! `lancedb` crate (LDB-00 §3.2 revised decision).
 //!
 //! Implements the batch-native semantic build/open ports from
-//! `quanta-index-core::domains::semantic` against a durable on-disk store under
-//! `{state_root}/indexes/semantic/{repo}/{revision}/g{generation}/`. A sealed
-//! generation is built once (columnar rows + a persisted HNSW graph) and opened
-//! directly from durable state — there is no boot-time replay and no rebuild of
-//! the graph at open. Vendor / file-layout knowledge stays inside this crate;
-//! the public surface is the two ports plus [`scan_persisted_generations`] for
-//! readiness seeding at the composition root.
+//! `quanta-index-core::domains::semantic` against a real lancedb dataset under
+//! `{state_root}/indexes/semantic/{repo}/{revision}/g{generation}/`. The
+//! adapter owns a `tokio::runtime::Runtime` and bridges async lancedb calls to
+//! the sync port surface via `Runtime::block_on` — this adapter *is* the
+//! deliberate async↔sync seam (the `disallowed_methods` rule against
+//! `block_on` is honored by a single, narrowly-scoped `#[expect]` on the
+//! crate-private [`run_blocking`] helper — the only `block_on` call site in
+//! the crate; both the build and query paths funnel through it).
 //!
-//! See `docs/plans/may-28-lancedb-adoption/` for the backend decision (LDB-00):
-//! "Lance" is the planning label for this durable shape; the bytes are an
-//! in-house CBOR columnar shard, not the `lance` crate.
+//! A sealed generation is built once (lancedb table + ANN index + scope
+//! manifest + READY/SEALED markers) and opened directly from durable state at
+//! query time. There is no boot-time replay. Vendor / file-layout knowledge
+//! stays inside this crate; the public surface is the two ports plus
+//! [`scan_persisted_generations`] for readiness seeding at the composition
+//! root, and [`semantic_state_root`] so the composition root does not hardcode
+//! the layout root.
+//!
+//! See `docs/plans/may-28-lancedb-adoption/` for the full backend decision and
+//! migration packet.
 
 mod build;
 mod codec;
-mod dataset;
-mod graph;
-mod hnsw;
+mod generation_contract;
 mod layout;
 mod manifest;
 mod search;
+mod sql;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -38,6 +46,14 @@ use quanta_index_core::{
 
 use crate::manifest::SemanticManifest;
 use crate::search::{LoadedGeneration, PersistedSemanticSearcher, open_generation};
+
+#[cfg(debug_assertions)]
+pub mod test_support {
+    /// Debug-only test hook for injected append failure rails.
+    pub fn set_append_fail_path(path: Option<&str>) {
+        crate::build::set_append_fail_path_for_debug(path);
+    }
+}
 
 /// Capacity of the opened-generation cache.
 const OPEN_CACHE_CAPACITY: usize = 8;
@@ -53,12 +69,11 @@ struct GenKey {
 /// generation)`.
 ///
 /// Sealed generations are immutable, so a content-keyed entry can never go
-/// stale — a fresh process reloads from durable state and gets identical
-/// results, and eviction only costs a reload. Eviction is FIFO (not LRU) on
-/// purpose: a cache *hit* takes only a read lock (so concurrent opens of a hot
-/// generation proceed in parallel), whereas LRU recency tracking would force a
-/// write lock on every hit. With immutable values and a small capacity, FIFO's
-/// occasional reload of a hot generation is cheaper than serializing every read.
+/// stale — a fresh process reopens the lancedb dataset from disk and gets
+/// identical results, and eviction only costs a reopen. Eviction is FIFO (not
+/// LRU) on purpose: a cache *hit* takes only a read lock (so concurrent opens
+/// of a hot generation proceed in parallel), whereas LRU recency tracking
+/// would force a write lock on every hit.
 #[derive(Default)]
 struct OpenCache {
     entries: BTreeMap<GenKey, Arc<LoadedGeneration>>,
@@ -86,20 +101,57 @@ impl OpenCache {
     }
 }
 
-/// Persisted semantic adapter rooted at a semantic state directory (typically
-/// `{state_root}/indexes/semantic` at the composition root).
+/// Persisted semantic adapter rooted at a semantic state directory.
+///
+/// The state directory is typically `{state_root}/indexes/semantic` at the
+/// composition root. Owns a tokio runtime used to drive lancedb's async API
+/// behind the sync port surface.
 pub struct SemanticAdapter {
     state_root: PathBuf,
+    runtime: Arc<tokio::runtime::Runtime>,
     cache: RwLock<OpenCache>,
 }
 
+/// Single crate-wide async↔sync seam funnel.
+///
+/// Every entry from a sync port (`SemanticBatchBuildPort` /
+/// `SemanticIndexOpenPort` / `SemanticSearcher`) into the async lancedb crate
+/// routes through this one helper. Both the build path (held by
+/// `SemanticAdapter`) and the query path (held by `PersistedSemanticSearcher`)
+/// call through it, so the workspace `disallowed_methods` exception is
+/// localized to exactly one `#[expect]` site rather than mirrored across
+/// adapter + searcher.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the semantic adapter is the deliberate async↔sync seam between the sync port surface and the async lancedb crate; the entire crate funnels through this single helper"
+)]
+pub(crate) fn run_blocking<F: core::future::Future>(
+    runtime: &tokio::runtime::Runtime,
+    future: F,
+) -> F::Output {
+    runtime.block_on(future)
+}
+
 impl SemanticAdapter {
-    #[must_use]
-    pub fn with_state_root(state_root: PathBuf) -> Self {
-        Self {
+    /// Returns `Err` if the tokio runtime cannot be constructed (a rare system-
+    /// resource failure). The construction would otherwise have to panic, which
+    /// the workspace lint regime forbids.
+    pub fn with_state_root(state_root: PathBuf) -> Result<Self, CoreError> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .thread_name("quanta-index-semantic-lancedb")
+            .build()
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: tokio runtime init for lancedb adapter: {err}"
+                ))
+            })?;
+        Ok(Self {
             state_root,
+            runtime: Arc::new(runtime),
             cache: RwLock::new(OpenCache::default()),
-        }
+        })
     }
 
     fn cache_get(&self, key: &GenKey) -> Result<Option<Arc<LoadedGeneration>>, CoreError> {
@@ -124,7 +176,7 @@ impl SemanticBatchBuildPort for SemanticAdapter {
         &self,
         batch: &quanta_index_contract::SemanticIngestBatch,
     ) -> Result<(), CoreError> {
-        build::build_batch(&self.state_root, batch)
+        run_blocking(&self.runtime, build::build_batch(&self.state_root, batch))
     }
 }
 
@@ -141,16 +193,20 @@ impl SemanticIndexOpenPort for SemanticAdapter {
             generation,
         };
         if let Some(loaded) = self.cache_get(&key)? {
-            return Ok(Box::new(PersistedSemanticSearcher::new(loaded)));
+            return Ok(Box::new(PersistedSemanticSearcher::new(
+                loaded,
+                Arc::clone(&self.runtime),
+            )));
         }
-        let loaded = Arc::new(open_generation(
-            &self.state_root,
-            repo,
-            revision,
-            generation,
+        let loaded = Arc::new(run_blocking(
+            &self.runtime,
+            open_generation(&self.state_root, repo, revision, generation),
         )?);
         self.cache_put(key, Arc::clone(&loaded))?;
-        Ok(Box::new(PersistedSemanticSearcher::new(loaded)))
+        Ok(Box::new(PersistedSemanticSearcher::new(
+            loaded,
+            Arc::clone(&self.runtime),
+        )))
     }
 }
 
@@ -165,7 +221,14 @@ pub fn semantic_state_root(state_root: &Path) -> PathBuf {
 }
 
 /// A sealed semantic generation discovered on disk, for readiness seeding.
+///
+/// `#[non_exhaustive]` reserves the right to add fields without a breaking
+/// change at this public surface: this struct is **produced** by
+/// [`scan_persisted_generations`] and **consumed** by the composition root's
+/// readiness seeder, both of which already match on named fields. Adding e.g.
+/// a `materialized_at` or `index_state` later then does not break callers.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PersistedSemanticGeneration {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
@@ -187,6 +250,15 @@ pub fn scan_persisted_generations(
     if !semantic_root.exists() {
         return Ok(out);
     }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_name("quanta-index-semantic-scan")
+        .build()
+        .map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: tokio runtime init for persisted-generation scan: {err}"
+            ))
+        })?;
     for repo_entry in read_dir(semantic_root)? {
         let repo_entry = dir_entry(repo_entry)?;
         if !is_dir(&repo_entry)? {
@@ -226,6 +298,10 @@ pub fn scan_persisted_generations(
                 })?;
                 let manifest = SemanticManifest::decode(&manifest_bytes)?;
                 manifest.validate_scope(&repo_id, &revision_id, generation)?;
+                let _loaded = run_blocking(
+                    &runtime,
+                    open_generation(semantic_root, &repo_id, &revision_id, generation),
+                )?;
                 out.push(PersistedSemanticGeneration {
                     repo_id: repo_id.clone(),
                     revision_id: revision_id.clone(),

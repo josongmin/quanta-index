@@ -12,11 +12,6 @@
 //! the current driver thread and reconstructing a fresh runtime over
 //! the same `state_root`.
 
-#![expect(
-    dead_code,
-    reason = "harness API surface is consumed across E2E-00..07; only the inventory smoke exercises a slice today"
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,8 +34,8 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
-    StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope, StructuralTreeRecord,
-    SymbolId, TextQueryRequest, TextQuerySyntax,
+    StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
+    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_search_plane::ActivationCatalog;
@@ -49,6 +44,44 @@ use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 use tempfile::TempDir;
+
+#[derive(Clone, Debug)]
+pub struct E2eRuntimeCatalogSpec {
+    pub producer_head_applied_at_ms: u64,
+    pub generation_materialized_at_ms: u64,
+    pub changed: Vec<E2eRuntimeChangedSpec>,
+    pub facets: Vec<E2eRuntimeFacetSpec>,
+    pub snapshots: Vec<E2eRuntimeSnapshotSpec>,
+    pub affected: Vec<E2eRuntimeEdgeSpec>,
+    pub invalidated_by: Vec<E2eRuntimeEdgeSpec>,
+}
+
+#[derive(Clone, Debug)]
+pub struct E2eRuntimeChangedSpec {
+    pub path: String,
+    pub applied_at_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct E2eRuntimeFacetSpec {
+    pub path: String,
+    pub owner: Option<String>,
+    pub service: Option<String>,
+    pub layer: Option<String>,
+    pub surface: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct E2eRuntimeSnapshotSpec {
+    pub name: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct E2eRuntimeEdgeSpec {
+    pub key: String,
+    pub paths: Vec<String>,
+}
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -90,11 +123,7 @@ fn structural_role_tags(
 }
 
 /// Tempdir-backed runtime handle.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eRuntime {
+pub struct E2eRuntime {
     tempdir: Option<TempDir>,
     state_root: PathBuf,
     driver: Option<DriverState>,
@@ -118,51 +147,59 @@ struct DriverState {
 /// `engines_touched` is best-effort; the `Text` response variant has no
 /// explanation today so this stays empty for plain text queries. Semantic and
 /// hybrid rows populate it in later E2E tickets.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eQueryResult {
-    pub(super) candidates: Vec<LexicalCandidate>,
-    pub(super) candidate_ids: Vec<String>,
-    pub(super) engines_touched: Vec<EngineTouched>,
-    pub(super) explanation: Option<SearchExplanation>,
-    pub(super) typed_error: Option<E2eTypedError>,
+pub struct E2eQueryResult {
+    pub candidates: Vec<LexicalCandidate>,
+    pub candidate_ids: Vec<String>,
+    pub structural_results: Vec<StructuralCandidate>,
+    pub engines_touched: Vec<EngineTouched>,
+    pub explanation: Option<SearchExplanation>,
+    pub typed_error: Option<E2eTypedError>,
 }
 
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eHistoryResult {
-    pub(super) commit_ids: Vec<String>,
-    pub(super) diff_paths: Vec<String>,
-    pub(super) typed_error: Option<E2eTypedError>,
+pub struct E2eHistoryResult {
+    pub commit_ids: Vec<String>,
+    pub diff_paths: Vec<String>,
+    pub typed_error: Option<E2eTypedError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eTypedError {
-    pub(super) code: String,
-    pub(super) message: String,
+pub struct E2eTypedError {
+    pub code: String,
+    pub message: String,
 }
 
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "sibling test modules import this private-module harness surface"
-)]
-pub(super) struct E2eExplainResult {
-    pub(super) explanation: Option<SearchExplanation>,
-    pub(super) typed_error: Option<E2eTypedError>,
+pub struct E2eExplainResult {
+    pub explanation: Option<SearchExplanation>,
+    pub typed_error: Option<E2eTypedError>,
+}
+
+pub struct E2eHistoryFixtureSpec<'a> {
+    pub commit_sha: &'a str,
+    pub file_path: &'a str,
+    pub author: &'a str,
+    pub committer: &'a str,
+    pub message: &'a str,
+    pub author_time_ms: u64,
+    pub committer_time_ms: u64,
+    pub applied_at_ms: u64,
+    pub ref_name: &'a str,
+    pub tag_name: &'a str,
+    pub added_text: &'a str,
+    pub removed_text: &'a str,
+    pub touched_text: &'a str,
+}
+
+pub struct E2eTextChunkSpec<'a> {
+    pub content: &'a str,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub source_repo_id: Option<&'a str>,
 }
 
 impl E2eRuntime {
     /// Create a fresh tempdir and an owned publisher. The driver is NOT
     /// started yet — it boots lazily on first `query_text`.
-    pub(super) fn boot() -> AnyResult<Self> {
+    pub fn boot() -> AnyResult<Self> {
         let tempdir = tempfile::tempdir()?;
         let state_root = tempdir.path().to_path_buf();
         Ok(Self {
@@ -181,7 +218,8 @@ impl E2eRuntime {
     /// same `state_root` so further ingest is possible, then leave the
     /// driver stopped so first query lazy-starts a fresh runtime.
     /// Mirrors a process restart against persistent storage.
-    pub(super) fn reopen(mut self) -> Self {
+    #[must_use]
+    pub fn reopen(mut self) -> Self {
         self.stop_driver();
         self
     }
@@ -224,43 +262,54 @@ impl E2eRuntime {
             })
     }
 
-    pub(super) fn repo(&self) -> RepoId {
+    pub fn repo(&self) -> RepoId {
         RepoId::new("repo-e2e")
     }
 
-    pub(super) fn revision(&self) -> RevisionId {
+    pub fn revision(&self) -> RevisionId {
         RevisionId::new("rev-e2e")
     }
 
     /// Current generation pin. Stable until `seal()` is called, then
     /// advances on the next ingest.
-    pub(super) fn current_generation(&self) -> ManifestGeneration {
+    pub fn current_generation(&self) -> ManifestGeneration {
         ManifestGeneration::new(self.generation_counter)
     }
 
-    pub(super) fn generation_pin(&self) -> GenerationPin {
+    pub fn generation_pin(&self) -> GenerationPin {
         GenerationPin::new(self.repo(), self.revision(), self.current_generation())
     }
 
-    pub(super) fn query_metrics_snapshot(&self) -> AnyResult<Vec<MetricSample>> {
+    fn lexical_batch_contract(&self) -> (BatchIngestMode, Option<ManifestGeneration>) {
+        if self.generation_counter <= 1 {
+            (BatchIngestMode::ReplaceGeneration, None)
+        } else {
+            (
+                BatchIngestMode::Delta,
+                Some(ManifestGeneration::new(self.generation_counter.saturating_sub(1))),
+            )
+        }
+    }
+
+    pub fn query_metrics_snapshot(&self) -> AnyResult<Vec<MetricSample>> {
         let store = self.query_obs_store.as_ref().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: query metrics unavailable before driver startup")
         })?;
         Ok(store.snapshot())
     }
 
-    pub(super) fn query_metric_errors(&self) -> AnyResult<Vec<ObsError>> {
+    pub fn query_metric_errors(&self) -> AnyResult<Vec<ObsError>> {
         let store = self.query_obs_store.as_ref().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: query metrics unavailable before driver startup")
         })?;
         Ok(store.errors())
     }
 
-    pub(super) fn activate_last_sealed_generation(&self) -> AnyResult<()> {
+    pub fn activate_last_sealed_generation(&self) -> AnyResult<()> {
         self.activate_last_sealed_generation_with_tracks(&[SearchPlaneTrackKind::Lexical])
     }
 
-    pub(super) fn activate_last_sealed_generation_with_tracks(
+    pub fn activate_last_sealed_generation_with_tracks(
         &self,
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<()> {
@@ -282,72 +331,130 @@ impl E2eRuntime {
 
     /// Ingest one chunk through the typed ingest front door.
     ///
-    /// `_repo` is informational metadata only — the publish itself goes
+    /// `repo` is informational metadata only — the publish itself goes
     /// against the harness's owning `repo()` so the matching query can
     /// pin to a stable triple.
-    pub(super) fn ingest_text(&mut self, _repo: &str, path: &str, content: &str) -> AnyResult<()> {
-        let chunk_id = ChunkId::new(format!(
-            "e2e-{}-{path}",
-            self.request_id_counter.fetch_add(1, Ordering::Relaxed)
-        ));
-        let record = ChunkRecord {
-            chunk_id,
-            repo_relative_path: RepoRelativePath::new(path),
-            language: LanguageCode::new(language_from_path(path)).map_err(|err| {
-                anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
-            })?,
-            start_byte: 0,
-            end_byte: u32::try_from(content.len())
-                .map_err(|err| anyhow::anyhow!("e2e harness content length overflow: {err}"))?,
-            start_line: 1,
-            end_line: 2,
-            text: content.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-        };
+    pub fn ingest_text(&mut self, repo: &str, path: &str, content: &str) -> AnyResult<()> {
+        let _candidate_id = self.ingest_text_with_candidate_id(repo, path, content)?;
+        Ok(())
+    }
+
+    pub fn ingest_text_with_candidate_id(
+        &mut self,
+        repo: &str,
+        path: &str,
+        content: &str,
+    ) -> AnyResult<String> {
+        let mut ids = self.ingest_text_chunks(
+            repo,
+            path,
+            &[E2eTextChunkSpec {
+                content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: None,
+            }],
+        )?;
+        ids.pop().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no candidate id returned for path `{path}`")
+        })
+    }
+
+    pub fn ingest_text_chunks(
+        &mut self,
+        _repo: &str,
+        path: &str,
+        chunks: &[E2eTextChunkSpec<'_>],
+    ) -> AnyResult<Vec<String>> {
+        if chunks.is_empty() {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: ingest_text_chunks requires at least one chunk"
+            ));
+        }
+        let language = LanguageCode::new(language_from_path(path)).map_err(|err| {
+            anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+        })?;
+        let records = chunks
+            .iter()
+            .map(|chunk| {
+                let chunk_id = ChunkId::new(format!(
+                    "e2e-{}-{path}",
+                    self.request_id_counter.fetch_add(1, Ordering::Relaxed)
+                ));
+                let source_repo_id = chunk.source_repo_id.map(RepoId::new);
+                let record = ChunkRecord {
+                    chunk_id,
+                    repo_relative_path: RepoRelativePath::new(path),
+                    language: language.clone(),
+                    start_byte: 0,
+                    end_byte: u32::try_from(chunk.content.len()).map_err(|err| {
+                        anyhow::anyhow!("e2e harness content length overflow: {err}")
+                    })?,
+                    start_line: chunk.start_line,
+                    end_line: chunk.end_line,
+                    text: chunk.content.to_string().into_boxed_str(),
+                    structural: None,
+                    parent_chunk_id: None,
+                    source_repo_id,
+                };
+                Ok::<ChunkRecord, anyhow::Error>(record)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
             LexicalIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
-                base_generation: None,
+                base_generation,
                 manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
                 batch_digest: format!(
                     "lex-batch:{path}:{}",
                     self.request_id_counter.load(Ordering::Relaxed)
                 ),
-                mode: BatchIngestMode::Delta,
+                mode,
                 bundle_payload: None,
                 replace_scopes: vec![LexicalReplaceScope {
                     scope: scope_key(path),
-                    scope_digest: format!("scope:{path}:{content}"),
-                    chunks: vec![record.clone()],
+                    scope_digest: format!("scope:{path}:{}-chunks", records.len()),
+                    chunks: records.clone(),
                     symbols: Vec::new(),
                 }],
                 tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
+        let Some(last_record) = records.last().cloned() else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: ingest_text_chunks built no records for path `{path}`"
+            ));
+        };
         let _old = self
             .chunk_ids_by_path
-            .insert(path.to_string(), record.chunk_id.clone());
-        let _old = self.chunk_records_by_path.insert(path.to_string(), record);
-        Ok(())
+            .insert(path.to_string(), last_record.chunk_id.clone());
+        let _old = self
+            .chunk_records_by_path
+            .insert(path.to_string(), last_record);
+        Ok(records
+            .iter()
+            .map(|record| record.chunk_id.as_str().to_string())
+            .collect())
     }
 
-    pub(super) fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
+    pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
+        let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
             LexicalIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
-                base_generation: None,
+                base_generation,
                 manifest_digest: format!("lex-meta:{}", self.current_generation().get()),
                 batch_digest: format!(
                     "lex-meta-batch:{}",
                     self.request_id_counter.load(Ordering::Relaxed)
                 ),
-                mode: BatchIngestMode::Delta,
+                mode,
                 bundle_payload: Some(payload),
                 replace_scopes: Vec::new(),
                 tombstone_scopes: Vec::new(),
@@ -357,15 +464,12 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn ingest_structural_function_tree(
+    pub fn ingest_structural_function_tree(
         &mut self,
         path: &str,
         content: &str,
         identifier: &str,
     ) -> AnyResult<()> {
-        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
-            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
-        })?;
         let identifier_start = content.find(identifier).ok_or_else(|| {
             anyhow::anyhow!(
                 "e2e-harness: identifier `{identifier}` not present in structural content"
@@ -413,6 +517,17 @@ impl E2eRuntime {
                 byte_end,
             ),
         };
+        self.ingest_structural_tree(path, tree)
+    }
+
+    pub fn ingest_structural_tree(
+        &mut self,
+        path: &str,
+        tree: ParseTreeRecord,
+    ) -> AnyResult<()> {
+        let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
+        })?;
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
             StructuralIngestBatch {
                 repo_id: self.repo(),
@@ -440,17 +555,40 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn ingest_history_fixture(&mut self, file_path: &str) -> AnyResult<()> {
+    pub fn ingest_history_fixture(&mut self, file_path: &str) -> AnyResult<()> {
+        self.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
+            commit_sha: "0123456789abcdef0123456789abcdef01234567",
+            file_path,
+            author: "alice",
+            committer: "alice",
+            message: "fix: sample history alpha_content_needle",
+            author_time_ms: 11,
+            committer_time_ms: 12,
+            applied_at_ms: 13,
+            ref_name: "refs/heads/main",
+            tag_name: "v1.0.0",
+            added_text: "history added line",
+            removed_text: "",
+            touched_text: "history touched line",
+        })
+    }
+
+    pub fn ingest_history_fixture_spec(
+        &mut self,
+        spec: &E2eHistoryFixtureSpec<'_>,
+    ) -> AnyResult<()> {
         use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
         use quanta_index_contract::{
             DiffHunkSide, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefMutation,
             HistoryRefUpsert,
         };
 
-        let commit_sha = CommitSha::from_bytes([
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-        ]);
+        let commit_sha = CommitSha::from_hex(spec.commit_sha).map_err(|err| {
+            anyhow::anyhow!(
+                "e2e-harness: invalid history fixture commit_sha `{}`: {err}",
+                spec.commit_sha
+            )
+        })?;
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
             HistoryIngestBatch {
                 repo_id: self.repo(),
@@ -458,46 +596,45 @@ impl E2eRuntime {
                 generation: self.current_generation(),
                 manifest_digest: Some(format!(
                     "history:{}:{}",
-                    file_path,
+                    spec.file_path,
                     self.current_generation().get()
                 )),
                 batch_digest: format!(
-                    "history-batch:{file_path}:{}",
+                    "history-batch:{}:{}",
+                    spec.file_path,
                     self.request_id_counter.load(Ordering::Relaxed)
                 ),
                 commits: vec![CommitRecord {
                     wire_version: 1,
                     sha: commit_sha,
                     parents: Vec::new(),
-                    author_time_ms: 11,
-                    committer_time_ms: 12,
-                    applied_at_ms: 13,
-                    author: "alice".to_string().into_boxed_str(),
-                    committer: "alice".to_string().into_boxed_str(),
-                    message: "fix: sample history alpha_content_needle"
-                        .to_string()
-                        .into_boxed_str(),
+                    author_time_ms: spec.author_time_ms,
+                    committer_time_ms: spec.committer_time_ms,
+                    applied_at_ms: spec.applied_at_ms,
+                    author: spec.author.to_string().into_boxed_str(),
+                    committer: spec.committer.to_string().into_boxed_str(),
+                    message: spec.message.to_string().into_boxed_str(),
                     is_merge: false,
-                    tags: vec!["v1.0.0".to_string().into_boxed_str()],
+                    tags: vec![spec.tag_name.to_string().into_boxed_str()],
                 }],
                 refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
-                    name: "refs/heads/main".to_string().into_boxed_str(),
+                    name: spec.ref_name.to_string().into_boxed_str(),
                     sha: commit_sha,
                 })],
                 tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
-                    name: "v1.0.0".to_string().into_boxed_str(),
+                    name: spec.tag_name.to_string().into_boxed_str(),
                     sha: commit_sha,
                 })],
                 diff_hunks: vec![HistoryDiffHunkUpsert {
                     commit_sha,
-                    file_path: file_path.to_string().into_boxed_str(),
+                    file_path: spec.file_path.to_string().into_boxed_str(),
                     record: DiffHunkRecord {
                         wire_version: 1,
                         hunk_header: "@@ -1 +1 @@".to_string().into_boxed_str(),
                         side: DiffHunkSide::After,
-                        added_text: "history added line".to_string().into_boxed_str(),
-                        removed_text: String::new().into_boxed_str(),
-                        touched_text: "history touched line".to_string().into_boxed_str(),
+                        added_text: spec.added_text.to_string().into_boxed_str(),
+                        removed_text: spec.removed_text.to_string().into_boxed_str(),
+                        touched_text: spec.touched_text.to_string().into_boxed_str(),
                         byte_start: 0,
                         byte_end: 20,
                     },
@@ -507,14 +644,14 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn publish_history_batch(
+    pub fn publish_history_batch(
         &mut self,
         batch: quanta_index_contract::HistoryIngestBatch,
     ) -> AnyResult<()> {
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch))
     }
 
-    pub(super) fn ingest_dirty_for_path(
+    pub fn ingest_dirty_for_path(
         &mut self,
         path: &str,
         applied_at_ms: u64,
@@ -546,7 +683,124 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn evict_dirty_for_path(&mut self, path: &str) -> AnyResult<()> {
+    pub fn ingest_runtime_catalog(
+        &mut self,
+        catalog: &E2eRuntimeCatalogSpec,
+    ) -> AnyResult<()> {
+        use quanta_index_contract::{
+            RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
+            RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord,
+        };
+
+        let mut changed_entries = Vec::with_capacity(catalog.changed.len());
+        for changed in &catalog.changed {
+            let chunk_id = self
+                .chunk_ids_by_path
+                .get(&changed.path)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "e2e-harness: no lexical chunk recorded for runtime changed path `{}`",
+                        changed.path
+                    )
+                })?;
+            changed_entries.push(RuntimeChangedRecord {
+                doc_id: chunk_id,
+                applied_at_ms: changed.applied_at_ms,
+                payload_hash: [0xaa; 32],
+            });
+        }
+        let mut facet_entries = Vec::with_capacity(catalog.facets.len());
+        for facet in &catalog.facets {
+            let chunk_id = self
+                .chunk_ids_by_path
+                .get(&facet.path)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "e2e-harness: no lexical chunk recorded for runtime facet path `{}`",
+                        facet.path
+                    )
+                })?;
+            facet_entries.push(RuntimeDocFacetRecord {
+                doc_id: chunk_id,
+                owner: facet.owner.clone(),
+                service: facet.service.clone(),
+                layer: facet.layer.clone(),
+                surface: facet.surface.clone(),
+            });
+        }
+        let mut snapshot_entries = Vec::with_capacity(catalog.snapshots.len());
+        for snapshot in &catalog.snapshots {
+            let mut doc_ids = Vec::with_capacity(snapshot.paths.len());
+            for path in &snapshot.paths {
+                let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "e2e-harness: no lexical chunk recorded for runtime snapshot path `{path}`"
+                    )
+                })?;
+                doc_ids.push(chunk_id);
+            }
+            snapshot_entries.push(RuntimeSnapshotRecord {
+                name: snapshot.name.clone(),
+                doc_ids,
+            });
+        }
+        let mut affected_entries = Vec::with_capacity(catalog.affected.len());
+        for edge in &catalog.affected {
+            let mut doc_ids = Vec::with_capacity(edge.paths.len());
+            for path in &edge.paths {
+                let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "e2e-harness: no lexical chunk recorded for runtime affected path `{path}`"
+                    )
+                })?;
+                doc_ids.push(chunk_id);
+            }
+            affected_entries.push(RuntimeEdgeAuthorityRecord {
+                key: edge.key.clone(),
+                doc_ids,
+            });
+        }
+        let mut invalidated_by_entries = Vec::with_capacity(catalog.invalidated_by.len());
+        for edge in &catalog.invalidated_by {
+            let mut doc_ids = Vec::with_capacity(edge.paths.len());
+            for path in &edge.paths {
+                let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "e2e-harness: no lexical chunk recorded for runtime invalidated_by path `{path}`"
+                    )
+                })?;
+                doc_ids.push(chunk_id);
+            }
+            invalidated_by_entries.push(RuntimeEdgeAuthorityRecord {
+                key: edge.key.clone(),
+                doc_ids,
+            });
+        }
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(
+            RuntimeCatalogIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                overlay_epoch_ms: catalog.generation_materialized_at_ms,
+                batch_digest: format!(
+                    "runtime-catalog:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                producer_head_applied_at_ms: catalog.producer_head_applied_at_ms,
+                generation_materialized_at_ms: catalog.generation_materialized_at_ms,
+                changed_entries,
+                facet_entries,
+                snapshot_entries,
+                affected_entries,
+                invalidated_by_entries,
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub fn evict_dirty_for_path(&mut self, path: &str) -> AnyResult<()> {
         use quanta_index_contract::{DirtyDelete, DirtyIngestBatch, DirtyMutation};
 
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
@@ -568,7 +822,7 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn tombstone_structural_for_path(&mut self, path: &str) -> AnyResult<()> {
+    pub fn tombstone_structural_for_path(&mut self, path: &str) -> AnyResult<()> {
         use quanta_index_contract::StructuralTombstoneScope;
 
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
@@ -593,19 +847,20 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
+    pub fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
+        let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
             LexicalIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
-                base_generation: None,
+                base_generation,
                 manifest_digest: format!("lex-del:{path}:{}", self.current_generation().get()),
                 batch_digest: format!(
                     "lex-del-batch:{path}:{}",
                     self.request_id_counter.load(Ordering::Relaxed)
                 ),
-                mode: BatchIngestMode::Delta,
+                mode,
                 bundle_payload: None,
                 replace_scopes: Vec::new(),
                 tombstone_scopes: vec![LexicalTombstoneScope {
@@ -618,7 +873,7 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub(super) fn ingest_symbol(
+    pub fn ingest_symbol(
         &mut self,
         _repo: &str,
         path: &str,
@@ -655,15 +910,16 @@ impl E2eRuntime {
             .cloned()
             .into_iter()
             .collect::<Vec<_>>();
+        let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
             LexicalIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
-                base_generation: None,
+                base_generation,
                 manifest_digest: format!("lex-symbol:{path}:{}", self.current_generation().get()),
                 batch_digest: format!("lex-symbol-batch:{path}:{symbol_id}"),
-                mode: BatchIngestMode::Delta,
+                mode,
                 bundle_payload: None,
                 replace_scopes: vec![LexicalReplaceScope {
                     scope: scope_key(path),
@@ -681,7 +937,7 @@ impl E2eRuntime {
     /// Seal the current generation. Returns the sealed `ManifestGeneration`
     /// then advances the harness's pin so subsequent ingests target the
     /// next generation.
-    pub(super) fn seal(&mut self) -> AnyResult<ManifestGeneration> {
+    pub fn seal(&mut self) -> AnyResult<ManifestGeneration> {
         self.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])
     }
 
@@ -690,7 +946,7 @@ impl E2eRuntime {
     /// There is no separate structural or semantic seal IPC. Those tracks
     /// become ready only after their authority has been ingested and the
     /// lexical track for the same generation has been sealed/activated.
-    pub(super) fn seal_lexical_generation_for_tracks(
+    pub fn seal_lexical_generation_for_tracks(
         &mut self,
         tracks: &[SearchPlaneTrackKind],
     ) -> AnyResult<ManifestGeneration> {
@@ -706,15 +962,16 @@ impl E2eRuntime {
             ));
         }
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {
+            let (mode, base_generation) = self.lexical_batch_contract();
             self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
                 LexicalIngestBatch {
                     repo_id: self.repo(),
                     revision_id: self.revision(),
                     generation: sealed,
-                    base_generation: None,
+                    base_generation,
                     manifest_digest: format!("lex-seal:{}", sealed.get()),
                     batch_digest: format!("lex-seal-batch:{}", sealed.get()),
-                    mode: BatchIngestMode::Delta,
+                    mode,
                     bundle_payload: None,
                     replace_scopes: Vec::new(),
                     tombstone_scopes: Vec::new(),
@@ -731,7 +988,7 @@ impl E2eRuntime {
     /// generation was most recently sealed (i.e. `current_generation() -
     /// 1`), matching how production callers pin queries to a sealed
     /// manifest.
-    pub(super) fn query_text(
+    pub fn query_text(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -741,7 +998,7 @@ impl E2eRuntime {
         self.query_text_with_pin(syntax, query_text, top_k, pin)
     }
 
-    pub(super) fn query_structural(
+    pub fn query_structural(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -751,7 +1008,7 @@ impl E2eRuntime {
         self.query_structural_with_pin(syntax, query_text, top_k, pin)
     }
 
-    pub(super) fn query_history(
+    pub fn query_history(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -850,7 +1107,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn query_runtime_metadata(
+    pub fn query_runtime_metadata(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -875,6 +1132,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -915,6 +1173,7 @@ impl E2eRuntime {
                     .map(|candidate| candidate.candidate_id.clone())
                     .collect(),
                 candidates: runtime.results,
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: None,
@@ -922,6 +1181,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -942,7 +1202,7 @@ impl E2eRuntime {
 
     /// Variant that lets a self-test exercise the "no generation pin"
     /// invalid-contract path explicitly.
-    pub(super) fn query_text_with_pin(
+    pub fn query_text_with_pin(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -966,6 +1226,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1013,6 +1274,7 @@ impl E2eRuntime {
                     .map(|c| c.candidate_id.clone())
                     .collect(),
                 candidates: text.results,
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: None,
@@ -1020,6 +1282,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1040,7 +1303,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn query_structural_with_pin(
+    pub fn query_structural_with_pin(
         &mut self,
         syntax: TextQuerySyntax,
         query_text: &str,
@@ -1066,6 +1329,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1101,20 +1365,24 @@ impl E2eRuntime {
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
         match response.payload {
-            SearchPlaneQueryIpcResponse::Structural(structural) => E2eQueryResult {
-                candidates: Vec::new(),
-                candidate_ids: structural
-                    .results
-                    .into_iter()
-                    .map(|candidate| candidate.candidate_id)
-                    .collect(),
-                engines_touched: Vec::new(),
-                explanation: None,
-                typed_error: None,
-            },
+            SearchPlaneQueryIpcResponse::Structural(structural) => {
+                let results = structural.results;
+                E2eQueryResult {
+                    candidate_ids: results
+                        .iter()
+                        .map(|candidate| candidate.candidate_id.clone())
+                        .collect(),
+                    candidates: Vec::new(),
+                    structural_results: results,
+                    engines_touched: Vec::new(),
+                    explanation: None,
+                    typed_error: None,
+                }
+            }
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1135,7 +1403,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn query_semantic(
+    pub fn query_semantic(
         &mut self,
         query_text: &str,
         top_k: u32,
@@ -1166,6 +1434,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1206,6 +1475,7 @@ impl E2eRuntime {
                     .map(|c| c.candidate_id.clone())
                     .collect(),
                 candidates: semantic.results,
+                structural_results: Vec::new(),
                 engines_touched: semantic.explanation.engines_touched.clone(),
                 explanation: Some(semantic.explanation),
                 typed_error: None,
@@ -1213,6 +1483,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1233,7 +1504,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn query_hybrid(
+    pub fn query_hybrid(
         &mut self,
         syntax: TextQuerySyntax,
         text_query: &str,
@@ -1264,6 +1535,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
                     typed_error: Some(E2eTypedError {
@@ -1304,6 +1576,7 @@ impl E2eRuntime {
                     .map(|c| c.candidate_id.clone())
                     .collect(),
                 candidates: hybrid.results,
+                structural_results: Vec::new(),
                 engines_touched: hybrid.explanation.engines_touched.clone(),
                 explanation: Some(hybrid.explanation),
                 typed_error: None,
@@ -1311,6 +1584,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
                 typed_error: Some(E2eTypedError {
@@ -1331,7 +1605,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn candidate_id_for_path(&self, path: &str) -> AnyResult<String> {
+    pub fn candidate_id_for_path(&self, path: &str) -> AnyResult<String> {
         self.chunk_ids_by_path
             .get(path)
             .map(|chunk_id| chunk_id.as_str().to_string())
@@ -1368,6 +1642,7 @@ impl E2eRuntime {
         E2eQueryResult {
             candidates: Vec::new(),
             candidate_ids: Vec::new(),
+            structural_results: Vec::new(),
             engines_touched: Vec::new(),
             explanation: None,
             typed_error: Some(E2eTypedError {
@@ -1377,7 +1652,7 @@ impl E2eRuntime {
         }
     }
 
-    pub(super) fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
+    pub fn explain_candidate(&mut self, candidate: LexicalCandidate) -> E2eExplainResult {
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let pin = GenerationPin::new(
             candidate.repo_id.clone(),
@@ -1490,6 +1765,7 @@ impl E2eRuntime {
             SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
             SearchPlaneIngestIpcResponse::Error(err) => Err(anyhow::anyhow!(
@@ -1565,6 +1841,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
     E2eQueryResult {
         candidates: Vec::new(),
         candidate_ids: Vec::new(),
+        structural_results: Vec::new(),
         engines_touched: Vec::new(),
         explanation: None,
         typed_error: Some(E2eTypedError {

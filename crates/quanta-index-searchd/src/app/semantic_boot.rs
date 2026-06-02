@@ -40,12 +40,22 @@ pub struct SemanticSeedReport {
 ///
 /// Distinguishes a direct durable open (`migration == NoLegacyJournal /
 /// AlreadyMigrated`, `seed.sealed_generations` opened) from a one-shot
-/// migration run, and carries the cold-boot seed cost. Carries only enums,
-/// counts, and a duration — never vectors, snippets, or path text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// migration run, and carries cold-boot cost for BOTH migration and seeding
+/// so a large legacy journal import is visible to operators. Carries only
+/// enums, counts, and durations — never vectors, snippets, or path text.
+///
+/// Intentionally does NOT derive `Eq` / `PartialEq` because the `_micros`
+/// fields are wall-clock timings; structural equality across two reports is
+/// meaningless. Tests should assert individual fields.
+#[derive(Clone, Copy, Debug)]
 pub struct SemanticBootReport {
     pub migration: SemanticMigrationOutcome,
+    /// Wall-clock cost of `migrate_legacy_semantic_journal` (0 when no journal
+    /// existed or migration was already complete — that information is in
+    /// `migration` itself, not duration).
+    pub migration_micros: u128,
     pub seed: SemanticSeedReport,
+    /// Wall-clock cost of `seed_persisted_semantic_readiness`.
     pub seed_micros: u128,
 }
 
@@ -253,7 +263,7 @@ mod tests {
     fn seed_reconstructs_readiness_from_sealed_generations() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         build_durable(
             &adapter,
             &batch(
@@ -303,7 +313,7 @@ mod tests {
     fn seed_skips_unsealed_generations() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         build_durable(
             &adapter,
             &batch(
@@ -332,12 +342,64 @@ mod tests {
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
+        reason = "test asserts corrupted sealed generations fail boot seeding via assert macros"
+    )]
+    fn seed_rejects_corrupted_sealed_generation() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+        let generation = ManifestGeneration::new(9);
+        build_durable(
+            &adapter,
+            &batch(generation, "a", "a.rs", vec![1.0, 0.0, 0.0], true)?,
+        )?;
+
+        let manifest_path = semantic_root
+            .join(repo_id().as_str())
+            .join(revision_id().as_str())
+            .join(format!("g{}", generation.get()))
+            .join("semantic-manifest.cbor");
+        let manifest_bytes = std::fs::read(&manifest_path)?;
+        let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
+            .map_err(|err| format!("decode manifest cbor: {err}"))?;
+        let mut bumped = false;
+        if let ciborium::value::Value::Map(entries) = &mut value {
+            for (key, val) in entries.iter_mut() {
+                if key.as_text() == Some("row_count") {
+                    *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(99_u64));
+                    bumped = true;
+                    break;
+                }
+            }
+        }
+        if !bumped {
+            return Err("expected `row_count` field in manifest CBOR".into());
+        }
+        let mut tampered = Vec::new();
+        ciborium::into_writer(&value, &mut tampered)
+            .map_err(|err| format!("encode manifest cbor: {err}"))?;
+        std::fs::write(&manifest_path, &tampered)?;
+
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let Err(err) = seed_persisted_semantic_readiness(&ledger, &semantic_root) else {
+            return Err("corrupted sealed generation must fail boot seeding".into());
+        };
+        assert!(
+            matches!(err, quanta_index_core::CoreError::Storage(ref message) if message.contains("row count")),
+            "expected row-count integrity failure, got: {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
         reason = "test asserts no-op migration outcome via assert macros"
     )]
     fn migration_without_journal_is_noop() -> TestResult {
         let temp = tempfile::tempdir()?;
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let store = LegacySemanticJournalStore::open(temp.path().join("semantic"))?;
         let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
         assert_eq!(outcome, SemanticMigrationOutcome::NoLegacyJournal);
@@ -373,7 +435,7 @@ mod tests {
         )?;
         LegacySemanticJournalStore::write_legacy_journal(&legacy_root, &[first, second])?;
 
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
         let store = LegacySemanticJournalStore::open(&legacy_root)?;
         let outcome = migrate_legacy_semantic_journal(&store, &adapter, &semantic_root)?;
         assert_eq!(outcome, SemanticMigrationOutcome::Migrated { imported: 2 });
@@ -403,7 +465,7 @@ mod tests {
         // Equivalence: a clean durable build of the same batches yields the same
         // surviving embeddings.
         let clean_root: PathBuf = temp.path().join("clean").join("indexes").join("semantic");
-        let clean_adapter = SemanticAdapter::with_state_root(clean_root);
+        let clean_adapter = SemanticAdapter::with_state_root(clean_root)?;
         let mut clean_first = batch(
             ManifestGeneration::new(7),
             "emb-1",
@@ -443,7 +505,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let legacy_root = temp.path().join("semantic");
         let semantic_root: PathBuf = temp.path().join("indexes").join("semantic");
-        let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+        let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
 
         // Simulate a migration that crashed after sealing gen 1 but before
         // writing the MIGRATED marker: gen 1 is durable on disk, marker absent.
@@ -515,11 +577,11 @@ mod tests {
         // then migrate the full journal [A, B, C] with no MIGRATED marker.
         let resumed = tempfile::tempdir()?;
         let resumed_semantic: PathBuf = resumed.path().join("indexes").join("semantic");
-        let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone());
+        let resumed_adapter = SemanticAdapter::with_state_root(resumed_semantic.clone())?;
         build_durable(&resumed_adapter, &a)?;
         build_durable(&resumed_adapter, &b)?;
         let store = LegacySemanticJournalStore::write_legacy_journal(
-            &resumed.path().join("semantic"),
+            resumed.path().join("semantic"),
             &[a.clone(), b.clone(), c.clone()],
         )
         .and_then(|()| LegacySemanticJournalStore::open(resumed.path().join("semantic")))?;
@@ -531,7 +593,7 @@ mod tests {
         // Clean root: a fresh linear build of [A, B, C].
         let clean = tempfile::tempdir()?;
         let clean_semantic: PathBuf = clean.path().join("indexes").join("semantic");
-        let clean_adapter = SemanticAdapter::with_state_root(clean_semantic);
+        let clean_adapter = SemanticAdapter::with_state_root(clean_semantic)?;
         build_durable(&clean_adapter, &a)?;
         build_durable(&clean_adapter, &b)?;
         build_durable(&clean_adapter, &c)?;

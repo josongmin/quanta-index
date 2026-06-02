@@ -1,20 +1,38 @@
 # LDB-00 — Truth Freeze and Backend Decision
 
-Status: `done` (2026-05-29)
+Status: `done` (revised 2026-05-30)
 Parent: [../README.md](../README.md)
 Depends on: none
 
 ## 0. Outcome
 
-Frozen decision recorded in [../README.md](../README.md) §3.1: an in-house,
-generation-scoped, columnar durable semantic store inside
-`quanta-index-semantic`; the async `lance` / `lancedb` crates are rejected for
-this repo's sync-port + strict-supply-chain + bounded-cold-build posture. The
-durable *shape* matches the Lance-family target (generation directory +
-manifest + READY/SEALED markers + direct sealed-generation open, no boot
-replay, fail-closed). `journal.cbor` is demoted to LDB-04 migration input only.
-Live-truth drift (`T3.2 done`, README "Tantivy + Lance" ownership) is mapped in
-[HISTORICAL-MAP.md](HISTORICAL-MAP.md) and closed in code by LDB-02..LDB-E2E-01.
+The decision was made twice. Both are recorded for the audit trail.
+
+**Initial decision (2026-05-29, SUPERSEDED)** — see [../README.md](../README.md)
+§3.1. An in-house CBOR + HNSW backend under the same generation-scoped layout.
+Justified at the time by sync-port + strict-supply-chain + cold-build
+constraints. Implemented and shipped to "done"; the entire backend was
+in-house, the `lancedb` crate was not used.
+
+**Revised decision (2026-05-30, ACTIVE)** — see [../README.md](../README.md)
+§3.2. The §3.1 outcome contradicted the packet name ("LanceDB adoption"); the
+right action was to pay the engineering cost and adopt the real `lancedb`
+crate (currently 0.30), not refuse it on cost grounds. The semantic adapter
+now owns a `tokio::runtime::Runtime` and bridges async lancedb calls to the
+sync port surface via `block_on` (the adapter *is* the async↔sync seam). The
+deny.toml policy is extended with named, scoped exceptions following the
+existing tantivy@0.22 pattern; the supply-chain posture (deny-by-default,
+justified exceptions only) is preserved.
+
+The runtime cutover, migration scaffolding, layout, manifest, READY/SEALED
+markers, fail-closed semantics, and full test/proof surface from the §3.1
+implementation are **reused, not thrown away**. Only the storage bytes change:
+in-house CBOR columnar shard + persisted HNSW graph → lancedb-managed Arrow
+dataset with lancedb's own vector index.
+
+Live-truth drift (`T3.2 done`, README "Tantivy + Lance" ownership) is mapped
+in [HISTORICAL-MAP.md](HISTORICAL-MAP.md) and closed in code by
+LDB-02..LDB-E2E-01.
 
 ## 1. Purpose
 

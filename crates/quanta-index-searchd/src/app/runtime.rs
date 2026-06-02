@@ -468,17 +468,20 @@ impl SearchdRuntime {
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         bootstrap_persisted_lexical_state(&ledger, config.state_root())?;
         let semantic_root = quanta_index_semantic::semantic_state_root(config.state_root());
+        let migration_start = std::time::Instant::now();
         let migration = semantic_boot::migrate_legacy_semantic_journal(
             legacy_semantic_journal_store.as_ref(),
             sem_build_port.as_ref(),
             &semantic_root,
         )
         .map_err(anyhow::Error::from)?;
+        let migration_micros = migration_start.elapsed().as_micros();
         let seed_start = std::time::Instant::now();
         let seed = semantic_boot::seed_persisted_semantic_readiness(&ledger, &semantic_root)
             .map_err(anyhow::Error::from)?;
         let boot_report = semantic_boot::SemanticBootReport {
             migration,
+            migration_micros,
             seed,
             seed_micros: seed_start.elapsed().as_micros(),
         };

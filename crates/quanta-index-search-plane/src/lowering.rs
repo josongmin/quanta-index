@@ -132,6 +132,15 @@ fn strip_sourcegraph_structural_patterntype(
                     | SgFilter::Select(_)
                     | SgFilter::Count(_)
                     | SgFilter::Dirty(_)
+                    | SgFilter::Changed(_)
+                    | SgFilter::Stale(_)
+                    | SgFilter::Snapshot(_)
+                    | SgFilter::MetaOwner(_)
+                    | SgFilter::MetaService(_)
+                    | SgFilter::MetaLayer(_)
+                    | SgFilter::MetaSurface(_)
+                    | SgFilter::Affected(_)
+                    | SgFilter::InvalidatedBy(_)
                     | SgFilter::Fork(_)
                     | SgFilter::Archived(_)
                     | SgFilter::Content(_)
@@ -139,7 +148,14 @@ fn strip_sourcegraph_structural_patterntype(
                     | SgFilter::Context(_)
                     | SgFilter::Index(_)
                     | SgFilter::Boost(_)
-                    | SgFilter::Timeout(_)) => kept_filters.push(other),
+                    | SgFilter::Timeout(_)
+                    | SgFilter::Before(_)
+                    | SgFilter::After(_)
+                    | SgFilter::Since(_)
+                    | SgFilter::Until(_)
+                    | SgFilter::DiffAdded(_)
+                    | SgFilter::DiffRemoved(_)
+                    | SgFilter::DiffTouched(_)) => kept_filters.push(other),
                 }
             }
             let (body, body_saw) = strip_sourcegraph_structural_patterntype(*body)?;
@@ -196,6 +212,13 @@ fn lower_sourcegraph_structural_shape(
     Ok(query)
 }
 
+/// Sourcegraph structural lowering supports a **narrow** mixed-domain subset:
+/// bare [`LqLeaf::Keyword`] lexical leaves may coexist with structural pattern
+/// bodies (`Phrase` / `Regex` lowered to [`LqLeaf::StructuralBlock`]). `Phrase`,
+/// `Regex`, `RawString`, and `Predicate` leaves are **not** preserved as lexical
+/// siblings on the SG structural route — phrase/regex bodies become structural,
+/// raw/predicate shapes typed-fail. Native mixed-domain parity for phrase/raw/
+/// predicate siblings is intentionally out of scope until SG lowering widens.
 fn rewrite_sourcegraph_structural_expr(
     query_text: &str,
     expr: &LqExpr,
@@ -209,9 +232,10 @@ fn rewrite_sourcegraph_structural_expr(
                 "bridge: Sourcegraph structural route requires at least one structural pattern body"
                     .to_string(),
         }),
-        LqExpr::Leaf(LqLeaf::Keyword(body) | LqLeaf::Phrase(body)) => Ok(LqExpr::Leaf(
-            LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
-        )),
+        LqExpr::Leaf(LqLeaf::Keyword(body)) => Ok(LqExpr::Leaf(LqLeaf::Keyword(body.clone()))),
+        LqExpr::Leaf(LqLeaf::Phrase(body)) => Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
+            lower_sourcegraph_structural_body(query_text, body)?,
+        ))),
         LqExpr::Leaf(LqLeaf::Regex(body)) => Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
             lower_sourcegraph_structural_regex_body(body)?,
         ))),
@@ -669,6 +693,87 @@ mod tests {
                     "expected boolean structural tree after SG NOT lowering, got {other:?}"
                 )
                 .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_lexical_keyword_in_mixed_boolean_or() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural parity_needle_alpha OR "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural OR lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [lexical, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed OR children, got {children:?}").into());
+                };
+                if !matches!(lexical, LqExpr::Leaf(LqLeaf::Keyword(body)) if body == "parity_needle_alpha")
+                {
+                    return Err(format!("expected lexical keyword child, got {lexical:?}").into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
+                return Err(format!("expected mixed OR tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or() -> TestResult {
+        let err = match lower_sourcegraph_structural_query_text(
+            r#"repo:repo-e2e patterntype:structural parity_needle_alpha OR "function_item { { identifier :[name] } }""#,
+        ) {
+            Ok(query) => {
+                return Err(
+                    format!("expected repo-scoped mixed OR to fail closed, got {query:?}").into(),
+                );
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert_eq!(
+            message,
+            "bridge: scoped filters under OR/NOT are not representable on the active LQ wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_lexical_keyword_in_mixed_boolean() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural parity_needle_alpha AND "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [lexical, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed children, got {children:?}").into());
+                };
+                if !matches!(lexical, LqExpr::Leaf(LqLeaf::Keyword(body)) if body == "parity_needle_alpha")
+                {
+                    return Err(format!("expected lexical keyword child, got {lexical:?}").into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
             }
         }
         Ok(())

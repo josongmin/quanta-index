@@ -1,17 +1,17 @@
 # May 27 DSL Master Closeout + Structural V2
 
-Status: `repo-local-closeout-complete`
-Date: `2026-05-27`
-Scope: current-source closeout packet for the remaining DSL whole-program work.
+Status: `superseded-by-jfc`
+Date: `2026-06-02`
+Scope: historical whole-DSL regrouping packet kept for provenance and evidence only.
 
-This packet supersedes the remaining active ownership from:
+Active ownership for the remaining DSL residue has moved to:
 
-- [../may-25-lexical-enhancement/README.md](../may-25-lexical-enhancement/README.md)
-- [../may-26-indexing-residue-tasks/README.md](../may-26-indexing-residue-tasks/README.md)
-- [../may-27-structural-dsl/README.md](../may-27-structural-dsl/README.md)
+- [../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md)
 
-Historical tickets stay in place for evidence. Active ownership is re-anchored
-through [tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md).
+This packet remains useful as historical evidence for the first regrouping pass.
+Historical tickets stay in place for evidence through
+[tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md), but they are no longer
+the active owner lane.
 
 ---
 
@@ -19,12 +19,13 @@ through [tickets/HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md).
 
 This packet owns the remaining DSL work as a whole program:
 
-- structural V2 on the native route
-- Sourcegraph structural V2 on top of native truth
-- structural bridge / CodeQL follow-on
-- bounded-label observability normalization
-- `E2E-07` performance and chaos closeout
-- producer-side history / runtime / structural emission handoff proof
+- predicate surface proof closure beyond the current runtime subset
+- history date/diff filter substrate
+- runtime catalog substrate beyond `dirty:`
+- mixed lexical / structural set algebra
+- pure-negative structural root semantics
+- Sourcegraph / bridge follow-on only where native semantics already exist
+- bounded-label observability normalization and chaos proof for the widened surfaces
 
 Explicitly excluded:
 
@@ -34,43 +35,47 @@ Explicitly excluded:
 
 ## 2. Current Source Truth
 
-Current source-backed state, not stale packet prose:
+Current source-backed state on the latest tree. This packet is historical-only;
+active ownership and closeout truth live in `jun-2-dsl-final-cut`.
 
+- the active runtime subset is materially wider than the original packet prose:
+  phrase positive, `patterntype:structural`, `timeout`, `type:path`,
+  `type:repo`, `select:path`, `select:content`, `select:content.match`, and
+  structural binding-aware subset rows are already runtime-proved through
+  `e2e_full_corpus`
 - native structural execution already ships the truthful subset over
-  producer-authored parse-tree authority
-- structural dispatcher already accepts structural-only boolean trees over
-  `match { ... }` leaves plus executable `repo:` / `file:` / `lang:` filters;
-  mixed lexical / structural boolean remains typed fail-closed
-- Sourcegraph structural lowering now ships quoted bodies, boolean composition,
-  typed-hole surface parity, and regex bodies by rewriting only into native
-  executable structural semantics; broader non-executable filter breadth stays
-  typed fail-closed
+  producer-authored parse-tree authority, including root capture, `where`,
+  `inside`, `outside`, named/anonymous/variadic holes, and typed holes
 - producer-side history / runtime / structural public ingest truth is the typed
-  batch UDS surface; delete / evict / tombstone reopen proof now exists for the
+  batch UDS surface; delete / evict / tombstone reopen proof exists for the
   repo-local search-side ingest/readiness path
-- bounded query observability already exists as a closed-dimension
-  `MetricSample + Dimensions` sink; route coverage now includes lexical
-  regex-timeout fail-closed proof and the remaining work is doc drift closure
-  rather than inventing a new metrics subsystem
-- native and Sourcegraph lexical surfaces now lower `timeout:` into canonical
-  query options for regex-backed execution; structural / history / runtime
-  routes keep timeout typed fail-closed where no executable semantics exist
-- `select:path` and `select:content.match` already have owner proof, and the
-  capability matrix is now re-anchored to the current source
-- repo-local DSL behavior, proof, and packet prose are now aligned on the
-  current tree
-- residual follow-on outside this packet is either historical evidence or
-  external producer / broader contract scope, not an open repo-local DSL seam
+- `file.contains(...)` is runtime-proved on the native dotted predicate surface,
+  and `file.has.content(...)` is runtime-proved on the SG alias plus the
+  owner-local native predicate rail
+- `repo.has.file(...)` is only executable for the current `path:` / `name:`
+  argument subset; runtime proof now includes a non-vacuous multi-repo
+  positive true-gate
+- history date/window filters (`before:`, `after:`, `since:`, `until:`),
+  qualified `since.time:` / `since.commit:`, and diff field filters
+  (`diff.added:`, `diff.removed:`, `diff.touched:`) execute on the current
+  history substrate
+- runtime metadata executes `dirty:{yes|only|no}`, `changed:`, `stale:`,
+  `snapshot:`, `meta.*`, `affected:`, and `invalidated_by:` on a persisted
+  generation-pinned catalog with edge-authority backing
+- mixed lexical / structural boolean and pure-negative structural root execute
+  on the current generation-pinned candidate-universe algebra
+- bridge directives (`into:codeql`, `scope:results`, `with:lexical`) are not
+  runtime-row residue; they are intentional bridge-packet carrier surfaces
 
 ## 3. Direction
 
-The direction remains `breaking-first` and `fail-closed`.
+The direction remains `breaking-first`, `fail-closed`, and `authority-first`.
 
 Required:
 
 - producer-authored authority remains the only structural truth source
 - unsupported shapes stay typed and explicit
-- public acceptance widens only when executor truth and proof exist
+- public acceptance widens only when executor truth, authority substrate, and proof all exist
 - metrics stay bounded; no free-text dimensions
 
 Forbidden:
@@ -80,7 +85,7 @@ Forbidden:
 - widening SG structural beyond native executable semantics
 - exporter/productization work beyond the current typed sink
 
-## 4. Active Ticket Lanes
+## 4. Historical Ticket Lanes
 
 - [tickets/MSTR-00-truth-freeze-and-historical-map.md](tickets/MSTR-00-truth-freeze-and-historical-map.md)
 - [tickets/MSTR-01-surface-and-matrix-closure.md](tickets/MSTR-01-surface-and-matrix-closure.md)
@@ -89,41 +94,24 @@ Forbidden:
 - [tickets/MSTR-04-sourcegraph-and-bridge-v2.md](tickets/MSTR-04-sourcegraph-and-bridge-v2.md)
 - [tickets/MSTR-05-observability-and-perf-chaos.md](tickets/MSTR-05-observability-and-perf-chaos.md)
 
-## 5. Dependency Order
+## 5. Historical Residue At Packet Creation
 
-Execution order is fixed:
+This packet originally grouped residue that was later retired by
+`jun-2-dsl-final-cut`. Keep it only as provenance for the first whole-DSL
+regrouping pass.
 
-1. `MSTR-00` truth freeze + historical ownership map
-2. `MSTR-01` surface / capability matrix closure
-3. `MSTR-02` producer handoff end-to-end proof
-4. `MSTR-03` structural core V2
-5. `MSTR-04` Sourcegraph + bridge V2
-6. `MSTR-05` observability + perf / chaos closeout
+The current closeout authority is:
 
-Rules:
+- [../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md)
 
-- `MSTR-01` cannot claim rows beyond current owner proof.
-- `MSTR-03` must land native semantics before `MSTR-04` widens the translator.
-- `MSTR-04` cannot introduce lexical fallback.
-- `MSTR-05` must preserve the existing metric dimension schema.
+## 6. Historical Exit Criteria
 
-## 6. Near-Term Exit Criteria
+The criteria below are historical context for why this regrouping packet
+existed. They are no longer the active merge/closeout gate.
 
-This packet is materially complete only when all are true:
+The active closeout and DoD live in:
 
-1. structural-only boolean composition executes natively with deterministic
-   candidate selection
-2. mixed lexical / structural boolean remains typed fail-closed
-3. current capability matrix rows align with actual proof for `select:path`,
-   `select:content.match`, explain / bridge / runtime rows, and route-specific
-   typed failure behavior
-4. producer-side history / runtime / structural typed-batch ingest, including
-   delete / evict / tombstone semantics, has real public UDS proof and survives
-   reopen without drifting
-5. structural / bridge / history / runtime query paths emit bounded metrics with
-   no raw query text or file path leakage
-6. Sourcegraph structural route and structural bridge packet stay aligned with
-   native semantics, including regex-body lowering without lexical fallback
+- [../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md)
 
 ## 7. Historical Evidence
 

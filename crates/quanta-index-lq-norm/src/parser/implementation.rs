@@ -252,7 +252,8 @@ impl Parser<'_> {
             | LqTokenKind::RawString(_)
             | LqTokenKind::Regex(_)
             | LqTokenKind::StructuralBlock(_)
-            | LqTokenKind::KeywordOrFilterName(_) => {
+            | LqTokenKind::KeywordOrFilterName(_)
+            | LqTokenKind::Predicate { .. } => {
                 let leaf = self.parse_leaf_or_filter()?;
                 Ok(leaf)
             }
@@ -261,8 +262,7 @@ impl Parser<'_> {
             | LqTokenKind::And
             | LqTokenKind::RParen
             | LqTokenKind::Colon
-            | LqTokenKind::ColonValue(_)
-            | LqTokenKind::Predicate { .. } => Err(LqParseError::new(
+            | LqTokenKind::ColonValue(_) => Err(LqParseError::new(
                 LqParseErrorCode::SyntaxError,
                 self.peek_span(),
                 "unexpected token in atom position",
@@ -311,8 +311,11 @@ impl Parser<'_> {
                             self.absorb_filter_or_option(&name, &val, head.span)?;
                             Ok(None)
                         }
-                        LqTokenKind::Predicate { dotted, args_raw } => {
-                            let canonical_name = format!("{name}.{dotted}");
+                        LqTokenKind::Predicate {
+                            name: predicate_name,
+                            args_raw,
+                        } => {
+                            let canonical_name = format!("{name}.{predicate_name}");
                             let args = parse_predicate_args(&args_raw, value.span)?;
                             Ok(Some(LqExpr::Leaf(LqLeaf::Predicate {
                                 name: canonical_name,
@@ -341,6 +344,10 @@ impl Parser<'_> {
                     Ok(Some(LqExpr::Leaf(LqLeaf::Keyword(name))))
                 }
             }
+            LqTokenKind::Predicate { name, args_raw } => {
+                let args = parse_predicate_args(&args_raw, head.span)?;
+                Ok(Some(LqExpr::Leaf(LqLeaf::Predicate { name, args })))
+            }
             LqTokenKind::And
             | LqTokenKind::Or
             | LqTokenKind::Not
@@ -349,7 +356,6 @@ impl Parser<'_> {
             | LqTokenKind::RParen
             | LqTokenKind::Colon
             | LqTokenKind::ColonValue(_)
-            | LqTokenKind::Predicate { .. }
             | LqTokenKind::Eof => Err(LqParseError::new(
                 LqParseErrorCode::SyntaxError,
                 head.span,
@@ -417,6 +423,60 @@ impl Parser<'_> {
                 });
                 Ok(())
             }
+            "before" => {
+                self.filters.push(LqFilter::Before {
+                    timeref: value.to_owned(),
+                });
+                Ok(())
+            }
+            "after" => {
+                self.filters.push(LqFilter::After {
+                    timeref: value.to_owned(),
+                });
+                Ok(())
+            }
+            "since" => {
+                self.filters.push(LqFilter::Since {
+                    timeref: value.to_owned(),
+                });
+                Ok(())
+            }
+            "since.time" => {
+                self.filters.push(LqFilter::Since {
+                    timeref: format!("time:{value}"),
+                });
+                Ok(())
+            }
+            "since.commit" => {
+                self.filters.push(LqFilter::Since {
+                    timeref: format!("commit:{value}"),
+                });
+                Ok(())
+            }
+            "until" => {
+                self.filters.push(LqFilter::Until {
+                    timeref: value.to_owned(),
+                });
+                Ok(())
+            }
+            "diff.added" => {
+                self.filters.push(LqFilter::DiffAdded {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
+            "diff.removed" => {
+                self.filters.push(LqFilter::DiffRemoved {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
+            "diff.touched" => {
+                self.filters.push(LqFilter::DiffTouched {
+                    pattern: value.to_owned(),
+                });
+                Ok(())
+            }
             "type" => {
                 if self.seen_type {
                     return Err(LqParseError::new(
@@ -456,6 +516,60 @@ impl Parser<'_> {
                     )
                 })?;
                 self.filters.push(LqFilter::Dirty { mode });
+                Ok(())
+            }
+            "changed" => {
+                self.filters.push(LqFilter::Changed {
+                    scope: value.to_owned(),
+                });
+                Ok(())
+            }
+            "stale" => {
+                self.filters.push(LqFilter::Stale {
+                    scope: value.to_owned(),
+                });
+                Ok(())
+            }
+            "snapshot" => {
+                self.filters.push(LqFilter::Snapshot {
+                    name: value.to_owned(),
+                });
+                Ok(())
+            }
+            "meta.owner" => {
+                self.filters.push(LqFilter::MetaOwner {
+                    id: value.to_owned(),
+                });
+                Ok(())
+            }
+            "meta.service" => {
+                self.filters.push(LqFilter::MetaService {
+                    id: value.to_owned(),
+                });
+                Ok(())
+            }
+            "meta.layer" => {
+                self.filters.push(LqFilter::MetaLayer {
+                    id: value.to_owned(),
+                });
+                Ok(())
+            }
+            "meta.surface" => {
+                self.filters.push(LqFilter::MetaSurface {
+                    id: value.to_owned(),
+                });
+                Ok(())
+            }
+            "affected" => {
+                self.filters.push(LqFilter::Affected {
+                    scope: value.to_owned(),
+                });
+                Ok(())
+            }
+            "invalidated_by" => {
+                self.filters.push(LqFilter::InvalidatedBy {
+                    source: value.to_owned(),
+                });
                 Ok(())
             }
             "fork" => {
@@ -1958,6 +2072,60 @@ mod tests {
     }
 
     #[test]
+    fn history_date_and_diff_filters_parse() {
+        let q = parse_input(
+            "type:diff diff.added:history diff.removed:removed diff.touched:touched before:1970-01-01T00:00:00.012Z after:1d since:2h until:1970-01-01",
+        );
+        assert_eq!(
+            q.filters,
+            vec![
+                LqFilter::Type { kind: LqType::Diff },
+                LqFilter::DiffAdded {
+                    pattern: "history".to_owned(),
+                },
+                LqFilter::DiffRemoved {
+                    pattern: "removed".to_owned(),
+                },
+                LqFilter::DiffTouched {
+                    pattern: "touched".to_owned(),
+                },
+                LqFilter::Before {
+                    timeref: "1970-01-01T00:00:00.012Z".to_owned(),
+                },
+                LqFilter::After {
+                    timeref: "1d".to_owned(),
+                },
+                LqFilter::Since {
+                    timeref: "2h".to_owned(),
+                },
+                LqFilter::Until {
+                    timeref: "1970-01-01".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn qualified_since_filters_parse() {
+        let q =
+            parse_input("type:commit since.time:2024-01-01T00:00:00Z since.commit:refs/heads/main");
+        assert_eq!(
+            q.filters,
+            vec![
+                LqFilter::Type {
+                    kind: LqType::Commit
+                },
+                LqFilter::Since {
+                    timeref: "time:2024-01-01T00:00:00Z".to_owned(),
+                },
+                LqFilter::Since {
+                    timeref: "commit:refs/heads/main".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn into_codeql_emits_directive() {
         let q = parse_input("Iterator into:codeql");
         assert_eq!(q.directives, vec![LqDirective::IntoCodeQl]);
@@ -2027,6 +2195,23 @@ mod tests {
                         name: "path".to_owned(),
                         value: "src".to_owned(),
                     }]
+                );
+            }
+            other => {
+                assert!(false, "expected Predicate leaf, got {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_top_level_file_contains_with_raw_arg() {
+        let q = parse_input("file.contains('oo_ba')");
+        match q.expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                assert_eq!(name, "file.contains");
+                assert_eq!(
+                    args,
+                    vec![crate::ast::LqPredicateArg::RawString("oo_ba".to_owned())]
                 );
             }
             other => {

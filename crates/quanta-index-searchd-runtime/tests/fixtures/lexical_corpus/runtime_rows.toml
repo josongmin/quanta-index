@@ -10,11 +10,64 @@ runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["alpha_content", "gamma_py_same"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "multi"
 min = 2
 max = 2
+
+[[row]]
+id = "runtime_native_content_filter_positive"
+query = "content:alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["content"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_content_filter_miss"
+query = "content:path_only_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["content"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_path_query"
+query = "path_only_needle"
+gate = "active"
+engines = ["lexical_path"]
+filters = ["path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["beta_pathonly"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
 
 [[row]]
 id = "runtime_native_file_filter"
@@ -28,9 +81,340 @@ runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["alpha_content"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_repo_miss"
+query = "repo:repo-other alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_repo_allow_list_corp_a"
+query = "repo:corp-a shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_repo_allow_list_corp_b"
+query = "repo:corp-b shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_b_doc"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_repo_allow_list_universe_baseline"
+query = "shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = []
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_native_repo_has_file_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo.has.file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_miss_multi_repo"
+query = "repo:has.file(path:src/missing.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_repo_has_file_name_true_gate_multi_repo"
+query = "repo:has.file(name:gate-a.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo.has.file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_name_true_gate_multi_repo"
+query = "repo:has.file(name:gate-a.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_name_miss_multi_repo"
+query = "repo:has.file(name:missing.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_repo_has_file_not_false_multi_repo"
+query = "shared_oracle_needle NOT repo:has.file(path:src/missing.rs)"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo.has.file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_native_lang_filter"
+query = "lang:rust alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["lang"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_case_sensitive_miss"
+query = "case:yes ALPHA_CONTENT_NEEDLE"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["case"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_miss"
+query = "repo:has.file(path:missing.rs) alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_regex_hit"
+query = "file:has.content(/v\\d+\\.\\d+\\.\\d+/)"
+gate = "active"
+engines = ["lexical_regex", "sourcegraph_lowering"]
+filters = ["file.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["epsilon_regex"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_phrase_miss"
+query = "file:has.content(\"banana lemon\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_file_contains_raw_hit"
+query = "file.contains('oo_ba')"
+gate = "active"
+engines = ["lexical_raw"]
+filters = ["file.contains"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["zeta_raw"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_contains_phrase_hit"
+query = "file.contains(\"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.contains"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_contains_phrase_miss"
+query = "file.contains(\"banana lemon\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.contains"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
 
 [[row]]
 id = "runtime_native_regex"
@@ -44,6 +428,24 @@ runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["epsilon_regex"]
 top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_regexp_option"
+query = "patterntype:regexp v\\d+\\.\\d+\\.\\d+"
+gate = "active"
+engines = ["lexical_regex", "sourcegraph_lowering"]
+filters = ["patterntype:regexp"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["epsilon_regex"]
+top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
@@ -60,6 +462,7 @@ runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["zeta_raw"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
@@ -76,6 +479,7 @@ runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["theta_symbol"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
@@ -91,6 +495,342 @@ classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
 expected_ids = ["theta_symbol"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_select_repo"
+query = "select:repo alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["select:repo"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_type_repo"
+query = "type:repo alpha_content_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["type:repo"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_path_filter"
+query = "path:src/lib.rs alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_boolean_and"
+query = "alpha_content_needle AND fn"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["boolean:and"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_boolean_or"
+query = "alpha_content_needle OR ripens"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["boolean:or"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same", "delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_native_boolean_not"
+query = "alpha_content_needle NOT lib"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["boolean:not"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_count_bound"
+query = "count:2 needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["count"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["beta_pathonly", "eta_trigram_bait"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_count_all"
+query = "count:all file_projection_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["count"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "beta_file", "gamma_file"]
+top_k = 1
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_sourcegraph_patterntype_standard_casefold"
+query = "patterntype:standard ALPHA_CONTENT_NEEDLE"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["patterntype:standard"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_patterntype_keyword_casefold"
+query = "patterntype:keyword ALPHA_CONTENT_NEEDLE"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["patterntype:keyword"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_patterntype_literal_casefold_hit"
+query = "patterntype:literal ALPHA_CONTENT_NEEDLE"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["patterntype:literal"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["alpha_content", "gamma_py_same"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_type_file_excludes_symbol_only"
+query = "type:file MyTypeSymbol"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["type:file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_select_file_projection"
+query = "select:file file_projection_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["select:file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "gamma_file"]
+expected_paths = ["src/lib.rs", "src/main.rs"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_select_path_projection"
+query = "select:path file_projection_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["select:path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "gamma_file"]
+expected_paths = ["src/lib.rs", "src/main.rs"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_type_path_projection"
+query = "type:path file_projection_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["type:path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "gamma_file"]
+expected_paths = ["src/lib.rs", "src/main.rs"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_native_select_content_projection"
+query = "select:content file_projection_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["select:content"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "beta_file", "gamma_file"]
+expected_paths = ["src/lib.rs", "src/lib.rs", "src/main.rs"]
+expected_snippets = ["file_projection_needle", "file_projection_needle", "file_projection_needle"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_native_select_content_match_projection"
+query = "select:content.match file_projection_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["select:content.match"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-select-file.toml"
+expected_ids = ["alpha_file", "beta_file", "gamma_file"]
+expected_paths = ["src/lib.rs", "src/lib.rs", "src/main.rs"]
+expected_snippets = ["file_projection_needle", "file_projection_needle", "file_projection_needle"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_sourcegraph_phrase_positive"
+query = "\"lemon yellow banana\""
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["phrase"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
 top_k = 10
 
 [row.expected]
@@ -113,8 +853,25 @@ top_k = 10
 kind = "empty"
 
 [[row]]
-id = "runtime_native_fork_filter"
-query = "fork:no alpha_content_needle"
+id = "runtime_native_timeout_typed"
+query = "timeout:0ms /needle_x\\b/"
+gate = "active"
+engines = ["lexical_regex"]
+filters = ["timeout", "regexp"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-timeout.toml"
+runtime_error_code = "QUERY_TIMEOUT"
+runtime_error_message_contains = "timed out"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_fork_filter_only_miss"
+query = "fork:only alpha_content_needle"
 gate = "active"
 engines = ["lexical_content"]
 filters = ["fork"]
@@ -122,17 +879,47 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-expected_ids = ["alpha_content", "gamma_py_same"]
+expected_ids = []
 top_k = 10
 
 [row.expected]
-kind = "multi"
-min = 2
-max = 2
+kind = "empty"
 
 [[row]]
-id = "runtime_sourcegraph_visibility_filter"
-query = "visibility:public alpha_content_needle"
+id = "runtime_sourcegraph_archived_filter_only_miss"
+query = "archived:only alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["archived"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_fork_typed_unavailable"
+query = "fork:no alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["fork"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-no-repomap.toml"
+runtime_error_code = "LEX_FILTER_FORK_UNAVAILABLE"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_visibility_filter_miss"
+query = "visibility:private alpha_content_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
 filters = ["visibility"]
@@ -140,7 +927,329 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-expected_ids = ["alpha_content", "gamma_py_same"]
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_context_filter_miss"
+query = "context:staging alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["context"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_visibility_typed_unavailable"
+query = "visibility:public alpha_content_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["visibility"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-no-repomap.toml"
+runtime_error_code = "LEX_FILTER_VISIBILITY_UNAVAILABLE"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_structural_root_kind"
+query = "match { function_item }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_root_capture"
+query = "match { function_item :[x] }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "capture"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "x", start_byte = 0, end_byte = 10, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_patterntype_structural_named_hole"
+query = "repo:repo-e2e path:src/main.rs lang:rust patterntype:structural \"function_item { { identifier :[name] } }\""
+gate = "active"
+engines = ["structural", "sourcegraph_lowering"]
+filters = ["structural", "patterntype:structural", "capture"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_anonymous_wildcard"
+query = "match { function_item { ... block } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "wildcard"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_where"
+query = "match { identifier :[name] where :[name] == \"main\" }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "where"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-where.toml"
+expected_ids = ["struct_where_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_inside"
+query = "match { identifier :[name] inside { function_item } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "inside"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_outside"
+query = "match { identifier :[name] outside { trait_item } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "outside"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_variadic"
+query = "match { function_item { :[...prefix] block } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "variadic"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "prefix", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_typed_expr"
+query = "match { function_item { { :[name.expr] } } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "typed-hole:expr"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_typed_item"
+query = "match { function_item :[root.item] }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "typed-hole:item"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "root", start_byte = 0, end_byte = 10, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_typed_stmt"
+query = "match { function_item { { :[body.stmt] } } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "typed-hole:stmt"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "body", start_byte = 8, end_byte = 10, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_typed_type"
+query = "match { function_item { { :[ty.type] } } }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "typed-hole:type"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-type.toml"
+expected_ids = ["struct_type_hit"]
+expected_bindings = [[
+  { metavariable = "ty", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_before"
+query = "type:commit before:1970-01-01T00:00:00.020Z alpha_content_needle"
+gate = "active"
+engines = ["history", "sourcegraph_lowering"]
+filters = ["type:commit", "before"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_since"
+query = "type:commit since:1970-01-01T00:00:00.022Z alpha_content_needle"
+gate = "active"
+engines = ["history", "sourcegraph_lowering"]
+filters = ["type:commit", "since"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["89abcdef0123456789abcdef0123456789abcdef"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_mixed_lexical_and"
+query = "main AND match { function_item }"
+gate = "active"
+engines = ["structural", "lexical"]
+filters = ["structural", "boolean:and", "mixed"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_mixed_lexical_or"
+query = "main OR match { trait_item }"
+gate = "active"
+engines = ["structural", "lexical", "boolean:or"]
+filters = ["structural", "boolean:or", "mixed"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
 top_k = 10
 
 [row.expected]
@@ -149,20 +1258,90 @@ min = 2
 max = 2
 
 [[row]]
-id = "runtime_sourcegraph_structural_match"
-query = "repo:repo-e2e path:src/lib.rs lang:rust patterntype:structural \"function_item { { identifier :[name] } }\""
+id = "runtime_native_structural_mixed_lexical_and_not"
+query = "main AND NOT match { trait_item }"
 gate = "active"
-engines = ["structural", "sourcegraph_lowering"]
-filters = ["structural"]
-syntax = "sourcegraph"
+engines = ["structural", "lexical", "boolean:not"]
+filters = ["structural", "boolean:not", "mixed"]
+syntax = "native"
 classification = "runtime"
 runtime_route = "structural"
-fixture = "docs-main.toml"
-expected_ids = ["alpha_content"]
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[]]
 top_k = 10
 
 [row.expected]
 kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_lexical_or"
+query = "patterntype:structural main OR \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:or"]
+filters = ["structural", "boolean:or", "mixed"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_lexical_and_not"
+query = "patterntype:structural main AND NOT \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:not"]
+filters = ["structural", "boolean:not", "mixed"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_pure_negative_root"
+query = "NOT match { function_item }"
+gate = "active"
+engines = ["structural", "boolean:not"]
+filters = ["structural", "pure-negative"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_trait_main"]
+expected_bindings = [[]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_structural_unsupported_lang"
+query = "lang:java match { :[x] }"
+gate = "active"
+engines = ["structural"]
+filters = ["structural", "lang"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-main.toml"
+runtime_error_code = "STR_LANG_NOT_SUPPORTED"
+top_k = 10
+
+[row.expected]
+kind = "empty"
 
 [[row]]
 id = "runtime_sourcegraph_history_commit"
@@ -174,7 +1353,737 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "history"
 fixture = "docs-main.toml"
+expected_ids = [
+  "0123456789abcdef0123456789abcdef01234567",
+  "89abcdef0123456789abcdef0123456789abcdef",
+]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_history_commit_author"
+query = "type:commit author:alice alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "author"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
 expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_commit_committer"
+query = "type:commit committer:alice alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "committer"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_commit_message"
+query = "type:commit message:sample alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "message"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_commit_rev_ref"
+query = "type:commit rev:refs/heads/main alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "rev"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_history_commit_rev_tag"
+query = "type:commit rev:v1.0.0 alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "rev"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_diff"
+query = "type:diff history"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["src/lib.rs"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_diff_added"
+query = "type:diff diff.added:history"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff", "diff.added"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["src/lib.rs"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_diff_added_miss"
+query = "type:diff diff.added:missing-added-token"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff", "diff.added"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_history_diff_removed"
+query = "type:diff diff.removed:history"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff", "diff.removed"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["src/lib.rs"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_diff_touched"
+query = "type:diff diff.touched:history"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff", "diff.touched"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["src/lib.rs"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_diff_touched_secondary"
+query = "type:diff diff.touched:secondary"
+gate = "active"
+engines = ["history"]
+filters = ["type:diff", "diff.touched"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["src/main.rs"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_before"
+query = "type:commit before:1970-01-01T00:00:00.020Z alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "before"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_after"
+query = "type:commit after:1970-01-01T00:00:00.015Z alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "after"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["89abcdef0123456789abcdef0123456789abcdef"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_since"
+query = "type:commit since:1970-01-01T00:00:00.022Z alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "since"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["89abcdef0123456789abcdef0123456789abcdef"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_until"
+query = "type:commit until:1970-01-01T00:00:00.012Z alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "until"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["0123456789abcdef0123456789abcdef01234567"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_before_invalid"
+query = "type:commit before:not-a-date alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "before"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+runtime_error_code = "HISTORY_INVALID_TIMEREF"
+runtime_error_message_contains = "not a valid RFC3339"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_history_since_time"
+query = "type:commit since.time:1970-01-01T00:00:00.022Z alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "since"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["89abcdef0123456789abcdef0123456789abcdef"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_since_commit_ref"
+query = "type:commit since.commit:refs/heads/release alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "since"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+expected_ids = ["89abcdef0123456789abcdef0123456789abcdef"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_history_since_commit_unknown"
+query = "type:commit since.commit:refs/heads/missing alpha_content_needle"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit", "since"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-main.toml"
+runtime_error_code = "HISTORY_INVALID_TIMEREF"
+runtime_error_message_contains = "since.commit"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_history_producer_unavailable"
+query = "type:commit fix"
+gate = "active"
+engines = ["history"]
+filters = ["type:commit"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "history"
+fixture = "docs-lex-only.toml"
+runtime_error_code = "HISTORY_PRODUCER_UNAVAILABLE"
+runtime_error_message_contains = "producer data is unavailable"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_dirty"
+query = "dirty:yes todo"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["dirty", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-main.toml"
+expected_ids = ["iota_dirty"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_dirty_only_unsupported"
+query = "dirty:only todo"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["dirty", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-main.toml"
+runtime_error_code = "RUNTIME_DIRTY_ONLY_UNSUPPORTED"
+runtime_error_message_contains = "dirty:only"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_dirty_missing_filter"
+query = "todo"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-main.toml"
+runtime_error_code = "INVALID_REQUEST"
+runtime_error_message_contains = "runtime authority filter is required"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_changed_positive"
+query = "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["changed", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_changed"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_changed_miss"
+query = "changed:since=1970-01-01T00:00:00.010Z file:src/unchanged.rs catalog_unchanged_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["changed", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_stale_positive"
+query = "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_window_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["stale", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_stale"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_stale_miss"
+query = "stale:before=1970-01-01T00:00:00.010Z file:src/stale.rs catalog_window_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["stale", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_stale_head_not_ahead_miss"
+query = "stale:before=1970-01-01T00:00:00.030Z file:src/stale.rs catalog_window_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["stale", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog-head-equal.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_snapshot_active"
+query = "snapshot:active catalog_snapshot_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["snapshot", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_snapshot"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_snapshot_miss"
+query = "snapshot:active file:src/snap-other.rs catalog_snapshot_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["snapshot", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_owner"
+query = "meta.owner:team-a catalog_owner_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.owner", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_owner"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_owner_miss"
+query = "meta.owner:team-a file:src/owner-other.rs catalog_owner_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.owner", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_service"
+query = "meta.service:search catalog_service_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.service", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_service"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_service_miss"
+query = "meta.service:search file:src/service-other.rs catalog_service_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.service", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_layer"
+query = "meta.layer:index catalog_layer_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.layer", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_layer"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_layer_miss"
+query = "meta.layer:index file:src/layer-other.rs catalog_layer_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.layer", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_surface"
+query = "meta.surface:lexical catalog_surface_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.surface", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_surface"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_meta_surface_miss"
+query = "meta.surface:lexical file:src/surface-other.rs catalog_surface_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["meta.surface", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_affected_positive"
+query = "affected:rebuild=lexical catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["affected", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_changed"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_affected_miss"
+query = "affected:rebuild=semantic catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["affected", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_invalidated_by_positive"
+query = "invalidated_by:rebuild=lexical catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["invalidated_by", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = ["catalog_changed"]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_invalidated_by_miss"
+query = "invalidated_by:rebuild=semantic catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["invalidated_by", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_snapshot_unknown"
+query = "snapshot:missing file:src/snap.rs catalog_snapshot_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["snapshot", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-runtime-catalog.toml"
+runtime_error_code = "SNAPSHOT_UNKNOWN"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_catalog_not_ready"
+query = "changed:since=1970-01-01T00:00:00.010Z file:src/changed.rs catalog_changed_needle"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["changed", "file", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-main.toml"
+runtime_error_code = "RUNTIME_CATALOG_NOT_READY"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_runtime_dirty_no"
+query = "dirty:no todo"
+gate = "active"
+engines = ["runtime_metadata"]
+filters = ["dirty", "content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "runtime_metadata"
+fixture = "docs-main.toml"
+expected_ids = ["lambda_clean"]
 top_k = 10
 
 [row.expected]

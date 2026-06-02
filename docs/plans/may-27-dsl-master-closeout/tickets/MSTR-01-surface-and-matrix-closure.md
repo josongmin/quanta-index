@@ -5,32 +5,43 @@ Parent packet: [../README.md](../README.md)
 ## Objective
 
 Close capability-matrix and route-surface drift against the current source and
-owner proof.
+owner proof, including predicate subset truth, oracle-limited rows, and
+carrier-split surfaces.
 
 ## Required Rows
 
-- `select:path`
-- `select:content.match`
+- predicate subset truth:
+  `repo.has.file(...)`, `file.contains(...)`, `file.has.content(...)`
+- runtime-metadata nuance:
+  `dirty:{yes|only}` vs `dirty:no`
+- oracle-limited runtime rows:
+  `repo:` positive allow-list and `repo.has.file(...)` true-gate
+- carrier split:
+  `into:codeql`, `scope:results`, `with:lexical`, empty query
 - route-specific typed failure normalization
-- bridge / explain / runtime rows re-anchored to current source
 
 ## Current Source Truth
 
-- owner proof already exists for `select:path` and `select:content.match` on both
-  Sourcegraph and native front doors
-- structural / bridge / runtime typed-failure behavior already has route-local
-  proof; the remaining work is packet-level matrix alignment rather than
-  executor bring-up
-- current source already ships structural-only boolean, typed holes, structural
-  bridge packets, and Sourcegraph structural regex lowering; the matrix must not
-  regress to older single-leaf or no-regex claims
+- this historical ticket has been retired by `JFC-01` and `JFC-03`; do not use
+  it as the active owner lane
+- owner proof already exists for `select:path`, `select:content.match`,
+  phrase positive, structural subset, and timeout route truth
+- `repo.has.file(...)` is executable for the current `path:` / `name:`
+  argument subset and now has non-vacuous multi-repo true-gate proof
+- `file.contains(...)` is runtime-proved on the native dotted predicate
+  surface, with SG parity remaining companion coverage
+- `file.has.content(...)` is directly proved on the SG alias rows plus the
+  owner-local native predicate rail
+- `dirty:` is a landed runtime-metadata family:
+  `dirty:{yes|only|no}` executes with generation-pinned authority semantics
+- bridge directives and empty query remain carrier-split surfaces, not missing
+  runtime-row promotions
 
 ## Remaining Closeout
 
-- repo-local residue is closed on the current tree
-- active packet prose and the legacy capability matrix are now aligned with the
-  current owner proof
-- any further row work would be new surface, not unclosed matrix drift
+- none on this historical ticket
+- active predicate/matrix truth is owned by
+  [../../jun-2-dsl-final-cut/tickets/JFC-01-predicate-oracle-and-surface-closure.md](../../jun-2-dsl-final-cut/tickets/JFC-01-predicate-oracle-and-surface-closure.md)
 
 ## Guardrails
 

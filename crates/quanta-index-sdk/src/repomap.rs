@@ -97,6 +97,7 @@ impl crate::NamespaceIngest for RepoMapNs {
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap receipt",

@@ -1,0 +1,4 @@
+[[doc]]
+id = "history_lex_only"
+path = "src/history.rs"
+content = "fix only lives in lexical content"

@@ -13,7 +13,7 @@ use quanta_index_contract::{
     SemanticReplaceScope, SemanticTombstoneScope, lex::LanguageCode,
 };
 use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
-use quanta_index_semantic::{SemanticAdapter, scan_persisted_generations};
+use quanta_index_semantic::{SemanticAdapter, scan_persisted_generations, test_support};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -106,7 +106,7 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
 fn build_open_roundtrip_serves_from_durable_state() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
-    let adapter = SemanticAdapter::with_state_root(root.clone());
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(7);
     let batch = sealed_batch(
         generation,
@@ -121,13 +121,21 @@ fn build_open_roundtrip_serves_from_durable_state() -> TestResult {
 
     adapter.build_batch(&batch)?;
 
-    // Durable layout exists: manifest + both markers + dataset rows + graph.
+    // Durable layout exists: manifest + both markers + a non-empty lancedb
+    // dataset dir (lancedb manages its own files under `dataset/`; we assert
+    // presence + non-emptiness rather than naming specific files).
     let dir = generation_dir(&root, generation);
+    assert!(dir.join("semantic-build-contract.cbor").exists());
     assert!(dir.join("semantic-manifest.cbor").exists());
     assert!(dir.join("MARKER_READY").exists());
     assert!(dir.join("MARKER_SEALED").exists());
-    assert!(dir.join("dataset").join("rows.cbor").exists());
-    assert!(dir.join("dataset").join("graph.cbor").exists());
+    let dataset_dir = dir.join("dataset");
+    assert!(dataset_dir.is_dir(), "lancedb dataset dir must exist");
+    let dataset_entries = std::fs::read_dir(&dataset_dir)?.count();
+    assert!(
+        dataset_entries > 0,
+        "lancedb dataset dir must contain at least one file/subdir after seal"
+    );
 
     let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search(&[1.0, 0.0, 0.0], 1)?;
@@ -150,7 +158,7 @@ fn restart_opens_prior_generation_without_replay() -> TestResult {
     let root = temp.path().to_path_buf();
     let generation = ManifestGeneration::new(4);
     {
-        let writer = SemanticAdapter::with_state_root(root.clone());
+        let writer = SemanticAdapter::with_state_root(root.clone())?;
         writer.build_batch(&sealed_batch(
             generation,
             "src/lib.rs",
@@ -164,7 +172,7 @@ fn restart_opens_prior_generation_without_replay() -> TestResult {
     }
 
     // Brand new adapter instance: no in-memory carryover, no journal replay.
-    let restarted = SemanticAdapter::with_state_root(root);
+    let restarted = SemanticAdapter::with_state_root(root)?;
     let searcher = restarted.open(&repo_id(), &revision_id(), generation)?;
     let hits = searcher.search(&[0.0, 1.0, 0.0], 3)?;
     let Some(hit) = hits.first() else {
@@ -181,7 +189,7 @@ fn restart_opens_prior_generation_without_replay() -> TestResult {
 )]
 fn replace_scope_overwrites_same_path_entries() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(2);
     adapter.build_batch(&{
         let mut batch = sealed_batch(
@@ -225,7 +233,7 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
 )]
 fn tombstone_scope_removes_existing_entries() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let base = ManifestGeneration::new(1);
     let next = ManifestGeneration::new(2);
     adapter.build_batch(&sealed_batch(
@@ -268,7 +276,7 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
 )]
 fn generation_pin_isolates_results() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
     adapter.build_batch(&sealed_batch(
@@ -303,7 +311,7 @@ fn generation_pin_isolates_results() -> TestResult {
 )]
 fn sealed_empty_generation_serves_empty_hits() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(5);
     adapter.build_batch(&SemanticIngestBatch {
         repo_id: repo_id(),
@@ -332,7 +340,7 @@ fn sealed_empty_generation_serves_empty_hits() -> TestResult {
 )]
 fn unsealed_generation_open_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(9);
     let mut batch = sealed_batch(
         generation,
@@ -372,7 +380,7 @@ fn unsealed_generation_open_fails_closed() -> TestResult {
 )]
 fn build_rejects_contract_dimension_mismatch() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let batch = sealed_batch(
         ManifestGeneration::new(1),
         "src/main.rs",
@@ -409,7 +417,7 @@ fn build_rejects_contract_dimension_mismatch() -> TestResult {
 )]
 fn query_dimension_mismatch_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
     adapter.build_batch(&sealed_batch(
         generation,
@@ -449,7 +457,7 @@ fn query_dimension_mismatch_fails_closed() -> TestResult {
 fn corrupt_manifest_open_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
-    let adapter = SemanticAdapter::with_state_root(root.clone());
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(3);
     adapter.build_batch(&sealed_batch(
         generation,
@@ -466,7 +474,7 @@ fn corrupt_manifest_open_fails_closed() -> TestResult {
     std::fs::write(&manifest_path, b"not-a-valid-cbor-manifest")?;
 
     // Fresh adapter to dodge the open cache.
-    let reopened = SemanticAdapter::with_state_root(root);
+    let reopened = SemanticAdapter::with_state_root(root)?;
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
         return Err("corrupt manifest must fail closed".into());
     };
@@ -477,12 +485,15 @@ fn corrupt_manifest_open_fails_closed() -> TestResult {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test asserts tampered dataset fails closed via assert macros"
+    reason = "test asserts a missing lancedb dataset fails closed via assert macros"
 )]
-fn tampered_dataset_open_fails_closed() -> TestResult {
+fn missing_lancedb_dataset_open_fails_closed() -> TestResult {
+    // Build a sealed generation, then delete its entire lancedb dataset
+    // directory. Open must fail closed (the seal marker still says the gen is
+    // sealed, but the underlying lancedb table is gone — a corruption signal).
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
-    let adapter = SemanticAdapter::with_state_root(root.clone());
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(6);
     adapter.build_batch(&sealed_batch(
         generation,
@@ -495,18 +506,12 @@ fn tampered_dataset_open_fails_closed() -> TestResult {
         3,
     ))?;
 
-    let rows_path = generation_dir(&root, generation)
-        .join("dataset")
-        .join("rows.cbor");
-    let mut bytes = std::fs::read(&rows_path)?;
-    if let Some(last) = bytes.last_mut() {
-        *last ^= 0xFF;
-    }
-    std::fs::write(&rows_path, &bytes)?;
+    let dataset_dir = generation_dir(&root, generation).join("dataset");
+    std::fs::remove_dir_all(&dataset_dir)?;
 
-    let reopened = SemanticAdapter::with_state_root(root);
+    let reopened = SemanticAdapter::with_state_root(root)?;
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
-        return Err("tampered dataset must fail closed".into());
+        return Err("missing lancedb dataset must fail closed".into());
     };
     assert!(matches!(err, CoreError::Storage(_)));
     Ok(())
@@ -521,7 +526,7 @@ fn scan_reports_sealed_generations_only() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let semantic_root = root.join("indexes").join("semantic");
-    let adapter = SemanticAdapter::with_state_root(semantic_root.clone());
+    let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
 
     adapter.build_batch(&sealed_batch(
         ManifestGeneration::new(1),
@@ -553,11 +558,76 @@ fn scan_reports_sealed_generations_only() -> TestResult {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "test asserts corrupted sealed generations fail closed during scan via assert macros"
+)]
+fn scan_corrupted_sealed_generation_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let semantic_root = root.join("indexes").join("semantic");
+    let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+    let generation = ManifestGeneration::new(20);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "scan.rs",
+        vec![embedding_record(
+            "emb-scan",
+            "scan.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&semantic_root, generation).join("semantic-manifest.cbor");
+    let manifest_bytes = std::fs::read(&manifest_path)?;
+    let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
+        .map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let mut bumped = false;
+    if let ciborium::value::Value::Map(entries) = &mut value {
+        for (key, val) in entries.iter_mut() {
+            if key.as_text() == Some("row_count") {
+                *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(99_u64));
+                bumped = true;
+                break;
+            }
+        }
+    }
+    if !bumped {
+        return Err("expected `row_count` field in manifest CBOR".into());
+    }
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(&manifest_path, &tampered)?;
+
+    let Err(err) = scan_persisted_generations(&semantic_root) else {
+        return Err("corrupted sealed generation must fail scan".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("row count"),
+                "expected row-count integrity error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "test asserts scoped search honors the allowlist via assert macros"
 )]
 fn search_scoped_restricts_to_allowlist() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
     adapter.build_batch(&SemanticIngestBatch {
         repo_id: repo_id(),
@@ -593,12 +663,17 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test asserts the content-checksum guard fires on decodable tampering via assert macros"
+    reason = "test asserts the lancedb row-count cross-check fails closed via assert macros"
 )]
-fn tampered_graph_fails_checksum_closed() -> TestResult {
+fn manifest_row_count_mismatch_fails_closed() -> TestResult {
+    // Build a sealed generation, then re-encode the manifest with a wrong
+    // `row_count` so it stays **valid CBOR + valid scope** but disagrees with
+    // the live lancedb table's actual row count. This specifically exercises
+    // the cross-check at search.rs `live_row_count_u64 != manifest.row_count`,
+    // not the generic decode/scope-validation paths covered by other tests.
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
-    let adapter = SemanticAdapter::with_state_root(root.clone());
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
     let generation = ManifestGeneration::new(8);
     adapter.build_batch(&sealed_batch(
         generation,
@@ -611,28 +686,37 @@ fn tampered_graph_fails_checksum_closed() -> TestResult {
         3,
     ))?;
 
-    // Flip the final byte of the persisted graph (the last node's `deleted`
-    // bool), which still decodes cleanly and keeps dim/row_count consistent —
-    // so the failure must come from the content checksum, not a decode error.
-    let graph_path = generation_dir(&root, generation)
-        .join("dataset")
-        .join("graph.cbor");
-    let mut bytes = std::fs::read(&graph_path)?;
-    let Some(last) = bytes.last_mut() else {
-        return Err("graph file unexpectedly empty".into());
-    };
-    *last ^= 0x01;
-    std::fs::write(&graph_path, &bytes)?;
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    let manifest_bytes = std::fs::read(&manifest_path)?;
+    let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
+        .map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let mut bumped = false;
+    if let ciborium::value::Value::Map(entries) = &mut value {
+        for (key, val) in entries.iter_mut() {
+            if key.as_text() == Some("row_count") {
+                *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(99_u64));
+                bumped = true;
+                break;
+            }
+        }
+    }
+    if !bumped {
+        return Err("expected `row_count` field in manifest CBOR".into());
+    }
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(&manifest_path, &tampered)?;
 
-    let reopened = SemanticAdapter::with_state_root(root);
+    let reopened = SemanticAdapter::with_state_root(root)?;
     let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
-        return Err("tampered graph must fail closed".into());
+        return Err("manifest row_count mismatch must fail closed".into());
     };
     match err {
         CoreError::Storage(message) => {
             assert!(
-                message.contains("checksum mismatch"),
-                "expected checksum-guard failure, got: {message}"
+                message.contains("row count") && message.contains("manifest row count"),
+                "expected row-count cross-check failure, got: {message}"
             );
         }
         other @ (CoreError::InvalidContract(_)
@@ -640,7 +724,7 @@ fn tampered_graph_fails_checksum_closed() -> TestResult {
         | CoreError::NotReady(_)
         | CoreError::NotImplemented(_)
         | CoreError::NotFound(_)) => {
-            return Err(format!("expected storage checksum error, got {other:?}").into());
+            return Err(format!("expected storage row-count error, got {other:?}").into());
         }
     }
     Ok(())
@@ -653,7 +737,7 @@ fn tampered_graph_fails_checksum_closed() -> TestResult {
 )]
 fn delta_with_missing_base_fails_closed() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let batch = SemanticIngestBatch {
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -693,11 +777,176 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "test asserts replace-generation batches reject base_generation via assert macros"
+)]
+fn replace_generation_with_base_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let mut batch = sealed_batch(
+        ManifestGeneration::new(14),
+        "x.rs",
+        vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    batch.base_generation = Some(ManifestGeneration::new(1));
+
+    let Err(err) = adapter.build_batch(&batch) else {
+        return Err("replace-generation batch with base_generation must fail closed".into());
+    };
+    match err {
+        CoreError::InvalidContract(message) => {
+            assert!(
+                message.contains("ReplaceGeneration") && message.contains("base_generation"),
+                "expected replace/base contract error, got: {message}"
+            );
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected InvalidContract, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts delta batches require a base_generation via assert macros"
+)]
+fn delta_without_base_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let mut batch = sealed_batch(
+        ManifestGeneration::new(15),
+        "x.rs",
+        vec![embedding_record("emb-1", "x.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    batch.mode = BatchIngestMode::Delta;
+    batch.base_generation = None;
+
+    let Err(err) = adapter.build_batch(&batch) else {
+        return Err("delta batch without base_generation must fail closed".into());
+    };
+    match err {
+        CoreError::InvalidContract(message) => {
+            assert!(
+                message.contains("Delta") && message.contains("base_generation"),
+                "expected delta/base contract error, got: {message}"
+            );
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected InvalidContract, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts reused unsealed generations reject a different delta base via assert macros"
+)]
+fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base_a = ManifestGeneration::new(1);
+    let base_b = ManifestGeneration::new(2);
+    let target = ManifestGeneration::new(16);
+    adapter.build_batch(&sealed_batch(
+        base_a,
+        "base-a.rs",
+        vec![embedding_record("emb-a", "base-a.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    ))?;
+    adapter.build_batch(&sealed_batch(
+        base_b,
+        "base-b.rs",
+        vec![embedding_record("emb-b", "base-b.rs", vec![0.0, 1.0, 0.0])?],
+        3,
+    ))?;
+
+    let first = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: target,
+        base_generation: Some(base_a),
+        manifest_digest: "manifest:16".to_string(),
+        batch_digest: "batch:16:first".to_string(),
+        mode: BatchIngestMode::Delta,
+        model_contract: model_contract(3),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("delta.rs"),
+            scope_digest: "scope:delta:first".to_string(),
+            embeddings: vec![embedding_record(
+                "emb-first",
+                "delta.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: false,
+    };
+    adapter.build_batch(&first)?;
+
+    let second = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: target,
+        base_generation: Some(base_b),
+        manifest_digest: "manifest:16".to_string(),
+        batch_digest: "batch:16:second".to_string(),
+        mode: BatchIngestMode::Delta,
+        model_contract: model_contract(3),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("delta.rs"),
+            scope_digest: "scope:delta:second".to_string(),
+            embeddings: vec![embedding_record(
+                "emb-second",
+                "delta.rs",
+                vec![0.0, 1.0, 0.0],
+            )?],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: false,
+    };
+
+    let Err(err) = adapter.build_batch(&second) else {
+        return Err("reused unsealed generation with a different base must fail closed".into());
+    };
+    match err {
+        CoreError::InvalidContract(message) => {
+            assert!(
+                message.contains("base_generation") && message.contains("does not match"),
+                "expected delta base provenance error, got: {message}"
+            );
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected InvalidContract, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "test asserts an unsupported distance metric is rejected via assert macros"
 )]
 fn build_rejects_unsupported_distance_metric() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let mut batch = sealed_batch(
         ManifestGeneration::new(1),
         "x.rs",
@@ -731,7 +980,7 @@ fn build_rejects_unsupported_distance_metric() -> TestResult {
 )]
 fn open_cache_survives_eviction_beyond_capacity() -> TestResult {
     let temp = tempfile::tempdir()?;
-    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf());
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     // Build more sealed generations than the open-cache capacity (8) and open
     // each so the early ones are evicted.
     for generation in 1..=12_u64 {
@@ -774,7 +1023,7 @@ fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
     use std::thread;
 
     let temp = tempfile::tempdir()?;
-    let adapter = Arc::new(SemanticAdapter::with_state_root(temp.path().to_path_buf()));
+    let adapter = Arc::new(SemanticAdapter::with_state_root(temp.path().to_path_buf())?);
     let generation = ManifestGeneration::new(1);
     adapter.build_batch(&sealed_batch(
         generation,
@@ -805,6 +1054,852 @@ fn concurrent_open_of_same_generation_is_consistent() -> TestResult {
         };
         let id = outcome?;
         assert_eq!(id, "emb-1");
+    }
+    Ok(())
+}
+
+/// Deterministic pseudo-random vector seeded by `seed`; reproducible across
+/// runs and platforms without a PRNG dep. Mirrors the helper from the old
+/// hnsw recall test.
+fn pseudo_vector(seed: u64, dim: usize) -> Vec<f32> {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    let mut vector = Vec::with_capacity(dim);
+    for _ in 0..dim {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let bytes = state.to_le_bytes();
+        let low = bytes.first().copied().unwrap_or(0);
+        let high = bytes.get(1).copied().unwrap_or(0);
+        let lane = u16::from_le_bytes([low, high]);
+        vector.push(f32::from(lane) / 32768.0_f32 - 1.0);
+    }
+    vector
+}
+
+fn u32_from_usize(value: usize) -> Result<u32, String> {
+    u32::try_from(value).map_err(|err| format!("usize -> u32 overflow: {err}"))
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts the IVF_HNSW_SQ index built at seal serves vector_search via assert macros"
+)]
+fn ivf_hnsw_sq_index_built_at_seal_serves_vector_search() -> TestResult {
+    // SOTA++ proof: a sealed generation above the 256-row threshold must
+    // actually build the IVF_HNSW_SQ index at seal time AND serve top-k
+    // vector_search through it. Below this row count create_index is skipped;
+    // here we cross the threshold to exercise the real index code path.
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    let dim = 8_usize;
+    let count = 300_u64;
+    let dim_u32 = u32_from_usize(dim)?;
+
+    let mut embeddings: Vec<EmbeddingRecord> = Vec::new();
+    for i in 0..count {
+        let id = format!("emb-{i}");
+        let path = format!("p/{i}.rs");
+        let vector = pseudo_vector(i, dim);
+        embeddings.push(embedding_record(&id, &path, vector)?);
+    }
+    let batch = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:ivf".to_string(),
+        batch_digest: "batch:ivf".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(dim_u32),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("p/0.rs"),
+            scope_digest: "scope:p".to_string(),
+            embeddings,
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    adapter.build_batch(&batch)?;
+
+    // Search-side proof: querying with a known-inserted vector must return that
+    // vector at rank 1 (cosine similarity to self ≈ 1.0). This proves index
+    // trained without panic and the query path serves through vector_search.
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let query = pseudo_vector(0, dim);
+    let hits = searcher.search(&query, 10)?;
+    let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
+    assert!(
+        !hits.is_empty(),
+        "IVF_HNSW_SQ-indexed sealed gen must return hits"
+    );
+    assert!(
+        ids.contains(&"emb-0".to_string()),
+        "expected the self-vector emb-0 in top-10, got {ids:?}"
+    );
+
+    // Structural proof that the IVF_HNSW_SQ index was actually built at seal,
+    // not silently skipped or downgraded to brute-force scan. Self-query above
+    // would also pass under brute-force, so we cross-check by listing lancedb
+    // indices on the sealed dataset directly.
+    let dataset_uri = generation_dir(temp.path(), generation)
+        .join("dataset")
+        .to_string_lossy()
+        .into_owned();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test-only direct lancedb inspection to verify the IVF index exists alongside the dataset; sync seam is the test's own runtime"
+    )]
+    let index_kinds: Vec<lancedb::index::IndexType> = {
+        let probe_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        probe_runtime.block_on(async {
+            let conn = lancedb::connect(&dataset_uri)
+                .execute()
+                .await
+                .map_err(|err| format!("lancedb connect: {err}"))?;
+            let table = conn
+                .open_table("semantic")
+                .execute()
+                .await
+                .map_err(|err| format!("lancedb open_table: {err}"))?;
+            let configs = table
+                .list_indices()
+                .await
+                .map_err(|err| format!("lancedb list_indices: {err}"))?;
+            Ok::<Vec<lancedb::index::IndexType>, String>(
+                configs.into_iter().map(|c| c.index_type).collect(),
+            )
+        })?
+    };
+    assert!(
+        index_kinds
+            .iter()
+            .any(|k| matches!(k, lancedb::index::IndexType::IvfHnswSq)),
+        "expected IvfHnswSq in lancedb indices after seal at row_count={count}, got {index_kinds:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts a delta against an unsealed base fails closed via assert macros"
+)]
+fn delta_with_unsealed_base_fails_closed() -> TestResult {
+    // R1 fix #2: prepare_generation_dir must refuse to clone a base whose
+    // SEALED marker is absent (in-progress base is a moving target; copy is
+    // only safe against a frozen dataset).
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let mut base_batch = sealed_batch(
+        base,
+        "a.rs",
+        vec![embedding_record("emb-1", "a.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    base_batch.seal = false;
+    adapter.build_batch(&base_batch)?;
+
+    let next = ManifestGeneration::new(2);
+    let delta = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation: next,
+        base_generation: Some(base),
+        manifest_digest: "manifest:delta".to_string(),
+        batch_digest: "batch:delta".to_string(),
+        mode: BatchIngestMode::Delta,
+        model_contract: model_contract(3),
+        replace_scopes: vec![SemanticReplaceScope {
+            scope: scope("b.rs"),
+            scope_digest: "scope:b".to_string(),
+            embeddings: vec![embedding_record("emb-2", "b.rs", vec![0.0, 1.0, 0.0])?],
+        }],
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    let Err(err) = adapter.build_batch(&delta) else {
+        return Err("delta against unsealed base must fail closed".into());
+    };
+    match err {
+        CoreError::NotReady(message) => {
+            assert!(
+                message.contains("not sealed"),
+                "expected `not sealed` in error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected NotReady, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts validate-before-delete preserves prior unsealed rows via assert macros"
+)]
+fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
+    // R1 fix #1: validation is now hoisted ABOVE the delete loop, so a later
+    // scope's contract failure may NOT destructively mutate earlier scopes'
+    // data on the unsealed dataset. Construct a multi-scope batch with one
+    // valid scope + one dim-mismatched scope; verify the prior row for the
+    // first scope's path survives the rejection.
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+
+    // Batch 1: prime the unsealed gen with emb-1 at a.rs.
+    let mut batch1 = sealed_batch(
+        generation,
+        "a.rs",
+        vec![embedding_record("emb-1", "a.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    batch1.seal = false;
+    adapter.build_batch(&batch1)?;
+
+    // Batch 2: try a multi-scope batch where the second scope's embedding
+    // dimension does NOT match the contract. The first scope (valid) replaces
+    // a.rs — that delete must NOT happen because validation rejects the batch
+    // up front.
+    let mut batch2 = sealed_batch(
+        generation,
+        "a.rs",
+        vec![embedding_record(
+            "emb-replace",
+            "a.rs",
+            vec![0.0, 1.0, 0.0],
+        )?],
+        3,
+    );
+    batch2.seal = false;
+    batch2.replace_scopes.push(SemanticReplaceScope {
+        scope: scope("b.rs"),
+        scope_digest: "scope:b".to_string(),
+        embeddings: vec![EmbeddingRecord {
+            embedding_id: EmbeddingId::new("emb-bad-dim"),
+            owner_kind: OwnerDocKind::Chunk,
+            owner_id: "owner-bad".to_string().into_boxed_str(),
+            source_doc_id: "doc-bad".to_string().into_boxed_str(),
+            repo_relative_path: RepoRelativePath::new("b.rs"),
+            language: LanguageCode::new("rust").map_err(|err| format!("lang: {err}"))?,
+            symbol_kind: None,
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 1,
+            end_line: 1,
+            snippet: "x".to_string().into_boxed_str(),
+            embedding_input_digest: "in:bad".to_string().into_boxed_str(),
+            vector_digest: "vec:bad".to_string().into_boxed_str(),
+            view_kind: "raw_chunk".to_string().into_boxed_str(),
+            vector: vec![1.0, 0.0], // dim=2, contract dim=3 -> InvalidContract
+        }],
+    });
+
+    let Err(err) = adapter.build_batch(&batch2) else {
+        return Err("invalid-dim scope must reject batch".into());
+    };
+    assert!(matches!(err, CoreError::InvalidContract(_)));
+
+    // Batch 3: empty seal — opens the unsealed gen as-is. emb-1 MUST still be
+    // present (no destructive delete from the rejected batch).
+    let batch3 = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:1".to_string(),
+        batch_digest: "batch:1:seal".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(3),
+        replace_scopes: Vec::new(),
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    adapter.build_batch(&batch3)?;
+
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
+    let ids: Vec<String> = hits.iter().map(|c| c.candidate_id.clone()).collect();
+    assert!(
+        ids.contains(&"emb-1".to_string()),
+        "validate-before-delete must preserve emb-1; got {ids:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts append-failure staging preserves prior unsealed rows via assert macros"
+)]
+fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(15);
+
+    let mut first = sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    );
+    first.seal = false;
+    adapter.build_batch(&first)?;
+
+    let mut second = sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-2",
+            "src/main.rs",
+            vec![0.0, 1.0, 0.0],
+        )?],
+        3,
+    );
+    second.seal = false;
+    test_support::set_append_fail_path(Some("src/main.rs"));
+    let Err(err) = adapter.build_batch(&second) else {
+        return Err("injected append failure must surface".into());
+    };
+    test_support::set_append_fail_path(None);
+    assert!(
+        matches!(err, CoreError::Storage(ref message) if message.contains("injected append failure")),
+        "expected injected append failure storage error, got: {err:?}"
+    );
+
+    adapter.build_batch(&SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:15".to_string(),
+        batch_digest: "batch:15:seal".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(3),
+        replace_scopes: Vec::new(),
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    })?;
+
+    let searcher =
+        SemanticAdapter::with_state_root(root)?.open(&repo_id(), &revision_id(), generation)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 5)?;
+    let ids: Vec<String> = hits
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect();
+    assert!(
+        ids.contains(&"emb-1".to_string()),
+        "append failure must preserve prior rows; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"emb-2".to_string()),
+        "failed append must not leak replacement rows; got {ids:?}"
+    );
+    Ok(())
+}
+
+/// Re-encode the on-disk manifest after mutating one named text field.
+///
+/// Used by the forged-manifest negative tests below. The mutation stays valid
+/// CBOR so we exercise the actual `validate_scope` branch, not the generic
+/// decode-failure branch already covered by `corrupt_manifest_open_fails_closed`.
+fn forge_manifest_text_field(
+    manifest_path: &Path,
+    field: &str,
+    new_value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(manifest_path)?;
+    let mut value: ciborium::value::Value =
+        ciborium::from_reader(&bytes[..]).map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let mut bumped = false;
+    if let ciborium::value::Value::Map(entries) = &mut value {
+        for (key, val) in entries.iter_mut() {
+            if key.as_text() == Some(field) {
+                *val = ciborium::value::Value::Text(new_value.to_string());
+                bumped = true;
+                break;
+            }
+        }
+    }
+    if !bumped {
+        return Err(format!("expected `{field}` field in manifest CBOR").into());
+    }
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(manifest_path, &tampered)?;
+    Ok(())
+}
+
+fn forge_manifest_u64_field(
+    manifest_path: &Path,
+    field: &str,
+    new_value: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(manifest_path)?;
+    let mut value: ciborium::value::Value =
+        ciborium::from_reader(&bytes[..]).map_err(|err| format!("decode manifest cbor: {err}"))?;
+    let mut bumped = false;
+    if let ciborium::value::Value::Map(entries) = &mut value {
+        for (key, val) in entries.iter_mut() {
+            if key.as_text() == Some(field) {
+                *val = ciborium::value::Value::Integer(ciborium::value::Integer::from(new_value));
+                bumped = true;
+                break;
+            }
+        }
+    }
+    if !bumped {
+        return Err(format!("expected `{field}` field in manifest CBOR").into());
+    }
+    let mut tampered = Vec::new();
+    ciborium::into_writer(&value, &mut tampered)
+        .map_err(|err| format!("encode manifest cbor: {err}"))?;
+    std::fs::write(manifest_path, &tampered)?;
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts manifest-scope mismatch fails closed via assert macros"
+)]
+fn open_with_forged_manifest_scope_fails_closed() -> TestResult {
+    // R4 MAJOR coverage: explicit negative for `SemanticManifest::validate_scope`'s
+    // repo-mismatch branch. A built-and-sealed generation has its manifest
+    // re-encoded with a different `repo_id` (still valid CBOR + matching format
+    // version). Open against the original requested scope must fail closed with
+    // a typed scope-mismatch storage error, NOT silently serve the table.
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(11);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&manifest_path, "repo_id", "repo-DIFFERENT")?;
+
+    // Fresh adapter to bypass the open cache.
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("manifest scope mismatch must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("manifest repo") && message.contains("does not match requested"),
+                "expected repo scope-mismatch storage error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage scope-mismatch, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts cross-batch dim mismatch fails closed via assert macros"
+)]
+fn cross_batch_dimension_mismatch_on_unsealed_generation_fails_closed() -> TestResult {
+    // R4 MAJOR coverage: explicit negative for `verify_table_dimension`. An
+    // unsealed generation's FixedSizeList vector dim is fixed by the FIRST
+    // batch's contract dim; a follow-up batch on the same gen with a different
+    // contract dim must surface InvalidContract from the adapter's dim check,
+    // not lancedb's late opaque arrow schema-mismatch error.
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(12);
+
+    // Batch 1: contract dim=3 -> creates the lancedb table at dim=3.
+    let mut batch1 = sealed_batch(
+        generation,
+        "a.rs",
+        vec![embedding_record("emb-1", "a.rs", vec![1.0, 0.0, 0.0])?],
+        3,
+    );
+    batch1.seal = false;
+    adapter.build_batch(&batch1)?;
+
+    // Batch 2: same unsealed gen, contract dim=4, with a dim-4 vector so the
+    // batch's own per-embedding validation passes. `ensure_table` opens the
+    // existing dim-3 table and `verify_table_dimension(_, 4)` must fail closed.
+    let mut batch2 = sealed_batch(
+        generation,
+        "b.rs",
+        vec![embedding_record("emb-2", "b.rs", vec![1.0, 0.0, 0.0, 0.0])?],
+        4,
+    );
+    batch2.seal = false;
+
+    let Err(err) = adapter.build_batch(&batch2) else {
+        return Err("cross-batch dim mismatch must fail closed".into());
+    };
+    match err {
+        CoreError::InvalidContract(message) => {
+            assert!(
+                message.contains("dimension 3") && message.contains("batch dimension 4"),
+                "expected cross-batch dim mismatch error, got: {message}"
+            );
+        }
+        other @ (CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected InvalidContract, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts manifest distance-metric guard fails closed via assert macros"
+)]
+fn open_with_forged_non_cosine_distance_metric_fails_closed() -> TestResult {
+    // R4 MAJOR coverage: explicit negative for `SemanticManifest::validate_scope`'s
+    // distance-metric guard. `build_batch` rejects non-cosine contracts up front
+    // (covered by `build_rejects_unsupported_distance_metric`), so the only way
+    // a non-cosine manifest can reach `open_generation` is corruption / drift.
+    // We forge that state here and assert open fails closed with the dedicated
+    // distance-metric storage error rather than silently serving cosine-quantized
+    // data through a foreign metric contract.
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(13);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&manifest_path, "distance_metric", "euclidean")?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("forged non-cosine distance_metric must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("distance_metric") && message.contains("euclidean"),
+                "expected distance-metric storage error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage distance-metric error, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts current-format sealed generations require the sidecar contract via assert macros"
+)]
+fn open_with_missing_generation_contract_on_v3_manifest_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(16);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let contract_path = generation_dir(&root, generation).join("semantic-build-contract.cbor");
+    std::fs::remove_file(&contract_path)?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("v3 manifest without generation contract must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("requires generation contract")
+                    && message.contains("semantic-build-contract.cbor"),
+                "expected missing-sidecar storage error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage missing-sidecar error, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts legacy v2 sealed generations remain openable without the sidecar contract via assert macros"
+)]
+fn legacy_v2_manifest_without_generation_contract_opens_for_compatibility() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(21);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-legacy",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let generation_dir = generation_dir(&root, generation);
+    forge_manifest_u64_field(
+        &generation_dir.join("semantic-manifest.cbor"),
+        "format_version",
+        2,
+    )?;
+    std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let searcher = reopened.open(&repo_id(), &revision_id(), generation)?;
+    let hits = searcher.search(&[1.0, 0.0, 0.0], 3)?;
+    let Some(hit) = hits.first() else {
+        return Err("legacy v2 sealed generation must still serve hits".into());
+    };
+    assert_eq!(hit.candidate_id.as_str(), "emb-legacy");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts scan keeps legacy v2 sealed generations visible without weakening v3 contract requirements via assert macros"
+)]
+fn scan_reports_legacy_v2_generation_without_generation_contract() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let semantic_root = root.join("indexes").join("semantic");
+    let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
+    let generation = ManifestGeneration::new(22);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "scan-legacy.rs",
+        vec![embedding_record(
+            "emb-scan-legacy",
+            "scan-legacy.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let generation_dir = generation_dir(&semantic_root, generation);
+    forge_manifest_u64_field(
+        &generation_dir.join("semantic-manifest.cbor"),
+        "format_version",
+        2,
+    )?;
+    std::fs::remove_file(generation_dir.join("semantic-build-contract.cbor"))?;
+
+    let scanned = scan_persisted_generations(&semantic_root)?;
+    let Some(record) = scanned
+        .iter()
+        .find(|record| record.generation == generation)
+    else {
+        return Err("legacy v2 sealed generation must still be reported by scan".into());
+    };
+    assert_eq!(record.manifest_digest, "manifest:22");
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts manifest model-id drift fails closed via assert macros"
+)]
+fn open_with_forged_model_id_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(17);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&manifest_path, "model_id", "DIFFERENT-MODEL")?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("forged model_id must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("model_id") && message.contains("DIFFERENT-MODEL"),
+                "expected model_id contract error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage model_id error, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts manifest model-version drift fails closed via assert macros"
+)]
+fn open_with_forged_model_version_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(18);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&manifest_path, "model_version", "2")?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("forged model_version must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("model_version") && message.contains('2'),
+                "expected model_version contract error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage model_version error, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts manifest normalization drift fails closed via assert macros"
+)]
+fn open_with_forged_normalization_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(19);
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/main.rs",
+        vec![embedding_record(
+            "emb-1",
+            "src/main.rs",
+            vec![1.0, 0.0, 0.0],
+        )?],
+        3,
+    ))?;
+
+    let manifest_path = generation_dir(&root, generation).join("semantic-manifest.cbor");
+    forge_manifest_text_field(&manifest_path, "normalization", "none")?;
+
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(err) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("forged normalization must fail closed".into());
+    };
+    match err {
+        CoreError::Storage(message) => {
+            assert!(
+                message.contains("normalization") && message.contains("none"),
+                "expected normalization contract error, got: {message}"
+            );
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)) => {
+            return Err(format!("expected Storage normalization error, got {other:?}").into());
+        }
     }
     Ok(())
 }

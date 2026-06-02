@@ -244,6 +244,15 @@ fn lower_filter(f: &SgFilter, metadata: &mut BridgeMetadata) -> Result<LowerOutc
             let value = validate_yes_no_only("dirty", v)?;
             apply_bridge_filter("dirty", value.as_ref(), metadata)
         }
+        SgFilter::Changed(v) => apply_bridge_filter("changed", v, metadata),
+        SgFilter::Stale(v) => apply_bridge_filter("stale", v, metadata),
+        SgFilter::Snapshot(v) => apply_bridge_filter("snapshot", v, metadata),
+        SgFilter::MetaOwner(v) => apply_bridge_filter("meta.owner", v, metadata),
+        SgFilter::MetaService(v) => apply_bridge_filter("meta.service", v, metadata),
+        SgFilter::MetaLayer(v) => apply_bridge_filter("meta.layer", v, metadata),
+        SgFilter::MetaSurface(v) => apply_bridge_filter("meta.surface", v, metadata),
+        SgFilter::Affected(v) => apply_bridge_filter("affected", v, metadata),
+        SgFilter::InvalidatedBy(v) => apply_bridge_filter("invalidated_by", v, metadata),
         SgFilter::Fork(v) => {
             let value = validate_yes_no_only("fork", v)?;
             apply_bridge_filter("fork", value.as_ref(), metadata)
@@ -278,6 +287,13 @@ fn lower_filter(f: &SgFilter, metadata: &mut BridgeMetadata) -> Result<LowerOutc
         )),
         SgFilter::Context(v) => apply_bridge_filter("context", v, metadata),
         SgFilter::Timeout(v) => apply_bridge_filter("timeout", v, metadata),
+        SgFilter::Before(v) => apply_bridge_filter("before", v, metadata),
+        SgFilter::After(v) => apply_bridge_filter("after", v, metadata),
+        SgFilter::Since(v) => apply_bridge_filter("since", v, metadata),
+        SgFilter::Until(v) => apply_bridge_filter("until", v, metadata),
+        SgFilter::DiffAdded(v) => apply_bridge_filter("diff.added", v, metadata),
+        SgFilter::DiffRemoved(v) => apply_bridge_filter("diff.removed", v, metadata),
+        SgFilter::DiffTouched(v) => apply_bridge_filter("diff.touched", v, metadata),
     }
 }
 
@@ -606,6 +622,33 @@ fn apply_bridge_filter(
         "dirty" => metadata.filters.push(LqFilter::Dirty {
             mode: lower_yes_no_only_filter("dirty", value)?,
         }),
+        "changed" => metadata.filters.push(LqFilter::Changed {
+            scope: value.to_string(),
+        }),
+        "stale" => metadata.filters.push(LqFilter::Stale {
+            scope: value.to_string(),
+        }),
+        "snapshot" => metadata.filters.push(LqFilter::Snapshot {
+            name: value.to_string(),
+        }),
+        "meta.owner" => metadata.filters.push(LqFilter::MetaOwner {
+            id: value.to_string(),
+        }),
+        "meta.service" => metadata.filters.push(LqFilter::MetaService {
+            id: value.to_string(),
+        }),
+        "meta.layer" => metadata.filters.push(LqFilter::MetaLayer {
+            id: value.to_string(),
+        }),
+        "meta.surface" => metadata.filters.push(LqFilter::MetaSurface {
+            id: value.to_string(),
+        }),
+        "affected" => metadata.filters.push(LqFilter::Affected {
+            scope: value.to_string(),
+        }),
+        "invalidated_by" => metadata.filters.push(LqFilter::InvalidatedBy {
+            source: value.to_string(),
+        }),
         "case" => {
             metadata.case = Some(match value {
                 "yes" => LqCase::Sensitive,
@@ -657,6 +700,27 @@ fn apply_bridge_filter(
         "visibility" => metadata.filters.push(lower_visibility_filter(value)?),
         "context" => metadata.filters.push(LqFilter::Context {
             name: value.to_string(),
+        }),
+        "before" => metadata.filters.push(LqFilter::Before {
+            timeref: value.to_string(),
+        }),
+        "after" => metadata.filters.push(LqFilter::After {
+            timeref: value.to_string(),
+        }),
+        "since" => metadata.filters.push(LqFilter::Since {
+            timeref: value.to_string(),
+        }),
+        "until" => metadata.filters.push(LqFilter::Until {
+            timeref: value.to_string(),
+        }),
+        "diff.added" => metadata.filters.push(LqFilter::DiffAdded {
+            pattern: value.to_string(),
+        }),
+        "diff.removed" => metadata.filters.push(LqFilter::DiffRemoved {
+            pattern: value.to_string(),
+        }),
+        "diff.touched" => metadata.filters.push(LqFilter::DiffTouched {
+            pattern: value.to_string(),
         }),
         other => {
             return Err(BridgeError::unsupported_filter(

@@ -115,6 +115,7 @@ impl crate::NamespaceIngest for RuntimeNs {
             SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(

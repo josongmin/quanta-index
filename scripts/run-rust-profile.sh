@@ -14,6 +14,12 @@ delegated_recipe="$2"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/quanta-index-env.sh"
 
+# Profile logging needs the cache/state roots, but the delegated recipe must own
+# its lane-specific target dir. Otherwise nested `scripts/cargow --lane ...`
+# invocations inherit the ambient shared target and silently collapse distinct
+# release/test lanes into one cache root.
+unset CARGO_TARGET_DIR
+
 log_profile_event() {
   local exit_code="$1"
   local duration_ms="$2"

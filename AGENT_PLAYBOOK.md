@@ -12,6 +12,8 @@
 - preferred agent surface: `just rust-profile <name>`
 - default local compile: `just rust-profile dev-fast`
 - daemon-only compile: `just rust-profile dev-daemon`
+- deployable daemon artifact: `just rust-profile release-daemon`
+- stale-fingerprint-safe daemon artifact: `just rust-profile release-daemon-fresh`
 - widest compile rail: `just rust-profile dev-all-targets`
 - shared-surface validation: `just rust-profile validate-shared-surface`
 - one crate probe when the profile catalog is insufficient: `./scripts/cargow check -p <crate>`
@@ -71,6 +73,7 @@
 # Quick Reference
 
 - `just rust-profile dev-fast`
+- `just rust-profile release-daemon`
 - `just rust-profile validate-shared-surface`
 - `just rust-profile test-fast`
 - `just rust-profile verify-rust`
@@ -91,6 +94,8 @@
 Canonical Rust commands:
 - `just rust-profile dev-fast`
 - `just rust-profile dev-daemon`
+- `just rust-profile release-daemon`
+- `just rust-profile release-daemon-fresh`
 - `just rust-profile dev-all-targets`
 - `just rust-profile validate-shared-surface`
 - `just fmt-check`
@@ -105,6 +110,7 @@ Canonical Rust commands:
 Canonical developer shortcuts:
 - `just rust-profile-list`
 - `just rust-profile dev-fast`
+- `just rust-profile release-daemon`
 - `just rust-profile test-fast`
 - `just rust-profile verify-rust`
 - `just verify-rust-heavy`
