@@ -317,6 +317,12 @@ jobs:
       - name: Smoke-run ipc_response_decode (60s)
         run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60
 
+      - name: Build fuzz targets (lq-norm)
+        run: cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz build
+
+      - name: Smoke-run lq_parse_pipeline (60s)
+        run: cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60
+
   dsl-bench-latency:
     name: dsl-bench-latency (Layer-3 regression gate, report-only)
     # RFC-DSL-Benchmarking Phase B. Latency baselines are machine-specific

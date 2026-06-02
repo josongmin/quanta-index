@@ -59,12 +59,16 @@ Both scripts read and write a single artifact shape:
 
 The scenario authority lives in
 `crates/quanta-index-searchd-harness/src/scenarios.rs` and currently covers all
-four shipped families end-to-end (25 scenarios): **lexical** (keyword / phrase /
-regex / `file.contains` / `repo:has.file`), **history** (`since.time` /
-`since.commit` / `after` / `until` / `diff.added|removed|touched`), **runtime
-catalog** (`dirty` / `changed` / `stale` / `snapshot` / `meta.*` / `affected` /
-`invalidated_by`), and **structural** (boolean `OR` / `NOT` plus a genuine
-`match { … }` tree pattern). Each is seeded by a deterministic fixture and
+four shipped families end-to-end plus an adversarial family (33 scenarios):
+**lexical** (keyword / phrase / regex / `file.contains` / `repo:has.file`),
+**history** (`since.time` / `since.commit` / `after` / `until` /
+`diff.added|removed|touched`), **runtime catalog** (`dirty` / `changed` /
+`stale` / `snapshot` / `meta.*` / `affected` / `invalidated_by`), **structural**
+(boolean `OR` / `NOT` plus a genuine `match { … }` tree pattern), and
+**adversarial** (malformed / unterminated / oversized-past-16 KiB /
+nesting-past-depth-32 — exercising the *typed-error path latency*; fail-closed
+must be fast). Several lexical/structural surfaces also have a sourcegraph twin
+for native↔sourcegraph parity. Each is seeded by a deterministic fixture and
 served through the real runtime — no mocked latencies.
 
 ## Convenience recipes

@@ -1,0 +1,27 @@
+[package]
+name = "quanta-index-lq-norm-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Detach from the workspace. cargo-fuzz uses nightly-only flags and ships its
+# own profile; keeping it standalone avoids polluting `cargo check --workspace`
+# and lets the heavy correctness rail drive it explicitly via `just rust-fuzz-*`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+quanta-index-lq-norm = { path = ".." }
+
+[[bin]]
+name = "lq_parse_pipeline"
+path = "fuzz_targets/lq_parse_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

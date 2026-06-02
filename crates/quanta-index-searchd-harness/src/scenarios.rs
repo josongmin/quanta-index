@@ -275,6 +275,51 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         fixture: FixtureKind::StructuralTree,
         expected_shape: ResultShape::Candidates,
     },
+    // --- ADVERSARIAL (malformed / cap-boundary -> typed error, fail-closed) ---
+    // These exercise the *typed-error path latency*: fail-closed must be fast.
+    // The two `oversized_*` / `deep_*` queries are generated at runtime in
+    // `bench_support` (they exceed the 16 KiB / depth-32 parser caps); their
+    // `query_text` here is a descriptive placeholder, not the literal sent.
+    DslBenchScenario {
+        id: "adversarial.unterminated_phrase.native",
+        route_family: RouteFamily::Adversarial,
+        syntax: BenchSyntax::Native,
+        query_text: "\"unterminated",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::TypedError,
+    },
+    DslBenchScenario {
+        id: "adversarial.bad_regex.native",
+        route_family: RouteFamily::Adversarial,
+        syntax: BenchSyntax::Native,
+        query_text: "/[/",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::TypedError,
+    },
+    DslBenchScenario {
+        id: "adversarial.dangling_operator.native",
+        route_family: RouteFamily::Adversarial,
+        syntax: BenchSyntax::Native,
+        query_text: "parity_needle_alpha AND",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::TypedError,
+    },
+    DslBenchScenario {
+        id: "adversarial.oversized_bytes.native",
+        route_family: RouteFamily::Adversarial,
+        syntax: BenchSyntax::Native,
+        query_text: "<generated: keyword query exceeding the 16 KiB input cap>",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::TypedError,
+    },
+    DslBenchScenario {
+        id: "adversarial.deep_nesting.native",
+        route_family: RouteFamily::Adversarial,
+        syntax: BenchSyntax::Native,
+        query_text: "<generated: parenthesis nesting exceeding the depth-32 cap>",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::TypedError,
+    },
 ];
 
 /// Linear lookup of a scenario by its stable id.
@@ -325,6 +370,7 @@ mod tests {
             RouteFamily::History,
             RouteFamily::RuntimeCatalog,
             RouteFamily::Structural,
+            RouteFamily::Adversarial,
         ] {
             assert!(
                 SCENARIOS.iter().any(|s| s.route_family == family),

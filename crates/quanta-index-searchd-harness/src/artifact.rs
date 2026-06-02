@@ -14,6 +14,7 @@ pub enum RouteFamily {
     History,
     RuntimeCatalog,
     Structural,
+    Adversarial,
 }
 
 impl RouteFamily {
@@ -24,6 +25,7 @@ impl RouteFamily {
             RouteFamily::History => "history",
             RouteFamily::RuntimeCatalog => "runtime_catalog",
             RouteFamily::Structural => "structural",
+            RouteFamily::Adversarial => "adversarial",
         }
     }
 }
