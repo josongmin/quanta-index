@@ -238,56 +238,11 @@ pub fn prepare_cold_runtime(scenario: &DslBenchScenario) -> AnyResult<E2eRuntime
 // Query dispatch + result classification.
 // ---------------------------------------------------------------------------
 
-/// Runtime-generated queries for adversarial scenarios, keyed by id.
-///
-/// Some adversarial cases exceed the parser's hard caps and are too large to
-/// embed as a literal, so they are generated here. Every other scenario uses
-/// its literal `query_text`.
-fn adversarial_query(id: &str) -> Option<String> {
-    match id {
-        "adversarial.oversized_bytes.native" => Some(oversized_keyword_query()),
-        "adversarial.deep_nesting.native" => Some(deep_nesting_query()),
-        _ => None,
-    }
-}
-
-/// A keyword query past the 16 KiB `MAX_INPUT_BYTES` cap; the tokenizer must
-/// reject it typed, not truncate or panic.
-fn oversized_keyword_query() -> String {
-    let mut query = String::with_capacity(18_000);
-    while query.len() < 17_000 {
-        query.push_str("needle ");
-    }
-    query
-}
-
-/// Parenthesis nesting past the depth-32 `MAX_AST_DEPTH` cap; the parser must
-/// reject it typed before the recursion descends.
-fn deep_nesting_query() -> String {
-    let depth = 64_usize;
-    let mut query = String::with_capacity(200);
-    for _ in 0..depth {
-        query.push('(');
-    }
-    query.push_str("needle");
-    for _ in 0..depth {
-        query.push(')');
-    }
-    query
-}
-
-fn resolve_query<'a>(scenario: &'a DslBenchScenario, generated: Option<&'a str>) -> &'a str {
-    if let Some(query) = generated {
-        return query;
-    }
-    scenario.query_text
-}
-
 /// Run one scenario query against a prepared runtime and classify the result.
 pub fn run_scenario_query(rt: &mut E2eRuntime, scenario: &DslBenchScenario) -> QueryOutcome {
     let syntax = to_text_syntax(scenario.syntax);
-    let generated = adversarial_query(scenario.id);
-    let query = resolve_query(scenario, generated.as_deref());
+    let resolved = scenario.query.resolve();
+    let query = resolved.as_ref();
     match scenario.fixture {
         FixtureKind::LexicalCorpus => outcome_from_query(&rt.query_text(syntax, query, TOP_K)),
         FixtureKind::RuntimeCatalog => {

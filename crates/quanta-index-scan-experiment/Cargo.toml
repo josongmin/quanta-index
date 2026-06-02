@@ -1,0 +1,26 @@
+[package]
+name = "quanta-index-scan-experiment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Exploratory scaling experiment (indexed query vs full-text scan). It drives
+# the lexical adapter directly and has nothing to do with the searchd runtime,
+# so it lives in its own crate rather than polluting the runtime test/bench
+# harness. Never gated; see tools/benchmark/run_scan_vs_index.py.
+[[bin]]
+name = "scan_vs_index"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+ciborium = { workspace = true }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+serde_json = { workspace = true }

@@ -30,7 +30,6 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::LexicalAdapter;
-use quanta_index_searchd_harness::artifact::LatencySummary;
 
 const NEEDLE: &str = "parity_needle_alpha";
 const RECORDS_PER_FILE: usize = 1_000;
@@ -57,6 +56,29 @@ struct Args {
     chunk_bytes: usize,
     needle_count: usize,
     samples: usize,
+}
+
+/// Nearest-rank p50/p95/p99 (ms) over the collected samples; zeros if empty.
+fn percentiles(samples_ms: &[f64]) -> (f64, f64, f64) {
+    if samples_ms.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    let mut ordered = samples_ms.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    (
+        nearest_rank(&ordered, 50),
+        nearest_rank(&ordered, 95),
+        nearest_rank(&ordered, 99),
+    )
+}
+
+fn nearest_rank(ordered: &[f64], pct: usize) -> f64 {
+    let rank = pct.saturating_mul(ordered.len()).div_ceil(100).max(1);
+    let idx = rank.min(ordered.len()).saturating_sub(1);
+    if let Some(value) = ordered.get(idx) {
+        return *value;
+    }
+    0.0
 }
 
 fn parse_usize(value: Option<String>, flag: &str) -> Result<usize> {
@@ -240,8 +262,7 @@ fn run() -> Result<serde_json::Value> {
         samples.push(elapsed_ms(started));
         hits = result.len();
     }
-    let (p50, p95, p99) = LatencySummary::from_samples_ms(&samples)
-        .map_or((0.0, 0.0, 0.0), |s| (s.p50_ms, s.p95_ms, s.p99_ms));
+    let (p50, p95, p99) = percentiles(&samples);
 
     Ok(serde_json::json!({
         "chunks": saturating_u64(args.chunks),

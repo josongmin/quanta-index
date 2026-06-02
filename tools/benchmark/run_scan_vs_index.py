@@ -57,9 +57,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bin-cmd",
-        default=(
-            "cargo run --quiet --release -p quanta-index-searchd-harness --bin scan_vs_index --"
-        ),
+        default="cargo run --quiet --release -p quanta-index-scan-experiment --",
         help="command prefix that invokes the scan_vs_index binary",
     )
     return parser.parse_args()

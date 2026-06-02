@@ -4,7 +4,57 @@
 //! verbatim copies of the repo's real test scenario truth and must not be
 //! invented or altered; the harness benchmarks exactly what ships.
 
+use std::borrow::Cow;
+
 use crate::artifact::{BenchSyntax, ResultShape, RouteFamily};
+
+/// How a scenario's query string is produced.
+///
+/// Most are literals. A few adversarial scenarios send queries that exceed the
+/// parser's hard caps and are too large to embed as a literal, so they carry a
+/// generator instead — keeping the query source in the scenario row, not coupled
+/// to its id by an external string match.
+#[derive(Clone, Copy, Debug)]
+pub enum QuerySpec {
+    Literal(&'static str),
+    Generated(fn() -> String),
+}
+
+impl QuerySpec {
+    /// The concrete query string this scenario sends.
+    #[must_use]
+    pub fn resolve(&self) -> Cow<'static, str> {
+        match *self {
+            QuerySpec::Literal(text) => Cow::Borrowed(text),
+            QuerySpec::Generated(generate) => Cow::Owned(generate()),
+        }
+    }
+}
+
+/// A keyword query past the 16 KiB `MAX_INPUT_BYTES` cap; the tokenizer must
+/// reject it typed, not truncate or panic.
+fn oversized_keyword_query() -> String {
+    let mut query = String::with_capacity(18_000);
+    while query.len() < 17_000 {
+        query.push_str("needle ");
+    }
+    query
+}
+
+/// Parenthesis nesting past the depth-32 `MAX_AST_DEPTH` cap; the parser must
+/// reject it typed before the recursion descends.
+fn deep_nesting_query() -> String {
+    let depth = 64_usize;
+    let mut query = String::with_capacity(200);
+    for _ in 0..depth {
+        query.push('(');
+    }
+    query.push_str("needle");
+    for _ in 0..depth {
+        query.push(')');
+    }
+    query
+}
 
 /// Backing fixture a scenario runs against.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -33,7 +83,7 @@ pub struct DslBenchScenario {
     pub id: &'static str,
     pub route_family: RouteFamily,
     pub syntax: BenchSyntax,
-    pub query_text: &'static str,
+    pub query: QuerySpec,
     pub fixture: FixtureKind,
     pub expected_shape: ResultShape,
 }
@@ -45,7 +95,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.keyword.native",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Native,
-        query_text: "parity_needle_alpha",
+        query: QuerySpec::Literal("parity_needle_alpha"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -53,7 +103,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.phrase.native",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Native,
-        query_text: "\"sphinx of quartz\"",
+        query: QuerySpec::Literal("\"sphinx of quartz\""),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -61,7 +111,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.regex.native",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Native,
-        query_text: "/v\\d+\\.\\d+\\.\\d+/",
+        query: QuerySpec::Literal("/v\\d+\\.\\d+\\.\\d+/"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -69,7 +119,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.file_contains.native",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Native,
-        query_text: "file.contains('oo_ba')",
+        query: QuerySpec::Literal("file.contains('oo_ba')"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -77,7 +127,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.repo_has_file.sourcegraph",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "repo:has.file(path:src/lib.rs) needle",
+        query: QuerySpec::Literal("repo:has.file(path:src/lib.rs) needle"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -87,7 +137,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.since_time.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "type:commit since.time:1970-01-01T00:00:00.011Z fix",
+        query: QuerySpec::Literal("type:commit since.time:1970-01-01T00:00:00.011Z fix"),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -95,7 +145,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.since_commit.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "type:commit since.commit:refs/heads/main alpha_content_needle",
+        query: QuerySpec::Literal("type:commit since.commit:refs/heads/main alpha_content_needle"),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -103,7 +153,9 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.after.sourcegraph",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle",
+        query: QuerySpec::Literal(
+            "type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle",
+        ),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -111,7 +163,9 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.until.sourcegraph",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "type:commit until:1970-01-01T00:00:00.013Z alpha_content_needle",
+        query: QuerySpec::Literal(
+            "type:commit until:1970-01-01T00:00:00.013Z alpha_content_needle",
+        ),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -119,7 +173,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_added.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "type:diff diff.added:history",
+        query: QuerySpec::Literal("type:diff diff.added:history"),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -127,7 +181,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_removed.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "type:diff diff.removed:history",
+        query: QuerySpec::Literal("type:diff diff.removed:history"),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -135,7 +189,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_touched.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "type:diff diff.touched:history",
+        query: QuerySpec::Literal("type:diff diff.touched:history"),
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -144,7 +198,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.dirty_no.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "dirty:no quartz",
+        query: QuerySpec::Literal("dirty:no quartz"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -152,7 +206,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.changed.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "changed:since=1970-01-01T00:00:00.010Z",
+        query: QuerySpec::Literal("changed:since=1970-01-01T00:00:00.010Z"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -160,7 +214,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.stale.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "stale:before=1970-01-01T00:00:00.030Z",
+        query: QuerySpec::Literal("stale:before=1970-01-01T00:00:00.030Z"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -168,7 +222,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.snapshot.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "snapshot:active",
+        query: QuerySpec::Literal("snapshot:active"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -176,7 +230,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.meta_owner.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "meta.owner:team-a",
+        query: QuerySpec::Literal("meta.owner:team-a"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -184,7 +238,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.meta_service.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "meta.service:search",
+        query: QuerySpec::Literal("meta.service:search"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -192,7 +246,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.meta_layer.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "meta.layer:index",
+        query: QuerySpec::Literal("meta.layer:index"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -200,7 +254,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.meta_surface.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "meta.surface:lexical",
+        query: QuerySpec::Literal("meta.surface:lexical"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -208,7 +262,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.affected.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "affected:rebuild=lexical",
+        query: QuerySpec::Literal("affected:rebuild=lexical"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -216,7 +270,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "runtime.invalidated_by.sourcegraph",
         route_family: RouteFamily::RuntimeCatalog,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "invalidated_by:rebuild=lexical",
+        query: QuerySpec::Literal("invalidated_by:rebuild=lexical"),
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
@@ -227,7 +281,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "structural.mixed_or.native",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Native,
-        query_text: "parity_needle_alpha OR documentation",
+        query: QuerySpec::Literal("parity_needle_alpha OR documentation"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -235,7 +289,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "structural.mixed_and_not.native",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Native,
-        query_text: "parity_needle_alpha NOT helper",
+        query: QuerySpec::Literal("parity_needle_alpha NOT helper"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -243,7 +297,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "structural.tree_match.native",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Native,
-        query_text: "match { function_item { { identifier :[name] } } }",
+        query: QuerySpec::Literal("match { function_item { { identifier :[name] } } }"),
         fixture: FixtureKind::StructuralTree,
         expected_shape: ResultShape::Candidates,
     },
@@ -255,7 +309,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "lexical.keyword.sourcegraph",
         route_family: RouteFamily::Lexical,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "parity_needle_alpha",
+        query: QuerySpec::Literal("parity_needle_alpha"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -263,7 +317,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "structural.mixed_or.sourcegraph",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "parity_needle_alpha OR documentation",
+        query: QuerySpec::Literal("parity_needle_alpha OR documentation"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
@@ -271,20 +325,21 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "structural.tree_match.sourcegraph",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "patterntype:structural \"function_item { { identifier :[name] } }\"",
+        query: QuerySpec::Literal(
+            "patterntype:structural \"function_item { { identifier :[name] } }\"",
+        ),
         fixture: FixtureKind::StructuralTree,
         expected_shape: ResultShape::Candidates,
     },
     // --- ADVERSARIAL (malformed / cap-boundary -> typed error, fail-closed) ---
     // These exercise the *typed-error path latency*: fail-closed must be fast.
-    // The two `oversized_*` / `deep_*` queries are generated at runtime in
-    // `bench_support` (they exceed the 16 KiB / depth-32 parser caps); their
-    // `query_text` here is a descriptive placeholder, not the literal sent.
+    // The oversized / deep-nesting queries exceed the 16 KiB / depth-32 parser
+    // caps, so they carry a `QuerySpec::Generated` rather than a literal.
     DslBenchScenario {
         id: "adversarial.unterminated_phrase.native",
         route_family: RouteFamily::Adversarial,
         syntax: BenchSyntax::Native,
-        query_text: "\"unterminated",
+        query: QuerySpec::Literal("\"unterminated"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::TypedError,
     },
@@ -292,7 +347,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "adversarial.bad_regex.native",
         route_family: RouteFamily::Adversarial,
         syntax: BenchSyntax::Native,
-        query_text: "/[/",
+        query: QuerySpec::Literal("/[/"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::TypedError,
     },
@@ -300,7 +355,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "adversarial.dangling_operator.native",
         route_family: RouteFamily::Adversarial,
         syntax: BenchSyntax::Native,
-        query_text: "parity_needle_alpha AND",
+        query: QuerySpec::Literal("parity_needle_alpha AND"),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::TypedError,
     },
@@ -308,7 +363,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "adversarial.oversized_bytes.native",
         route_family: RouteFamily::Adversarial,
         syntax: BenchSyntax::Native,
-        query_text: "<generated: keyword query exceeding the 16 KiB input cap>",
+        query: QuerySpec::Generated(oversized_keyword_query),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::TypedError,
     },
@@ -316,7 +371,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "adversarial.deep_nesting.native",
         route_family: RouteFamily::Adversarial,
         syntax: BenchSyntax::Native,
-        query_text: "<generated: parenthesis nesting exceeding the depth-32 cap>",
+        query: QuerySpec::Generated(deep_nesting_query),
         fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::TypedError,
     },

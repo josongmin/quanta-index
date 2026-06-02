@@ -13,18 +13,10 @@ name = "dsl_cold_matrix"
 path = "src/bin/dsl_cold_matrix.rs"
 doc = false
 
-[[bin]]
-name = "scan_vs_index"
-path = "src/bin/scan_vs_index.rs"
-doc = false
-
 [dependencies]
 anyhow = { workspace = true }
-ciborium = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
-quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
-quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime" }

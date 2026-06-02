@@ -11,6 +11,7 @@ members = [
     "crates/quanta-index-searchd",
     "crates/quanta-index-searchd-runtime",
     "crates/quanta-index-searchd-harness",
+    "crates/quanta-index-scan-experiment",
     "crates/quanta-index-searchctl",
     "crates/quanta-index-sdk",
     "crates/quanta-index-lq-norm",
