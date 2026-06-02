@@ -57,6 +57,26 @@ Both scripts read and write a single artifact shape:
 - **`cold-matrix.json`** is produced by `run_dsl_cold_matrix.py` (true
   cold-start: a fresh OS process per sample).
 
+The scenario authority lives in
+`crates/quanta-index-searchd-harness/src/scenarios.rs` and currently covers all
+four shipped families end-to-end (25 scenarios): **lexical** (keyword / phrase /
+regex / `file.contains` / `repo:has.file`), **history** (`since.time` /
+`since.commit` / `after` / `until` / `diff.added|removed|touched`), **runtime
+catalog** (`dirty` / `changed` / `stale` / `snapshot` / `meta.*` / `affected` /
+`invalidated_by`), and **structural** (boolean `OR` / `NOT` plus a genuine
+`match { … }` tree pattern). Each is seeded by a deterministic fixture and
+served through the real runtime — no mocked latencies.
+
+## Convenience recipes
+
+```
+just rust-bench-dsl-warm        # criterion warm matrix -> artifacts/dsl-bench/warm-matrix.json
+just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
+just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
+```
+
+The warm bench honours `$DSL_BENCH_WARM_SAMPLES` (default 200) for quick runs.
+
 ## Scripts
 
 ### `compare_dsl_bench.py` — regression gate

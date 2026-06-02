@@ -21,15 +21,22 @@ use std::time::Instant;
 
 use criterion::Criterion;
 
-use quanta_index_searchd_harness::artifact::{
-    BenchArtifact, BenchMode, BenchRow, LatencySummary,
-};
+use quanta_index_searchd_harness::artifact::{BenchArtifact, BenchMode, BenchRow, LatencySummary};
 use quanta_index_searchd_harness::bench_support::{prepare_warm_runtime, run_scenario_query};
 use quanta_index_searchd_harness::scenarios::SCENARIOS;
 
-/// Manual percentile-sample count per measured scenario (in addition to the
-/// criterion timing pass).
-const SAMPLES: usize = 200;
+/// Manual percentile-sample count per scenario (in addition to the criterion
+/// timing pass). Overridable via `$DSL_BENCH_WARM_SAMPLES` for quick runs.
+fn warm_samples() -> usize {
+    const DEFAULT: usize = 200;
+    let Ok(raw) = std::env::var("DSL_BENCH_WARM_SAMPLES") else {
+        return DEFAULT;
+    };
+    match raw.parse::<usize>() {
+        Ok(n) if n > 0 => n,
+        _ => DEFAULT,
+    }
+}
 
 fn warm_out_path() -> PathBuf {
     std::env::var_os("DSL_BENCH_WARM_OUT").map_or_else(
@@ -55,25 +62,9 @@ fn main() -> anyhow::Result<()> {
     let mut artifact = BenchArtifact::new(BenchMode::Warm, git_rev());
 
     {
+        let samples_n = warm_samples();
         let mut group = criterion.benchmark_group("dsl_query_matrix");
         for scenario in SCENARIOS {
-            let probe = run_scenario_query(&mut runtime, scenario);
-            if !probe.measured() {
-                artifact.rows.push(BenchRow {
-                    scenario_id: scenario.id.to_string(),
-                    route_family: scenario.route_family,
-                    syntax: scenario.syntax,
-                    mode: BenchMode::Warm,
-                    result_shape: probe.result_shape,
-                    latency: None,
-                    result_count: probe.result_count,
-                    typed_error_code: probe.typed_error_code,
-                    engine_touched: probe.engine_touched,
-                    early_stop_reason: probe.early_stop_reason,
-                });
-                continue;
-            }
-
             let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> =
                 group.bench_function(scenario.id, |b| {
                     b.iter(|| {
@@ -82,9 +73,9 @@ fn main() -> anyhow::Result<()> {
                     });
                 });
 
-            let mut samples = Vec::with_capacity(SAMPLES);
-            let mut last = probe;
-            for _ in 0..SAMPLES {
+            let mut samples = Vec::with_capacity(samples_n);
+            let mut last = run_scenario_query(&mut runtime, scenario);
+            for _ in 0..samples_n {
                 let started = Instant::now();
                 last = run_scenario_query(&mut runtime, scenario);
                 samples.push(elapsed_ms(started));

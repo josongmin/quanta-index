@@ -7,9 +7,8 @@
 //!
 //! The binary never aggregates and never fabricates a number: it boots, seeds
 //! the scenario's fixture, seals, activates, times exactly one query, prints
-//! one JSON sample, and exits. A scenario whose fixture family is not wired yet
-//! emits an explicit `early_stop_reason = "fixture_not_seeded"` row with a null
-//! latency rather than a guessed value.
+//! one JSON sample, and exits. A query that the runtime rejects is reported with
+//! its typed error code and a null result count, never a guessed latency.
 //!
 //! Subcommands:
 //!   --list             print the scenario authority as a JSON array
@@ -18,9 +17,9 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
+use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_harness::artifact::BenchMode;
 use quanta_index_searchd_harness::bench_support::{prepare_cold_runtime, run_scenario_query};
-use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_harness::scenarios::{DslBenchScenario, SCENARIOS, scenario_by_id};
 
 /// Print one line of machine-readable output to stdout.
@@ -71,8 +70,8 @@ fn print_list() {
 
 fn run_scenario(scenario: &DslBenchScenario) -> ExitCode {
     let rev = git_rev();
-    let prepared = match prepare_cold_runtime(scenario) {
-        Ok(prepared) => prepared,
+    let mut runtime = match prepare_cold_runtime(scenario) {
+        Ok(runtime) => runtime,
         Err(err) => {
             emit_stderr(&format!(
                 "dsl_cold_matrix: prepare failed for {}: {err:#}",
@@ -81,30 +80,8 @@ fn run_scenario(scenario: &DslBenchScenario) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-
-    let value = prepared.map_or_else(
-        || not_seeded_sample(scenario, &rev),
-        |mut runtime| measured_sample(&mut runtime, scenario, &rev),
-    );
-    emit_stdout(&value);
+    emit_stdout(&measured_sample(&mut runtime, scenario, &rev));
     ExitCode::SUCCESS
-}
-
-/// JSON sample for a scenario whose fixture family is not wired yet.
-fn not_seeded_sample(scenario: &DslBenchScenario, rev: &str) -> serde_json::Value {
-    serde_json::json!({
-        "scenario_id": scenario.id,
-        "route_family": scenario.route_family.as_str(),
-        "syntax": scenario.syntax.as_str(),
-        "mode": BenchMode::Cold.as_str(),
-        "result_shape": "empty",
-        "first_query_ms": serde_json::Value::Null,
-        "result_count": serde_json::Value::Null,
-        "typed_error_code": serde_json::Value::Null,
-        "engine_touched": Vec::<String>::new(),
-        "early_stop_reason": "fixture_not_seeded",
-        "git_rev": rev,
-    })
 }
 
 /// Time exactly one cold query and build its JSON sample.

@@ -82,11 +82,12 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         expected_shape: ResultShape::Candidates,
     },
     // --- HISTORY (HistoryLedger / Commits, diff.* -> DiffPaths) ---
+    // query_history requires the `type:commit` / `type:diff` route discriminator.
     DslBenchScenario {
         id: "history.since_time.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "since.time:1970-01-01T00:00:00.012Z fix",
+        query_text: "type:commit since.time:1970-01-01T00:00:00.011Z fix",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -94,7 +95,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.since_commit.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "since.commit:refs/heads/main fix",
+        query_text: "type:commit since.commit:refs/heads/main alpha_content_needle",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -102,7 +103,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.after.sourcegraph",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "after:1970-01-01T00:00:00.011Z alpha_content_needle",
+        query_text: "type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -110,7 +111,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.until.sourcegraph",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Sourcegraph,
-        query_text: "until:1970-01-01T00:00:00.012Z alpha_content_needle",
+        query_text: "type:commit until:1970-01-01T00:00:00.013Z alpha_content_needle",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::Commits,
     },
@@ -118,7 +119,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_added.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "diff.added:history",
+        query_text: "type:diff diff.added:history",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -126,7 +127,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_removed.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "diff.removed:history",
+        query_text: "type:diff diff.removed:history",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -134,7 +135,7 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         id: "history.diff_touched.native",
         route_family: RouteFamily::History,
         syntax: BenchSyntax::Native,
-        query_text: "diff.touched:history",
+        query_text: "type:diff diff.touched:history",
         fixture: FixtureKind::HistoryLedger,
         expected_shape: ResultShape::DiffPaths,
     },
@@ -219,13 +220,15 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         fixture: FixtureKind::RuntimeCatalog,
         expected_shape: ResultShape::Candidates,
     },
-    // --- STRUCTURAL (StructuralTree / Candidates) ---
+    // --- STRUCTURAL ---
+    // Boolean OR / NOT are lexical-route queries (`query_text`) over the
+    // multi-file corpus; the genuine tree pattern is a `query_structural` route.
     DslBenchScenario {
         id: "structural.mixed_or.native",
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Native,
         query_text: "parity_needle_alpha OR documentation",
-        fixture: FixtureKind::StructuralTree,
+        fixture: FixtureKind::LexicalCorpus,
         expected_shape: ResultShape::Candidates,
     },
     DslBenchScenario {
@@ -233,6 +236,42 @@ pub const SCENARIOS: &[DslBenchScenario] = &[
         route_family: RouteFamily::Structural,
         syntax: BenchSyntax::Native,
         query_text: "parity_needle_alpha NOT helper",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::Candidates,
+    },
+    DslBenchScenario {
+        id: "structural.tree_match.native",
+        route_family: RouteFamily::Structural,
+        syntax: BenchSyntax::Native,
+        query_text: "match { function_item { { identifier :[name] } } }",
+        fixture: FixtureKind::StructuralTree,
+        expected_shape: ResultShape::Candidates,
+    },
+    // --- NATIVE <-> SOURCEGRAPH PARITY ---
+    // Same semantic surface, sourcegraph syntax (translated through the lq
+    // bridge) vs the native scenarios above (direct parser). Pair these with
+    // their `.native` twins by `route_family` to compare cross-syntax latency.
+    DslBenchScenario {
+        id: "lexical.keyword.sourcegraph",
+        route_family: RouteFamily::Lexical,
+        syntax: BenchSyntax::Sourcegraph,
+        query_text: "parity_needle_alpha",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::Candidates,
+    },
+    DslBenchScenario {
+        id: "structural.mixed_or.sourcegraph",
+        route_family: RouteFamily::Structural,
+        syntax: BenchSyntax::Sourcegraph,
+        query_text: "parity_needle_alpha OR documentation",
+        fixture: FixtureKind::LexicalCorpus,
+        expected_shape: ResultShape::Candidates,
+    },
+    DslBenchScenario {
+        id: "structural.tree_match.sourcegraph",
+        route_family: RouteFamily::Structural,
+        syntax: BenchSyntax::Sourcegraph,
+        query_text: "patterntype:structural \"function_item { { identifier :[name] } }\"",
         fixture: FixtureKind::StructuralTree,
         expected_shape: ResultShape::Candidates,
     },

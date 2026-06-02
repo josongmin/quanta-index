@@ -1,29 +1,35 @@
 //! Glue between the bench scenario authority and the runtime harness.
 //!
 //! Each scenario is driven through the real harness — boot, ingest a
-//! deterministic fixture, seal, activate, query. The caller owns timing;
-//! this module owns *what* gets run and how the harness result maps onto an
-//! artifact row.
+//! deterministic fixture, seal, activate, query. The caller owns timing; this
+//! module owns *what* gets run, *which* fixture seeds it, and how the harness
+//! result maps onto an artifact row.
 //!
-//! v1 wires the **lexical** family end-to-end. The history / runtime-catalog /
-//! structural families require their dedicated fixture-seeding paths
-//! (`ingest_history_fixture_spec`, `ingest_runtime_catalog`,
-//! `ingest_structural_tree`); until those are wired here, such scenarios are
-//! reported with an explicit `early_stop_reason = "fixture_not_seeded"` and a
-//! null latency — never a fabricated number and never a silent skip.
+//! Dispatch is keyed on [`FixtureKind`]: it selects both the fixture seeded for
+//! a scenario and the query route used to serve it —
+//!
+//! | fixture          | query route             | result read        |
+//! | ---------------- | ----------------------- | ------------------ |
+//! | `LexicalCorpus`  | `query_text`            | `candidates`       |
+//! | `HistoryLedger`  | `query_history`         | `commit_ids`/diffs |
+//! | `RuntimeCatalog` | `query_runtime_metadata`| `candidates`       |
+//! | `StructuralTree` | `query_structural`      | `structural_results` |
+//!
+//! Warm mode seeds every fixture into one sealed generation; cold mode seeds
+//! only the one fixture a scenario needs.
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
 
 use crate::artifact::{BenchSyntax, ResultShape};
-use crate::harness::{E2eQueryResult, E2eRuntime};
+use crate::harness::{E2eHistoryResult, E2eQueryResult, E2eRuntime};
 use crate::scenarios::{DslBenchScenario, FixtureKind};
 
 /// Result cap requested for every benchmark query.
 pub const TOP_K: u32 = 10;
 
-/// Explicit marker carried on rows whose fixture seeding is not wired yet.
-pub const FIXTURE_NOT_SEEDED: &str = "fixture_not_seeded";
+/// Repo id used across every benchmark fixture.
+const BENCH_REPO: &str = "repo-bench";
 
 /// The non-timing facts the harness reports for one scenario query.
 ///
@@ -37,26 +43,6 @@ pub struct QueryOutcome {
     pub early_stop_reason: Option<String>,
 }
 
-impl QueryOutcome {
-    /// The scenario's fixture family is not seeded in this harness yet.
-    #[must_use]
-    pub fn not_seeded() -> Self {
-        QueryOutcome {
-            result_shape: ResultShape::Empty,
-            result_count: None,
-            typed_error_code: None,
-            engine_touched: Vec::new(),
-            early_stop_reason: Some(FIXTURE_NOT_SEEDED.to_string()),
-        }
-    }
-
-    /// True when the scenario actually executed a query (latency is meaningful).
-    #[must_use]
-    pub fn measured(&self) -> bool {
-        self.early_stop_reason.is_none()
-    }
-}
-
 fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
     match syntax {
         BenchSyntax::Native => TextQuerySyntax::Native,
@@ -64,66 +50,8 @@ fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
     }
 }
 
-/// Deterministic lexical corpus covering every lexical scenario token.
-///
-/// Includes the keyword `parity_needle_alpha`, the phrase `sphinx of quartz`,
-/// a semver-shaped `v1.2.3` (regex), the `foo_bar` substring (`file.contains`),
-/// and `needle` under `src/lib.rs` (`repo:has.file`).
-pub fn seed_lexical_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
-    rt.ingest_text(
-        "repo-bench",
-        "src/lib.rs",
-        "fn parity_needle_alpha() {\n    // sphinx of quartz\n    // release v1.2.3 foo_bar\n    let documentation = \"needle\";\n    let helper = documentation;\n}\n",
-    )
-}
-
-/// Boot a single runtime for the warm matrix: lexical corpus, sealed + active.
-///
-/// v1 seeds the lexical fixture only; non-lexical scenarios short-circuit to
-/// [`QueryOutcome::not_seeded`] in [`run_scenario_query`].
-pub fn prepare_warm_runtime() -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
-    seed_lexical_corpus(&mut rt)?;
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
-}
-
-/// Boot a fresh runtime for one cold scenario, seeding only its fixture.
-///
-/// Returns `Ok(None)` when the scenario's fixture family is not wired yet, so
-/// the cold runner emits an explicit `fixture_not_seeded` row.
-pub fn prepare_cold_runtime(scenario: &DslBenchScenario) -> AnyResult<Option<E2eRuntime>> {
-    match scenario.fixture {
-        FixtureKind::LexicalCorpus => {
-            let mut rt = E2eRuntime::boot()?;
-            seed_lexical_corpus(&mut rt)?;
-            let _generation = rt.seal()?;
-            rt.activate_last_sealed_generation()?;
-            Ok(Some(rt))
-        }
-        FixtureKind::HistoryLedger | FixtureKind::RuntimeCatalog | FixtureKind::StructuralTree => {
-            Ok(None)
-        }
-    }
-}
-
-/// Run one scenario query against a prepared runtime and classify the result.
-pub fn run_scenario_query(rt: &mut E2eRuntime, scenario: &DslBenchScenario) -> QueryOutcome {
-    match scenario.fixture {
-        FixtureKind::LexicalCorpus => {
-            let result = rt.query_text(to_text_syntax(scenario.syntax), scenario.query_text, TOP_K);
-            outcome_from_query(&result)
-        }
-        FixtureKind::HistoryLedger | FixtureKind::RuntimeCatalog | FixtureKind::StructuralTree => {
-            QueryOutcome::not_seeded()
-        }
-    }
-}
-
-/// Saturating narrowing of a `usize` candidate count into the `u64` artifact
-/// field. Candidate counts never approach `u64::MAX`; saturation is a
-/// defensive ceiling rather than an expected path.
+/// Saturating narrowing of a `usize` count into the `u64` artifact field.
+/// Counts never approach `u64::MAX`; saturation is a defensive ceiling.
 fn saturating_u64(n: usize) -> u64 {
     if let Ok(value) = u64::try_from(n) {
         return value;
@@ -131,34 +59,275 @@ fn saturating_u64(n: usize) -> u64 {
     u64::MAX
 }
 
-fn outcome_from_query(result: &E2eQueryResult) -> QueryOutcome {
-    let engine_touched = result
-        .engines_touched
-        .iter()
-        .map(|engine| format!("{engine:?}"))
-        .collect();
+// ---------------------------------------------------------------------------
+// Fixtures (ingest only — sealing/activation is done once by the caller).
+// ---------------------------------------------------------------------------
 
-    if let Some(error) = &result.typed_error {
-        return QueryOutcome {
-            result_shape: ResultShape::TypedError,
-            result_count: None,
-            typed_error_code: Some(error.code.clone()),
-            engine_touched,
-            early_stop_reason: None,
-        };
+/// Multi-file lexical corpus covering the lexical and boolean-structural tokens.
+///
+/// The spread across files makes `OR` / `NOT` non-trivial: `src/with_helper.rs`
+/// carries `helper` so `parity_needle_alpha NOT helper` must exclude it, while
+/// `docs/intro.md` carries only `documentation` so `parity_needle_alpha OR
+/// documentation` must widen to it.
+const LEXICAL_CORPUS: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "fn parity_needle_alpha() {\n    // sphinx of quartz\n    // release v1.2.3 foo_bar\n    let documentation = \"needle\";\n}\n",
+    ),
+    ("src/other.rs", "fn parity_needle_alpha() {}\n"),
+    ("docs/intro.md", "parity documentation lives here\n"),
+    (
+        "src/with_helper.rs",
+        "fn parity_needle_alpha() {\n    let helper = 1;\n}\n",
+    ),
+];
+
+fn ingest_lexical_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
+    for (path, content) in LEXICAL_CORPUS {
+        rt.ingest_text(BENCH_REPO, path, content)?;
     }
+    Ok(())
+}
 
-    let count = saturating_u64(result.candidates.len());
-    let result_shape = if count == 0 {
-        ResultShape::Empty
-    } else {
-        ResultShape::Candidates
+/// Add a genuine `function_item` parse tree so the tree-pattern query
+/// `match { function_item { { identifier :[name] } } }` matches.
+///
+/// Lives on its own `src/tree.rs` path: the text and the parse tree must share
+/// byte-for-byte content (the harness checks a source hash), and keeping it off
+/// `src/lib.rs` avoids clobbering the richer lexical corpus there.
+fn ingest_structural_trees(rt: &mut E2eRuntime) -> AnyResult<()> {
+    const TREE_SRC: &str = "fn parity_needle_alpha() {}";
+    rt.ingest_text(BENCH_REPO, "src/tree.rs", TREE_SRC)?;
+    rt.ingest_structural_function_tree("src/tree.rs", TREE_SRC, "parity_needle_alpha")
+}
+
+/// A single deterministic commit so the history predicates resolve.
+///
+/// The message carries `fix` and `alpha_content_needle`; the diff text carries
+/// `history`; timestamps straddle the `.011Z`/`.012Z` scenario bounds.
+fn ingest_history_ledger(rt: &mut E2eRuntime) -> AnyResult<()> {
+    use crate::harness::E2eHistoryFixtureSpec;
+
+    let path = "src/history.rs";
+    rt.ingest_text(
+        BENCH_REPO,
+        path,
+        "history lexical proof alpha_content_needle\n",
+    )?;
+    rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
+        commit_sha: "0123456789abcdef0123456789abcdef01234567",
+        file_path: path,
+        author: "alice",
+        committer: "alice",
+        message: "fix: sample history alpha_content_needle",
+        author_time_ms: 11,
+        committer_time_ms: 12,
+        applied_at_ms: 12,
+        ref_name: "refs/heads/main",
+        tag_name: "v1.0.0",
+        added_text: "history added line",
+        removed_text: "history removed line",
+        touched_text: "history touched line",
+    })
+}
+
+/// Runtime catalog covering dirty/changed/stale/snapshot/meta/affected edges.
+/// Text chunks back every catalog path; `src/clean.rs` is deliberately left
+/// un-dirtied so `dirty:no quartz` resolves to it.
+fn ingest_runtime_catalog_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
+    use crate::harness::{
+        E2eRuntimeCatalogSpec, E2eRuntimeChangedSpec, E2eRuntimeEdgeSpec, E2eRuntimeFacetSpec,
+        E2eRuntimeSnapshotSpec,
     };
+
+    let facet = |path: &str| E2eRuntimeFacetSpec {
+        path: path.to_string(),
+        owner: Some("team-a".to_string()),
+        service: Some("search".to_string()),
+        layer: Some("index".to_string()),
+        surface: Some("lexical".to_string()),
+    };
+
+    for (path, content) in [
+        ("src/clean.rs", "clean scope quartz"),
+        ("src/dirty.rs", "dirty scope todo"),
+        ("src/changed.rs", "fn catalog_changed_needle() {}"),
+        ("src/stale.rs", "fn catalog_stale_needle() {}"),
+        ("src/owner.rs", "fn catalog_owner_needle() {}"),
+        ("src/service.rs", "fn catalog_service_needle() {}"),
+        ("src/layer.rs", "fn catalog_layer_needle() {}"),
+        ("src/surface.rs", "fn catalog_surface_needle() {}"),
+        ("src/snap.rs", "fn catalog_snapshot_needle() {}"),
+    ] {
+        rt.ingest_text(BENCH_REPO, path, content)?;
+    }
+    rt.ingest_dirty_for_path("src/dirty.rs", 100)?;
+
+    rt.ingest_runtime_catalog(&E2eRuntimeCatalogSpec {
+        producer_head_applied_at_ms: 100,
+        generation_materialized_at_ms: 20,
+        changed: vec![
+            E2eRuntimeChangedSpec {
+                path: "src/changed.rs".to_string(),
+                applied_at_ms: 25,
+            },
+            E2eRuntimeChangedSpec {
+                path: "src/stale.rs".to_string(),
+                applied_at_ms: 15,
+            },
+        ],
+        facets: vec![
+            facet("src/owner.rs"),
+            facet("src/service.rs"),
+            facet("src/layer.rs"),
+            facet("src/surface.rs"),
+        ],
+        snapshots: vec![E2eRuntimeSnapshotSpec {
+            name: "active".to_string(),
+            paths: vec!["src/changed.rs".to_string(), "src/snap.rs".to_string()],
+        }],
+        affected: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+        invalidated_by: vec![E2eRuntimeEdgeSpec {
+            key: "rebuild=lexical".to_string(),
+            paths: vec!["src/changed.rs".to_string()],
+        }],
+    })
+}
+
+fn seal_and_activate(rt: &mut E2eRuntime) -> AnyResult<()> {
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()
+}
+
+// ---------------------------------------------------------------------------
+// Preparation entry points.
+// ---------------------------------------------------------------------------
+
+/// Boot one runtime for the warm matrix: every fixture, one sealed + active
+/// generation. All scenario families serve from this single runtime.
+pub fn prepare_warm_runtime() -> AnyResult<E2eRuntime> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_lexical_corpus(&mut rt)?;
+    ingest_structural_trees(&mut rt)?;
+    ingest_history_ledger(&mut rt)?;
+    ingest_runtime_catalog_fixture(&mut rt)?;
+    seal_and_activate(&mut rt)?;
+    Ok(rt)
+}
+
+/// Boot a fresh runtime for one cold scenario, seeding only its fixture.
+pub fn prepare_cold_runtime(scenario: &DslBenchScenario) -> AnyResult<E2eRuntime> {
+    let mut rt = E2eRuntime::boot()?;
+    match scenario.fixture {
+        FixtureKind::LexicalCorpus => ingest_lexical_corpus(&mut rt)?,
+        FixtureKind::StructuralTree => {
+            ingest_lexical_corpus(&mut rt)?;
+            ingest_structural_trees(&mut rt)?;
+        }
+        FixtureKind::HistoryLedger => ingest_history_ledger(&mut rt)?,
+        FixtureKind::RuntimeCatalog => ingest_runtime_catalog_fixture(&mut rt)?,
+    }
+    seal_and_activate(&mut rt)?;
+    Ok(rt)
+}
+
+// ---------------------------------------------------------------------------
+// Query dispatch + result classification.
+// ---------------------------------------------------------------------------
+
+/// Run one scenario query against a prepared runtime and classify the result.
+pub fn run_scenario_query(rt: &mut E2eRuntime, scenario: &DslBenchScenario) -> QueryOutcome {
+    let syntax = to_text_syntax(scenario.syntax);
+    match scenario.fixture {
+        FixtureKind::LexicalCorpus => {
+            outcome_from_query(&rt.query_text(syntax, scenario.query_text, TOP_K))
+        }
+        FixtureKind::RuntimeCatalog => {
+            outcome_from_query(&rt.query_runtime_metadata(syntax, scenario.query_text, TOP_K))
+        }
+        FixtureKind::HistoryLedger => {
+            outcome_from_history(&rt.query_history(syntax, scenario.query_text, TOP_K))
+        }
+        FixtureKind::StructuralTree => {
+            outcome_from_structural(&rt.query_structural(syntax, scenario.query_text, TOP_K))
+        }
+    }
+}
+
+fn engine_labels(engines: &[quanta_index_contract::EngineTouched]) -> Vec<String> {
+    engines.iter().map(|engine| format!("{engine:?}")).collect()
+}
+
+fn outcome_from_query(result: &E2eQueryResult) -> QueryOutcome {
+    let engine_touched = engine_labels(&result.engines_touched);
+    if let Some(error) = &result.typed_error {
+        return typed_error_outcome(error.code.clone(), engine_touched);
+    }
+    let count = saturating_u64(result.candidates.len());
     QueryOutcome {
-        result_shape,
+        result_shape: shape_for_count(count, ResultShape::Candidates),
         result_count: Some(count),
         typed_error_code: None,
         engine_touched,
         early_stop_reason: None,
+    }
+}
+
+fn outcome_from_structural(result: &E2eQueryResult) -> QueryOutcome {
+    let engine_touched = engine_labels(&result.engines_touched);
+    if let Some(error) = &result.typed_error {
+        return typed_error_outcome(error.code.clone(), engine_touched);
+    }
+    let count = saturating_u64(result.structural_results.len());
+    QueryOutcome {
+        result_shape: shape_for_count(count, ResultShape::Candidates),
+        result_count: Some(count),
+        typed_error_code: None,
+        engine_touched,
+        early_stop_reason: None,
+    }
+}
+
+fn outcome_from_history(result: &E2eHistoryResult) -> QueryOutcome {
+    if let Some(error) = &result.typed_error {
+        return typed_error_outcome(error.code.clone(), Vec::new());
+    }
+    let commits = result.commit_ids.len();
+    let diffs = result.diff_paths.len();
+    let total = saturating_u64(commits.saturating_add(diffs));
+    let shape = if total == 0 {
+        ResultShape::Empty
+    } else if diffs > commits {
+        ResultShape::DiffPaths
+    } else {
+        ResultShape::Commits
+    };
+    QueryOutcome {
+        result_shape: shape,
+        result_count: Some(total),
+        typed_error_code: None,
+        engine_touched: Vec::new(),
+        early_stop_reason: None,
+    }
+}
+
+fn typed_error_outcome(code: String, engine_touched: Vec<String>) -> QueryOutcome {
+    QueryOutcome {
+        result_shape: ResultShape::TypedError,
+        result_count: None,
+        typed_error_code: Some(code),
+        engine_touched,
+        early_stop_reason: None,
+    }
+}
+
+fn shape_for_count(count: u64, non_empty: ResultShape) -> ResultShape {
+    if count == 0 {
+        ResultShape::Empty
+    } else {
+        non_empty
     }
 }

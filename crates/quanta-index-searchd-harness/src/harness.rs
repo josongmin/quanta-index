@@ -286,7 +286,9 @@ impl E2eRuntime {
         } else {
             (
                 BatchIngestMode::Delta,
-                Some(ManifestGeneration::new(self.generation_counter.saturating_sub(1))),
+                Some(ManifestGeneration::new(
+                    self.generation_counter.saturating_sub(1),
+                )),
             )
         }
     }
@@ -520,11 +522,7 @@ impl E2eRuntime {
         self.ingest_structural_tree(path, tree)
     }
 
-    pub fn ingest_structural_tree(
-        &mut self,
-        path: &str,
-        tree: ParseTreeRecord,
-    ) -> AnyResult<()> {
+    pub fn ingest_structural_tree(&mut self, path: &str, tree: ParseTreeRecord) -> AnyResult<()> {
         let chunk_id = self.chunk_ids_by_path.get(path).cloned().ok_or_else(|| {
             anyhow::anyhow!("e2e-harness: no lexical chunk recorded for structural path `{path}`")
         })?;
@@ -651,11 +649,7 @@ impl E2eRuntime {
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch))
     }
 
-    pub fn ingest_dirty_for_path(
-        &mut self,
-        path: &str,
-        applied_at_ms: u64,
-    ) -> AnyResult<()> {
+    pub fn ingest_dirty_for_path(&mut self, path: &str, applied_at_ms: u64) -> AnyResult<()> {
         use quanta_index_contract::lex::DirtyRecord;
         use quanta_index_contract::{DirtyIngestBatch, DirtyMutation};
 
@@ -683,10 +677,7 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub fn ingest_runtime_catalog(
-        &mut self,
-        catalog: &E2eRuntimeCatalogSpec,
-    ) -> AnyResult<()> {
+    pub fn ingest_runtime_catalog(&mut self, catalog: &E2eRuntimeCatalogSpec) -> AnyResult<()> {
         use quanta_index_contract::{
             RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
             RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord,
