@@ -125,3 +125,28 @@ A scenario regresses iff **both** legs are exceeded on p95:
 - **cold:** `rel > +10%` **AND** `abs > +5.0 ms`
 
 Explicit `--rel-threshold` / `--abs-threshold-ms` override the mode defaults.
+
+## Appendix: scan-vs-index scaling experiment (NOT a gate)
+
+`run_scan_vs_index.py` + the `scan_vs_index` binary are an **exploratory
+experiment**, deliberately separate from the 3-layer model above. They exist
+only to make the *scaling* argument concrete, because the RFC forbids reporting
+DSL latency against a text-only engine as a benchmark — a daemon IPC round-trip
+and a `grep` process answer different questions, and at toy corpus sizes the
+plumbing (IPC vs process spawn) dominates, which inverts the real picture.
+
+The experiment removes that confound: it measures the lexical index query
+**in-process** (no daemon, no IPC) and times `rg` / `grep` over the identical
+corpus bytes, across corpus sizes. The result it demonstrates: index query
+latency is ~flat in corpus size while a full scan is linear, so there is a
+crossover beyond which the index wins per query (the index's one-time build cost
+is reported separately and amortizes over many queries).
+
+```
+python3 tools/benchmark/run_scan_vs_index.py --scales 2000,20000,100000
+```
+
+Output goes to `artifacts/experiments/scan-vs-index.md` (gitignored). This is
+never compared, gated, or written to the committed baselines. Only the lexical
+keyword surface is even comparable to grep; history / runtime-catalog /
+structural-tree queries have no text-engine equivalent.

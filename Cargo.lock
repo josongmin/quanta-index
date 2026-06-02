@@ -4312,8 +4312,11 @@ name = "quanta-index-searchd-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ciborium",
  "quanta-index-contract",
+ "quanta-index-core",
  "quanta-index-ipc",
+ "quanta-index-lexical",
  "quanta-index-search-plane",
  "quanta-index-searchd",
  "quanta-index-searchd-runtime",
