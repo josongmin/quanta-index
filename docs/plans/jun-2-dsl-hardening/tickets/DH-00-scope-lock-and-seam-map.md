@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
@@ -11,12 +11,11 @@ does not get mixed with optional DSL widening or historical closeout.
 
 ## Current Source Truth
 
-- `jun-2-dsl-final-cut` is already closed and remains the shipped closeout
-- `jun-2-dsl-advanced` already owns optional widening and benchmark/shadow
-  claims for non-shipped surfaces
-- the open residue from the current audit is on shipped surfaces only:
-  runtime catalog authority integrity, runtime metadata semantics/execution,
-  and predicate proof symmetry
+- `jun-2-dsl-final-cut` is closed and remains the shipped closeout
+- `jun-2-dsl-advanced` owns optional widening and benchmark/shadow claims for
+  non-shipped surfaces
+- this packet is now the historical hardening map for shipped-surface
+  correctness, fail-closed behavior, and execution-cost hardening
 
 ## Current Code Pointers
 
@@ -55,10 +54,10 @@ does not get mixed with optional DSL widening or historical closeout.
 
 ## TODO
 
-- [ ] freeze the hardening-only seam map
-- [ ] freeze parallelization boundaries between catalog state, query semantics,
+- [x] freeze the hardening-only seam map
+- [x] freeze parallelization boundaries between catalog state, query semantics,
   and proof-only work
-- [ ] freeze claim discipline so no ticket markets hardening as widening
+- [x] freeze claim discipline so no ticket markets hardening as widening
 
 ## Concrete First Increment
 

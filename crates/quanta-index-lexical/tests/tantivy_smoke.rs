@@ -1708,6 +1708,80 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
 }
 
 #[test]
+fn tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_source_repo(
+            "corp-a-doc",
+            "src/corp-a.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle corp-a branch",
+            "corp-a",
+        )?,
+        upsert_with_source_repo(
+            "corp-b-doc",
+            "src/corp-b.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle corp-b branch",
+            "corp-b",
+        )?,
+        upsert_with_source_repo(
+            "corp-a-gate",
+            "src/gate-a.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle gate-a only",
+            "corp-a",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let gate_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("corp-a".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let mut gate_ids: Vec<String> = searcher
+        .search(&gate_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    gate_ids.sort();
+    if gate_ids != vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()] {
+        return Err(
+            format!("expected corp-a repo.has.content true-gate ids, got {gate_ids:?}").into(),
+        );
+    }
+
+    let miss_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("missing-corpus-token".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let miss_hits = searcher.search(&miss_query, 10)?;
+    if !miss_hits.is_empty() {
+        return Err(format!(
+            "expected repo.has.content miss to return zero hits, got {miss_hits:?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
 fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -1748,6 +1822,78 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
     let miss_hits = searcher.search(&miss_query, 10)?;
     if !miss_hits.is_empty() {
         return Err(format!("expected 0 repo-gated hits, got {miss_hits:?}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_with_metadata("beta", "src/main.rs", "rust", 10, 12, "needle beta")?,
+        upsert_with_metadata("gamma", "docs/readme.md", "markdown", 1, 2, "documentation")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let or_query = make_query(LqExpr::Any(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("documentation".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let mut or_ids: Vec<String> = searcher
+        .search(&or_query, 10)?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    or_ids.sort();
+    if or_ids != vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()] {
+        return Err(format!(
+            "expected OR repo.has.content ids [alpha, beta, gamma], got {or_ids:?}"
+        )
+        .into());
+    }
+
+    let not_true_query = make_query(LqExpr::All(vec![
+        LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("documentation".to_string())],
+        }))),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let not_true_hits = searcher.search(&not_true_query, 10)?;
+    if !not_true_hits.is_empty() {
+        return Err(format!(
+            "expected NOT(true repo.has.content) to suppress all needle hits, got {not_true_hits:?}"
+        )
+        .into());
+    }
+
+    let not_false_query = make_query(LqExpr::All(vec![
+        LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("missing-corpus-token".to_string())],
+        }))),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let mut not_false_ids: Vec<String> = searcher
+        .search(&not_false_query, 10)?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    not_false_ids.sort();
+    if not_false_ids != vec!["alpha".to_string(), "beta".to_string()] {
+        return Err(format!(
+            "expected NOT(false repo.has.content) ids [alpha, beta], got {not_false_ids:?}"
+        )
+        .into());
     }
 
     Ok(())

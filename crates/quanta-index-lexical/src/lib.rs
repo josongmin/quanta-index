@@ -64,8 +64,9 @@ use quanta_index_lq_trigram::{
 
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
 use crate::predicate_registry::{
-    PREDICATE_OWNER, PredicateKind, RepoFileArgError, RepoFileConstraint, RepoFileMatcher, kind_of,
-    parse_repo_file_matchers, unimplemented_predicate,
+    PREDICATE_OWNER, PredicateKind, RepoContentArg, RepoContentArgError, RepoFileArgError,
+    RepoFileConstraint, RepoFileMatcher, kind_of, parse_repo_content_arg, parse_repo_file_matchers,
+    unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
 use tantivy::collector::TopDocs;
@@ -1773,6 +1774,37 @@ struct PreparedPredicatePlan {
     force_empty: bool,
 }
 
+/// A repo-existence gate to intersect into `allowed_repo_ids`.
+///
+/// `repo.has.file` gates by an indexed `path:`/`name:`/`lang:` matcher;
+/// `repo.has.content` gates by an indexed content query. Both narrow the
+/// eligible repo surface, so `prepare_predicate_plan` treats them uniformly.
+enum RepoScopeConstraint {
+    File(RepoFileConstraint),
+    Content(LqLeaf),
+}
+
+/// Lower a validated `repo.has.content` scalar into a content leaf, applying the
+/// same `/regex/`-delimiter stripping the `ContentLeaf` family uses so a regex
+/// content gate stays a regex.
+fn content_leaf_from_scalar(arg: &RepoContentArg) -> LqLeaf {
+    match arg {
+        RepoContentArg::Keyword(value) => {
+            if let Some(regex) = strip_regex_delimiters(value) {
+                return LqLeaf::Regex(regex.to_string());
+            }
+            LqLeaf::Keyword(value.clone())
+        }
+        RepoContentArg::Phrase(value) => LqLeaf::Phrase(value.clone()),
+        RepoContentArg::RawString(value) => {
+            if let Some(regex) = strip_regex_delimiters(value) {
+                return LqLeaf::Regex(regex.to_string());
+            }
+            LqLeaf::RawString(value.clone())
+        }
+    }
+}
+
 impl TantivySearcher {
     fn is_case_sensitive(options: &LqOptions) -> bool {
         matches!(options.case, Some(quanta_index_contract::LqCase::Sensitive))
@@ -2337,6 +2369,79 @@ impl TantivySearcher {
         Ok(out)
     }
 
+    /// Validate `repo.has.content(...)` and lower it to its content leaf.
+    fn repo_content_constraint(
+        &self,
+        name: &str,
+        args: &[LqPredicateArg],
+    ) -> Result<LqLeaf, CoreError> {
+        let arg = parse_repo_content_arg(args).map_err(|err| match err {
+            RepoContentArgError::WrongArity => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` requires exactly one content scalar argument (owner: {PREDICATE_OWNER})"
+            )),
+            RepoContentArgError::NonTextualArg => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports a keyword/phrase/raw-string content argument (owner: {PREDICATE_OWNER})"
+            )),
+        })?;
+        Ok(content_leaf_from_scalar(&arg))
+    }
+
+    /// Compile a `repo.has.content` leaf into its repo-scope content query.
+    ///
+    /// Unlike `file.contains` path-discovery (which uses `standard_pattern_options`
+    /// as a prelude), this collection IS the user-visible evaluation, so it
+    /// preserves the caller's `case` / `patterntype` options.
+    fn repo_has_content_query(
+        &self,
+        leaf: &LqLeaf,
+        options: &LqOptions,
+    ) -> Result<Box<dyn Query>, CoreError> {
+        Ok(self.with_doc_kind(self.compile_leaf(leaf, options, false)?, TEXT_DOC_KIND))
+    }
+
+    fn repo_has_content_matches(
+        &self,
+        leaf: &LqLeaf,
+        options: &LqOptions,
+    ) -> Result<bool, CoreError> {
+        let compiled = self.repo_has_content_query(leaf, options)?;
+        let searcher = self.reader.searcher();
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(1))
+            .map_err(|err| CoreError::Storage(format!("lexical: repo.has.content search: {err}")))?;
+        Ok(!hits.is_empty())
+    }
+
+    fn collect_repo_ids_for_repo_has_content(
+        &self,
+        leaf: &LqLeaf,
+        options: &LqOptions,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let compiled = self.repo_has_content_query(leaf, options)?;
+        let searcher = self.reader.searcher();
+        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while collecting repo.has.content scope: {err}"
+            ))
+        })?;
+        if limit == 0 {
+            return Ok(BTreeSet::new());
+        }
+        let hits = searcher.search(&*compiled, &TopDocs::with_limit(limit)).map_err(|err| {
+            CoreError::Storage(format!("lexical: repo.has.content repo scope search: {err}"))
+        })?;
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for (_, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if let Some(repo_id) = stored_text(&doc, self.fields.repo_id) {
+                let _inserted: bool = out.insert(repo_id);
+            }
+        }
+        Ok(out)
+    }
+
     fn predicate_content_leaf(
         &self,
         name: &str,
@@ -2399,6 +2504,13 @@ impl TantivySearcher {
                     args: args.to_vec(),
                 }))
             }
+            Some(PredicateKind::RepoContentGate) => {
+                let _leaf = self.repo_content_constraint(name, args)?;
+                Ok(LqExpr::Leaf(LqLeaf::Predicate {
+                    name: name.to_string(),
+                    args: args.to_vec(),
+                }))
+            }
             Some(PredicateKind::ContentLeaf) => {
                 Ok(LqExpr::Leaf(self.predicate_content_leaf(name, args)?))
             }
@@ -2437,13 +2549,22 @@ impl TantivySearcher {
     fn extract_predicate_plan(
         &self,
         expr: &LqExpr,
-    ) -> Result<(LqExpr, Vec<RepoFileConstraint>, Vec<LqLeaf>), CoreError> {
+    ) -> Result<(LqExpr, Vec<RepoScopeConstraint>, Vec<LqLeaf>), CoreError> {
         match expr {
             LqExpr::Empty => Ok((LqExpr::Empty, Vec::new(), Vec::new())),
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => match kind_of(name) {
                 Some(PredicateKind::RepoFileGate) => Ok((
                     LqExpr::Empty,
-                    vec![self.repo_has_file_constraint(name, args)?],
+                    vec![RepoScopeConstraint::File(
+                        self.repo_has_file_constraint(name, args)?,
+                    )],
+                    Vec::new(),
+                )),
+                Some(PredicateKind::RepoContentGate) => Ok((
+                    LqExpr::Empty,
+                    vec![RepoScopeConstraint::Content(
+                        self.repo_content_constraint(name, args)?,
+                    )],
                     Vec::new(),
                 )),
                 Some(PredicateKind::ContentLeaf) => Ok((
@@ -2458,7 +2579,7 @@ impl TantivySearcher {
             LqExpr::Leaf(_) => Ok((expr.clone(), Vec::new(), Vec::new())),
             LqExpr::All(parts) => {
                 let mut exprs: Vec<LqExpr> = Vec::new();
-                let mut repo_predicates: Vec<RepoFileConstraint> = Vec::new();
+                let mut repo_predicates: Vec<RepoScopeConstraint> = Vec::new();
                 let mut file_predicates: Vec<LqLeaf> = Vec::new();
                 for part in parts {
                     let (lowered, repo_parts, file_parts) = self.extract_predicate_plan(part)?;
@@ -2496,7 +2617,12 @@ impl TantivySearcher {
         let (expr, repo_constraints, file_predicates) = self.extract_predicate_plan(&query.expr)?;
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
-            let repo_ids = self.collect_repo_ids_for_repo_has_file(constraint)?;
+            let repo_ids = match constraint {
+                RepoScopeConstraint::File(file) => self.collect_repo_ids_for_repo_has_file(file)?,
+                RepoScopeConstraint::Content(leaf) => {
+                    self.collect_repo_ids_for_repo_has_content(leaf, &query.options)?
+                }
+            };
             if repo_ids.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
@@ -3062,6 +3188,13 @@ impl TantivySearcher {
                 Some(PredicateKind::RepoFileGate) => {
                     let constraint = self.repo_has_file_constraint(name, args)?;
                     if self.repo_has_file_matches(&constraint)? {
+                        return Ok(Box::new(AllQuery));
+                    }
+                    return Ok(self.match_none_query());
+                }
+                Some(PredicateKind::RepoContentGate) => {
+                    let leaf = self.repo_content_constraint(name, args)?;
+                    if self.repo_has_content_matches(&leaf, options)? {
                         return Ok(Box::new(AllQuery));
                     }
                     return Ok(self.match_none_query());

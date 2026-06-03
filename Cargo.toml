@@ -151,3 +151,11 @@ overflow-checks = true
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[profile.bench]
+inherits = "release"
+# Bench lanes compare against their own baselines; disabling LTO and restoring
+# some codegen parallelism keeps the warm-matrix gate runnable without changing
+# the command surface.
+lto = false
+codegen-units = 16

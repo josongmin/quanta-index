@@ -33,6 +33,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/syntax.rs"
 TRANSLATOR_RS = REPO_ROOT / "crates/quanta-index-lq-bridge/src/translator.rs"
+PREDICATE_REGISTRY_RS = (
+    REPO_ROOT / "crates/quanta-index-lexical/src/predicate_registry.rs"
+)
 PARITY_RS = (
     REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
 )
@@ -229,8 +232,15 @@ def scan_filter_exec(evidence: dict[str, Evidence]) -> int:
 
 
 def ours_predicates() -> list[str]:
-    body = read(TRANSLATOR_RS) + read(SYNTAX_RS)
-    found = sorted(set(re.findall(r'"((?:repo|file)[.:]?has\.[a-z]+|file\.contains)"', body)))
+    registry_body = read(PREDICATE_REGISTRY_RS)
+    translator_body = read(TRANSLATOR_RS) + read(SYNTAX_RS)
+    canonical = set(
+        re.findall(r'PredicateSpec\s*\{\s*name:\s*"([^"]+)"', registry_body)
+    )
+    aliases = set(
+        re.findall(r'"(repo\.has\.path|file\.contains\.content)"', translator_body)
+    )
+    found = sorted(canonical | aliases)
     return found
 
 

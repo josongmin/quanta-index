@@ -252,6 +252,14 @@ impl LexicalPlanner {
                     name: name.to_owned(),
                 })
             }
+            Some(PredicateKind::RepoContentGate) => {
+                // Textual-scalar contract matches `single_string_arg` exactly
+                // (rejects `Number` / `filter:`), so planner and lowering agree.
+                let _needle = single_string_arg(name, args)?;
+                Ok(PlanLeaf::Predicate {
+                    name: name.to_owned(),
+                })
+            }
             None => Err(LexicalPlannerError::Unimplemented {
                 node: "predicate_leaf",
                 owner_ticket: PREDICATE_OWNER,
@@ -301,6 +309,8 @@ fn predicate_arity_label(name: &str) -> &'static str {
         "predicate_symbol_has_name_arity"
     } else if name == "repo.has.file" {
         "predicate_repo_has_file_arity"
+    } else if name == "repo.has.content" {
+        "predicate_repo_has_content_arity"
     } else {
         "predicate_leaf_arity"
     }
@@ -349,6 +359,7 @@ fn describe_leaf(leaf: &PlanLeaf) -> String {
 mod tests {
     use super::{LexicalPlanner, LexicalPlannerError};
     use crate::plan::{EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
+    use crate::predicate_registry::PREDICATE_OWNER;
     use quanta_index_contract::{LqExpr, LqLeaf, LqQuery, LqSpan};
 
     fn empty_query() -> LqQuery {
@@ -554,6 +565,51 @@ mod tests {
             );
             assert!(plan.engines.contains(&EngineKind::Tantivy));
         }
+    }
+
+    #[test]
+    fn predicate_repo_has_content_plans_through_tantivy_route() {
+        use quanta_index_contract::LqPredicateArg;
+        let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_owned(),
+            args: vec![LqPredicateArg::Keyword("needle".to_owned())],
+        }));
+        let outcome = LexicalPlanner::plan(&q);
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let Ok(plan) = outcome {
+            let matched_leaf = matches!(
+                &plan.root,
+                PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
+                    if name == "repo.has.content"
+            );
+            assert!(
+                matched_leaf,
+                "expected predicate leaf for repo.has.content, got {:?}",
+                plan.root
+            );
+            assert!(plan.engines.contains(&EngineKind::Tantivy));
+        }
+    }
+
+    #[test]
+    fn predicate_repo_has_content_rejects_non_textual_args() {
+        use quanta_index_contract::LqPredicateArg;
+        let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_owned(),
+            args: vec![LqPredicateArg::Number(7)],
+        }));
+        let outcome = LexicalPlanner::plan(&q);
+        assert!(
+            matches!(
+                outcome,
+                Err(LexicalPlannerError::Unimplemented {
+                    node: "predicate_repo_has_content_arity",
+                    owner_ticket,
+                })
+                if owner_ticket == PREDICATE_OWNER
+            ),
+            "expected typed planner rejection, got {outcome:?}"
+        );
     }
 
     #[test]

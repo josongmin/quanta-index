@@ -278,6 +278,81 @@ fn row6_repo_predicate_lowers_to_predicate_placeholder() {
 }
 
 #[test]
+fn row6b_repo_has_path_alias_lowers_to_repo_has_file_path_filter() {
+    let q = match parse_sourcegraph("repo:has.path(src/lib.rs)") {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let raw = "repo:has.path(src/lib.rs)";
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+        })
+    );
+}
+
+#[test]
+fn row6c_repo_has_content_lowers_to_predicate_placeholder() {
+    let q = match parse_sourcegraph("repo:has.content(corp-a)") {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let raw = "repo:has.content(corp-a)";
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Keyword("corp-a".to_string())],
+        })
+    );
+}
+
+#[test]
+fn row6d_file_contains_content_alias_lowers_to_content_leaf() {
+    let q = match parse_sourcegraph("file:contains.content(\"lemon yellow banana\")") {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let raw = "file:contains.content(\"lemon yellow banana\")";
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Phrase("lemon yellow banana".to_string())));
+}
+
+#[test]
 fn row9_adopted_history_since_filter() {
     assert_filter_present(
         "type:commit since:1970-01-01T00:00:00.022Z needle",

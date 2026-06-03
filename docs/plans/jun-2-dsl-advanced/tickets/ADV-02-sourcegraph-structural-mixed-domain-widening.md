@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `done` (legality matrix frozen; `RawString` and `Predicate` siblings
+Status: `landed` (legality matrix frozen; `RawString` and `Predicate` siblings
 both widened and parity-proven)
 
 Increment log:
@@ -48,8 +48,10 @@ bridge unchanged.
 ## Current Source Truth
 
 - native mixed lexical/structural boolean already executes
-- SG structural route currently preserves only a narrow mixed subset
-- `RawString` and `Predicate` siblings still typed-fail on the SG structural route
+- SG structural legality is now code-owned in
+  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
+- `RawString` and `Predicate` siblings are now widened for mixed `AND` / `OR`
+  and remain typed-fail in root / `NOT`
 
 ## Current Code Pointers
 

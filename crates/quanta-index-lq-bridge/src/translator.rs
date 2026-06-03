@@ -350,6 +350,9 @@ fn lower_bridge_predicate(name: &str, args_raw: &str) -> Result<LqExpr, BridgeEr
     if let Some(executable) = lower_executable_bridge_predicate(name, &args) {
         return Ok(executable);
     }
+    if let Some(aliased) = lower_repo_has_path_alias(name, &args) {
+        return aliased;
+    }
     Ok(LqExpr::Leaf(LqLeaf::Predicate {
         name: name.to_string(),
         args: args.into_iter().map(to_lq_predicate_arg).collect(),
@@ -358,11 +361,44 @@ fn lower_bridge_predicate(name: &str, args_raw: &str) -> Result<LqExpr, BridgeEr
 
 fn lower_executable_bridge_predicate(name: &str, args: &[BridgePredicateArg]) -> Option<LqExpr> {
     match name {
-        "file.contains" | "file.has.content" if args.len() == 1 => {
+        "file.contains" | "file.has.content" | "file.contains.content" if args.len() == 1 => {
             args.first().and_then(lower_file_content_predicate_arg)
         }
         _ => None,
     }
+}
+
+/// `repo:has.path(<pattern>)` is SG-only sugar for `repo:has.file(path:<pattern>)`.
+///
+/// The lexical executor already owns the repo-file gate semantics. Rewriting
+/// here keeps `repo.has.file` as the single canonical repo-path predicate and
+/// avoids introducing a second engine-side matcher family.
+fn lower_repo_has_path_alias(
+    name: &str,
+    args: &[BridgePredicateArg],
+) -> Option<Result<LqExpr, BridgeError>> {
+    if name != "repo.has.path" {
+        return None;
+    }
+    let pattern = match args {
+        [
+            BridgePredicateArg::Bare(value)
+            | BridgePredicateArg::RawString(value)
+            | BridgePredicateArg::Phrase(value),
+        ] => value.clone(),
+        _ => {
+            return Some(Err(BridgeError::translate_fail(
+                "bridge: repo:has.path expects a single path-pattern argument".to_string(),
+            )));
+        }
+    };
+    Some(Ok(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "repo.has.file".to_string(),
+        args: vec![LqPredicateArg::Filter {
+            name: "path".to_string(),
+            value: pattern,
+        }],
+    })))
 }
 
 fn lower_file_content_predicate_arg(arg: &BridgePredicateArg) -> Option<LqExpr> {

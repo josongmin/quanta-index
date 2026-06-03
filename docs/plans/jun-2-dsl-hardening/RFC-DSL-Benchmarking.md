@@ -1,6 +1,6 @@
 # Jun-2 DSL Benchmarking RFC
 
-Status: `proposed`
+Status: `adopted`
 Date: `2026-06-02`
 Owner packet: [README.md](README.md)
 
@@ -46,9 +46,8 @@ Owner packet: [README.md](README.md)
    - `e2e_restart_replay_determinism`
    - `e2e_perf_chaos`
 
-부족한 것은 하나다.
-
-- shipped DSL query surface에 대한 **정식 latency benchmark harness**가 없다
+현재 부족한 것은 아니다. adopted path의 remaining work는 artifact refresh와
+baseline comparison discipline 유지다.
 
 ## Non-Goals
 
@@ -113,10 +112,9 @@ shipped DSL surface는 아래 둘로 나눠 측정한다.
 
 #### 3.1 Warm steady-state benchmark
 
-새 criterion harness를 추가한다.
+adopted harness:
 
-- proposed file:
-  - `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
+- `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
 
 역할:
 
@@ -160,12 +158,11 @@ scenario family:
 
 #### 3.2 Cold daemon benchmark
 
-criterion은 warm loop에 최적화되어 있으므로
-cold first-query latency는 별도 runner로 측정한다.
+criterion은 warm loop에 최적화되어 있으므로 cold first-query latency는
+adopted runner로 별도 측정한다.
 
-- proposed file:
-  - `tools/ci/benchmark/run_dsl_cold_matrix.py`
-  - 또는 Rust bin runner under `crates/quanta-index-searchd-runtime/src/bin/`
+- `tools/benchmark/run_dsl_cold_matrix.py`
+- support bin: `crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`
 
 역할:
 
@@ -191,10 +188,10 @@ warm/cold/query benchmark가 test scenario와 drift하면 금방 거짓 숫자�
 따라서 benchmark는 현재 test-only scenario truth와 분리된
 **bench-owned scenario authority**를 가져야 한다.
 
-권장 구조:
+adopted structure:
 
-- new dev-support module:
-  - `crates/quanta-index-searchd-runtime/src/dev_support/dsl_bench_scenarios.rs`
+- scenario authority:
+  `crates/quanta-index-searchd-harness/src/scenarios.rs`
 
 여기서 관리할 것:
 
@@ -208,8 +205,9 @@ warm/cold/query benchmark가 test scenario와 drift하면 금방 거짓 숫자�
 
 주의:
 
-- `tests/common/frontdoor_scenarios.rs`를 그대로 bench에서 path include 하는 방식은 금지
-- test와 bench는 같은 semantic source를 공유해도 되지만, binary-private path include는 유지보수성이 약하다
+- `tests/common/frontdoor_scenarios.rs`를 bench에서 path-include 하는 방식은
+  adopted path가 아니다
+- test와 bench는 shared harness scenario authority를 사용한다
 
 ## Comparison Discipline
 

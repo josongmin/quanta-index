@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `done`
+Status: `landed`
 
 Closeout: the packet-level admission table, frozen start order, claim-discipline
 paragraph, and permanent exclusions are frozen in [../README.md](../README.md)

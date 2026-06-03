@@ -1,6 +1,6 @@
 # Jun 2 DSL Advanced
 
-Status: `planned`
+Status: `active`
 Date: `2026-06-02`
 Scope: post-closeout DSL widening beyond the shipped `jun-2-dsl-final-cut` surface
 
@@ -32,13 +32,21 @@ Explicitly excluded:
 ## 2. Current Source Truth
 
 - closeout is done; executable DSL residue is gone on the shipped surface
-- the main typed-fail-closed widening seam is predicate names / argument shapes
-  outside the shipped subset
-- the main subset-limited bridge seam is SG structural mixed-domain lowering:
-  native executes broader mixed shapes than Sourcegraph lowering currently
-  mirrors
-- the current docs/ledger are accurate enough for closeout, but widening would
-  benefit from generated capability truth instead of hand-maintained prose
+- predicate widening is now owned by a lexical capability registry:
+  `crates/quanta-index-lexical/src/predicate_registry.rs`
+- the first widened predicate family is landed:
+  `repo.has.file(lang:<x>)`
+- SG structural mixed-domain legality is now code-owned in
+  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
+- SG structural route now preserves:
+  - `file:contains('...')` raw sibling in mixed `AND` / `OR`
+  - `repo:has.file('...')` predicate sibling in mixed `AND` / `OR`
+- SG structural route still fail-closes:
+  - root / `NOT` raw-string sibling
+  - root / `NOT` predicate sibling
+  - scoped metadata filters under mixed `OR` / `NOT`
+- capability truth is now mechanically checkable from code-owned dump bins plus
+  `tools/ci/lint/check-dsl-capability-truth.py`
 
 ## 2.1 Current Code Pointers
 
@@ -71,17 +79,20 @@ Explicitly excluded:
 - benchmark / shadow truth:
   `crates/quanta-index-lq-norm/benches/pipeline.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`,
-  `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`
+  `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`,
+  `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`,
+  `crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`,
+  `tools/benchmark/run_dsl_cold_matrix.py`
 
 ## 3. Ticket Lanes
 
 | ticket | status | concrete first increment | red rail first |
 | --- | --- | --- | --- |
-| [ADV-00](tickets/ADV-00-scope-lock-and-admission-bar.md) | done | admission table frozen in §9 | packet/doc truth spot-check |
-| [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | done (registry + `lang:` family) | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
-| [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | done (matrix + `RawString` + `Predicate`) | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
-| [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | done | legality verdict frozen | rejected scoped-`OR` owner rail |
-| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | done | checker landed (`check-dsl-capability-truth.py`) | docs-vs-code drift checker |
+| [ADV-00](tickets/ADV-00-scope-lock-and-admission-bar.md) | landed | admission table frozen in §9 | packet/doc truth spot-check |
+| [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | landed | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
+| [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | landed | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
+| [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | landed | legality verdict frozen | rejected scoped-`OR` owner rail |
+| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | active | checker landed; warm benchmark artifact refresh remains | docs-vs-code drift checker |
 | [HISTORICAL-MAP](tickets/HISTORICAL-MAP.md) | reference | lineage only | n/a |
 
 ## 4. Sequencing

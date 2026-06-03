@@ -56,6 +56,13 @@ pub(crate) enum PredicateKind {
     /// filters, lowered to a repo-existence gate. Matcher parsing is
     /// registry-owned via [`parse_repo_file_matchers`].
     RepoFileGate,
+    /// `repo.has.content` — exactly one textual content scalar (keyword /
+    /// phrase / raw string), lowered to a repo-existence gate evaluated against
+    /// indexed content. Unlike [`PredicateKind::ContentLeaf`] (which projects
+    /// the matching *paths*) this gates the *repo* surface. Argument parsing is
+    /// registry-owned via [`parse_repo_content_arg`]; it deliberately rejects a
+    /// `Number` argument rather than coercing it (RFC: textual scalar only).
+    RepoContentGate,
 }
 
 /// One predicate capability row.
@@ -80,6 +87,10 @@ pub(crate) const PREDICATE_REGISTRY: &[PredicateSpec] = &[
     PredicateSpec {
         name: "repo.has.file",
         kind: PredicateKind::RepoFileGate,
+    },
+    PredicateSpec {
+        name: "repo.has.content",
+        kind: PredicateKind::RepoContentGate,
     },
 ];
 
@@ -177,6 +188,50 @@ pub(crate) fn parse_repo_file_matchers(
     Ok(RepoFileConstraint { matchers })
 }
 
+/// A validated `repo.has.content` argument: exactly one textual content scalar.
+///
+/// `repo.has.content` gates the repo by indexed content, so its argument is a
+/// content pattern. Numbers and `filter:` args are rejected here — unlike the
+/// `ContentLeaf` execution helper in `lib.rs`, this contract does not coerce a
+/// `Number` to a keyword (RFC: textual scalar only, no implicit number widening).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RepoContentArg {
+    Keyword(String),
+    Phrase(String),
+    RawString(String),
+}
+
+/// Why a `repo.has.content` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoContentArgError {
+    /// Not exactly one positional argument.
+    WrongArity,
+    /// The single argument was not a textual content scalar (keyword / phrase /
+    /// raw string) — e.g. a number or a `filter:` argument.
+    NonTextualArg,
+}
+
+/// Parse `repo.has.content(...)` into its validated textual content argument.
+///
+/// Single owner of the `repo.has.content` argument contract: exactly one
+/// keyword / phrase / raw-string scalar. Both lexical lowering and planner
+/// validation route through here so the contract cannot diverge.
+pub(crate) fn parse_repo_content_arg(
+    args: &[LqPredicateArg],
+) -> Result<RepoContentArg, RepoContentArgError> {
+    let [arg] = args else {
+        return Err(RepoContentArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Keyword(value) => Ok(RepoContentArg::Keyword(value.clone())),
+        LqPredicateArg::Phrase(value) => Ok(RepoContentArg::Phrase(value.clone())),
+        LqPredicateArg::RawString(value) => Ok(RepoContentArg::RawString(value.clone())),
+        LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
+            Err(RepoContentArgError::NonTextualArg)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +252,51 @@ mod tests {
         assert_eq!(kind_of("symbol.has.name"), None);
         assert_eq!(kind_of("repo.has.commit"), None);
         assert_eq!(kind_of(""), None);
+    }
+
+    #[test]
+    fn registry_resolves_repo_has_content_kind() {
+        assert_eq!(
+            kind_of("repo.has.content"),
+            Some(PredicateKind::RepoContentGate)
+        );
+    }
+
+    #[test]
+    fn repo_content_arg_accepts_textual_scalars() {
+        for arg in [
+            LqPredicateArg::Keyword("needle".to_string()),
+            LqPredicateArg::Phrase("two words".to_string()),
+            LqPredicateArg::RawString("raw".to_string()),
+        ] {
+            assert!(parse_repo_content_arg(&[arg]).is_ok());
+        }
+    }
+
+    #[test]
+    fn repo_content_arg_rejects_number_filter_and_bad_arity() {
+        assert_eq!(
+            parse_repo_content_arg(&[]),
+            Err(RepoContentArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_repo_content_arg(&[
+                LqPredicateArg::Keyword("a".to_string()),
+                LqPredicateArg::Keyword("b".to_string()),
+            ]),
+            Err(RepoContentArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_repo_content_arg(&[LqPredicateArg::Number(3)]),
+            Err(RepoContentArgError::NonTextualArg)
+        );
+        assert_eq!(
+            parse_repo_content_arg(&[LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "x".to_string(),
+            }]),
+            Err(RepoContentArgError::NonTextualArg)
+        );
     }
 
     #[test]

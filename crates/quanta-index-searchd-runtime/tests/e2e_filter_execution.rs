@@ -19,7 +19,7 @@ use quanta_index_contract::{LqVisibility, TextQuerySyntax};
 
 use quanta_index_searchd_harness as e2e_harness;
 
-use crate::e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime};
+use crate::e2e_harness::{E2eHistoryFixtureSpec, E2eRuntime, E2eTextChunkSpec};
 
 const REPO: &str = "repo-filter-exec";
 
@@ -131,6 +131,52 @@ fn boot_with_lexical() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     rt.ingest_text(REPO, "src/lib.rs", "fn parity_needle_alpha() {}\n")?;
     rt.ingest_text(REPO, "src/other.rs", "let unrelated = quartz;\n")?;
+    rt.ingest_text(REPO, "docs/colors.md", "the lemon yellow banana ripens\n")?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(rt)
+}
+
+fn candidate_paths(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
+    result
+        .candidates
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+        .collect()
+}
+
+fn boot_with_multi_repo() -> AnyResult<E2eRuntime> {
+    let mut rt = E2eRuntime::boot()?;
+    let _corp_a_ids = rt.ingest_text_chunks(
+        REPO,
+        "src/corp-a.rs",
+        &[E2eTextChunkSpec {
+            content: "shared_oracle_needle corp-a branch\n",
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("corp-a"),
+        }],
+    )?;
+    let _corp_b_ids = rt.ingest_text_chunks(
+        REPO,
+        "src/corp-b.rs",
+        &[E2eTextChunkSpec {
+            content: "shared_oracle_needle corp-b branch\n",
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("corp-b"),
+        }],
+    )?;
+    let _gate_a_ids = rt.ingest_text_chunks(
+        REPO,
+        "src/gate-a.rs",
+        &[E2eTextChunkSpec {
+            content: "shared_oracle_needle gate-a only\n",
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("corp-a"),
+        }],
+    )?;
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt)
@@ -174,6 +220,108 @@ fn timeout_option_is_typed_refused_off_the_regex_surface() -> AnyResult<()> {
         result.typed_error.is_some(),
         "timeout: on a non-regex query must return a typed error, got {:?}",
         result.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    let admitted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.content(corp-a) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "repo:has.content positive must not error"
+    );
+    ensure!(
+        candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.content(corp-a) must gate to corp-a paths, got {:?}",
+        candidate_paths(&admitted),
+    );
+    let excluded = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.content(missing-corpus-token) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        excluded.typed_error.is_none(),
+        "repo:has.content miss must not error"
+    );
+    ensure!(
+        excluded.candidate_ids.is_empty(),
+        "repo:has.content miss must return no docs, got {:?}",
+        excluded.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    let admitted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.path(src/gate-a.rs) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "repo:has.path positive must not error"
+    );
+    ensure!(
+        candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.path(src/gate-a.rs) must gate to corp-a paths, got {:?}",
+        candidate_paths(&admitted),
+    );
+    let excluded = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.path(src/missing.rs) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        excluded.typed_error.is_none(),
+        "repo:has.path miss must not error"
+    );
+    ensure!(
+        excluded.candidate_ids.is_empty(),
+        "repo:has.path miss must return no docs, got {:?}",
+        excluded.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_lexical()?;
+    let admitted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:contains.content(\"lemon yellow banana\")",
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "file:contains.content positive must not error"
+    );
+    ensure!(
+        candidate_paths(&admitted) == ["docs/colors.md"],
+        "file:contains.content phrase must match the phrase doc, got {:?}",
+        candidate_paths(&admitted),
+    );
+    let excluded = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:contains.content(\"absent_zzz_token\")",
+        10,
+    );
+    ensure!(
+        excluded.typed_error.is_none(),
+        "file:contains.content miss must not error"
+    );
+    ensure!(
+        excluded.candidate_ids.is_empty(),
+        "file:contains.content miss must return nothing, got {:?}",
+        excluded.candidate_ids,
     );
     Ok(())
 }

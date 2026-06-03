@@ -9,6 +9,7 @@ publish.workspace = true
 name = "quanta-index-searchd"
 path = "src/bin/quanta-index-searchd.rs"
 doc = false
+bench = false
 
 [lints]
 workspace = true

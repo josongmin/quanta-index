@@ -34,7 +34,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_BIN_CMD = "cargo run --quiet -p quanta-index-searchd-harness --bin dsl_cold_matrix --"
+DEFAULT_SAMPLES = 3
+DEFAULT_OUT = Path("artifacts/dsl-bench/cold-matrix.json")
+DEFAULT_BIN_CMD = (
+    "./scripts/cargow run -p quanta-index-searchd-harness --bin dsl_cold_matrix "
+    "--quiet --locked --"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,14 +47,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples",
         type=int,
-        required=True,
-        help="number of fresh-process cold samples per scenario",
+        default=DEFAULT_SAMPLES,
+        help=(
+            "number of fresh-process cold samples per scenario "
+            f"(default: {DEFAULT_SAMPLES})"
+        ),
     )
     parser.add_argument(
         "--out",
         type=Path,
-        required=True,
-        help="output artifact path (parent dirs created as needed)",
+        default=DEFAULT_OUT,
+        help=f"output artifact path (default: {DEFAULT_OUT})",
     )
     parser.add_argument(
         "--bin-cmd",

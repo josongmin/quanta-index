@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `done` (legality frozen; one family legalized with existing parity
+Status: `landed` (legality frozen; one family legalized with existing parity
 proof, scoped-filter families permanently rejected with stable typed-fail)
 
 ## Legality Verdict (frozen)
@@ -39,11 +39,11 @@ scoped filters sit under mixed `OR` alongside structural bodies.
 
 ## Current Source Truth
 
-- current packet truth says repo-scoped filters under mixed `OR` remain
+- scoped metadata filters under mixed `OR` are now explicitly frozen to
   `BRIDGE_TRANSLATE_FAIL`
-- native execution already has the candidate-universe algebra to evaluate these
-  shapes once legality is defined
-- SG route has no frozen legality semantics here yet
+- predicate-backed repo gate `repo.has.file(...)` remains accepted because it is
+  a boolean leaf, not a query-global filter
+- SG legality semantics for these cells are now frozen and no longer ambiguous
 
 ## Current Code Pointers
 

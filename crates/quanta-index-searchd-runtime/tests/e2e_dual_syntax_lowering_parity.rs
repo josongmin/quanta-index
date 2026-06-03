@@ -323,6 +323,16 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "file_contains_content_alias_parity",
+        sg_query: "file:contains.content(\"lemon yellow banana\")",
+        lq_query: "file.contains(\"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "patterntype_regexp_parity",
         sg_query: "patterntype:regexp v\\d+\\.\\d+\\.\\d+",
         lq_query: "/v\\d+\\.\\d+\\.\\d+/",
@@ -404,6 +414,16 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
         },
     },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_path_alias_parity",
+        sg_query: "repo:has.path(src/lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
     // ADV-01 widened arg-shape family: `repo.has.file(lang:<x>)`. The corpus
     // repo contains `beta_py` (scripts/helper.py, python), so the `lang:python`
     // gate opens identically on both syntaxes and returns the parity set.
@@ -412,6 +432,16 @@ const SCENARIOS: &[ParityScenario] = &[
         id: "repo_has_file_lang_predicate_parity",
         sg_query: "repo:has.file(lang:python) parity_needle_alpha",
         lq_query: "repo:has.file(lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_content_predicate_parity",
+        sg_query: "repo:has.content(parity_needle_alpha) parity_needle_alpha",
+        lq_query: "repo:has.content(parity_needle_alpha) parity_needle_alpha",
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "delta_other_path", "beta_py"],

@@ -1,6 +1,6 @@
 # Jun 2 DSL Hardening
 
-Status: `active`
+Status: `closed`
 Date: `2026-06-02`
 Scope: post-closeout hardening for already-executable DSL surfaces
 
@@ -12,7 +12,7 @@ It also sits **beside** [../jun-2-dsl-advanced/README.md](../jun-2-dsl-advanced/
 `jun-2-dsl-advanced` owns optional widening. This packet owns shipped-surface
 hardening only.
 
-Benchmarking final proposal for shipped surfaces lives in
+Benchmarking adopted path for shipped surfaces lives in
 [RFC-DSL-Benchmarking.md](RFC-DSL-Benchmarking.md).
 
 ---
@@ -91,7 +91,7 @@ Explicitly excluded:
 
 | ticket | status | concrete first increment | parallel class | red rail first |
 | --- | --- | --- | --- | --- |
-| [DH-00](tickets/DH-00-scope-lock-and-seam-map.md) | active | keep packet truth aligned with landed code | serial | packet/doc truth spot-check |
+| [DH-00](tickets/DH-00-scope-lock-and-seam-map.md) | landed | keep packet truth aligned with landed code | serial | packet/doc truth spot-check |
 | [DH-01](tickets/DH-01-runtime-catalog-integrity-and-replay-guard.md) | landed | state contract + replay/replacement unit red | lane A | readiness owner-local unit rail |
 | [DH-02](tickets/DH-02-runtime-metadata-semantics-and-pushdown.md) | landed | semantics rail first, then seed planner | lane B after DH-01 state freeze | query-dispatch owner-local unit rail |
 | [DH-03](tickets/DH-03-predicate-proof-symmetry.md) | landed | add missing sibling proof only | lane C in parallel | `tantivy_smoke` |

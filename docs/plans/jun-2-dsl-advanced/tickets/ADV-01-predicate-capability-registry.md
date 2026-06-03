@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `done` (registry-only increment + first widened predicate family both
+Status: `landed` (registry-only increment + first widened predicate family both
 landed and verified)
 
 Increment log:
@@ -42,10 +42,12 @@ one-off branches.
 
 ## Current Source Truth
 
-- shipped predicates are still hardcoded in lexical lowering
-- unsupported names / argument shapes typed-fail with `LEX_PREDICATE_UNIMPLEMENTED`
-- `file.contains(...)`, `file.has.content(...)`, and `repo.has.file(path|name)`
-  are the current executable subset
+- predicate capability is now code-owned in
+  `crates/quanta-index-lexical/src/predicate_registry.rs`
+- unsupported names / argument shapes still typed-fail with
+  `LEX_PREDICATE_UNIMPLEMENTED`
+- the shipped executable subset is registry-driven, and the first widened family
+  `repo.has.file(lang:...)` is landed
 
 ## Current Code Pointers
 

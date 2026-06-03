@@ -2,35 +2,16 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `done` (checker-first increment landed; generator intentionally not
-built — the checker is strong enough to fail closed on drift)
+Status: `active`
 
-Closeout:
+Current status:
 
-- checker (not generator): `tools/ci/lint/check-dsl-capability-truth.py` reads
-  the code-owned capability sources — `PREDICATE_REGISTRY` in
-  `crates/quanta-index-lexical/src/predicate_registry.rs` and
-  `structural_leaf_verdict` in
-  `crates/quanta-index-search-plane/src/lowering.rs` — and fails closed on
-  predicate-subset drift, SG-legality drift, and any ADV ticket whose `Status`
-  claims `advanced`/`SOTA` without a benchmark/shadow section. SG legality is a
-  code-vs-frozen-snapshot guard (`EXPECTED_STRUCTURAL_VERDICTS`): the matrix
-  function must be a flat constant table — a guard/branch/multi-verdict arm
-  fails closed (a guarded verdict cannot be frozen), which is what stops a
-  guarded widening from slipping past. Comment-stripping is string-literal
-  aware and the slice strips comments first. It is blind-safe.
-- tests: `tools/ci/tests/test_check_dsl_capability_truth.py` (26 cases) cover
-  literal-aware comment stripping, canonical-shape rejection of guard/branch/
-  helper-delegated/nested-match arms, extraction-matches-real-source, both
-  drift directions, the advanced/SOTA gate, and — decisively — mutating a copy
-  of the *real* `lowering.rs` (the round-2 guarded-widening attack and a flat
-  verdict flip) and asserting the gate exits 1; green.
-- benchmark/shadow template: frozen in [../README.md](../README.md) §10; the
-  checker enforces its presence on any `advanced` claim.
-- CI wiring: registered as the `dsl-capability-truth` pre-push hook in
-  `.pre-commit-config.yaml`.
-- generator (optional): deliberately not built. Re-open only if a future
-  capability shape cannot be checked without machine-generated docs.
+- checker (not generator) is landed:
+  `tools/ci/lint/check-dsl-capability-truth.py`
+- checker unit rail is landed:
+  `tools/ci/tests/test_check_dsl_capability_truth.py`
+- benchmark/shadow template is frozen in [../README.md](../README.md) §10
+- remaining seam is warm benchmark artifact refresh on the adopted command path
 
 ## Objective
 
@@ -40,31 +21,34 @@ calling the widened surface “advanced”.
 
 ## Current Source Truth
 
-- closeout docs are currently aligned, but they are still hand-maintained
-- widening will raise drift risk unless capability truth is generated or checked
-  mechanically
+- code-owned dump bins now exist for predicate subset truth and SG legality:
+  `crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs`
+  `crates/quanta-index-search-plane/src/bin/dump_sg_structural_legality.rs`
+- checker path now exists:
+  `tools/ci/lint/check-dsl-capability-truth.py`
 - structural improvement alone is not enough to justify an “advanced” claim
+- warm benchmark path must remain runnable; the owning manifest/profile seams are
+  `crates/quanta-index-searchd-runtime/Cargo.toml` and workspace `[profile.bench]`
 
 ## Current Code Pointers
 
 - current proof inventory:
   `docs/plans/may-25-lexical-enhancement/dsl-proof-ledger.toml`
   `docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`
-- future predicate capability source:
+- predicate capability source:
   `crates/quanta-index-lexical/src/predicate_registry.rs`
-  once `ADV-01` lands
-- future SG legality source:
-  `crates/quanta-index-search-plane/src/lowering.rs`
-  or a helper extracted under the same crate once `ADV-02` lands
+- SG legality source:
+  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
 - checker precedents:
   `tools/ci/lint/check-public-api.py`
   and `tools/ci/lint/check-cargo-modules-snapshot.py`
-- prompt-manager sync precedent:
-  `python3 tools/prompt-manager/pm.py sync`
 - cost/shadow proof rails:
   `crates/quanta-index-lq-norm/benches/pipeline.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`,
-  `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`
+  `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`,
+  `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`,
+  `crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`,
+  `tools/benchmark/run_dsl_cold_matrix.py`
 
 ## 핵심 로직
 
@@ -98,10 +82,10 @@ calling the widened surface “advanced”.
 
 ## TODO
 
-- [ ] choose generated vs mechanically checked truth for capability inventory
-- [ ] derive predicate subset and SG legality subset from code-owned metadata
-- [ ] define benchmark/shadow acceptance for widened surfaces
-- [ ] make docs fail closed when widening code and capability truth diverge
+- [x] choose generated vs mechanically checked truth for capability inventory
+- [x] derive predicate subset and SG legality subset from code-owned metadata
+- [ ] refresh warm benchmark artifact on the adopted bench command path
+- [x] make docs fail closed when widening code and capability truth diverge
 
 ## Concrete First Increment
 
@@ -123,6 +107,7 @@ The ticket is not done until it produces all of these:
 4. one test file at `tools/ci/tests/test_check_dsl_capability_truth.py`
 5. one optional generator only if the checker is not strong enough by itself
 6. one benchmark/shadow checklist template that future widening tickets must fill
+7. one reproducible warm benchmark artifact on the adopted command path
 
 ## Implementation Steps
 
@@ -131,14 +116,14 @@ The ticket is not done until it produces all of these:
 2. refactor: extract the minimal code-owned metadata needed from `ADV-01` and
    `ADV-02` without making docs the source of truth
 3. refactor: build a deterministic checker first; generation stays optional
-4. widen support for the documentation flow only after the checker can fail
-   closed on drift
-5. proof/doc sync: add a widening claim template:
+4. proof/doc sync: add a widening claim template:
    - correctness proof
    - parity proof
    - chaos/restart proof if route-sensitive
    - shadow or benchmark evidence
-6. proof/doc sync: wire the checker into the normal docs/lint workflow
+5. proof/doc sync: wire the checker into the normal docs/lint workflow
+6. benchmark: keep the warm lane runnable by excluding non-bench runtime bins
+   from bench builds and pinning a dedicated workspace `[profile.bench]`
 
 ## Dependency / Import Constraints
 
@@ -148,6 +133,8 @@ The ticket is not done until it produces all of these:
 - keep tooling under `tools/ci/lint/` and `tools/ci/tests/`; do not hide the
   checker inside a docs folder
 - do not let the generator silently heal drift that the checker should fail
+- do not let bench command surfaces silently pull unrelated runtime bins into
+  the warm lane
 
 ## Red Rails First
 
@@ -158,8 +145,9 @@ The ticket is not done until it produces all of these:
 - widening correctness rail that must stay green while the checker is added:
   `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity -- --nocapture`
 - benchmark/shadow gate:
-  `just rust-bench-build`
-  and, when the route is sensitive, `just rust-profile test-daemon`
+  `./scripts/cargow --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked`
+  and
+  `python3 tools/benchmark/run_dsl_cold_matrix.py`
 
 ## NOT TODO
 
@@ -179,6 +167,7 @@ The ticket is not done until it produces all of these:
 - widening docs cannot silently drift from the executable subset
 - benchmark/shadow bar is explicit and repeatable
 - advanced claim requires both correctness proof and cost evidence
+- warm benchmark artifact is reproducible from the adopted bench command path
 
 ## Failure Modes
 
