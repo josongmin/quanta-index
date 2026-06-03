@@ -145,6 +145,12 @@ fn candidate_paths(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
         .collect()
 }
 
+fn sorted_candidate_paths(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
+    let mut out = candidate_paths(result);
+    out.sort();
+    out
+}
+
 fn boot_with_multi_repo() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     let _corp_a_ids = rt.ingest_text_chunks(
@@ -237,9 +243,9 @@ fn repo_has_content_predicate_executes_on_sourcegraph_surface() -> AnyResult<()>
         "repo:has.content positive must not error"
     );
     ensure!(
-        candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.content(corp-a) must gate to corp-a paths, got {:?}",
-        candidate_paths(&admitted),
+        sorted_candidate_paths(&admitted),
     );
     let excluded = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -271,9 +277,9 @@ fn repo_has_path_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
         "repo:has.path positive must not error"
     );
     ensure!(
-        candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
         "repo:has.path(src/gate-a.rs) must gate to corp-a paths, got {:?}",
-        candidate_paths(&admitted),
+        sorted_candidate_paths(&admitted),
     );
     let excluded = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -305,9 +311,9 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "file:contains.content positive must not error"
     );
     ensure!(
-        candidate_paths(&admitted) == ["docs/colors.md"],
+        sorted_candidate_paths(&admitted) == ["docs/colors.md"],
         "file:contains.content phrase must match the phrase doc, got {:?}",
-        candidate_paths(&admitted),
+        sorted_candidate_paths(&admitted),
     );
     let excluded = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -322,6 +328,97 @@ fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         excluded.candidate_ids.is_empty(),
         "file:contains.content miss must return nothing, got {:?}",
         excluded.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    let admitted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/gate-a.rs) OR missing_corpus_token",
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "repo:has.file OR positive must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.file(path:src/gate-a.rs) OR missing token must stay on corp-a paths, got {:?}",
+        sorted_candidate_paths(&admitted),
+    );
+
+    let excluded = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs)",
+        10,
+    );
+    ensure!(
+        excluded.typed_error.is_none(),
+        "repo:has.file NOT positive must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&excluded) == ["src/corp-b.rs"],
+        "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs) must leave only corp-b, got {:?}",
+        sorted_candidate_paths(&excluded),
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_content_phrase_and_raw_string_execute_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    for query in [
+        r#"repo:has.content("gate-a only") shared_oracle_needle"#,
+        "repo:has.content('gate-a only') shared_oracle_needle",
+    ] {
+        let admitted = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
+        ensure!(
+            admitted.typed_error.is_none(),
+            "repo:has.content textual scalar must not error for `{query}`"
+        );
+        ensure!(
+            sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+            "repo:has.content textual scalar must gate to corp-a paths for `{query}`, got {:?}",
+            sorted_candidate_paths(&admitted),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    let admitted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        r#"repo:has.content("gate-a only") OR missing_corpus_token"#,
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "repo:has.content OR positive must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&admitted) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.content(\"gate-a only\") OR missing token must stay on corp-a paths, got {:?}",
+        sorted_candidate_paths(&admitted),
+    );
+
+    let excluded = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        r#"shared_oracle_needle NOT repo:has.content("gate-a only")"#,
+        10,
+    );
+    ensure!(
+        excluded.typed_error.is_none(),
+        "repo:has.content NOT positive must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&excluded) == ["src/corp-b.rs"],
+        "shared_oracle_needle NOT repo:has.content(\"gate-a only\") must leave only corp-b, got {:?}",
+        sorted_candidate_paths(&excluded),
     );
     Ok(())
 }

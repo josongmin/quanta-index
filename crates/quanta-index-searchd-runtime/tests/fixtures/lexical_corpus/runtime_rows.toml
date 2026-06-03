@@ -304,6 +304,44 @@ min = 2
 max = 2
 
 [[row]]
+id = "runtime_native_repo_has_content_phrase_true_gate_multi_repo"
+query = "repo:has.content(\"gate-a only\") shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo.has.content"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_content_raw_true_gate_multi_repo"
+query = "repo:has.content('gate-a only') shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
 id = "runtime_sourcegraph_repo_has_content_miss_multi_repo"
 query = "repo:has.content(missing-corpus-token) shared_oracle_needle"
 gate = "active"
@@ -318,6 +356,42 @@ top_k = 10
 
 [row.expected]
 kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_content_or_true_gate_multi_repo"
+query = "repo:has.content(\"gate-a only\") OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_content_not_true_gate_multi_repo"
+query = "shared_oracle_needle NOT repo:has.content(\"gate-a only\")"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_b_doc"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
 
 [[row]]
 id = "runtime_sourcegraph_repo_has_path_true_gate_multi_repo"
@@ -355,6 +429,25 @@ top_k = 10
 kind = "empty"
 
 [[row]]
+id = "runtime_sourcegraph_repo_has_file_or_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs) OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
 id = "runtime_native_repo_has_file_not_false_multi_repo"
 query = "shared_oracle_needle NOT repo:has.file(path:src/missing.rs)"
 gate = "active"
@@ -372,6 +465,23 @@ expected_engines_touched = ["lexical"]
 kind = "multi"
 min = 3
 max = 3
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_not_true_gate_multi_repo"
+query = "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs)"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_b_doc"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
 
 [[row]]
 id = "runtime_native_lang_filter"

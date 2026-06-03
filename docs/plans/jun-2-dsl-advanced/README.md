@@ -1,6 +1,6 @@
 # Jun 2 DSL Advanced
 
-Status: `active`
+Status: `closed`
 Date: `2026-06-02`
 Scope: post-closeout DSL widening beyond the shipped `jun-2-dsl-final-cut` surface
 
@@ -47,6 +47,9 @@ Explicitly excluded:
   - scoped metadata filters under mixed `OR` / `NOT`
 - capability truth is now mechanically checkable from code-owned dump bins plus
   `tools/ci/lint/check-dsl-capability-truth.py`
+- warm/cold benchmark baselines are refreshed on the adopted command paths:
+  `tools/benchmark/baselines/warm-matrix.json`
+  `tools/benchmark/baselines/cold-matrix.json`
 
 ## 2.1 Current Code Pointers
 
@@ -92,7 +95,7 @@ Explicitly excluded:
 | [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | landed | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
 | [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | landed | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
 | [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | landed | legality verdict frozen | rejected scoped-`OR` owner rail |
-| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | active | checker landed; warm benchmark artifact refresh remains | docs-vs-code drift checker |
+| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | landed | checker + benchmark baseline refresh | docs-vs-code drift checker |
 | [HISTORICAL-MAP](tickets/HISTORICAL-MAP.md) | reference | lineage only | n/a |
 
 ## 4. Sequencing

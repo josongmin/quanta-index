@@ -231,7 +231,7 @@ def scan_filter_exec(evidence: dict[str, Evidence]) -> int:
     return len(queries)
 
 
-def ours_predicates() -> list[str]:
+def ours_predicates() -> tuple[list[str], list[str]]:
     registry_body = read(PREDICATE_REGISTRY_RS)
     translator_body = read(TRANSLATOR_RS) + read(SYNTAX_RS)
     canonical = set(
@@ -240,8 +240,7 @@ def ours_predicates() -> list[str]:
     aliases = set(
         re.findall(r'"(repo\.has\.path|file\.contains\.content)"', translator_body)
     )
-    found = sorted(canonical | aliases)
-    return found
+    return sorted(canonical), sorted(aliases)
 
 
 def build_report(
@@ -302,18 +301,29 @@ def build_report(
 
     lines.append("## Predicate coverage vs Sourcegraph")
     lines.append("")
-    ours = ours_predicates()
-    lines.append("**Ours (code-grounded):** " + (", ".join(f"`{p}`" for p in ours) or "none"))
+    canonical, aliases = ours_predicates()
+    supported_surface = set(canonical) | set(aliases)
+    lines.append(
+        "**Canonical executable predicates (`PREDICATE_REGISTRY` SSOT):** "
+        + (", ".join(f"`{p}`" for p in canonical) or "none")
+    )
+    lines.append("")
+    lines.append(
+        "**Sourcegraph-only bridge aliases:** "
+        + (", ".join(f"`{p}`" for p in aliases) or "none")
+    )
     lines.append("")
     lines.append("**Sourcegraph (docs, external reference — not verified here):**")
     for pred in SG_PREDICATES:
-        have = any(pred.split("(")[0].replace(":", ".").endswith(o.replace(":", ".")) for o in ours)
+        have = pred.split("(")[0].replace(":", ".") in supported_surface
         mark = "✅ have" if have else "❌ lack"
         lines.append(f"- `{pred}` — {mark}")
     lines.append("")
     lines.append(
-        "> Predicate surface is our clearest gap vs Sourcegraph: we ship "
-        f"{len(ours)} predicate(s); the rest are typed-refused or unparsed."
+        "> Predicate surface is our clearest gap vs Sourcegraph: the canonical "
+        f"engine inventory is {len(canonical)} predicate(s) and the bridge adds "
+        f"{len(aliases)} Sourcegraph-only alias(es); the rest are "
+        "typed-refused or unparsed."
     )
     lines.append("")
 

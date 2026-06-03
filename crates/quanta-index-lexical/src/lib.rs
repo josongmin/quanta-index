@@ -2329,15 +2329,6 @@ impl TantivySearcher {
         Ok(self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND))
     }
 
-    fn repo_has_file_matches(&self, constraint: &RepoFileConstraint) -> Result<bool, CoreError> {
-        let compiled = self.repo_has_file_path_query(constraint)?;
-        let searcher = self.reader.searcher();
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(1))
-            .map_err(|err| CoreError::Storage(format!("lexical: repo.has.file search: {err}")))?;
-        Ok(!hits.is_empty())
-    }
-
     fn collect_repo_ids_for_repo_has_file(
         &self,
         constraint: &RepoFileConstraint,
@@ -2397,19 +2388,6 @@ impl TantivySearcher {
         options: &LqOptions,
     ) -> Result<Box<dyn Query>, CoreError> {
         Ok(self.with_doc_kind(self.compile_leaf(leaf, options, false)?, TEXT_DOC_KIND))
-    }
-
-    fn repo_has_content_matches(
-        &self,
-        leaf: &LqLeaf,
-        options: &LqOptions,
-    ) -> Result<bool, CoreError> {
-        let compiled = self.repo_has_content_query(leaf, options)?;
-        let searcher = self.reader.searcher();
-        let hits = searcher
-            .search(&*compiled, &TopDocs::with_limit(1))
-            .map_err(|err| CoreError::Storage(format!("lexical: repo.has.content search: {err}")))?;
-        Ok(!hits.is_empty())
     }
 
     fn collect_repo_ids_for_repo_has_content(
@@ -3187,17 +3165,19 @@ impl TantivySearcher {
             LqLeaf::Predicate { name, args } => match kind_of(name) {
                 Some(PredicateKind::RepoFileGate) => {
                     let constraint = self.repo_has_file_constraint(name, args)?;
-                    if self.repo_has_file_matches(&constraint)? {
-                        return Ok(Box::new(AllQuery));
+                    let repo_ids = self.collect_repo_ids_for_repo_has_file(&constraint)?;
+                    if repo_ids.is_empty() {
+                        return Ok(self.match_none_query());
                     }
-                    return Ok(self.match_none_query());
+                    return Ok(self.repo_id_restriction_query(&repo_ids));
                 }
                 Some(PredicateKind::RepoContentGate) => {
                     let leaf = self.repo_content_constraint(name, args)?;
-                    if self.repo_has_content_matches(&leaf, options)? {
-                        return Ok(Box::new(AllQuery));
+                    let repo_ids = self.collect_repo_ids_for_repo_has_content(&leaf, options)?;
+                    if repo_ids.is_empty() {
+                        return Ok(self.match_none_query());
                     }
-                    return Ok(self.match_none_query());
+                    return Ok(self.repo_id_restriction_query(&repo_ids));
                 }
                 Some(PredicateKind::ContentLeaf) => {
                     let lowered = self.predicate_content_leaf(name, args)?;

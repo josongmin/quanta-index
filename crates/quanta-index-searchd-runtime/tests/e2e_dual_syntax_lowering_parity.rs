@@ -449,6 +449,26 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "repo_has_content_phrase_predicate_parity",
+        sg_query: "repo:has.content(\"lemon yellow banana\") parity_needle_alpha",
+        lq_query: "repo:has.content(\"lemon yellow banana\") parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_content_raw_predicate_parity",
+        sg_query: "repo:has.content('parity_foo_bar_baz') parity_needle_alpha",
+        lq_query: "repo:has.content('parity_foo_bar_baz') parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "select_repo_projection_parity",
         sg_query: "select:repo parity_needle_alpha",
         lq_query: "select:repo parity_needle_alpha",

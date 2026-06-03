@@ -2,7 +2,7 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `active`
+Status: `landed`
 
 Current status:
 
@@ -11,7 +11,14 @@ Current status:
 - checker unit rail is landed:
   `tools/ci/tests/test_check_dsl_capability_truth.py`
 - benchmark/shadow template is frozen in [../README.md](../README.md) §10
-- remaining seam is warm benchmark artifact refresh on the adopted command path
+- warm benchmark artifact and committed baseline are refreshed on the adopted
+  command path:
+  `artifacts/dsl-bench/warm-matrix.json`
+  `tools/benchmark/baselines/warm-matrix.json`
+- cold benchmark artifact and committed baseline are refreshed on the adopted
+  command path:
+  `artifacts/dsl-bench/cold-matrix.json`
+  `tools/benchmark/baselines/cold-matrix.json`
 
 ## Objective
 
@@ -29,6 +36,7 @@ calling the widened surface “advanced”.
 - structural improvement alone is not enough to justify an “advanced” claim
 - warm benchmark path must remain runnable; the owning manifest/profile seams are
   `crates/quanta-index-searchd-runtime/Cargo.toml` and workspace `[profile.bench]`
+- baseline refresh now tracks the current widened tree at git rev `c7e995f`
 
 ## Current Code Pointers
 
@@ -84,7 +92,7 @@ calling the widened surface “advanced”.
 
 - [x] choose generated vs mechanically checked truth for capability inventory
 - [x] derive predicate subset and SG legality subset from code-owned metadata
-- [ ] refresh warm benchmark artifact on the adopted bench command path
+- [x] refresh warm benchmark artifact on the adopted bench command path
 - [x] make docs fail closed when widening code and capability truth diverge
 
 ## Concrete First Increment
@@ -168,6 +176,7 @@ The ticket is not done until it produces all of these:
 - benchmark/shadow bar is explicit and repeatable
 - advanced claim requires both correctness proof and cost evidence
 - warm benchmark artifact is reproducible from the adopted bench command path
+- warm/cold committed baselines are refreshed from the adopted command paths
 
 ## Failure Modes
 
