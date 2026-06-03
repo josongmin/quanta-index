@@ -192,7 +192,10 @@ def scan_bench(evidence: dict[str, Evidence]) -> int:
     body = read(SCENARIOS_RS)
     rows = 0
     for block in body.split("DslBenchScenario {")[1:]:
-        query = re.search(r'query_text:\s*"(.*?)",', block)
+        # `query: QuerySpec::Literal("...")` holds the static query string;
+        # `QuerySpec::Generated(...)` adversarial rows are runtime-built (no
+        # literal to scan) and carry no filter keyword, so they're skipped.
+        query = re.search(r'QuerySpec::Literal\(\s*"(.*?)"\s*\)', block)
         shape = re.search(r"ResultShape::([A-Za-z]+)", block)
         if query is None:
             continue
