@@ -174,6 +174,14 @@ adopted runner로 별도 측정한다.
 6. process 종료
 7. scenario별 wall-clock latency 기록
 
+gate discipline:
+
+1. cold `p95` gate는 measured row당 최소 `20` samples를 요구한다
+2. fewer-sample cold runs are exploratory only; they are not benchmark-gate authority
+3. the cold orchestrator should build the harness binary once, then invoke the
+   binary directly per sample instead of paying `cargo run` orchestration on
+   every sample
+
 이 레이어는 아래를 포함한다.
 
 1. daemon boot

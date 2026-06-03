@@ -37,7 +37,7 @@ use quanta_index_contract::{
     StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_ipc::send_request;
+use quanta_index_ipc::{IpcError, send_request};
 use quanta_index_search_plane::ActivationCatalog;
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::SearchdConfig;
@@ -1031,26 +1031,9 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => {
                 let query_result = self.semantic_transport_error(readiness_reached, err);
@@ -1133,26 +1116,9 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
@@ -1232,28 +1198,12 @@ impl E2eRuntime {
         // test does. For an invalid-contract request (no pin), the runtime
         // returns INVALID_REQUEST immediately, which already satisfies the
         // "non-NOT_READY" predicate.
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => {
-                        err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
-                    }
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) = wait_for_query_response(
+            &socket,
+            &envelope,
+            query_response_ready_allow_structural_not_ready,
+        );
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
@@ -1330,28 +1280,12 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => {
-                        err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
-                    }
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) = wait_for_query_response(
+            &socket,
+            &envelope,
+            query_response_ready_allow_structural_not_ready,
+        );
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
@@ -1435,26 +1369,9 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
@@ -1536,26 +1453,9 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
             Err(err) => return self.semantic_transport_error(readiness_reached, err),
         };
@@ -1669,41 +1569,11 @@ impl E2eRuntime {
                 };
             }
         };
-        let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-            match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(&socket, &envelope) {
-                Ok(response) => match &response.payload {
-                    SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                    SearchPlaneQueryIpcResponse::Text(_)
-                    | SearchPlaneQueryIpcResponse::Symbol(_)
-                    | SearchPlaneQueryIpcResponse::Semantic(_)
-                    | SearchPlaneQueryIpcResponse::Hybrid(_)
-                    | SearchPlaneQueryIpcResponse::History(_)
-                    | SearchPlaneQueryIpcResponse::Structural(_)
-                    | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
-                    | SearchPlaneQueryIpcResponse::Explain(_)
-                    | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => {
-                        true
-                    }
-                },
-                Err(_transport_error) => false,
-            }
-        });
-        let response: SearchPlaneQueryIpcResponseEnvelope = match send_request(&socket, &envelope) {
+        let (readiness_reached, response) =
+            wait_for_query_response(&socket, &envelope, query_response_ready);
+        let response: SearchPlaneQueryIpcResponseEnvelope = match response {
             Ok(r) => r,
-            Err(err) => {
-                let message = if readiness_reached {
-                    err.to_string()
-                } else {
-                    format!("readiness timeout before IPC response: {err}")
-                };
-                return E2eExplainResult {
-                    explanation: None,
-                    typed_error: Some(E2eTypedError {
-                        code: "IPC_TRANSPORT".to_string(),
-                        message,
-                    }),
-                };
-            }
+            Err(err) => return explain_transport_error(readiness_reached, err),
         };
         match response.payload {
             SearchPlaneQueryIpcResponse::Explain(explain) => E2eExplainResult {
@@ -1793,6 +1663,82 @@ impl Drop for E2eRuntime {
     fn drop(&mut self) {
         self.stop_driver();
         drop(self.tempdir.take());
+    }
+}
+
+fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool {
+    match &response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
+        SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
+    }
+}
+
+fn query_response_ready_allow_structural_not_ready(
+    response: &SearchPlaneQueryIpcResponseEnvelope,
+) -> bool {
+    match &response.payload {
+        SearchPlaneQueryIpcResponse::Error(err) => {
+            err.code != "NOT_READY" && err.code != "STR_GENERATION_NOT_READY"
+        }
+        SearchPlaneQueryIpcResponse::Text(_)
+        | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => true,
+    }
+}
+
+fn wait_for_query_response(
+    socket: &Path,
+    envelope: &SearchPlaneQueryIpcRequestEnvelope,
+    ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
+) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
+    let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
+    let readiness_reached = wait_until(READINESS_TIMEOUT, || {
+        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope) {
+            Ok(response) => {
+                if ready(&response) {
+                    cached_response = Some(response);
+                    return true;
+                }
+                false
+            }
+            Err(_transport_error) => false,
+        }
+    });
+    if let Some(response) = cached_response {
+        return (readiness_reached, Ok(response));
+    }
+    (readiness_reached, send_request(socket, envelope))
+}
+
+fn explain_transport_error(
+    readiness_reached: bool,
+    err: impl std::fmt::Display,
+) -> E2eExplainResult {
+    let message = if readiness_reached {
+        err.to_string()
+    } else {
+        format!("readiness timeout before IPC response: {err}")
+    };
+    E2eExplainResult {
+        explanation: None,
+        typed_error: Some(E2eTypedError {
+            code: "IPC_TRANSPORT".to_string(),
+            message,
+        }),
     }
 }
 

@@ -2405,9 +2405,13 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
-        let hits = searcher.search(&*compiled, &TopDocs::with_limit(limit)).map_err(|err| {
-            CoreError::Storage(format!("lexical: repo.has.content repo scope search: {err}"))
-        })?;
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "lexical: repo.has.content repo scope search: {err}"
+                ))
+            })?;
         let mut out: BTreeSet<String> = BTreeSet::new();
         for (_, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {

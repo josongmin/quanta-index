@@ -50,6 +50,9 @@ Explicitly excluded:
 - warm/cold benchmark baselines are refreshed on the adopted command paths:
   `tools/benchmark/baselines/warm-matrix.json`
   `tools/benchmark/baselines/cold-matrix.json`
+- the current harness no longer discards the first successful IPC response
+  during readiness polling; cold baselines after this point include route-local
+  first-success initialization cost that older artifacts undercounted
 
 ## 2.1 Current Code Pointers
 

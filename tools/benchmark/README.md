@@ -105,10 +105,12 @@ python3 tools/benchmark/run_dsl_cold_matrix.py --samples K \
     --out artifacts/dsl-bench/cold-matrix.json [--bin-cmd "..."] [--git-rev REV]
 ```
 
-Invokes the harness binary once per `(scenario, sample)` in a fresh process for
-a genuine cold-start, then aggregates p50/p95/p99 (nearest-rank percentile) per
-scenario. Default `--bin-cmd` is
-`cargo run --quiet -p quanta-index-searchd-harness --bin dsl_cold_matrix --`.
+Builds `dsl_cold_matrix` once on the `bench-lane`, then invokes the resulting
+binary directly once per `(scenario, sample)` in a fresh process for a genuine
+cold-start. Aggregates p50/p95/p99 (nearest-rank percentile) per scenario.
+Default sample count is `20`; passing fewer samples is allowed for ad-hoc local
+inspection, but the comparator will refuse to gate cold `p95` artifacts when a
+measured row carries fewer than `20` samples.
 
 ## Rollout: Phase A then Phase B
 

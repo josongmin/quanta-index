@@ -34,11 +34,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_SAMPLES = 3
+DEFAULT_SAMPLES = 20
 DEFAULT_OUT = Path("artifacts/dsl-bench/cold-matrix.json")
-DEFAULT_BIN_CMD = (
-    "./scripts/cargow run -p quanta-index-searchd-harness --bin dsl_cold_matrix "
-    "--quiet --locked --"
+DEFAULT_BUILD_CMD = (
+    "env CARGO_NET_OFFLINE=true ./scripts/cargow --lane bench-lane build -p quanta-index-searchd-harness "
+    "--bin dsl_cold_matrix --quiet --locked"
+)
+TARGET_DIR_CMD = (
+    "export QUANTA_INDEX_BUILD_LANE=bench-lane; "
+    "source scripts/quanta-index-env.sh; "
+    'printf "%s" "$CARGO_TARGET_DIR"'
 )
 
 
@@ -61,8 +66,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bin-cmd",
-        default=DEFAULT_BIN_CMD,
-        help="shell-splittable command prefix for the harness binary",
+        default=None,
+        help=(
+            "shell-splittable command prefix for the harness binary; when omitted, "
+            "the script prebuilds dsl_cold_matrix once and invokes the binary directly"
+        ),
     )
     parser.add_argument(
         "--git-rev",
@@ -100,6 +108,35 @@ def resolve_git_rev(explicit: str | None) -> str:
         return "unknown"
     rev = completed.stdout.strip()
     return rev or "unknown"
+
+
+def resolve_default_bin_cmd() -> list[str]:
+    build = subprocess.run(
+        shlex.split(DEFAULT_BUILD_CMD),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if build.returncode != 0:
+        raise RuntimeError(
+            "cold-matrix build failed "
+            f"(exit {build.returncode}):\n{build.stderr or build.stdout}"
+        )
+    target_dir = subprocess.run(
+        ["bash", "-lc", TARGET_DIR_CMD],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if target_dir.returncode != 0:
+        raise RuntimeError(
+            "cold-matrix target-dir probe failed "
+            f"(exit {target_dir.returncode}):\n{target_dir.stderr or target_dir.stdout}"
+        )
+    path = Path(target_dir.stdout.strip()) / "debug" / "dsl_cold_matrix"
+    if not path.is_file():
+        raise RuntimeError(f"cold-matrix binary missing after build: {path}")
+    return [str(path)]
 
 
 def run_bin(bin_cmd: list[str], *extra: str) -> subprocess.CompletedProcess[str]:
@@ -213,10 +250,13 @@ def main() -> int:
         print("ERROR: --samples must be >= 1", file=sys.stderr)
         return 2
 
-    bin_cmd = shlex.split(args.bin_cmd)
+    bin_cmd = shlex.split(args.bin_cmd) if args.bin_cmd is not None else []
     if not bin_cmd:
-        print("ERROR: --bin-cmd resolved to an empty command", file=sys.stderr)
-        return 2
+        try:
+            bin_cmd = resolve_default_bin_cmd()
+        except (RuntimeError, OSError) as exc:
+            print(f"ERROR: default cold-matrix binary resolution failed: {exc}", file=sys.stderr)
+            return 2
 
     git_rev = resolve_git_rev(args.git_rev)
 

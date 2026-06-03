@@ -349,7 +349,10 @@ fn row6d_file_contains_content_alias_lowers_to_content_leaf() {
             return;
         }
     };
-    assert_eq!(lq.expr, LqExpr::Leaf(LqLeaf::Phrase("lemon yellow banana".to_string())));
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Phrase("lemon yellow banana".to_string()))
+    );
 }
 
 #[test]

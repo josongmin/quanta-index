@@ -31,6 +31,7 @@ from pathlib import Path
 # --rel-threshold / --abs-threshold-ms flags override these.
 DEFAULT_REL_THRESHOLD = 0.10
 DEFAULT_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
+MIN_SAMPLES_FOR_P95 = {"cold": 20}
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class ScenarioRow:
     result_shape: str
     latency_p95_ms: float | None
     early_stop_reason: str | None
+    samples: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +94,7 @@ def load_artifact(path: Path) -> tuple[str, dict[str, ScenarioRow]]:
             result_shape=row["result_shape"],
             latency_p95_ms=None if latency is None else float(latency),
             early_stop_reason=row.get("early_stop_reason"),
+            samples=int(row.get("samples", 0)),
         )
     return mode, rows
 
@@ -132,6 +135,7 @@ def main() -> int:
 
     regressed: list[tuple[str, float, float, float, float]] = []
     missing_measured: list[str] = []
+    insufficient_samples: list[tuple[str, str, int, int]] = []
 
     all_scenarios = sorted(set(baseline) | set(current))
     print(
@@ -162,6 +166,15 @@ def main() -> int:
         if not is_measured(base) or not is_measured(cur):
             reason = cur.early_stop_reason or base.early_stop_reason or "unmeasured"
             print(f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} {'skip':>8s}  ({reason})")
+            continue
+
+        min_samples = MIN_SAMPLES_FOR_P95.get(mode)
+        if min_samples is not None and (base.samples < min_samples or cur.samples < min_samples):
+            insufficient_samples.append((scenario_id, mode, base.samples, cur.samples))
+            print(
+                f"{scenario_id:40s} {'--':>10s} {'--':>10s} {'--':>10s} "
+                f"{'invalid':>8s}  (samples base={base.samples} current={cur.samples}; need >= {min_samples})"
+            )
             continue
 
         base_ms = base.latency_p95_ms
@@ -196,6 +209,16 @@ def main() -> int:
             print(f"{level}: scenario {scenario_id!r} present in baseline but absent from current")
         if not args.allow_missing:
             failures += len(missing_measured)
+
+    if insufficient_samples:
+        print()
+        for scenario_id, row_mode, base_samples, cur_samples in insufficient_samples:
+            required = MIN_SAMPLES_FOR_P95.get(row_mode, 0)
+            print(
+                f"INVALID: scenario {scenario_id!r} has insufficient samples for p95 gating "
+                f"(baseline={base_samples}, current={cur_samples}, required>={required})"
+            )
+        return 2
 
     print()
     if failures:

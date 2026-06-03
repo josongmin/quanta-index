@@ -11,6 +11,7 @@ Covers the Layer-3 DSL query-latency regression gate:
 7. mode mismatch -> exit 2
 8. NEW scenario never fails
 9. MISSING scenario fails without --allow-missing, warns with it
+10. cold p95 gate refuses measured rows with fewer than 20 samples
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ def _row(
     mode: str = "warm",
     result_shape: str = "candidates",
     early_stop_reason: str | None = None,
+    samples: int = 200,
 ) -> dict:
     p50 = None if p95 is None else p95 * 0.8
     p99 = None if p95 is None else p95 * 1.1
@@ -60,7 +62,7 @@ def _row(
         "latency_p50_ms": p50,
         "latency_p95_ms": p95,
         "latency_p99_ms": p99,
-        "samples": 200,
+        "samples": samples,
         "result_count": 3,
         "typed_error_code": None,
         "engine_touched": [route_family],
@@ -268,6 +270,24 @@ def test_mode_mismatch_exits_two(tmp_path: Path) -> None:
     result = _run(str(baseline), str(current))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "mode mismatch" in result.stderr
+
+
+def test_cold_rows_with_insufficient_samples_fail_closed(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_artifact(
+        baseline,
+        "cold",
+        [_row("history.diff_added.native", 10.0, mode="cold", samples=3)],
+    )
+    _write_artifact(
+        current,
+        "cold",
+        [_row("history.diff_added.native", 11.0, mode="cold", samples=3)],
+    )
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "insufficient samples" in result.stdout
 
 
 # ---------------------------------------------------------------------------

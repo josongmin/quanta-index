@@ -19,6 +19,12 @@ Current status:
   command path:
   `artifacts/dsl-bench/cold-matrix.json`
   `tools/benchmark/baselines/cold-matrix.json`
+- the current cold baseline is tied to the corrected harness measurement
+  contract: readiness polling now reuses the first successful IPC response
+  instead of discarding it and timing a second query
+- cold benchmark gating now fail-closes measured rows with fewer than `20`
+  samples, and the orchestrator prebuilds `dsl_cold_matrix` once instead of
+  shelling through `cargo run` per sample
 
 ## Objective
 
@@ -37,6 +43,9 @@ calling the widened surface “advanced”.
 - warm benchmark path must remain runnable; the owning manifest/profile seams are
   `crates/quanta-index-searchd-runtime/Cargo.toml` and workspace `[profile.bench]`
 - baseline refresh now tracks the current widened tree at git rev `c7e995f`
+- older cold baselines that predate the first-success-response fix are not
+  comparable as-if they measured the same first-query path; they undercount
+  route-local initialization on the first successful response
 
 ## Current Code Pointers
 
