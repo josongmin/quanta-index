@@ -2,7 +2,35 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `done` (legality frozen; one family legalized with existing parity
+proof, scoped-filter families permanently rejected with stable typed-fail)
+
+## Legality Verdict (frozen)
+
+Root cause that decides every cell: on the active LQ wire, `LqQuery.filters` are
+**query-global** — a filter applies to the whole query, not to one boolean
+branch. A scoped filter that must bind to only one side of a mixed `OR`
+therefore has no faithful wire representation, and no canonical rewrite can
+reconstruct per-branch scope without changing semantics. A **predicate-backed
+repo gate** (`repo.has.file(...)`) is different in kind: it is a boolean *leaf*,
+so it already composes under `OR` and is proven.
+
+| filter family | placement under mixed `OR` | structural sibling | verdict | proof / rail |
+| --- | --- | --- | --- | --- |
+| `repo:` scoped filter | left or right of `OR` | structural body / raw / predicate | `BRIDGE_TRANSLATE_FAIL` (permanent) | `sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or`, `scoped_filters_under_or_and_not_fail_closed_with_typed_translate_errors` |
+| `file:` scoped filter | left or right of `OR` | any | `BRIDGE_TRANSLATE_FAIL` (permanent) | `scoped_filters_under_or_and_not_fail_closed_with_typed_translate_errors` |
+| `lang:` scoped filter | left or right of `OR` | any | `BRIDGE_TRANSLATE_FAIL` (permanent) | bridge `lower_sourcegraph_or` homogeneity rail |
+| predicate-backed repo gate `repo.has.file(...)` | left or right of `OR`; nested under `AND NOT` | keyword / raw / structural | **accept** (already representable — boolean leaf) | `e2e_dual_syntax_lowering_parity:repo_has_file_predicate_under_or_parity`, `repo_has_file_predicate_under_not_parity` |
+
+Permanence rationale: the scoped-filter rejects are not a missing feature; they
+are a wire-representability limit (`accept`=no, `accept-with-rewrite`=no,
+`reject`=permanent). Lifting them would require per-branch filter scope on the
+LQ wire, which is out of this packet’s scope and would be a contract change, not
+a lowering widening.
+
+Closeout: no new product behavior — the accepted family was already proven and
+the rejected families already fail closed; this ticket freezes the verdict so
+no later work treats these cells as ambiguous.
 
 ## Objective
 
@@ -71,10 +99,10 @@ scoped filters sit under mixed `OR` alongside structural bodies.
 
 ## TODO
 
-- [ ] freeze legality for scoped filters under mixed `OR`
-- [ ] either widen the representable subset or document permanent typed-fail
-- [ ] add direct lowering tests and parity proof for each accepted scoped-filter family
-- [ ] keep all rejected shapes on explicit typed-fail rails with stable diagnostics
+- [x] freeze legality for scoped filters under mixed `OR` (verdict table in this ticket)
+- [x] either widen the representable subset or document permanent typed-fail (scoped filters: permanent reject; predicate-backed repo gate: accept)
+- [x] add direct lowering tests and parity proof for each accepted scoped-filter family (`repo_has_file_predicate_under_or_parity`)
+- [x] keep all rejected shapes on explicit typed-fail rails with stable diagnostics (`scoped_filters_under_or_and_not_fail_closed_with_typed_translate_errors`)
 
 ## Concrete Decision Table To Produce
 

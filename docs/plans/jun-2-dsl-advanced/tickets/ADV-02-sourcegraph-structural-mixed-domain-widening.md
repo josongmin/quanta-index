@@ -2,7 +2,42 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `done` (legality matrix frozen; `RawString` and `Predicate` siblings
+both widened and parity-proven)
+
+Increment log:
+
+- `legality-matrix` (done, behavior-preserving) — lifted the scattered leaf
+  branch comments in `rewrite_sourcegraph_structural_expr` into one central,
+  enforced table: `StructuralLeafVerdict` + `structural_leaf_verdict(&LqLeaf)`
+  in `crates/quanta-index-search-plane/src/lowering.rs`, guarded by
+  `sourcegraph_structural_leaf_verdict_matrix_is_frozen`. The boolean context
+  is uniform (All/Any/Not recurse), so the matrix is one-dimensional over leaf
+  kind.
+- `raw-string-sibling` (done, widened + proven) — `RawString` leaves are now
+  preserved as lexical siblings of a structural body (verdict
+  `PreserveLexical`), mirroring native `'...' OR match { ... }`. On the SG side
+  the reachable raw leaf is `file:contains('...')` (executable bridge
+  predicate). Proof: owner-local lowering test
+  `sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or`;
+  cross-route parity row
+  `structural_sourcegraph_native_mixed_raw_string_or_parity` in
+  `e2e_dual_syntax_lowering_parity` (green); bridge golden rail unchanged (21).
+- `predicate-sibling` (done, widened + parity-proven) — `Predicate` leaves are
+  now preserved as lexical siblings (verdict `PreserveLexical`, flat — no guard,
+  so the checker's flat-table invariant holds). The lexical executor gates a
+  preserved predicate downstream exactly as on native: `repo.has.file` /
+  `file.contains` / `file.has.content` execute; non-executable predicate names
+  typed-fail with `LEX_PREDICATE_UNIMPLEMENTED` at the execution layer — same
+  code and layer as native, so SG mirrors native for every predicate sibling
+  (the old behavior typed-failed *all* predicate siblings at lowering, strictly
+  narrower than native). Native-parity-first: the parity rail is the judge and
+  is green. Proof: owner-local
+  `sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean`;
+  matrix-freeze cell `Predicate => PreserveLexical`; native↔SG parity
+  `structural_sourcegraph_native_mixed_predicate_sibling_and_parity`
+  (`repo:has.file(path:src/lib.rs) AND <structural body>` → `["alpha_rust"]` on
+  both syntaxes). `StructuralBlock` remains the only `TypedFail` leaf.
 
 ## Objective
 
@@ -83,11 +118,11 @@ bridge unchanged.
 
 ## TODO
 
-- [ ] freeze the SG legality matrix for mixed-domain structural queries
-- [ ] widen `RawString` sibling support where canonical lowering exists
-- [ ] widen `Predicate` sibling support where canonical lowering exists
-- [ ] add sibling-specific lowering tests and SG/native parity rows
-- [ ] keep non-representable shapes on explicit typed-fail rails
+- [x] freeze the SG legality matrix for mixed-domain structural queries (`structural_leaf_verdict`)
+- [x] widen `RawString` sibling support where canonical lowering exists
+- [x] widen `Predicate` sibling support where canonical lowering exists (flat preserve; executor gates)
+- [x] add sibling-specific lowering tests and SG/native parity rows
+- [x] keep non-representable shapes on explicit typed-fail rails (`StructuralBlock` typed-fail; non-executable predicates fail at exec)
 
 ## Concrete First Increment
 

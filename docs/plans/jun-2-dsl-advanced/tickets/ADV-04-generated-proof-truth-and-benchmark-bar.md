@@ -2,7 +2,35 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `done` (checker-first increment landed; generator intentionally not
+built — the checker is strong enough to fail closed on drift)
+
+Closeout:
+
+- checker (not generator): `tools/ci/lint/check-dsl-capability-truth.py` reads
+  the code-owned capability sources — `PREDICATE_REGISTRY` in
+  `crates/quanta-index-lexical/src/predicate_registry.rs` and
+  `structural_leaf_verdict` in
+  `crates/quanta-index-search-plane/src/lowering.rs` — and fails closed on
+  predicate-subset drift, SG-legality drift, and any ADV ticket whose `Status`
+  claims `advanced`/`SOTA` without a benchmark/shadow section. SG legality is a
+  code-vs-frozen-snapshot guard (`EXPECTED_STRUCTURAL_VERDICTS`): the matrix
+  function must be a flat constant table — a guard/branch/multi-verdict arm
+  fails closed (a guarded verdict cannot be frozen), which is what stops a
+  guarded widening from slipping past. Comment-stripping is string-literal
+  aware and the slice strips comments first. It is blind-safe.
+- tests: `tools/ci/tests/test_check_dsl_capability_truth.py` (26 cases) cover
+  literal-aware comment stripping, canonical-shape rejection of guard/branch/
+  helper-delegated/nested-match arms, extraction-matches-real-source, both
+  drift directions, the advanced/SOTA gate, and — decisively — mutating a copy
+  of the *real* `lowering.rs` (the round-2 guarded-widening attack and a flat
+  verdict flip) and asserting the gate exits 1; green.
+- benchmark/shadow template: frozen in [../README.md](../README.md) §10; the
+  checker enforces its presence on any `advanced` claim.
+- CI wiring: registered as the `dsl-capability-truth` pre-push hook in
+  `.pre-commit-config.yaml`.
+- generator (optional): deliberately not built. Re-open only if a future
+  capability shape cannot be checked without machine-generated docs.
 
 ## Objective
 

@@ -77,11 +77,11 @@ Explicitly excluded:
 
 | ticket | status | concrete first increment | red rail first |
 | --- | --- | --- | --- |
-| [ADV-00](tickets/ADV-00-scope-lock-and-admission-bar.md) | planned | freeze admission table and claim discipline only | packet/doc truth spot-check |
-| [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | planned | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
-| [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | planned | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
-| [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | planned | decision table before any code | rejected scoped-`OR` owner rail |
-| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | planned | checker first, generator optional | docs-vs-code drift checker |
+| [ADV-00](tickets/ADV-00-scope-lock-and-admission-bar.md) | done | admission table frozen in §9 | packet/doc truth spot-check |
+| [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | done (registry + `lang:` family) | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
+| [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | done (matrix + `RawString` + `Predicate`) | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
+| [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | done | legality verdict frozen | rejected scoped-`OR` owner rail |
+| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | done | checker landed (`check-dsl-capability-truth.py`) | docs-vs-code drift checker |
 | [HISTORICAL-MAP](tickets/HISTORICAL-MAP.md) | reference | lineage only | n/a |
 
 ## 4. Sequencing
@@ -159,3 +159,86 @@ This packet is complete only when all are true:
 - no runtime-row promotion for bridge carriers
 - no empty-query execution semantics
 - no “SOTA++” branding based on structure alone
+
+## 9. Admission Bar (frozen by [ADV-00](tickets/ADV-00-scope-lock-and-admission-bar.md))
+
+This table is the single packet-level gate. A widening lane may not start code
+until its row exists here with a non-empty owning seam, red rail, and claim
+gate. A lane may not be called “advanced” until its claim gate is satisfied by
+real evidence, not structure.
+
+| widening surface | current state | owning seam (code authority) | red rail first | claim gate (before “advanced”) |
+| --- | --- | --- | --- | --- |
+| predicate subset widening | hardcoded `match` in lexical lowering/planner; unsupported shapes typed-fail `LEX_PREDICATE_UNIMPLEMENTED` | `quanta-index-lexical` `predicate_registry.rs` + `planner.rs` + `lib.rs` | `tantivy_smoke` + `predicate_repo_has_file_plans_through_tantivy_route` | owner-local + runtime + parity proof for each widened family, and a registry row |
+| SG structural `RawString` sibling | typed-fail `BRIDGE_TRANSLATE_FAIL` on the SG structural route | `quanta-index-search-plane` `lowering.rs` legality table; mirrored in `quanta-index-lq-bridge` `translator.rs` | `sourcegraph_structural_route_preserves_lexical_keyword_in_mixed_boolean_or` | native↔SG parity row + bridge golden + explicit typed-fail remainder |
+| SG structural `Predicate` sibling | typed-fail `BRIDGE_TRANSLATE_FAIL` on the SG structural route | same as `RawString` sibling | same lowering owner rail | same as `RawString` sibling; cannot start before `RawString` lane is green |
+| SG scoped-filter under mixed `OR` | typed-fail `BRIDGE_TRANSLATE_FAIL` by closeout design | `quanta-index-search-plane` `lowering.rs` legality table | `sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or` | per-family verdict (`accept` / `accept-with-rewrite` / permanent reject) with proof or a permanent typed-fail rail |
+| generated capability truth + benchmark bar | hand-maintained ledger/matrix prose; no drift gate | `tools/ci/lint/check-dsl-capability-truth.py` consuming code-owned metadata | `python3 tools/ci/lint/check-dsl-capability-truth.py` | checker fails closed on drift, and a widening claim without a benchmark/shadow section |
+
+### 9.1 Frozen start order
+
+This order is authoritative and matches [INDEX.md](tickets/INDEX.md) and
+[HISTORICAL-MAP.md](tickets/HISTORICAL-MAP.md). Deviating is a scope-creep
+finding, not a shortcut.
+
+1. `ADV-00` admission bar (this section)
+2. `ADV-01` registry only, no behavior widening
+3. `ADV-01` first widened predicate family
+4. `ADV-02` `RawString` sibling
+5. `ADV-02` `Predicate` sibling
+6. `ADV-03` scoped-filter-under-`OR` verdicts
+7. `ADV-04` generated/checked truth + benchmark gate
+
+### 9.2 Claim discipline for “advanced”
+
+No widened lane may be described as “advanced”, “SOTA”, or “SOTA++” on the
+basis of structure, registry shape, or a broader accepted subset alone. The
+label is admissible only when **both** are true and both are linked from the
+lane’s ticket:
+
+1. correctness evidence — owner-local rail, runtime row, and (for dual-syntax
+   surfaces) an explicit native↔SG parity row; and
+2. cost evidence — a benchmark or shadow measurement under the `ADV-04`
+   template, not a prose promise.
+
+A lane that has only correctness evidence is “broader”, not “advanced”. A lane
+that has neither is “planned”. Reporting structure as if it were advancement is
+the primary failure mode this bar exists to block.
+
+### 9.3 Permanent exclusions
+
+These categories are out of scope for the whole packet and may not be
+reintroduced through any lane:
+
+- bridge-packet carriers (`into:codeql`, `scope:results`, `with:lexical`) as
+  runtime search-result rows — they stay `bridge_packet` carriers
+- parser-only / normalizer-only shapes presented as executable surface
+- empty-query execution semantics
+- request-time `git`, `tree-sitter`, embedding, or other producer-owned
+  fallback authorities reached from the search plane
+
+## 10. Benchmark / Shadow Evidence Template (frozen by [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md))
+
+A widening lane that wants the “advanced” label (README §9.2) must fill this
+template **in its own ticket** before the label is admissible. The drift gate
+`tools/ci/lint/check-dsl-capability-truth.py` fails any ticket whose `Status`
+claims `advanced` without a benchmark/shadow section.
+
+```
+## Benchmark / Shadow Evidence
+
+- correctness proof: <owner-local rail name>
+- parity proof: <native↔SG parity row name>  (dual-syntax surfaces only)
+- chaos/restart proof: <rail name>  (route-sensitive surfaces only)
+- cost evidence (fill at least one, as a runnable command, not prose):
+  - benchmark: `just rust-bench-dsl-warm` / `just rust-bench-dsl-cold` + `just rust-bench-dsl-compare` against `tools/benchmark/baselines/*.json`
+  - shadow: <shadow rail + the metric and threshold measured>
+- measured result: <number + baseline + delta, or the shadow verdict>
+```
+
+Rules:
+
+- cost evidence is a command that can be re-run, never a prose promise
+- a lane with only correctness/parity proof is “broader”, not “advanced”
+- the drift gate is mechanical; it does not judge whether the numbers are good,
+  only that the evidence section exists when the label is claimed

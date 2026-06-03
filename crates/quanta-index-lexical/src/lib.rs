@@ -28,6 +28,7 @@ pub mod filters;
 pub mod phrase;
 pub mod plan;
 pub mod planner;
+mod predicate_registry;
 pub mod regex;
 pub mod symbol;
 pub mod trigram_plan;
@@ -62,6 +63,10 @@ use quanta_index_lq_trigram::{
 };
 
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
+use crate::predicate_registry::{
+    PREDICATE_OWNER, PredicateKind, RepoFileArgError, RepoFileConstraint, RepoFileMatcher, kind_of,
+    parse_repo_file_matchers, unimplemented_predicate,
+};
 use crate::regex::RegexPolicy;
 use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RegexQuery, TermQuery};
@@ -1761,16 +1766,6 @@ struct TantivySearcher {
     text_authority: Option<TextAuthorityShard>,
 }
 
-#[derive(Clone)]
-enum RepoHasFileMatcher {
-    Path(String),
-    Name(String),
-}
-
-struct RepoHasFileConstraint {
-    matchers: Vec<RepoHasFileMatcher>,
-}
-
 struct PreparedPredicatePlan {
     expr: LqExpr,
     allowed_paths: Option<BTreeSet<String>>,
@@ -2269,17 +2264,32 @@ impl TantivySearcher {
 
     fn repo_has_file_path_query(
         &self,
-        constraint: &RepoHasFileConstraint,
+        constraint: &RepoFileConstraint,
     ) -> Result<Box<dyn Query>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> =
             Vec::with_capacity(constraint.matchers.len());
         for matcher in &constraint.matchers {
             let query = match matcher {
-                RepoHasFileMatcher::Path(pattern) => {
+                RepoFileMatcher::Path(pattern) => {
                     self.regex_text_query(self.fields.repo_relative_path, pattern)?
                 }
-                RepoHasFileMatcher::Name(pattern) => {
+                RepoFileMatcher::Name(pattern) => {
                     self.regex_text_query(self.fields.file_name, pattern)?
+                }
+                RepoFileMatcher::Language(value) => {
+                    // normalize_language case-folds the value for the exact
+                    // language-field match. The registry already rejects
+                    // empty/whitespace lang values, so the `None` branch is
+                    // unreachable on every path that builds a constraint through
+                    // parse_repo_file_matchers; it is kept as a fail-closed guard
+                    // (not a panic) against a future caller constructing
+                    // RepoFileMatcher::Language directly.
+                    let Some(normalized) = normalize_language(value) else {
+                        return Err(unimplemented_predicate(format!(
+                            "lexical: predicate leaf `repo.has.file` lang: argument cannot be empty (owner: {PREDICATE_OWNER})"
+                        )));
+                    };
+                    self.exact_text_query(self.fields.language, &normalized)
                 }
             };
             clauses.push((Occur::Must, query));
@@ -2287,7 +2297,7 @@ impl TantivySearcher {
         Ok(self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND))
     }
 
-    fn repo_has_file_matches(&self, constraint: &RepoHasFileConstraint) -> Result<bool, CoreError> {
+    fn repo_has_file_matches(&self, constraint: &RepoFileConstraint) -> Result<bool, CoreError> {
         let compiled = self.repo_has_file_path_query(constraint)?;
         let searcher = self.reader.searcher();
         let hits = searcher
@@ -2298,7 +2308,7 @@ impl TantivySearcher {
 
     fn collect_repo_ids_for_repo_has_file(
         &self,
-        constraint: &RepoHasFileConstraint,
+        constraint: &RepoFileConstraint,
     ) -> Result<BTreeSet<String>, CoreError> {
         let compiled = self.repo_has_file_path_query(constraint)?;
         let searcher = self.reader.searcher();
@@ -2332,21 +2342,10 @@ impl TantivySearcher {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<LqLeaf, CoreError> {
-        if args.len() != 1 {
-            return Err(CoreError::Typed {
-                code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                message: format!(
-                    "lexical: predicate leaf `{name}` requires exactly one scalar argument (owner: LXE-03-predicate-extensions)"
-                ),
-            });
-        }
-        let Some(arg) = args.first() else {
-            return Err(CoreError::Typed {
-                code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                message: format!(
-                    "lexical: predicate leaf `{name}` requires exactly one scalar argument (owner: LXE-03-predicate-extensions)"
-                ),
-            });
+        let [arg] = args else {
+            return Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` requires exactly one scalar argument (owner: {PREDICATE_OWNER})"
+            )));
         };
         match arg {
             LqPredicateArg::Keyword(value) => {
@@ -2363,12 +2362,9 @@ impl TantivySearcher {
                 Ok(LqLeaf::RawString(value.clone()))
             }
             LqPredicateArg::Number(value) => Ok(LqLeaf::Keyword(value.to_string())),
-            LqPredicateArg::Filter { .. } => Err(CoreError::Typed {
-                code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                message: format!(
-                    "lexical: predicate leaf `{name}` filter arguments are not executable on Tantivy adapter (owner: LXE-03-predicate-extensions)"
-                ),
-            }),
+            LqPredicateArg::Filter { .. } => Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` filter arguments are not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+            ))),
         }
     }
 
@@ -2376,39 +2372,18 @@ impl TantivySearcher {
         &self,
         name: &str,
         args: &[LqPredicateArg],
-    ) -> Result<RepoHasFileConstraint, CoreError> {
-        let mut matchers: Vec<RepoHasFileMatcher> = Vec::new();
-        for arg in args {
-            match arg {
-                LqPredicateArg::Filter { name, value } if name == "path" => {
-                    matchers.push(RepoHasFileMatcher::Path(value.clone()));
-                }
-                LqPredicateArg::Filter { name, value } if name == "name" => {
-                    matchers.push(RepoHasFileMatcher::Name(value.clone()));
-                }
-                LqPredicateArg::Keyword(_)
-                | LqPredicateArg::Phrase(_)
-                | LqPredicateArg::RawString(_)
-                | LqPredicateArg::Number(_)
-                | LqPredicateArg::Filter { .. } => {
-                    return Err(CoreError::Typed {
-                        code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                        message: format!(
-                            "lexical: predicate leaf `{name}` only supports path:/name: filter arguments (owner: LXE-03-predicate-extensions)"
-                        ),
-                    });
-                }
-            }
-        }
-        if matchers.is_empty() {
-            return Err(CoreError::Typed {
-                code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                message: format!(
-                    "lexical: predicate leaf `{name}` requires at least one path:/name: argument (owner: LXE-03-predicate-extensions)"
-                ),
-            });
-        }
-        Ok(RepoHasFileConstraint { matchers })
+    ) -> Result<RepoFileConstraint, CoreError> {
+        parse_repo_file_matchers(args).map_err(|err| match err {
+            RepoFileArgError::UnsupportedArg => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports path:/name:/lang: filter arguments (owner: {PREDICATE_OWNER})"
+            )),
+            RepoFileArgError::NoMatcher => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` requires at least one path:/name:/lang: argument (owner: {PREDICATE_OWNER})"
+            )),
+            RepoFileArgError::EmptyLanguageValue => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` lang: argument cannot be empty (owner: {PREDICATE_OWNER})"
+            )),
+        })
     }
 
     fn lower_predicate_for_boolean_scope(
@@ -2416,23 +2391,20 @@ impl TantivySearcher {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<LqExpr, CoreError> {
-        match name {
-            "repo.has.file" => {
+        match kind_of(name) {
+            Some(PredicateKind::RepoFileGate) => {
                 let _constraint = self.repo_has_file_constraint(name, args)?;
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
                     name: name.to_string(),
                     args: args.to_vec(),
                 }))
             }
-            "file.contains" | "file.has.content" => {
+            Some(PredicateKind::ContentLeaf) => {
                 Ok(LqExpr::Leaf(self.predicate_content_leaf(name, args)?))
             }
-            _ => Err(CoreError::Typed {
-                code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                message: format!(
-                    "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: LXE-03-predicate-extensions)"
-                ),
-            }),
+            None => Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+            ))),
         }
     }
 
@@ -2465,31 +2437,28 @@ impl TantivySearcher {
     fn extract_predicate_plan(
         &self,
         expr: &LqExpr,
-    ) -> Result<(LqExpr, Vec<RepoHasFileConstraint>, Vec<LqLeaf>), CoreError> {
+    ) -> Result<(LqExpr, Vec<RepoFileConstraint>, Vec<LqLeaf>), CoreError> {
         match expr {
             LqExpr::Empty => Ok((LqExpr::Empty, Vec::new(), Vec::new())),
-            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => match name.as_str() {
-                "repo.has.file" => Ok((
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => match kind_of(name) {
+                Some(PredicateKind::RepoFileGate) => Ok((
                     LqExpr::Empty,
                     vec![self.repo_has_file_constraint(name, args)?],
                     Vec::new(),
                 )),
-                "file.contains" | "file.has.content" => Ok((
+                Some(PredicateKind::ContentLeaf) => Ok((
                     LqExpr::Empty,
                     Vec::new(),
                     vec![self.predicate_content_leaf(name, args)?],
                 )),
-                _ => Err(CoreError::Typed {
-                    code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                    message: format!(
-                        "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: LXE-03-predicate-extensions)"
-                    ),
-                }),
+                None => Err(unimplemented_predicate(format!(
+                    "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                ))),
             },
             LqExpr::Leaf(_) => Ok((expr.clone(), Vec::new(), Vec::new())),
             LqExpr::All(parts) => {
                 let mut exprs: Vec<LqExpr> = Vec::new();
-                let mut repo_predicates: Vec<RepoHasFileConstraint> = Vec::new();
+                let mut repo_predicates: Vec<RepoFileConstraint> = Vec::new();
                 let mut file_predicates: Vec<LqLeaf> = Vec::new();
                 for part in parts {
                     let (lowered, repo_parts, file_parts) = self.extract_predicate_plan(part)?;
@@ -2515,7 +2484,7 @@ impl TantivySearcher {
 
     fn prepare_predicate_plan(&self, query: &LqQuery) -> Result<PreparedPredicatePlan, CoreError> {
         if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr
-            && matches!(name.as_str(), "file.contains" | "file.has.content")
+            && matches!(kind_of(name), Some(PredicateKind::ContentLeaf))
         {
             return Ok(PreparedPredicatePlan {
                 expr: LqExpr::Leaf(self.predicate_content_leaf(name, args)?),
@@ -3089,25 +3058,22 @@ impl TantivySearcher {
                             .to_string(),
                 });
             }
-            LqLeaf::Predicate { name, args } => match name.as_str() {
-                "repo.has.file" => {
+            LqLeaf::Predicate { name, args } => match kind_of(name) {
+                Some(PredicateKind::RepoFileGate) => {
                     let constraint = self.repo_has_file_constraint(name, args)?;
                     if self.repo_has_file_matches(&constraint)? {
                         return Ok(Box::new(AllQuery));
                     }
                     return Ok(self.match_none_query());
                 }
-                "file.contains" | "file.has.content" => {
+                Some(PredicateKind::ContentLeaf) => {
                     let lowered = self.predicate_content_leaf(name, args)?;
                     return self.compile_leaf(&lowered, options, false);
                 }
-                _ => {
-                    return Err(CoreError::Typed {
-                        code: "LEX_PREDICATE_UNIMPLEMENTED".to_string(),
-                        message: format!(
-                            "lexical: predicate leaf `{name}` is not yet executable on Tantivy adapter (owner: LXE-03-predicate-extensions)"
-                        ),
-                    });
+                None => {
+                    return Err(unimplemented_predicate(format!(
+                        "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                    )));
                 }
             },
         };

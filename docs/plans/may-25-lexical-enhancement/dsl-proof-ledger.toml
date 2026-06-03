@@ -56,9 +56,11 @@ proof_rail = [
   "dsl_scenarios:sourcegraph_repo_has_file_predicate_executes_live",
   "e2e_perf_chaos:predicate_repo_has_file_executes_and_miss_does_not_poison_next_query",
   "e2e_lexical_full_fidelity:repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
+  "tantivy_executes_repo_has_file_predicate_with_lang_matcher",
+  "e2e_dual_syntax_lowering_parity:repo_has_file_lang_predicate_parity",
   "tantivy_smoke",
 ]
-expected_live_behavior = "repo-wide existence gate is runtime-proved via miss and NOT-false rows on docs-multi-repo.toml; per-path narrowing stays on companion OR/NOT rails"
+expected_live_behavior = "repo-wide existence gate is runtime-proved via miss and NOT-false rows on docs-multi-repo.toml; per-path narrowing stays on companion OR/NOT rails; arg subset is path:/name: (regex) plus lang: (ADV-01, exact language-field match), owned by predicate_registry::parse_repo_file_matchers"
 
 [[entry]]
 surface = "Predicate file.contains(...)"
@@ -690,6 +692,28 @@ proof_rail = [
   "e2e_perf_chaos",
 ]
 expected_live_behavior = "mixed-domain OR unions lexical and structural candidate identity; repo-scoped filters under mixed OR remain bridge fail-closed on the SG structural route"
+
+[[entry]]
+surface = "SG structural mixed RawString sibling (ADV-02)"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or",
+  "quanta-index-search-plane lowering sourcegraph_structural_leaf_verdict_matrix_is_frozen",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_raw_string_or_parity",
+]
+expected_live_behavior = "RawString leaves (reachable via file:contains('...')) are preserved as lexical siblings of a structural body on the SG structural route, matching native '...' OR match {...}"
+
+[[entry]]
+surface = "SG structural mixed Predicate sibling (ADV-02)"
+proof_status = "active_runtime"
+authority_owner = "search_plane_planner"
+proof_rail = [
+  "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean",
+  "quanta-index-search-plane lowering sourcegraph_structural_leaf_verdict_matrix_is_frozen",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_predicate_sibling_and_parity",
+]
+expected_live_behavior = "Predicate leaves are preserved as lexical siblings of a structural body and gated by the lexical executor exactly as on native (repo.has.file etc. execute; non-executable predicates typed-fail with LEX_PREDICATE_UNIMPLEMENTED at execution); only StructuralBlock remains BRIDGE_TRANSLATE_FAIL on the route"
 
 [[entry]]
 surface = "mixed lexical + structural boolean AND NOT"

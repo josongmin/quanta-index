@@ -1754,6 +1754,60 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
 }
 
 #[test]
+fn tantivy_executes_repo_has_file_predicate_with_lang_matcher() -> TestResult {
+    // ADV-01 widened arg-shape family: `repo.has.file(lang:<x>)` gates by
+    // whether the repo contains a file in language <x>, lowered to one
+    // canonical language-field matcher (no ambiguity).
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 4, 8, "needle alpha")?,
+        upsert_with_metadata("beta", "src/app.py", "python", 10, 12, "needle beta")?,
+        upsert_with_metadata("gamma", "docs/readme.md", "markdown", 1, 2, "no match")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    // The repo contains a python file -> gate opens, both `needle` docs return.
+    let hit_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "lang".to_string(),
+                value: "python".to_string(),
+            }],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let hits = searcher.search(&hit_query, 10)?;
+    if hits.len() != 2 {
+        return Err(format!(
+            "expected 2 lang-gated hits (repo has a python file), got {}",
+            hits.len()
+        )
+        .into());
+    }
+
+    // No Go file exists -> gate closes -> zero hits (fail-closed, not a fallback).
+    let miss_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Filter {
+                name: "lang".to_string(),
+                value: "go".to_string(),
+            }],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+    ]));
+    let miss = searcher.search(&miss_query, 10)?;
+    if !miss.is_empty() {
+        return Err(format!("expected 0 hits (no go file in repo), got {miss:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
 fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

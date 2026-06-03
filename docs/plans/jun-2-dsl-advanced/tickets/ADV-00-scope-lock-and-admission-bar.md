@@ -2,7 +2,12 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `done`
+
+Closeout: the packet-level admission table, frozen start order, claim-discipline
+paragraph, and permanent exclusions are frozen in [../README.md](../README.md)
+§9. Later lanes inherit that gate; this ticket changed no product behavior,
+fixtures, or runtime rows.
 
 ## Objective
 
@@ -70,9 +75,9 @@ shapes.
 
 ## TODO
 
-- [ ] freeze widening candidate list before code changes start
-- [ ] define the benchmark/shadow bar for any “advanced” claim
-- [ ] define the legality-matrix requirement for SG widening
+- [x] freeze widening candidate list before code changes start (README §9 table)
+- [x] define the benchmark/shadow bar for any “advanced” claim (README §9.2)
+- [x] define the legality-matrix requirement for SG widening (README §9 owning-seam column + ADV-02/03)
 
 ## Concrete First Increment
 

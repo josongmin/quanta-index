@@ -2,7 +2,37 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `planned`
+Status: `done` (registry-only increment + first widened predicate family both
+landed and verified)
+
+Increment log:
+
+- `registry-only` (done, no behavior drift) — introduced
+  `crates/quanta-index-lexical/src/predicate_registry.rs` as the predicate
+  capability SSOT (`PredicateKind`, `PREDICATE_REGISTRY`, `kind_of`,
+  `parse_repo_file_matchers`, `RepoFileMatcher`/`RepoFileConstraint`, canonical
+  `LEX_PREDICATE_UNIMPLEMENTED` owner). All five hardcoded `match name` dispatch
+  sites in `lib.rs` (`lower_predicate_for_boolean_scope`,
+  `extract_predicate_plan`, `prepare_predicate_plan`, the `compile_leaf`
+  predicate arm, `repo_has_file_constraint`) and both planner sites
+  (`plan_predicate_leaf`, `validate_repo_has_file_args`) now dispatch on the
+  registry instead of re-matching raw names. `symbol.has.name` stays on the
+  symbol-route arm by design (not a registry member).
+  Verified green: `tantivy_smoke` (24), planner unit
+  `predicate_repo_has_file_plans_through_tantivy_route`, registry units (5),
+  `e2e_full_corpus`, `e2e_dual_syntax_lowering_parity` (4).
+- `first-widened-family` (done) — widened exactly one `repo.has.file` arg-shape
+  family: a `lang:` matcher (`RepoFileMatcher::Language`) that gates by whether
+  the repo contains a file in the given language, lowered to one canonical
+  exact-term query on the indexed `language` field (no ambiguity; `path:`/
+  `name:` remain regex matchers). `parse_repo_file_matchers` is the single
+  owner of the now `path:`/`name:`/`lang:` contract; planner validation inherits
+  it unchanged. Proof: registry unit `repo_file_matchers_accept_lang_filter`;
+  owner-local `tantivy_executes_repo_has_file_predicate_with_lang_matcher`
+  (hit + fail-closed miss); native↔SG parity
+  `repo_has_file_lang_predicate_parity` in `e2e_dual_syntax_lowering_parity`
+  (green). Unsupported filters (e.g. `size:`) still typed-fail
+  `LEX_PREDICATE_UNIMPLEMENTED`.
 
 ## Objective
 
@@ -87,11 +117,11 @@ one-off branches.
 
 ## TODO
 
-- [ ] introduce a first-class predicate capability registry
-- [ ] move existing shipped predicates onto that registry without behavior drift
-- [ ] choose and land the first widened predicate/arg-shape subset
-- [ ] add direct runtime rows and owner-local rails for every widened predicate
-- [ ] keep unsupported shapes on stable typed-fail rails
+- [x] introduce a first-class predicate capability registry (`predicate_registry.rs`)
+- [x] move existing shipped predicates onto that registry without behavior drift (owner + runtime + parity rails green)
+- [x] choose and land the first widened predicate/arg-shape subset (`repo.has.file(lang:…)`)
+- [x] add direct runtime rows and owner-local rails for every widened predicate (owner-local + parity)
+- [x] keep unsupported shapes on stable typed-fail rails (`LEX_PREDICATE_UNIMPLEMENTED` centralized in the registry)
 
 ## Concrete First Increment
 

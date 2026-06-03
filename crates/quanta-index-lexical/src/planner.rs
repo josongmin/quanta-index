@@ -13,6 +13,9 @@ use quanta_index_contract::{LqExpr, LqLeaf, LqPredicateArg, LqQuery};
 use crate::filters::{FilterPlannerError, plan_filters};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
 use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
+use crate::predicate_registry::{
+    PREDICATE_OWNER, PredicateKind, kind_of, parse_repo_file_matchers,
+};
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
 use crate::trigram_plan::{TrigramPlannerError, TrigramPolicy, plan_raw_substring};
@@ -227,28 +230,31 @@ impl LexicalPlanner {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<PlanLeaf, LexicalPlannerError> {
-        match name {
-            "symbol.has.name" => {
-                let needle = single_string_arg(name, args)?;
-                let plan = plan_symbol(&needle, None, &SymbolPolicy::defaults())
-                    .map_err(LexicalPlannerError::SymbolPlan)?;
-                Ok(PlanLeaf::Symbol { name: needle, plan })
-            }
-            "repo.has.file" => {
+        // `symbol.has.name` lowers through the symbol planner, not the lexical
+        // content/repo seam, so it is handled here before consulting the
+        // lexical predicate registry (which intentionally does not own it).
+        if name == "symbol.has.name" {
+            let needle = single_string_arg(name, args)?;
+            let plan = plan_symbol(&needle, None, &SymbolPolicy::defaults())
+                .map_err(LexicalPlannerError::SymbolPlan)?;
+            return Ok(PlanLeaf::Symbol { name: needle, plan });
+        }
+        match kind_of(name) {
+            Some(PredicateKind::RepoFileGate) => {
                 validate_repo_has_file_args(name, args)?;
                 Ok(PlanLeaf::Predicate {
                     name: name.to_owned(),
                 })
             }
-            "file.contains" | "file.has.content" => {
+            Some(PredicateKind::ContentLeaf) => {
                 let _needle = single_string_arg(name, args)?;
                 Ok(PlanLeaf::Predicate {
                     name: name.to_owned(),
                 })
             }
-            _ => Err(LexicalPlannerError::Unimplemented {
+            None => Err(LexicalPlannerError::Unimplemented {
                 node: "predicate_leaf",
-                owner_ticket: "LXE-03-predicate-extensions",
+                owner_ticket: PREDICATE_OWNER,
             }),
         }
     }
@@ -263,13 +269,13 @@ fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, Lexi
     if args.len() != 1 {
         return Err(LexicalPlannerError::Unimplemented {
             node: predicate_arity_label(name),
-            owner_ticket: "LXE-03-predicate-extensions",
+            owner_ticket: PREDICATE_OWNER,
         });
     }
     let Some(arg) = args.first() else {
         return Err(LexicalPlannerError::Unimplemented {
             node: predicate_arity_label(name),
-            owner_ticket: "LXE-03-predicate-extensions",
+            owner_ticket: PREDICATE_OWNER,
         });
     };
     match arg {
@@ -279,7 +285,7 @@ fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, Lexi
         LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
             Err(LexicalPlannerError::Unimplemented {
                 node: predicate_arity_label(name),
-                owner_ticket: "LXE-03-predicate-extensions",
+                owner_ticket: PREDICATE_OWNER,
             })
         }
     }
@@ -300,36 +306,20 @@ fn predicate_arity_label(name: &str) -> &'static str {
     }
 }
 
+/// Validate `repo.has.file(...)` arguments by delegating to the registry-owned
+/// matcher parser, so the planner and lexical lowering share one argument
+/// contract. The parsed matchers are discarded here; the planner only needs to
+/// confirm the shape is admissible before emitting `PlanLeaf::Predicate`.
 fn validate_repo_has_file_args(
     name: &str,
     args: &[LqPredicateArg],
 ) -> Result<(), LexicalPlannerError> {
-    let mut saw_matcher = false;
-    for arg in args {
-        match arg {
-            LqPredicateArg::Filter { name, .. } if name == "path" || name == "name" => {
-                saw_matcher = true;
-            }
-            LqPredicateArg::Keyword(_)
-            | LqPredicateArg::Phrase(_)
-            | LqPredicateArg::RawString(_)
-            | LqPredicateArg::Number(_)
-            | LqPredicateArg::Filter { .. } => {
-                return Err(LexicalPlannerError::Unimplemented {
-                    node: predicate_arity_label(name),
-                    owner_ticket: "LXE-03-predicate-extensions",
-                });
-            }
-        }
-    }
-    if saw_matcher {
-        Ok(())
-    } else {
-        Err(LexicalPlannerError::Unimplemented {
+    parse_repo_file_matchers(args)
+        .map(|_constraint| ())
+        .map_err(|_err| LexicalPlannerError::Unimplemented {
             node: predicate_arity_label(name),
-            owner_ticket: "LXE-03-predicate-extensions",
+            owner_ticket: PREDICATE_OWNER,
         })
-    }
 }
 
 /// Default per-leaf candidate cap by engine.

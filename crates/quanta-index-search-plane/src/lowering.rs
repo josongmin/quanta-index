@@ -212,13 +212,65 @@ fn lower_sourcegraph_structural_shape(
     Ok(query)
 }
 
-/// Sourcegraph structural lowering supports a **narrow** mixed-domain subset:
-/// bare [`LqLeaf::Keyword`] lexical leaves may coexist with structural pattern
-/// bodies (`Phrase` / `Regex` lowered to [`LqLeaf::StructuralBlock`]). `Phrase`,
-/// `Regex`, `RawString`, and `Predicate` leaves are **not** preserved as lexical
-/// siblings on the SG structural route — phrase/regex bodies become structural,
-/// raw/predicate shapes typed-fail. Native mixed-domain parity for phrase/raw/
-/// predicate siblings is intentionally out of scope until SG lowering widens.
+/// Per-leaf legality verdict on the Sourcegraph structural route.
+///
+/// The body-carrying variants hand the borrowed leaf body straight to the
+/// rewrite so the rewrite never has to re-match the leaf to recover it.
+#[derive(Debug, PartialEq, Eq)]
+enum StructuralLeafVerdict<'a> {
+    /// Lexical sibling the active LQ wire can represent unchanged (`Keyword`,
+    /// `RawString`, `Predicate`). A preserved `Predicate` is gated by the
+    /// lexical executor downstream exactly as on the native route: executable
+    /// predicates (`repo.has.file`, `file.contains`, …) run; non-executable
+    /// ones typed-fail with `LEX_PREDICATE_UNIMPLEMENTED` at execution — same
+    /// code and layer as native, so SG mirrors native for every predicate
+    /// sibling (ADV-02).
+    PreserveLexical,
+    /// Phrase body to lower into a structural block.
+    LowerPhraseBody(&'a str),
+    /// Regex body to lower into a structural block.
+    LowerRegexBody(&'a str),
+    /// Leaf kind the structural route does not represent (`StructuralBlock`, a
+    /// pre-SG shape that should never reach this rewrite).
+    TypedFail,
+}
+
+/// Leaf-kind legality matrix for the SG structural route. This is the single
+/// authority for which leaf kinds the route preserves, lowers, or rejects.
+/// Flipping a cell here widens or narrows the mixed-domain subset and must
+/// travel with parity proof per the ADV-02 admission bar (enforced by
+/// `sourcegraph_structural_leaf_verdict_matrix_is_frozen` and the
+/// `check-dsl-capability-truth` gate).
+fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_> {
+    match leaf {
+        LqLeaf::Keyword(_) | LqLeaf::RawString(_) | LqLeaf::Predicate { .. } => {
+            StructuralLeafVerdict::PreserveLexical
+        }
+        LqLeaf::Phrase(body) => StructuralLeafVerdict::LowerPhraseBody(body),
+        LqLeaf::Regex(body) => StructuralLeafVerdict::LowerRegexBody(body),
+        LqLeaf::StructuralBlock(_) => StructuralLeafVerdict::TypedFail,
+    }
+}
+
+/// Typed-fail for a leaf kind the SG structural route does not represent.
+fn structural_route_typed_fail() -> CoreError {
+    CoreError::Typed {
+        code: BridgeErrorCode::BridgeTranslateFail
+            .as_code_str()
+            .to_string(),
+        message:
+            "bridge: Sourcegraph structural route accepts only structural pattern bodies plus executable filters"
+                .to_string(),
+    }
+}
+
+/// Rewrite a Sourcegraph structural expression against the leaf-kind legality
+/// matrix ([`structural_leaf_verdict`]). Mixed-domain lexical siblings that the
+/// active LQ wire can represent (`Keyword`, `RawString`, `Predicate`) are
+/// preserved unchanged to mirror native execution (a preserved `Predicate` is
+/// gated by the lexical executor downstream); `Phrase` / `Regex` bodies become
+/// structural blocks; `StructuralBlock` typed-fails. Native execution stays the
+/// source of truth — SG widening only follows it.
 fn rewrite_sourcegraph_structural_expr(
     query_text: &str,
     expr: &LqExpr,
@@ -232,36 +284,25 @@ fn rewrite_sourcegraph_structural_expr(
                 "bridge: Sourcegraph structural route requires at least one structural pattern body"
                     .to_string(),
         }),
-        LqExpr::Leaf(LqLeaf::Keyword(body)) => Ok(LqExpr::Leaf(LqLeaf::Keyword(body.clone()))),
-        LqExpr::Leaf(LqLeaf::Phrase(body)) => Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
-            lower_sourcegraph_structural_body(query_text, body)?,
-        ))),
-        LqExpr::Leaf(LqLeaf::Regex(body)) => Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
-            lower_sourcegraph_structural_regex_body(body)?,
-        ))),
-        LqExpr::Leaf(
-            LqLeaf::RawString(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. },
-        ) => Err(CoreError::Typed {
-            code: BridgeErrorCode::BridgeTranslateFail
-                .as_code_str()
-                .to_string(),
-            message:
-                "bridge: Sourcegraph structural route accepts only structural pattern bodies plus executable filters"
-                    .to_string(),
-        }),
+        LqExpr::Leaf(leaf) => match structural_leaf_verdict(leaf) {
+            StructuralLeafVerdict::PreserveLexical => Ok(LqExpr::Leaf(leaf.clone())),
+            StructuralLeafVerdict::LowerPhraseBody(body) => Ok(LqExpr::Leaf(
+                LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
+            )),
+            StructuralLeafVerdict::LowerRegexBody(body) => Ok(LqExpr::Leaf(
+                LqLeaf::StructuralBlock(lower_sourcegraph_structural_regex_body(body)?),
+            )),
+            StructuralLeafVerdict::TypedFail => Err(structural_route_typed_fail()),
+        },
         LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(rewrite_sourcegraph_structural_expr(
             query_text, inner,
         )?))),
-        LqExpr::All(children) => rewrite_sourcegraph_structural_children(
-            query_text,
-            children,
-            true,
-        ),
-        LqExpr::Any(children) => rewrite_sourcegraph_structural_children(
-            query_text,
-            children,
-            false,
-        ),
+        LqExpr::All(children) => {
+            rewrite_sourcegraph_structural_children(query_text, children, true)
+        }
+        LqExpr::Any(children) => {
+            rewrite_sourcegraph_structural_children(query_text, children, false)
+        }
     }
 }
 
@@ -375,11 +416,13 @@ fn map_bridge_error(err: &BridgeError) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        lower_lq_query_text, lower_sourcegraph_query_text, lower_sourcegraph_structural_query_text,
+        StructuralLeafVerdict, lower_lq_query_text, lower_sourcegraph_query_text,
+        lower_sourcegraph_structural_query_text, structural_leaf_verdict,
     };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
-        LqPredicateArg, LqSelect, LqSpan, LqStructuralExpr, LqType, LqVisibility, LqYesNoOnly,
+        LqPredicateArg, LqSelect, LqSpan, LqStructuralBlock, LqStructuralExpr, LqType,
+        LqVisibility, LqYesNoOnly,
     };
     use quanta_index_core::CoreError;
     use quanta_index_lq_bridge::BridgeErrorCode;
@@ -729,6 +772,76 @@ mod tests {
     }
 
     #[test]
+    fn sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or() -> TestResult {
+        // `file:contains('...')` lowers to an executable RawString leaf; mixed
+        // with a structural body it must now survive (ADV-02 widening) as the
+        // exact tree native produces for `'parity_raw_needle' OR match { ... }`.
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural file:contains('parity_raw_needle') OR "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural RawString OR lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [lexical, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed OR children, got {children:?}").into());
+                };
+                if !matches!(lexical, LqExpr::Leaf(LqLeaf::RawString(body)) if body == "parity_raw_needle")
+                {
+                    return Err(format!("expected RawString lexical child, got {lexical:?}").into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
+                return Err(format!("expected mixed OR tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean() -> TestResult {
+        // ADV-02 Predicate sibling: `repo:has.file(...)` lowers to a
+        // `LqLeaf::Predicate` that is preserved as a lexical sibling of the
+        // structural body — the exact tree native produces for
+        // `repo:has.file(...) AND match { ... }`. The lexical executor gates the
+        // predicate downstream (parity rail proves SG↔native execution).
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural repo:has.file(path:src/lib.rs) AND "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural Predicate AND lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == "repo.has.file"
+                ) {
+                    return Err(format!("expected predicate sibling, got {predicate:?}").into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or() -> TestResult {
         let err = match lower_sourcegraph_structural_query_text(
             r#"repo:repo-e2e patterntype:structural parity_needle_alpha OR "function_item { { identifier :[name] } }""#,
@@ -1069,6 +1182,52 @@ mod tests {
         let (code, message) = typed_error(err)?;
         assert_eq!(code, "PARSE_FAIL");
         assert!(!message.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts the frozen leaf-kind verdict matrix via assert_eq! macros"
+    )]
+    fn sourcegraph_structural_leaf_verdict_matrix_is_frozen() -> TestResult {
+        // The leaf-kind legality matrix for the SG structural route. Flipping a
+        // cell here is the only way to widen or narrow the mixed-domain subset,
+        // and must travel with parity proof per the ADV-02 admission bar.
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::Keyword("k".to_string())),
+            StructuralLeafVerdict::PreserveLexical
+        );
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::RawString("r".to_string())),
+            StructuralLeafVerdict::PreserveLexical,
+            "ADV-02: RawString siblings are preserved to mirror native"
+        );
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::Phrase("p".to_string())),
+            StructuralLeafVerdict::LowerPhraseBody("p")
+        );
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::Regex("x".to_string())),
+            StructuralLeafVerdict::LowerRegexBody("x")
+        );
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::Predicate {
+                name: "repo.has.file".to_string(),
+                args: Vec::new(),
+            }),
+            StructuralLeafVerdict::PreserveLexical,
+            "ADV-02: Predicate siblings are preserved; the lexical executor gates them as on native"
+        );
+        assert_eq!(
+            structural_leaf_verdict(&LqLeaf::StructuralBlock(LqStructuralBlock {
+                lang: None,
+                nodes: Vec::new(),
+                exprs: Vec::new(),
+            })),
+            StructuralLeafVerdict::TypedFail,
+            "StructuralBlock is a pre-SG shape and must stay the only typed-fail leaf"
+        );
         Ok(())
     }
 }

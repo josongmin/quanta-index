@@ -6,10 +6,13 @@
 //! exercises self-parity between the two surface syntaxes that both feed
 //! into this daemon's single active lowering + execution path per route.
 //!
-//! SG structural mixed-domain parity covers the **narrow** subset documented
-//! in `quanta-index-search-plane::lowering` (keyword leaf + structural body
-//! only). Phrase/raw/predicate mixed siblings are native-only until SG
-//! lowering widens.
+//! SG structural mixed-domain parity covers the subset frozen by
+//! `quanta-index-search-plane::lowering::structural_leaf_verdict`: `Keyword`
+//! and (ADV-02) `RawString` and `Predicate` leaves are preserved as lexical
+//! siblings of a structural body; `Phrase`/`Regex` bodies become structural
+//! blocks. A preserved `Predicate` is gated by the lexical executor exactly as
+//! on native (executable predicates run; non-executable ones typed-fail at
+//! execution). Only `StructuralBlock` remains typed-fail on the route.
 //!
 //! Each row pairs a Sourcegraph-syntax query and an equivalent native LQ
 //! query. The runner issues both against the same sealed corpus and
@@ -401,6 +404,19 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
         },
     },
+    // ADV-01 widened arg-shape family: `repo.has.file(lang:<x>)`. The corpus
+    // repo contains `beta_py` (scripts/helper.py, python), so the `lang:python`
+    // gate opens identically on both syntaxes and returns the parity set.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_lang_predicate_parity",
+        sg_query: "repo:has.file(lang:python) parity_needle_alpha",
+        lq_query: "repo:has.file(lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
     ParityScenario {
         route: QueryRoute::Text,
         id: "select_repo_projection_parity",
@@ -482,6 +498,21 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust"],
         },
     },
+    // ADV-02 widening: Predicate sibling preserved on the SG structural route.
+    // `repo:has.file(path:src/lib.rs)` lowers to a preserved Predicate leaf that
+    // gates the repo open, AND'd with a structural body — mirroring native
+    // `repo:has.file(...) AND match { ... }`. The lexical executor runs the
+    // predicate identically on both syntaxes; intersection is `alpha_rust`.
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_sibling_and_parity",
+        sg_query: r#"patterntype:structural repo:has.file(path:src/lib.rs) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "repo:has.file(path:src/lib.rs) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
     // Repo-scoped filters under mixed OR are bridge fail-closed; see lowering scoped-filter test.
     ParityScenario {
         route: QueryRoute::Structural,
@@ -491,6 +522,20 @@ const SCENARIOS: &[ParityScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "beta_py", "delta_other_path"],
+        },
+    },
+    // ADV-02 widening: RawString sibling preserved on the SG structural route.
+    // `file:contains('foo_bar')` lowers to an executable RawString leaf that
+    // OR's with a structural body, mirroring native `'foo_bar' OR match { ... }`.
+    // `'foo_bar'` raw-matches `zeta_raw`; the structural body matches `alpha_rust`.
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_raw_string_or_parity",
+        sg_query: r#"patterntype:structural file:contains('foo_bar') OR "function_item { { identifier :[name] } }""#,
+        lq_query: "'foo_bar' OR match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "zeta_raw"],
         },
     },
     ParityScenario {

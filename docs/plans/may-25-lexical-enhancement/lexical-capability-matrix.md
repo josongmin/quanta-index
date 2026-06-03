@@ -34,6 +34,20 @@ Machine-readable ledger: [dsl-proof-ledger.toml](dsl-proof-ledger.toml)
 - Bridge companion rail:
   `crates/quanta-index-lq-bridge/tests/golden_bridge.rs`
 
+## Code-Owned Capability Sources
+
+These are the code SSOTs the documentation tracks; the `jun-2-dsl-advanced`
+drift checker (`tools/ci/lint/check-dsl-capability-truth.py`, ADV-04) reads them
+so the ledger/matrix cannot silently diverge from the executable subset:
+
+- predicate subset: `crates/quanta-index-lexical/src/predicate_registry.rs`
+  (`PREDICATE_REGISTRY` — the only enumeration of executable lexical predicate
+  names and their lowering kind)
+- SG structural legality: `crates/quanta-index-search-plane/src/lowering.rs`
+  (`structural_leaf_verdict` leaf-kind verdict matrix; `rewrite_sourcegraph_structural_expr`
+  dispatches on it). The checker freezes this map against
+  `EXPECTED_STRUCTURAL_VERDICTS` (code-vs-snapshot), not against this prose.
+
 ## Leaves And Boolean
 
 | Surface | Status | Proof rail | Current live behavior |
@@ -43,10 +57,10 @@ Machine-readable ledger: [dsl-proof-ledger.toml](dsl-proof-ledger.toml)
 | `RawString` | `active runtime` | `runtime_native_raw_substring` | raw substring executes through lexical raw-substring path |
 | `Regex` | `active runtime` | `runtime_native_regex`, `runtime_sourcegraph_regexp_option` | regex executes on lexical route with exact verify |
 | `StructuralBlock` | `active runtime` | `runtime_native_structural_root_kind`, `runtime_sourcegraph_patterntype_structural_named_hole`, `runtime_native_structural_unsupported_lang` | runtime subset is live on structural route, and the closeout rail asserts exact structural bindings as well as candidate ids |
-| `Predicate repo.has.file(...)` | `active runtime` | `runtime_*_repo_has_file_true_gate_multi_repo`, `runtime_sourcegraph_repo_has_file_miss_multi_repo`, `runtime_native_repo_has_file_not_false_multi_repo`, `tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id`, `dsl_scenarios`, `e2e_perf_chaos`, `e2e_lexical_full_fidelity`, `tantivy_smoke` | true-gate narrows by indexed `source_repo_id` on `docs-multi-repo.toml`; executable arg subset remains `path:` / `name:` filters only |
+| `Predicate repo.has.file(...)` | `active runtime` | `runtime_*_repo_has_file_true_gate_multi_repo`, `runtime_sourcegraph_repo_has_file_miss_multi_repo`, `runtime_native_repo_has_file_not_false_multi_repo`, `tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id`, `tantivy_executes_repo_has_file_predicate_with_lang_matcher`, `e2e_dual_syntax_lowering_parity` (`repo_has_file_lang_predicate_parity`), `dsl_scenarios`, `e2e_perf_chaos`, `e2e_lexical_full_fidelity`, `tantivy_smoke` | true-gate narrows by indexed `source_repo_id`; executable arg subset is `path:` / `name:` (regex matchers) plus `lang:` (ADV-01; exact match on the indexed language field). The `path:`/`name:`/`lang:` contract is owned by `predicate_registry::parse_repo_file_matchers`; other filters typed-fail |
 | `Predicate file.contains(...)` | `active runtime` | `runtime_native_file_contains_raw_hit`, `runtime_native_file_contains_phrase_hit`, `runtime_native_file_contains_phrase_miss`, `sdk_frontdoor`, `e2e_perf_chaos`, `tantivy_smoke` (`file_has_content_predicate_phrase_and_regex`), `e2e_dual_syntax_lowering_parity` (`file_contains_raw_substring_parity`, `file_contains_phrase_parity`) | native dotted predicate surface executes on the shipped raw/content leaf subset with direct runtime raw-hit, phrase-hit, and phrase-miss rows; public SDK front-door, parity, and chaos rails verify the same surface beyond runtime corpus closeout |
 | `Predicate file.has.content(...)` | `active runtime` | `runtime_sourcegraph_file_has_content_regex_hit`, `runtime_sourcegraph_file_has_content_phrase_miss`, `tantivy_smoke` (`file_has_content_predicate_phrase_and_regex`), `e2e_dual_syntax_lowering_parity` (`file_has_content_regex_parity`) | SG alias executes on lexical content-leaf substrate with regex hit and phrase miss oracle; native `file.has.content` predicate name is owner-local proved |
-| Predicate names / arg shapes outside shipped subset | `typed fail-closed` | `quanta-index-lexical` planner typed-unavailable paths + bridge rejection rails | unsupported predicate lowering does not silently widen |
+| Predicate names / arg shapes outside shipped subset | `typed fail-closed` | `quanta-index-lexical` `predicate_registry` (`kind_of` → `None`) + planner typed-unavailable paths + bridge rejection rails | unsupported predicate lowering does not silently widen; the executable name subset is the `PREDICATE_REGISTRY` table |
 | `Empty` | `parser_only` | `lq-norm` parser/normalizer keep `LqExpr::Empty`; no runtime row | empty query is a parser shape, not a closeout-green runtime surface |
 | `Not` | `active runtime` | `runtime_native_boolean_not` | lexical boolean negation executes with exact ordered ids |
 | `All` | `active runtime` | `runtime_native_boolean_and` | lexical boolean AND executes on text rail |
