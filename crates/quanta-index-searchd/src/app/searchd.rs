@@ -9,7 +9,13 @@ use anyhow::Result;
 
 use crate::app::runtime::SearchdRuntime;
 
-const DEFAULT_ACCEPT_IDLE: Duration = Duration::from_millis(50);
+// Query clients use one-shot UDS connections, so the accept-loop idle cadence
+// is directly observable in warm p95. Keep query polling tight; control/ingest
+// can stay looser because they are not on the steady-state query hot path.
+const QUERY_ACCEPT_IDLE: Duration = Duration::from_millis(1);
+const CONTROL_ACCEPT_IDLE: Duration = Duration::from_millis(5);
+const INGEST_ACCEPT_IDLE: Duration = Duration::from_millis(5);
+const SHUTDOWN_POLL_IDLE: Duration = Duration::from_millis(10);
 
 /// Run a fully-assembled runtime with an externally-driven shutdown flag.
 pub fn drive(runtime: SearchdRuntime, shutdown: &Arc<AtomicBool>) -> Result<()> {
@@ -22,13 +28,13 @@ pub fn drive(runtime: SearchdRuntime, shutdown: &Arc<AtomicBool>) -> Result<()> 
     let query_shutdown = query_server.shutdown_handle();
     let control_shutdown = control_server.shutdown_handle();
     let ingest_shutdown = ingest_server.shutdown_handle();
-    let query_join = query_server.spawn(DEFAULT_ACCEPT_IDLE)?;
-    let control_join = control_server.spawn(DEFAULT_ACCEPT_IDLE)?;
+    let query_join = query_server.spawn(QUERY_ACCEPT_IDLE)?;
+    let control_join = control_server.spawn(CONTROL_ACCEPT_IDLE)?;
     // QI-RT-01: ingest server runs alongside query / control.
-    let ingest_join = ingest_server.spawn(DEFAULT_ACCEPT_IDLE)?;
+    let ingest_join = ingest_server.spawn(INGEST_ACCEPT_IDLE)?;
 
     while !shutdown.load(Ordering::Acquire) {
-        std::thread::sleep(DEFAULT_ACCEPT_IDLE);
+        std::thread::sleep(SHUTDOWN_POLL_IDLE);
     }
 
     query_shutdown.trigger();

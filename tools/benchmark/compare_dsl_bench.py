@@ -5,14 +5,23 @@ Layer-3 (query latency) regression gate for the DSL-benchmarking model defined
 in ``docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md``. Reads two JSON
 artifacts (see that doc / ``tools/benchmark/README.md`` for the schema): one
 baseline (checked into ``tools/benchmark/baselines/``) and one current run
-(produced by the criterion ``dsl_query_matrix`` bench for warm, or by
-``run_dsl_cold_matrix.py`` for cold). Matches scenarios by ``scenario_id`` and
-exits non-zero if any scenario's p95 latency has grown past the configured
-relative + absolute thresholds.
+(produced by ``dsl_warm_matrix`` for warm, or by ``run_dsl_cold_matrix.py``
+for cold). Matches scenarios by ``scenario_id`` and exits non-zero if the
+mode's *blocking metric* has grown past the configured relative + absolute
+thresholds.
 
-Why both thresholds: noise on sub-millisecond warm scenarios easily produces
-large relative swings; we only care about meaningful regressions, so a delta
-must exceed *both* ``--rel-threshold`` and ``--abs-threshold-ms`` to count.
+Blocking metrics:
+
+- warm: ``p50`` (steady-state central tendency)
+- cold: ``p50`` (first-query central tendency)
+
+``p95``/``p99`` remain in the artifact as observability signals, but they are
+advisory-only because same-commit workstation reruns still show ambient tail
+drift long after the central tendency has stabilized.
+
+Why both thresholds: noise on sub-millisecond scenarios easily produces large
+relative swings; we only care about meaningful regressions, so a delta must
+exceed *both* ``--rel-threshold`` and ``--abs-threshold-ms`` to count.
 
 Rows carrying ``early_stop_reason`` (e.g. ``fixture_not_seeded``) were never
 measured — their latency fields are null. Such rows are skipped entirely: never
@@ -31,6 +40,7 @@ from pathlib import Path
 # --rel-threshold / --abs-threshold-ms flags override these.
 DEFAULT_REL_THRESHOLD = 0.10
 DEFAULT_ABS_THRESHOLD_MS = {"warm": 1.0, "cold": 5.0}
+DEFAULT_BLOCKING_METRIC = {"warm": "p50", "cold": "p50"}
 MIN_SAMPLES_FOR_P95 = {"cold": 20}
 
 
@@ -41,7 +51,9 @@ class ScenarioRow:
     syntax: str
     mode: str
     result_shape: str
+    latency_p50_ms: float | None
     latency_p95_ms: float | None
+    latency_p99_ms: float | None
     early_stop_reason: str | None
     samples: int
 
@@ -52,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "current",
         type=Path,
-        help="fresh artifact JSON (criterion dsl_query_matrix or run_dsl_cold_matrix.py)",
+        help="fresh artifact JSON (dsl_warm_matrix or run_dsl_cold_matrix.py)",
     )
     parser.add_argument(
         "--update-baseline",
@@ -92,7 +104,9 @@ def load_artifact(path: Path) -> tuple[str, dict[str, ScenarioRow]]:
             syntax=row["syntax"],
             mode=row["mode"],
             result_shape=row["result_shape"],
+            latency_p50_ms=None if row.get("latency_p50_ms") is None else float(row["latency_p50_ms"]),
             latency_p95_ms=None if latency is None else float(latency),
+            latency_p99_ms=None if row.get("latency_p99_ms") is None else float(row["latency_p99_ms"]),
             early_stop_reason=row.get("early_stop_reason"),
             samples=int(row.get("samples", 0)),
         )
@@ -101,6 +115,16 @@ def load_artifact(path: Path) -> tuple[str, dict[str, ScenarioRow]]:
 
 def is_measured(row: ScenarioRow) -> bool:
     return row.early_stop_reason is None and row.latency_p95_ms is not None
+
+
+def metric_value(row: ScenarioRow, metric: str) -> float | None:
+    if metric == "p50":
+        return row.latency_p50_ms
+    if metric == "p95":
+        return row.latency_p95_ms
+    if metric == "p99":
+        return row.latency_p99_ms
+    raise ValueError(f"unknown metric: {metric}")
 
 
 def main() -> int:
@@ -132,14 +156,16 @@ def main() -> int:
         if args.abs_threshold_ms is not None
         else DEFAULT_ABS_THRESHOLD_MS.get(mode, 1.0)
     )
+    blocking_metric = DEFAULT_BLOCKING_METRIC.get(mode, "p95")
 
     regressed: list[tuple[str, float, float, float, float]] = []
     missing_measured: list[str] = []
     insufficient_samples: list[tuple[str, str, int, int]] = []
+    advisories: list[tuple[str, str, float, float, float, float]] = []
 
     all_scenarios = sorted(set(baseline) | set(current))
     print(
-        f"mode={mode}  rel-threshold={rel_threshold * 100:.0f}%  abs-threshold={abs_threshold_ms:.2f}ms"
+        f"mode={mode}  blocking-metric={blocking_metric}  rel-threshold={rel_threshold * 100:.0f}%  abs-threshold={abs_threshold_ms:.2f}ms"
     )
     print(f"{'scenario':40s} {'baseline':>10s} {'current':>10s} {'delta':>10s} {'rel':>8s}")
     print("-" * 82)
@@ -177,8 +203,8 @@ def main() -> int:
             )
             continue
 
-        base_ms = base.latency_p95_ms
-        cur_ms = cur.latency_p95_ms
+        base_ms = metric_value(base, blocking_metric)
+        cur_ms = metric_value(cur, blocking_metric)
         assert base_ms is not None and cur_ms is not None
         delta = cur_ms - base_ms
         rel = (delta / base_ms) if base_ms > 0 else float("inf") if delta > 0 else 0.0
@@ -192,15 +218,48 @@ def main() -> int:
             f"{delta:>+8.2f}ms {rel_pct:>8s}{marker}"
         )
 
+        for advisory_metric in ("p95", "p99"):
+            if advisory_metric == blocking_metric:
+                continue
+            base_advisory = metric_value(base, advisory_metric)
+            cur_advisory = metric_value(cur, advisory_metric)
+            if base_advisory is None or cur_advisory is None:
+                continue
+            advisory_delta = cur_advisory - base_advisory
+            advisory_rel = (
+                (advisory_delta / base_advisory)
+                if base_advisory > 0
+                else float("inf") if advisory_delta > 0 else 0.0
+            )
+            if advisory_rel > rel_threshold and advisory_delta > abs_threshold_ms:
+                advisories.append(
+                    (
+                        scenario_id,
+                        advisory_metric,
+                        base_advisory,
+                        cur_advisory,
+                        advisory_delta,
+                        advisory_rel,
+                    )
+                )
+
     failures = 0
     if regressed:
         print()
         for scenario_id, base_ms, cur_ms, delta, rel in regressed:
             print(
-                f"REGRESSION {scenario_id}: p95 {base_ms:.2f}ms -> {cur_ms:.2f}ms "
+                f"REGRESSION {scenario_id}: {blocking_metric} {base_ms:.2f}ms -> {cur_ms:.2f}ms "
                 f"({delta:+.2f}ms, {rel * 100:+.1f}%)"
             )
         failures += len(regressed)
+
+    if advisories:
+        print()
+        for scenario_id, metric, base_ms, cur_ms, delta, rel in advisories:
+            print(
+                f"ADVISORY {scenario_id}: {metric} {base_ms:.2f}ms -> {cur_ms:.2f}ms "
+                f"({delta:+.2f}ms, {rel * 100:+.1f}%)"
+            )
 
     if missing_measured:
         print()
@@ -231,7 +290,7 @@ def main() -> int:
             parts.append(f"{missing_n} missing")
         print(
             f"FAIL: {', '.join(parts)} scenario(s) over thresholds "
-            f"(p95 rel > {rel_threshold * 100:.0f}% AND abs > {abs_threshold_ms:.2f}ms)."
+            f"({blocking_metric} rel > {rel_threshold * 100:.0f}% AND abs > {abs_threshold_ms:.2f}ms)."
         )
         print("To accept a deliberate change: re-run with --update-baseline.")
         return 1

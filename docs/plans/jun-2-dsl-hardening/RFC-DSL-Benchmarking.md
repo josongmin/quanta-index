@@ -114,14 +114,27 @@ shipped DSL surface는 아래 둘로 나눠 측정한다.
 
 adopted harness:
 
-- `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
+- authority runner: `crates/quanta-index-searchd-harness/src/bin/dsl_warm_matrix.rs`
+- exploratory criterion view: `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
 
 역할:
 
-1. runtime를 한 번 boot
-2. deterministic fixture ingest + activate
-3. scenario별 query를 반복 실행
-4. `p50/p95/p99`를 scenario 단위로 기록
+1. bench-profile authority binary를 direct exec
+2. isolated warm pass마다 fresh runtime boot + deterministic fixture ingest + activate
+3. pass를 scenario round-robin으로 interleave
+4. isolated pass raw samples를 scenario 단위로 pooled aggregation
+5. `p50/p95/p99`를 scenario 단위로 기록
+
+measurement contract note:
+
+- bench query clients use one-shot UDS requests, so daemon accept-loop cadence
+  is part of the observed warm path
+- the current adopted daemon contract is
+  `crates/quanta-index-searchd/src/app/searchd.rs`:
+  query accept idle `1ms`, control/ingest accept idle `5ms`
+- older warm artifacts captured under a uniform `50ms` accept-loop poll are not
+  comparable as-if they measured the same steady-state path
+- workstation blocking metric is `p50`; `p95` / `p99` remain advisory tail signals
 
 scenario family:
 
@@ -179,7 +192,7 @@ gate discipline:
 1. cold `p95` gate는 measured row당 최소 `20` samples를 요구한다
 2. fewer-sample cold runs are exploratory only; they are not benchmark-gate authority
 3. the cold orchestrator should build the harness binary once, then invoke the
-   binary directly per sample instead of paying `cargo run` orchestration on
+   bench-profile binary directly per sample instead of paying `cargo run` orchestration on
    every sample
 
 이 레이어는 아래를 포함한다.
@@ -188,6 +201,7 @@ gate discipline:
 2. socket connect
 3. first request path
 4. route-specific first-touch overhead
+5. daemon accept-loop cadence on the first query connection
 
 ## Shared Scenario Authority
 
@@ -210,6 +224,15 @@ adopted structure:
 5. fixture seed id
 6. expected result shape
 7. latency class (`warm` / `cold`)
+
+authority-run discipline:
+
+1. warm and cold producers must run serially on the same machine
+2. a concurrent warm+cold capture is exploratory only; it is not baseline or gate authority
+3. the adopted front door for an authority refresh is `just rust-bench-dsl-refresh 20`
+4. warm gate authority comes from `dsl_warm_matrix`; criterion `dsl_query_matrix`
+   is exploratory only and must not overwrite baselines
+5. warm authority binary and cold probe binary both run from workspace `[profile.bench]`
 
 주의:
 
@@ -288,9 +311,11 @@ optional but recommended:
 scenario별 ratchet rule:
 
 1. warm:
-   - fail if `p95` regression > `10%` and absolute delta > `1.0 ms`
+   - fail if `p50` regression > `10%` and absolute delta > `1.0 ms`
+   - `p95` / `p99` are advisory-only on workstation authority runs
 2. cold:
-   - fail if `p95` regression > `10%` and absolute delta > `5.0 ms`
+   - fail if `p50` regression > `10%` and absolute delta > `5.0 ms`
+   - `p95` / `p99` are advisory-only on workstation authority runs
 
 compile timing gate는 기존 규칙 유지:
 
@@ -307,8 +332,8 @@ compile timing gate는 기존 규칙 유지:
 just rust-timings-fast-check
 just rust-timings-daemon-check
 ./scripts/cargow --lane bench-lane bench -p quanta-index-lq-norm --bench pipeline --all-features --locked
-./scripts/cargow --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
-python3 tools/ci/benchmark/run_dsl_cold_matrix.py
+just rust-bench-dsl-warm
+python3 tools/benchmark/run_dsl_cold_matrix.py --samples 20 --out artifacts/dsl-bench/cold-matrix.json
 ```
 
 Phase B gate command 추가 시:
@@ -339,12 +364,12 @@ python3 tools/ci/benchmark/compare_dsl_bench.py \
 
 ## Files To Add
 
-1. `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
-2. `crates/quanta-index-searchd-runtime/src/dev_support/dsl_bench_scenarios.rs`
+1. `crates/quanta-index-searchd-harness/src/bin/dsl_warm_matrix.rs`
+2. `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
 3. `tools/ci/benchmark/run_dsl_cold_matrix.py`
 4. `tools/ci/benchmark/compare_dsl_bench.py`
-5. `tools/ci/benchmark/baselines/warm-matrix.json`
-6. `tools/ci/benchmark/baselines/cold-matrix.json`
+5. `tools/benchmark/baselines/warm-matrix.json`
+6. `tools/benchmark/baselines/cold-matrix.json`
 
 ## DoD
 

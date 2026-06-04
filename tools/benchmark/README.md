@@ -52,10 +52,20 @@ Both scripts read and write a single artifact shape:
 
 ## Producers
 
-- **`warm-matrix.json`** is produced by the criterion bench `dsl_query_matrix`
-  (amortized hot-path latency; the runtime is booted once and reused).
+- **`warm-matrix.json`** is produced by the dedicated runner
+  `dsl_warm_matrix` (bench-profile binary; each isolated pass boots a fresh
+  runtime, the runner interleaves passes round-robin across scenarios, and the
+  final row pools raw samples across those isolated passes).
 - **`cold-matrix.json`** is produced by `run_dsl_cold_matrix.py` (true
-  cold-start: a fresh OS process per sample).
+  cold-start: a fresh OS process per sample, using a bench-profile prebuilt
+  `dsl_cold_matrix` binary).
+- warm measurements include the real daemon UDS front door. Because clients are
+  one-shot, daemon accept-loop cadence is still visible in the tail metrics.
+  The current adopted contract is
+  `crates/quanta-index-searchd/src/app/searchd.rs`: query accept idle `1ms`,
+  control/ingest accept idle `5ms`. Older artifacts captured under a uniform
+  `50ms` accept poll are not comparable as-if they measured the same
+  steady-state path.
 
 The scenario authority lives in
 `crates/quanta-index-searchd-harness/src/scenarios.rs` and currently covers all
@@ -74,12 +84,22 @@ served through the real runtime — no mocked latencies.
 ## Convenience recipes
 
 ```
-just rust-bench-dsl-warm        # criterion warm matrix -> artifacts/dsl-bench/warm-matrix.json
+just rust-bench-dsl-warm        # dedicated warm authority runner -> warm-matrix.json
+just rust-bench-dsl-warm-criterion  # exploratory criterion view -> warm-matrix.criterion.json
 just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
+just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority run
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/
 ```
 
-The warm bench honours `$DSL_BENCH_WARM_SAMPLES` (default 200) for quick runs.
+The warm authority runner honours `$DSL_BENCH_WARM_SAMPLES` (default 100).
+The dedicated warm runner also honours `$DSL_BENCH_WARM_REPEATS`
+(default 5), `$DSL_BENCH_WARM_COOLDOWN_MS` (default 10),
+`$DSL_BENCH_WARM_PASS_SETTLE_MS` (default 5), and
+`$DSL_BENCH_WARM_PRIME_QUERIES` (default 5).
+Authority artifacts must be produced **serially**. Do not run warm and cold
+producers in parallel on the same machine and then treat the results as gate
+authority; shared CPU/package-cache contention can distort warm tail advisories
+and cold first-query latency.
 
 ## Scripts
 
@@ -91,7 +111,12 @@ python3 tools/benchmark/compare_dsl_bench.py <baseline.json> <current.json> \
 ```
 
 - Both artifacts must share the same top-level `mode`; a mismatch exits 2.
-- Matches scenarios by `scenario_id` and compares the **p95** latency.
+- Matches scenarios by `scenario_id`.
+- Blocking metric:
+  - `warm`: compare **p50**
+  - `cold`: compare **p50**
+- `p95` / `p99` deltas are printed as `ADVISORY` lines; they do not fail the
+  gate.
 - New scenarios (in current, not baseline) print as `NEW` and never fail.
 - Scenarios missing from current (and measured in baseline) **FAIL** by default;
   `--allow-missing` downgrades them to a warning.
@@ -125,10 +150,10 @@ measured row carries fewer than `20` samples.
 
 ## Ratchet rule (exact)
 
-A scenario regresses iff **both** legs are exceeded on p95:
+A scenario regresses iff **both** legs are exceeded on the mode's blocking metric:
 
-- **warm:** `rel > +10%` **AND** `abs > +1.0 ms`
-- **cold:** `rel > +10%` **AND** `abs > +5.0 ms`
+- **warm:** `p50 rel > +10%` **AND** `abs > +1.0 ms`
+- **cold:** `p50 rel > +10%` **AND** `abs > +5.0 ms`
 
 Explicit `--rel-threshold` / `--abs-threshold-ms` override the mode defaults.
 

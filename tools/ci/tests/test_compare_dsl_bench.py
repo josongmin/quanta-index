@@ -4,14 +4,15 @@ Covers the Layer-3 DSL query-latency regression gate:
 
 1. percentile helper (run_dsl_cold_matrix.py, nearest-rank)
 2. no-regression OK case (exit 0)
-3. clear regression: rel > 10% AND abs > threshold (exit 1)
+3. clear regression on the blocking metric: rel > 10% AND abs > threshold (exit 1)
 4. AND-gate: rel exceeded but abs not exceeded -> OK
 5. rows with early_stop_reason are skipped (never compared / failed)
 6. --update-baseline overwrites and exits 0
 7. mode mismatch -> exit 2
 8. NEW scenario never fails
 9. MISSING scenario fails without --allow-missing, warns with it
-10. cold p95 gate refuses measured rows with fewer than 20 samples
+10. cold artifacts still require >=20 samples for tail advisories
+11. warm/cold p95-only drift is advisory; blocking metric is p50
 """
 
 from __future__ import annotations
@@ -164,6 +165,36 @@ def test_clear_regression_exits_one(tmp_path: Path) -> None:
     assert "lexical.keyword.native" in result.stdout
     assert "FAIL" in result.stdout
     assert "--update-baseline" in result.stdout
+
+
+def test_warm_p95_only_drift_is_advisory(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    base = _row("lexical.keyword.native", 10.0)
+    cur = _row("lexical.keyword.native", 25.0)
+    base["latency_p50_ms"] = 5.0
+    cur["latency_p50_ms"] = 5.4
+    _write_artifact(baseline, "warm", [base])
+    _write_artifact(current, "warm", [cur])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ADVISORY lexical.keyword.native: p95" in result.stdout
+    assert "REGRESSION" not in result.stdout
+
+
+def test_cold_p95_only_drift_is_advisory(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    base = _row("history.diff_added.native", 10.0, mode="cold", samples=20)
+    cur = _row("history.diff_added.native", 25.0, mode="cold", samples=20)
+    base["latency_p50_ms"] = 5.0
+    cur["latency_p50_ms"] = 5.4
+    _write_artifact(baseline, "cold", [base])
+    _write_artifact(current, "cold", [cur])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ADVISORY history.diff_added.native: p95" in result.stdout
+    assert "REGRESSION" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

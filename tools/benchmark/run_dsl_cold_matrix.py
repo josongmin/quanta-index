@@ -38,7 +38,7 @@ DEFAULT_SAMPLES = 20
 DEFAULT_OUT = Path("artifacts/dsl-bench/cold-matrix.json")
 DEFAULT_BUILD_CMD = (
     "env CARGO_NET_OFFLINE=true ./scripts/cargow --lane bench-lane build -p quanta-index-searchd-harness "
-    "--bin dsl_cold_matrix --quiet --locked"
+    "--bin dsl_cold_matrix --profile bench --quiet --locked"
 )
 TARGET_DIR_CMD = (
     "export QUANTA_INDEX_BUILD_LANE=bench-lane; "
@@ -133,7 +133,7 @@ def resolve_default_bin_cmd() -> list[str]:
             "cold-matrix target-dir probe failed "
             f"(exit {target_dir.returncode}):\n{target_dir.stderr or target_dir.stdout}"
         )
-    path = Path(target_dir.stdout.strip()) / "debug" / "dsl_cold_matrix"
+    path = Path(target_dir.stdout.strip()) / "release" / "dsl_cold_matrix"
     if not path.is_file():
         raise RuntimeError(f"cold-matrix binary missing after build: {path}")
     return [str(path)]

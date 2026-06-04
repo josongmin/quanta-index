@@ -50,9 +50,18 @@ Explicitly excluded:
 - warm/cold benchmark baselines are refreshed on the adopted command paths:
   `tools/benchmark/baselines/warm-matrix.json`
   `tools/benchmark/baselines/cold-matrix.json`
+- workstation benchmark authority now blocks on `p50`; `p95` / `p99` are
+  advisory-only tail signals after same-commit reruns showed ambient
+  workstation noise well past central-tendency drift
 - the current harness no longer discards the first successful IPC response
   during readiness polling; cold baselines after this point include route-local
   first-success initialization cost that older artifacts undercounted
+- the query daemon no longer inherits a uniform `50ms` accept-loop poll floor:
+  `crates/quanta-index-searchd/src/app/searchd.rs` now uses a `1ms` query
+  accept idle and `5ms` control/ingest accept idle so warm p95 reflects query
+  work rather than one-shot UDS polling slack
+- warm/cold adopted command paths now execute bench-profile binaries directly;
+  authority refresh is no longer taken from debug-profile `cargo run`
 
 ## 2.1 Current Code Pointers
 
@@ -86,6 +95,7 @@ Explicitly excluded:
   `crates/quanta-index-lq-norm/benches/pipeline.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`,
+  `crates/quanta-index-searchd-harness/src/bin/dsl_warm_matrix.rs`,
   `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`,
   `crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`,
   `tools/benchmark/run_dsl_cold_matrix.py`
@@ -98,7 +108,7 @@ Explicitly excluded:
 | [ADV-01](tickets/ADV-01-predicate-capability-registry.md) | landed | registry only, then one widened predicate family | `tantivy_smoke` before any widen |
 | [ADV-02](tickets/ADV-02-sourcegraph-structural-mixed-domain-widening.md) | landed | legality table, then `RawString`, then `Predicate` | search-plane lowering tests |
 | [ADV-03](tickets/ADV-03-sourcegraph-scoped-filter-or-widening.md) | landed | legality verdict frozen | rejected scoped-`OR` owner rail |
-| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | landed | checker + benchmark baseline refresh | docs-vs-code drift checker |
+| [ADV-04](tickets/ADV-04-generated-proof-truth-and-benchmark-bar.md) | landed | checker + benchmark authority stabilization | docs-vs-code drift checker |
 | [HISTORICAL-MAP](tickets/HISTORICAL-MAP.md) | reference | lineage only | n/a |
 
 ## 4. Sequencing
@@ -249,6 +259,7 @@ claims `advanced` without a benchmark/shadow section.
 - chaos/restart proof: <rail name>  (route-sensitive surfaces only)
 - cost evidence (fill at least one, as a runnable command, not prose):
   - benchmark: `just rust-bench-dsl-warm` / `just rust-bench-dsl-cold` + `just rust-bench-dsl-compare` against `tools/benchmark/baselines/*.json`
+    warm authority is `dsl_warm_matrix`; `dsl_query_matrix` is exploratory only
   - shadow: <shadow rail + the metric and threshold measured>
 - measured result: <number + baseline + delta, or the shadow verdict>
 ```

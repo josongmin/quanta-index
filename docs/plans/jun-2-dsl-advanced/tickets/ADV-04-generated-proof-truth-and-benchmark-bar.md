@@ -15,6 +15,14 @@ Current status:
   command path:
   `artifacts/dsl-bench/warm-matrix.json`
   `tools/benchmark/baselines/warm-matrix.json`
+- warm gate authority is now produced by the dedicated runner
+  `crates/quanta-index-searchd-harness/src/bin/dsl_warm_matrix.rs`;
+  criterion `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
+  remains exploratory only
+- benchmark authority now builds and executes both adopted binaries from
+  workspace `[profile.bench]`, not debug-profile `cargo run`
+- warm and cold same-commit reruns are green on the adopted blocking metric:
+  `p50`; `p95` / `p99` remain advisory-only tail signals
 - cold benchmark artifact and committed baseline are refreshed on the adopted
   command path:
   `artifacts/dsl-bench/cold-matrix.json`
@@ -22,9 +30,20 @@ Current status:
 - the current cold baseline is tied to the corrected harness measurement
   contract: readiness polling now reuses the first successful IPC response
   instead of discarding it and timing a second query
+- the current warm/cold baselines are also tied to the corrected daemon
+  measurement contract: `crates/quanta-index-searchd/src/app/searchd.rs`
+  no longer leaves query traffic behind a uniform `50ms` accept-loop poll floor
 - cold benchmark gating now fail-closes measured rows with fewer than `20`
   samples, and the orchestrator prebuilds `dsl_cold_matrix` once instead of
   shelling through `cargo run` per sample
+- cold authority now also prebuilds and invokes the bench-profile binary
+  directly
+- authority benchmark refresh is now explicitly serialized via
+  `just rust-bench-dsl-refresh 20`; concurrent warm+cold producer runs are
+  exploratory only and cannot be written back as baselines
+- baseline authority is closed:
+  warm/cold committed baselines now track the adopted runner contracts rather
+  than the older debug-profile / uniform-accept-poll artifacts
 
 ## Objective
 
@@ -42,10 +61,17 @@ calling the widened surface “advanced”.
 - structural improvement alone is not enough to justify an “advanced” claim
 - warm benchmark path must remain runnable; the owning manifest/profile seams are
   `crates/quanta-index-searchd-runtime/Cargo.toml` and workspace `[profile.bench]`
-- baseline refresh now tracks the current widened tree at git rev `c7e995f`
+- baseline refresh now tracks the current widened tree on the adopted harness
+  and daemon measurement contract
 - older cold baselines that predate the first-success-response fix are not
   comparable as-if they measured the same first-query path; they undercount
   route-local initialization on the first successful response
+- older warm and cold baselines that predate the query-accept-idle split are
+  not comparable as-if they measured the same steady-state query path; they
+  include one-shot UDS polling slack that the current daemon no longer pays
+- older baselines that treated `p95` as the blocking metric are also not
+  comparable as-if they reflected a stable authority gate; the adopted gate now
+  blocks on workstation `p50` and prints `p95` / `p99` only as advisories
 
 ## Current Code Pointers
 
@@ -63,6 +89,7 @@ calling the widened surface “advanced”.
   `crates/quanta-index-lq-norm/benches/pipeline.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs`,
+  `crates/quanta-index-searchd-harness/src/bin/dsl_warm_matrix.rs`,
   `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`,
   `crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`,
   `tools/benchmark/run_dsl_cold_matrix.py`
@@ -102,6 +129,9 @@ calling the widened surface “advanced”.
 - [x] choose generated vs mechanically checked truth for capability inventory
 - [x] derive predicate subset and SG legality subset from code-owned metadata
 - [x] refresh warm benchmark artifact on the adopted bench command path
+- [x] split warm gate authority off criterion into `dsl_warm_matrix`
+- [x] stabilize warm/cold baseline authority so same-commit reruns are green on
+  the adopted blocking metrics
 - [x] make docs fail closed when widening code and capability truth diverge
 
 ## Concrete First Increment

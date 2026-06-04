@@ -225,12 +225,24 @@ rust-bench-build:
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench
-    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.json" DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+    env CARGO_NET_OFFLINE=true {{cargo}} --lane bench-lane build -p quanta-index-searchd-harness --bin dsl_warm_matrix --profile bench --quiet --locked
+    env QUANTA_INDEX_BUILD_LANE=bench-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
+
+# Exploratory criterion view for warm scenarios. Not gate authority.
+rust-bench-dsl-warm-criterion:
+    mkdir -p artifacts/dsl-bench
+    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.criterion.json" DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
       {{cargo}} --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
 
 rust-bench-dsl-cold samples="20":
     mkdir -p artifacts/dsl-bench
     python3 tools/benchmark/run_dsl_cold_matrix.py --samples {{samples}} --out artifacts/dsl-bench/cold-matrix.json
+
+# Authority refresh: run warm and cold producers serially, then gate against baselines.
+rust-bench-dsl-refresh samples="20":
+    @just rust-bench-dsl-warm
+    @just rust-bench-dsl-cold {{samples}}
+    @just rust-bench-dsl-compare
 
 # Phase B relative-regression gate (report-only until baselines are captured via --update-baseline).
 rust-bench-dsl-compare:

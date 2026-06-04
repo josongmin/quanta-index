@@ -86,6 +86,8 @@ pub struct E2eRuntimeEdgeSpec {
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_APPEAR_TIMEOUT: Duration = Duration::from_secs(5);
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const SOCKET_APPEAR_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 type DriverJoin = thread::JoinHandle<AnyResult<()>>;
 type DriverHandles = (
@@ -1706,18 +1708,21 @@ fn wait_for_query_response(
     ready: impl Fn(&SearchPlaneQueryIpcResponseEnvelope) -> bool,
 ) -> (bool, Result<SearchPlaneQueryIpcResponseEnvelope, IpcError>) {
     let mut cached_response: Option<SearchPlaneQueryIpcResponseEnvelope> = None;
-    let readiness_reached = wait_until(READINESS_TIMEOUT, || {
-        match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope) {
-            Ok(response) => {
-                if ready(&response) {
-                    cached_response = Some(response);
-                    return true;
+    let readiness_reached =
+        wait_until(
+            READINESS_TIMEOUT,
+            READINESS_POLL_INTERVAL,
+            || match send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, envelope) {
+                Ok(response) => {
+                    if ready(&response) {
+                        cached_response = Some(response);
+                        return true;
+                    }
+                    false
                 }
-                false
-            }
-            Err(_transport_error) => false,
-        }
-    });
+                Err(_transport_error) => false,
+            },
+        );
     if let Some(response) = cached_response {
         return (readiness_reached, Ok(response));
     }
@@ -1753,7 +1758,7 @@ fn start_driver(state_root: &Path) -> AnyResult<DriverHandles> {
     let join = thread::Builder::new()
         .name("e2e-harness-driver".into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, SOCKET_APPEAR_POLL_INTERVAL, || {
         query_socket.exists() && ingest_socket.exists()
     }) {
         shutdown.store(true, Ordering::Release);
@@ -1801,7 +1806,7 @@ fn unique_socket_paths() -> (PathBuf, PathBuf, PathBuf) {
     (query, control, ingest)
 }
 
-fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
+fn wait_until<F>(timeout: Duration, poll_interval: Duration, mut cond: F) -> bool
 where
     F: FnMut() -> bool,
 {
@@ -1810,7 +1815,7 @@ where
         if cond() {
             return true;
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(poll_interval);
     }
     false
 }
