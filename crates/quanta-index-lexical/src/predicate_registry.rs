@@ -381,7 +381,10 @@ pub(crate) fn parse_content_predicate_constraint(
                 }
             }
             LqPredicateArg::Phrase(value) => {
-                if content.replace(ContentScalarArg::Phrase(value.clone())).is_some() {
+                if content
+                    .replace(ContentScalarArg::Phrase(value.clone()))
+                    .is_some()
+                {
                     return Err(ContentPredicateArgError::MultipleContentScalars);
                 }
             }

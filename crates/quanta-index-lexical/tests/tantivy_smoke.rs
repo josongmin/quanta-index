@@ -902,6 +902,31 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
         .into());
     }
 
+    let symbol_predicate_hits = searcher.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "symbol.has.name".to_string(),
+            args: vec![LqPredicateArg::Keyword("needle_symbol".to_string())],
+        })),
+        10,
+    )?;
+    if symbol_predicate_hits.len() != 1 {
+        return Err(format!(
+            "expected 1 symbol.has.name hit, got {}",
+            symbol_predicate_hits.len()
+        )
+        .into());
+    }
+    let first_symbol_predicate = symbol_predicate_hits
+        .first()
+        .ok_or("symbol.has.name hits empty after length check")?;
+    if first_symbol_predicate.candidate_id != "sym-alpha" {
+        return Err(format!(
+            "expected sym-alpha for symbol.has.name, got {}",
+            first_symbol_predicate.candidate_id
+        )
+        .into());
+    }
+
     let text_hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("alpha".to_string())),
@@ -1535,6 +1560,24 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
             "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
+        upsert_with_source_repo(
+            "corp-b-name-only",
+            "lib/gate-a.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle corp-b gate-a branch",
+            "corp-b",
+        )?,
+        upsert_with_source_repo(
+            "corp-b-path-lang",
+            "src/gate-b.py",
+            "python",
+            1,
+            2,
+            "shared_oracle_needle corp-b python branch",
+            "corp-b",
+        )?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
@@ -1569,22 +1612,19 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
         ),
         10,
     )?;
-    if corp_b_hits.len() != 1 {
-        return Err(format!(
-            "expected 1 corp-b allow-list hit, got {}",
-            corp_b_hits.len()
-        )
-        .into());
-    }
-    let corp_b_hit = corp_b_hits
-        .first()
-        .ok_or("corp-b hits empty after length check")?;
-    if corp_b_hit.candidate_id != "corp-b-doc" {
-        return Err(format!(
-            "expected corp-b-doc for corp-b allow-list, got {}",
-            corp_b_hit.candidate_id
-        )
-        .into());
+    let mut corp_b_ids: Vec<String> = corp_b_hits
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    corp_b_ids.sort();
+    if corp_b_ids
+        != vec![
+            "corp-b-doc".to_string(),
+            "corp-b-name-only".to_string(),
+            "corp-b-path-lang".to_string(),
+        ]
+    {
+        return Err(format!("expected corp-b allow-list ids, got {corp_b_ids:?}").into());
     }
 
     let universe_hits = searcher.search(
@@ -1593,9 +1633,9 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
         ))),
         10,
     )?;
-    if universe_hits.len() != 3 {
+    if universe_hits.len() != 5 {
         return Err(format!(
-            "expected 3 universe hits across indexed source repos, got {}",
+            "expected 5 universe hits across indexed source repos, got {}",
             universe_hits.len()
         )
         .into());
@@ -1737,6 +1777,164 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
             "expected repo.has.file(<scalar-path>) miss to return zero hits, got {scalar_miss_hits:?}"
         )
         .into());
+    }
+
+    let combo_cases = [
+        (
+            "path+name",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "gate-a.rs".to_string(),
+                },
+            ],
+            vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()],
+        ),
+        (
+            "path+lang",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "rust".to_string(),
+                },
+            ],
+            vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()],
+        ),
+        (
+            "name+lang",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "rust".to_string(),
+                },
+            ],
+            vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()],
+        ),
+        (
+            "path+name+lang",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "rust".to_string(),
+                },
+            ],
+            vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()],
+        ),
+    ];
+    for (label, args, expected) in combo_cases {
+        let combo_query = make_query(LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".to_string(),
+                args,
+            }),
+            LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+        ]));
+        let mut combo_ids: Vec<String> = searcher
+            .search(&combo_query, 10)?
+            .into_iter()
+            .map(|hit| hit.candidate_id)
+            .collect();
+        combo_ids.sort();
+        if combo_ids != expected {
+            return Err(format!(
+                "expected repo.has.file({label}) ids {expected:?}, got {combo_ids:?}"
+            )
+            .into());
+        }
+    }
+
+    let combo_miss_cases = [
+        (
+            "path+name miss",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "missing.rs".to_string(),
+                },
+            ],
+        ),
+        (
+            "path+lang miss",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "go".to_string(),
+                },
+            ],
+        ),
+        (
+            "name+lang miss",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "python".to_string(),
+                },
+            ],
+        ),
+        (
+            "path+name+lang miss",
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "gate-a.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "python".to_string(),
+                },
+            ],
+        ),
+    ];
+    for (label, args) in combo_miss_cases {
+        let combo_query = make_query(LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".to_string(),
+                args,
+            }),
+            LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+        ]));
+        let combo_hits = searcher.search(&combo_query, 10)?;
+        if !combo_hits.is_empty() {
+            return Err(
+                format!("expected repo.has.file({label}) to miss, got {combo_hits:?}").into(),
+            );
+        }
     }
 
     Ok(())
@@ -2045,6 +2243,18 @@ fn tantivy_executes_numeric_content_predicates() -> TestResult {
         if ids != vec!["number_hit".to_string()] {
             return Err(format!("expected {name}(1) to hit [number_hit], got {ids:?}").into());
         }
+    }
+
+    let file_has_content_miss = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.has.content".to_string(),
+        args: vec![LqPredicateArg::Number(404)],
+    }));
+    let file_has_content_miss_hits = searcher.search(&file_has_content_miss, 10)?;
+    if !file_has_content_miss_hits.is_empty() {
+        return Err(format!(
+            "expected file.has.content(404) to miss, got {file_has_content_miss_hits:?}"
+        )
+        .into());
     }
 
     let repo_number_gate = make_query(LqExpr::All(vec![
@@ -2621,8 +2831,46 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
             .map(|hit| hit.candidate_id)
             .collect();
         if ids != expected {
-            return Err(format!("expected scoped file.has.content hits {expected:?}, got {ids:?}").into());
+            return Err(
+                format!("expected scoped file.has.content hits {expected:?}, got {ids:?}").into(),
+            );
         }
+    }
+
+    let file_miss_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "file".to_string(),
+                value: "missing.md".to_string(),
+            },
+            LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+        ],
+    }));
+    let file_miss_hits = searcher.search(&file_miss_query, 10)?;
+    if !file_miss_hits.is_empty() {
+        return Err(format!(
+            "expected scoped file.contains(file:missing.md, ...) to miss, got {file_miss_hits:?}"
+        )
+        .into());
+    }
+
+    let lang_miss_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.has.content".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "lang".to_string(),
+                value: "markdown".to_string(),
+            },
+            LqPredicateArg::Keyword("/v\\d+\\.\\d+\\.\\d+/".to_string()),
+        ],
+    }));
+    let lang_miss_hits = searcher.search(&lang_miss_query, 10)?;
+    if !lang_miss_hits.is_empty() {
+        return Err(format!(
+            "expected scoped file.has.content(lang:markdown, /v.../) to miss, got {lang_miss_hits:?}"
+        )
+        .into());
     }
 
     let and_query = make_query(LqExpr::All(vec![
@@ -2646,6 +2894,31 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
     if and_ids != vec!["phrase_hit".to_string()] {
         return Err(format!(
             "expected scoped file.contains AND to hit [phrase_hit], got {and_ids:?}"
+        )
+        .into());
+    }
+
+    let and_miss_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".to_string(),
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/lib.rs".to_string(),
+                },
+                LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+            ],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("ripens".to_string())),
+    ]));
+    let and_miss_ids: Vec<String> = searcher
+        .search(&and_miss_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    if !and_miss_ids.is_empty() {
+        return Err(format!(
+            "expected scoped file.contains(path:src/lib.rs, ...) AND ripens to miss, got {and_miss_ids:?}"
         )
         .into());
     }
@@ -2727,6 +3000,26 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
         other => {
             return Err(format!(
                 "expected file.contains(two scalars) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    let repo_scoped_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "repo.has.content".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src".to_string(),
+            },
+            LqPredicateArg::Number(7),
+        ],
+    }));
+    match searcher.search(&repo_scoped_query, 10) {
+        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
+        other => {
+            return Err(format!(
+                "expected repo.has.content(path:src, 7) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
             )
             .into());
         }

@@ -133,7 +133,11 @@ fn boot_with_lexical() -> AnyResult<E2eRuntime> {
     rt.ingest_text(REPO, "src/other.rs", "let unrelated = quartz;\n")?;
     rt.ingest_text(REPO, "config/path_only_needle.toml", "value = 1\n")?;
     rt.ingest_text(REPO, "docs/colors.md", "the lemon yellow banana ripens\n")?;
-    rt.ingest_text(REPO, "src/version.rs", "const VERSION: &str = \"v1.2.3-rc.4\";\n")?;
+    rt.ingest_text(
+        REPO,
+        "src/version.rs",
+        "const VERSION: &str = \"v1.2.3-rc.4\";\n",
+    )?;
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt)
@@ -183,6 +187,26 @@ fn boot_with_multi_repo() -> AnyResult<E2eRuntime> {
             start_line: 1,
             end_line: 2,
             source_repo_id: Some("corp-a"),
+        }],
+    )?;
+    let _corp_b_name_ids = rt.ingest_text_chunks(
+        REPO,
+        "lib/gate-a.rs",
+        &[E2eTextChunkSpec {
+            content: "shared_oracle_needle corp-b gate-a branch\n",
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("corp-b"),
+        }],
+    )?;
+    let _corp_b_path_lang_ids = rt.ingest_text_chunks(
+        REPO,
+        "src/gate-b.py",
+        &[E2eTextChunkSpec {
+            content: "shared_oracle_needle corp-b python branch\n",
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("corp-b"),
         }],
     )?;
     let _generation = rt.seal()?;
@@ -335,6 +359,68 @@ fn repo_has_file_scalar_path_executes_on_sourcegraph_surface() -> AnyResult<()> 
 }
 
 #[test]
+fn repo_has_file_matcher_combinations_execute_on_sourcegraph_surface() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo()?;
+    for (query, expected) in [
+        (
+            "repo:has.file(path:src/gate-a.rs, name:gate-a.rs) shared_oracle_needle",
+            vec!["src/corp-a.rs", "src/gate-a.rs"],
+        ),
+        (
+            "repo:has.file(path:src/gate-a.rs, lang:rust) shared_oracle_needle",
+            vec!["src/corp-a.rs", "src/gate-a.rs"],
+        ),
+        (
+            "repo:has.file(name:gate-a.rs, lang:rust) shared_oracle_needle",
+            vec![
+                "lib/gate-a.rs",
+                "src/corp-a.rs",
+                "src/corp-b.rs",
+                "src/gate-a.rs",
+                "src/gate-b.py",
+            ],
+        ),
+        (
+            "repo:has.file(path:src/gate-a.rs, name:gate-a.rs, lang:rust) shared_oracle_needle",
+            vec!["src/corp-a.rs", "src/gate-a.rs"],
+        ),
+    ] {
+        let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
+        ensure!(
+            result.typed_error.is_none(),
+            "{query} must not error: {:?}",
+            result.typed_error,
+        );
+        let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
+        ensure!(
+            sorted_candidate_paths(&result) == expected,
+            "{query} must gate exact repo set, got {:?}",
+            sorted_candidate_paths(&result),
+        );
+    }
+
+    for query in [
+        "repo:has.file(path:src/gate-a.rs, name:missing.rs) shared_oracle_needle",
+        "repo:has.file(path:src/gate-a.rs, lang:python) shared_oracle_needle",
+        "repo:has.file(name:gate-a.rs, lang:python) shared_oracle_needle",
+        "repo:has.file(path:src/gate-a.rs, name:gate-a.rs, lang:python) shared_oracle_needle",
+    ] {
+        let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
+        ensure!(
+            result.typed_error.is_none(),
+            "{query} must not error: {:?}",
+            result.typed_error,
+        );
+        ensure!(
+            sorted_candidate_paths(&result).is_empty(),
+            "{query} must miss, got {:?}",
+            sorted_candidate_paths(&result),
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn file_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
     let admitted = rt.query_text(
@@ -385,6 +471,34 @@ fn repo_contains_content_alias_executes_on_sourcegraph_surface() -> AnyResult<()
         "repo:contains.content(\"gate-a only\") must gate to corp-a paths, got {:?}",
         sorted_candidate_paths(&admitted),
     );
+    let or_alias = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:contains.content(\"gate-a only\") OR missing_corpus_token",
+        10,
+    );
+    ensure!(
+        or_alias.typed_error.is_none(),
+        "repo:contains.content alias OR must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&or_alias) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:contains.content alias OR must return corp-a repo only, got {:?}",
+        sorted_candidate_paths(&or_alias),
+    );
+    let not_alias = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "shared_oracle_needle NOT repo:contains.content(\"gate-a only\")",
+        10,
+    );
+    ensure!(
+        not_alias.typed_error.is_none(),
+        "repo:contains.content alias NOT must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&not_alias) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
+        "shared_oracle_needle NOT repo:contains.content(...) must return corp-b repo only, got {:?}",
+        sorted_candidate_paths(&not_alias),
+    );
     Ok(())
 }
 
@@ -412,10 +526,24 @@ fn numeric_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<()> 
         "file:has.content(1) must hit the numeric file, got {:?}",
         sorted_candidate_paths(&file_has_content),
     );
+    let file_has_content_miss =
+        lexical.query_text(TextQuerySyntax::Sourcegraph, "file:has.content(404)", 10);
+    ensure!(
+        file_has_content_miss.typed_error.is_none(),
+        "file:has.content(404) must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&file_has_content_miss).is_empty(),
+        "file:has.content(404) must miss, got {:?}",
+        sorted_candidate_paths(&file_has_content_miss),
+    );
 
     let mut multi_repo = boot_with_multi_repo()?;
-    let repo_content =
-        multi_repo.query_text(TextQuerySyntax::Sourcegraph, "repo:has.content(123) shared_oracle_needle", 10);
+    let repo_content = multi_repo.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.content(123) shared_oracle_needle",
+        10,
+    );
     ensure!(
         repo_content.typed_error.is_none(),
         "repo:has.content(123) must not error"
@@ -433,32 +561,60 @@ fn scoped_file_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<
     let mut rt = boot_with_lexical()?;
     let path_hit = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        "file:contains(path:docs/colors.md, \"lemon yellow banana\")",
+        "file:has.content(path:docs/colors.md, \"lemon yellow banana\")",
         10,
     );
     ensure!(
         path_hit.typed_error.is_none(),
-        "scoped file:contains(path:..., phrase) must not error"
+        "scoped file:has.content(path:..., phrase) must not error"
     );
     ensure!(
         sorted_candidate_paths(&path_hit) == ["docs/colors.md"],
-        "scoped file:contains(path:...) must isolate docs/colors.md, got {:?}",
+        "scoped file:has.content(path:...) must isolate docs/colors.md, got {:?}",
         sorted_candidate_paths(&path_hit),
     );
 
     let file_hit = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        "file:contains(file:colors.md, \"lemon yellow banana\")",
+        "file:has.content(file:colors.md, \"lemon yellow banana\")",
         10,
     );
     ensure!(
         file_hit.typed_error.is_none(),
-        "scoped file:contains(file:..., phrase) must not error"
+        "scoped file:has.content(file:..., phrase) must not error"
     );
     ensure!(
         sorted_candidate_paths(&file_hit) == ["docs/colors.md"],
-        "scoped file:contains(file:...) must isolate docs/colors.md, got {:?}",
+        "scoped file:has.content(file:...) must isolate docs/colors.md, got {:?}",
         sorted_candidate_paths(&file_hit),
+    );
+    let path_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:has.content(path:src/lib.rs, \"lemon yellow banana\")",
+        10,
+    );
+    ensure!(
+        path_miss.typed_error.is_none(),
+        "scoped file:has.content(path:src/lib.rs, phrase) must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&path_miss).is_empty(),
+        "scoped file:has.content(path:src/lib.rs, ...) must miss, got {:?}",
+        sorted_candidate_paths(&path_miss),
+    );
+    let file_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:has.content(file:missing.md, \"lemon yellow banana\")",
+        10,
+    );
+    ensure!(
+        file_miss.typed_error.is_none(),
+        "scoped file:has.content(file:missing.md, phrase) must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&file_miss).is_empty(),
+        "scoped file:has.content(file:missing.md, ...) must miss, got {:?}",
+        sorted_candidate_paths(&file_miss),
     );
 
     let lang_hit = rt.query_text(
@@ -475,6 +631,35 @@ fn scoped_file_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<
         "scoped file:has.content(lang:rust, regex) must isolate src/version.rs, got {:?}",
         sorted_candidate_paths(&lang_hit),
     );
+    let lang_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:has.content(lang:markdown, /v\\d+\\.\\d+\\.\\d+/)",
+        10,
+    );
+    ensure!(
+        lang_miss.typed_error.is_none(),
+        "scoped file:has.content(lang:markdown, regex) must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&lang_miss).is_empty(),
+        "scoped file:has.content(lang:markdown, regex) must miss, got {:?}",
+        sorted_candidate_paths(&lang_miss),
+    );
+
+    let scoped_and_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "file:contains(path:src/lib.rs, \"lemon yellow banana\") AND ripens",
+        10,
+    );
+    ensure!(
+        scoped_and_miss.typed_error.is_none(),
+        "scoped file:contains(path:src/lib.rs, ...) AND ripens must not error"
+    );
+    ensure!(
+        sorted_candidate_paths(&scoped_and_miss).is_empty(),
+        "scoped file:contains(path:src/lib.rs, ...) AND ripens must miss, got {:?}",
+        sorted_candidate_paths(&scoped_and_miss),
+    );
     Ok(())
 }
 
@@ -487,7 +672,10 @@ fn scoped_file_content_predicates_fail_closed_under_or_not_and_bad_matchers() ->
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
         let Some(error) = result.typed_error else {
-            anyhow::bail!("query `{query}` must typed-fail, got {:?}", result.candidate_ids);
+            anyhow::bail!(
+                "query `{query}` must typed-fail, got {:?}",
+                result.candidate_ids
+            );
         };
         ensure!(
             error.code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
@@ -499,10 +687,14 @@ fn scoped_file_content_predicates_fail_closed_under_or_not_and_bad_matchers() ->
     for query in [
         "file:contains(name:colors.md, \"lemon yellow banana\")",
         "file:contains(\"lemon\", \"banana\")",
+        "repo:has.content(path:src, 7)",
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
         let Some(error) = result.typed_error else {
-            anyhow::bail!("query `{query}` must typed-fail, got {:?}", result.candidate_ids);
+            anyhow::bail!(
+                "query `{query}` must typed-fail, got {:?}",
+                result.candidate_ids
+            );
         };
         ensure!(
             error.code == "LEX_PREDICATE_UNIMPLEMENTED",
@@ -541,7 +733,7 @@ fn repo_has_file_predicate_under_or_and_not_executes_on_sourcegraph_surface() ->
         "repo:has.file NOT positive must not error"
     );
     ensure!(
-        sorted_candidate_paths(&excluded) == ["src/corp-b.rs"],
+        sorted_candidate_paths(&excluded) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
         "shared_oracle_needle NOT repo:has.file(path:src/gate-a.rs) must leave only corp-b, got {:?}",
         sorted_candidate_paths(&excluded),
     );
@@ -597,7 +789,7 @@ fn repo_has_content_predicate_under_or_and_not_executes_on_sourcegraph_surface()
         "repo:has.content NOT positive must not error"
     );
     ensure!(
-        sorted_candidate_paths(&excluded) == ["src/corp-b.rs"],
+        sorted_candidate_paths(&excluded) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
         "shared_oracle_needle NOT repo:has.content(\"gate-a only\") must leave only corp-b, got {:?}",
         sorted_candidate_paths(&excluded),
     );

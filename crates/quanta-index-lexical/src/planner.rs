@@ -14,9 +14,8 @@ use crate::filters::{FilterPlannerError, plan_filters};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
 use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
 use crate::predicate_registry::{
-    PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call,
-    kind_of, parse_content_predicate_constraint, parse_content_scalar_arg,
-    parse_repo_file_matchers,
+    PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call, kind_of,
+    parse_content_predicate_constraint, parse_content_scalar_arg, parse_repo_file_matchers,
 };
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
@@ -246,7 +245,8 @@ impl LexicalPlanner {
                 node: predicate_arity_label(name),
                 owner_ticket: PREDICATE_OWNER,
             }
-        })? else {
+        })?
+        else {
             return Err(LexicalPlannerError::Unimplemented {
                 node: "predicate_leaf",
                 owner_ticket: PREDICATE_OWNER,
@@ -260,12 +260,13 @@ impl LexicalPlanner {
                 })
             }
             Some(PredicateKind::ContentLeaf) => {
-                let _constraint = parse_content_predicate_constraint(&canonical.args).map_err(|_err| {
-                    LexicalPlannerError::Unimplemented {
-                        node: predicate_arity_label(name),
-                        owner_ticket: PREDICATE_OWNER,
-                    }
-                })?;
+                let _constraint =
+                    parse_content_predicate_constraint(&canonical.args).map_err(|_err| {
+                        LexicalPlannerError::Unimplemented {
+                            node: predicate_arity_label(name),
+                            owner_ticket: PREDICATE_OWNER,
+                        }
+                    })?;
                 Ok(PlanLeaf::Predicate {
                     name: canonical.name.to_owned(),
                 })
@@ -700,7 +701,10 @@ mod tests {
                 assert!(
                     matches!(
                         &plan.root,
-                        PlanNode::Leaf { leaf: PlanLeaf::Predicate { .. }, .. }
+                        PlanNode::Leaf {
+                            leaf: PlanLeaf::Predicate { .. },
+                            ..
+                        }
                     ),
                     "expected predicate leaf, got {:?}",
                     plan.root

@@ -12,9 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
-use quanta_index_searchd_harness::artifact::{
-    BenchArtifact, BenchMode, BenchRow, LatencySummary,
-};
+use quanta_index_searchd_harness::artifact::{BenchArtifact, BenchMode, BenchRow, LatencySummary};
 use quanta_index_searchd_harness::bench_support::{
     QueryOutcome, prepare_cold_runtime, run_scenario_query,
 };

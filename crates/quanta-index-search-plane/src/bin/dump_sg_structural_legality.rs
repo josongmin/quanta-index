@@ -46,7 +46,12 @@ fn main() {
     let dump = StructuralLegalityDump {
         verdicts: leaves
             .into_iter()
-            .map(|(name, leaf)| (name, verdict_name(lowering_dump::structural_leaf_verdict(&leaf))))
+            .map(|(name, leaf)| {
+                (
+                    name,
+                    verdict_name(lowering_dump::structural_leaf_verdict(&leaf)),
+                )
+            })
             .collect(),
     };
     println!(

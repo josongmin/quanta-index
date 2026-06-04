@@ -15,6 +15,7 @@ pub(super) struct TypedErrorExpectation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SdkFrontdoorSurface {
     Lexical,
+    Symbol,
     History,
     RuntimeMetadata,
 }
@@ -49,6 +50,20 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         syntax: TextQuerySyntax::Native,
         query_text: "file.contains(\"banana lemon\")",
         expected: SdkFrontdoorExpectation::CandidateIds(&[]),
+    },
+    SdkFrontdoorScenario {
+        name: "native_symbol_has_name_positive",
+        surface: SdkFrontdoorSurface::Symbol,
+        syntax: TextQuerySyntax::Native,
+        query_text: "symbol.has.name(MySdkSymbol)",
+        expected: SdkFrontdoorExpectation::CandidateIds(&["sym-sdk"]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_symbol_has_name_positive",
+        surface: SdkFrontdoorSurface::Symbol,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "symbol:has.name(MySdkSymbol)",
+        expected: SdkFrontdoorExpectation::CandidateIds(&["sym-sdk"]),
     },
     SdkFrontdoorScenario {
         name: "native_since_time_success",
@@ -291,5 +306,29 @@ pub(super) const DSL_FRONTDOOR_SCENARIOS: &[DslFrontdoorScenario] = &[
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:has.file(path:missing.rs) needle",
         expected_candidate_ids: &[],
+    },
+    DslFrontdoorScenario {
+        name: "sourcegraph_repo_has_path_true_gate",
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.path(src/lib.rs) needle",
+        expected_candidate_ids: &["alpha", "beta"],
+    },
+    DslFrontdoorScenario {
+        name: "sourcegraph_repo_has_content_true_gate",
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.content(alpha) needle",
+        expected_candidate_ids: &["alpha", "beta"],
+    },
+    DslFrontdoorScenario {
+        name: "sourcegraph_repo_contains_content_true_gate",
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:contains.content(alpha) needle",
+        expected_candidate_ids: &["alpha", "beta"],
+    },
+    DslFrontdoorScenario {
+        name: "sourcegraph_file_has_content_path_true_gate",
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "file:has.content(path:src/lib.rs, needle)",
+        expected_candidate_ids: &["alpha"],
     },
 ];

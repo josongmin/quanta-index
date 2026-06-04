@@ -262,6 +262,16 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "symbol_has_name_predicate_parity",
+        sg_query: "symbol:has.name(ParityTypeSymbol)",
+        lq_query: "symbol.has.name(ParityTypeSymbol)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["theta_symbol"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "select_file_parity",
         sg_query: "select:file parity_needle_alpha",
         lq_query: "select:file parity_needle_alpha",
@@ -347,9 +357,7 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "file:contains(123)",
         lq_query: "file.contains(123)",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["gamma_md"],
-        },
+        expected: ExpectedOutcome::Candidates { ids: &["gamma_md"] },
     },
     ParityScenario {
         route: QueryRoute::Text,
@@ -357,9 +365,15 @@ const SCENARIOS: &[ParityScenario] = &[
         sg_query: "file:has.content(123)",
         lq_query: "file.has.content(123)",
         top_k: 10,
-        expected: ExpectedOutcome::Candidates {
-            ids: &["gamma_md"],
-        },
+        expected: ExpectedOutcome::Candidates { ids: &["gamma_md"] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_number_miss_parity",
+        sg_query: "file:has.content(404)",
+        lq_query: "file.has.content(404)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Text,
@@ -373,6 +387,24 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "file_has_content_scoped_path_parity",
+        sg_query: "file:has.content(path:src/phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.has.content(path:src/phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_path_miss_parity",
+        sg_query: "file:has.content(path:src/lib.rs, \"lemon yellow banana\")",
+        lq_query: "file.has.content(path:src/lib.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "file_contains_scoped_file_parity",
         sg_query: "file:contains(file:phrase.rs, \"lemon yellow banana\")",
         lq_query: "file.contains(file:phrase.rs, \"lemon yellow banana\")",
@@ -380,6 +412,32 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &["delta_phrase"],
         },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_file_parity",
+        sg_query: "file:has.content(file:phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.has.content(file:phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_file_miss_parity",
+        sg_query: "file:contains(file:missing.rs, \"lemon yellow banana\")",
+        lq_query: "file.contains(file:missing.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_file_miss_parity",
+        sg_query: "file:has.content(file:missing.rs, \"lemon yellow banana\")",
+        lq_query: "file.has.content(file:missing.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Text,
@@ -393,6 +451,14 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "file_has_content_scoped_lang_regex_miss_parity",
+        sg_query: "file:has.content(lang:markdown, /v\\d+\\.\\d+\\.\\d+/)",
+        lq_query: "file.has.content(lang:markdown, /v\\d+\\.\\d+\\.\\d+/)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "file_contains_scoped_and_parity",
         sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\") AND banana",
         lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\") AND banana",
@@ -400,6 +466,14 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &["delta_phrase"],
         },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_and_miss_parity",
+        sg_query: "file:contains(path:src/lib.rs, \"lemon yellow banana\") AND banana",
+        lq_query: "file.contains(path:src/lib.rs, \"lemon yellow banana\") AND banana",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Text,
@@ -436,6 +510,16 @@ const SCENARIOS: &[ParityScenario] = &[
         id: "file_contains_multiple_scalars_typed_fail_parity",
         sg_query: "file:contains(\"lemon\", \"banana\")",
         lq_query: "file.contains(\"lemon\", \"banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_content_scoped_typed_fail_parity",
+        sg_query: "repo:has.content(path:src, 7)",
+        lq_query: "repo.has.content(path:src, 7)",
         top_k: 10,
         expected: ExpectedOutcome::TypedError {
             code: "LEX_PREDICATE_UNIMPLEMENTED",
@@ -569,6 +653,78 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "repo_has_file_path_name_predicate_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, name:lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, name:lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_name_miss_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, name:helper.py) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, name:helper.py) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_lang_predicate_parity",
+        sg_query: "repo:has.file(path:scripts/helper.py, lang:python) parity_needle_alpha",
+        lq_query: "repo:has.file(path:scripts/helper.py, lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_lang_miss_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, lang:python) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_name_lang_predicate_parity",
+        sg_query: "repo:has.file(name:helper.py, lang:python) parity_needle_alpha",
+        lq_query: "repo:has.file(name:helper.py, lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_name_lang_miss_parity",
+        sg_query: "repo:has.file(name:helper.py, lang:rust) parity_needle_alpha",
+        lq_query: "repo:has.file(name:helper.py, lang:rust) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_name_lang_predicate_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, name:lib.rs, lang:rust) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, name:lib.rs, lang:rust) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_name_lang_miss_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, name:lib.rs, lang:python) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, name:lib.rs, lang:python) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "repo_has_content_predicate_parity",
         sg_query: "repo:has.content(parity_needle_alpha) parity_needle_alpha",
         lq_query: "repo:has.content(parity_needle_alpha) parity_needle_alpha",
@@ -606,6 +762,24 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
         },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_content_alias_or_parity",
+        sg_query: "repo:contains.content(missing_corpus_token) OR parity_needle_alpha",
+        lq_query: "repo.contains.content(missing_corpus_token) OR parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_content_alias_not_parity",
+        sg_query: "parity_needle_alpha NOT repo:contains.content(parity_needle_alpha)",
+        lq_query: "parity_needle_alpha NOT repo.contains.content(parity_needle_alpha)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Text,
@@ -722,6 +896,136 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust"],
         },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_path_or_parity",
+        sg_query: r#"patterntype:structural repo:has.file(path:src/lib.rs) OR "trait_item""#,
+        lq_query: "repo:has.file(path:src/lib.rs) OR match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_rust",
+                "delta_phrase",
+                "epsilon_regex",
+                "zeta_raw",
+                "theta_symbol",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
+            ],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_path_alias_and_parity",
+        sg_query: r#"patterntype:structural repo:has.path(src/lib.rs) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "repo.has.path(src/lib.rs) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_path_alias_or_parity",
+        sg_query: r#"patterntype:structural repo:has.path(src/lib.rs) OR "trait_item""#,
+        lq_query: "repo.has.path(src/lib.rs) OR match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_rust",
+                "delta_phrase",
+                "epsilon_regex",
+                "zeta_raw",
+                "theta_symbol",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
+            ],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_path_alias_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:has.path(src/lib.rs)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT repo.has.path(src/lib.rs)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_has_content_and_parity",
+        sg_query: r#"patterntype:structural repo:has.content(parity_needle_alpha) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "repo:has.content(parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_has_content_or_parity",
+        sg_query: r#"patterntype:structural repo:has.content(parity_needle_alpha) OR "trait_item""#,
+        lq_query: "repo:has.content(parity_needle_alpha) OR match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_rust",
+                "delta_phrase",
+                "epsilon_regex",
+                "zeta_raw",
+                "theta_symbol",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
+            ],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_has_content_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:has.content(parity_needle_alpha)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT repo:has.content(parity_needle_alpha)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_contains_content_and_parity",
+        sg_query: r#"patterntype:structural repo:contains.content(parity_needle_alpha) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "repo.contains.content(parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_contains_content_or_parity",
+        sg_query: r#"patterntype:structural repo:contains.content(parity_needle_alpha) OR "trait_item""#,
+        lq_query: "repo.contains.content(parity_needle_alpha) OR match { trait_item }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &[
+                "alpha_rust",
+                "delta_phrase",
+                "epsilon_regex",
+                "zeta_raw",
+                "theta_symbol",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
+            ],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_contains_content_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:contains.content(parity_needle_alpha)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT repo.contains.content(parity_needle_alpha)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     // Repo-scoped filters under mixed OR are bridge fail-closed; see lowering scoped-filter test.
     ParityScenario {

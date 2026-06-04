@@ -131,12 +131,14 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_b_doc"]
+expected_ids = ["corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
-kind = "single"
+kind = "multi"
+min = 3
+max = 3
 
 [[row]]
 id = "runtime_native_repo_allow_list_universe_baseline"
@@ -148,14 +150,14 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path"]
+expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "multi"
-min = 3
-max = 3
+min = 5
+max = 5
 
 [[row]]
 id = "runtime_native_repo_has_file_true_gate_multi_repo"
@@ -275,18 +277,53 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_a_doc", "corp_a_only_path"]
+expected_ids = ["corp_a_doc", "corp_a_only_path", "corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "multi"
-min = 2
-max = 2
+min = 5
+max = 5
 
 [[row]]
 id = "runtime_sourcegraph_repo_has_file_name_true_gate_multi_repo"
 query = "repo:has.file(name:gate-a.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path", "corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 5
+max = 5
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_name_miss_multi_repo"
+query = "repo:has.file(name:missing.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_path_name_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, name:gate-a.rs) shared_oracle_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
 filters = ["repo.has.file"]
@@ -304,8 +341,113 @@ min = 2
 max = 2
 
 [[row]]
-id = "runtime_sourcegraph_repo_has_file_name_miss_multi_repo"
-query = "repo:has.file(name:missing.rs) shared_oracle_needle"
+id = "runtime_sourcegraph_repo_has_file_path_name_miss_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, name:missing.rs) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_path_lang_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, lang:rust) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_path_lang_miss_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, lang:python) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_name_lang_true_gate_multi_repo"
+query = "repo:has.file(name:gate-a.rs, lang:rust) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path", "corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 5
+max = 5
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_name_lang_miss_multi_repo"
+query = "repo:has.file(name:gate-a.rs, lang:python) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_path_name_lang_true_gate_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, name:gate-a.rs, lang:rust) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_file_path_name_lang_miss_multi_repo"
+query = "repo:has.file(path:src/gate-a.rs, name:gate-a.rs, lang:python) shared_oracle_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
 filters = ["repo.has.file"]
@@ -529,12 +671,52 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_b_doc"]
+expected_ids = ["corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
-kind = "single"
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
+id = "runtime_sourcegraph_repo_contains_content_or_true_gate_multi_repo"
+query = "repo:contains.content(\"gate-a only\") OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.contains.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_contains_content_not_true_gate_multi_repo"
+query = "shared_oracle_needle NOT repo:contains.content(\"gate-a only\")"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.contains.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
 
 [[row]]
 id = "runtime_sourcegraph_repo_has_path_true_gate_multi_repo"
@@ -635,14 +817,14 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path"]
+expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "multi"
-min = 3
-max = 3
+min = 5
+max = 5
 
 [[row]]
 id = "runtime_sourcegraph_repo_has_file_not_true_gate_multi_repo"
@@ -654,12 +836,14 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-expected_ids = ["corp_b_doc"]
+expected_ids = ["corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
 top_k = 10
 expected_engines_touched = ["lexical"]
 
 [row.expected]
-kind = "single"
+kind = "multi"
+min = 3
+max = 3
 
 [[row]]
 id = "runtime_native_lang_filter"
@@ -894,6 +1078,22 @@ expected_engines_touched = ["lexical"]
 kind = "single"
 
 [[row]]
+id = "runtime_native_file_has_content_number_miss"
+query = "file.has.content(404)"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["file.has.content"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
 id = "runtime_native_file_contains_scoped_path_hit"
 query = "file.contains(path:docs/colors.md, \"lemon yellow banana\")"
 gate = "active"
@@ -944,12 +1144,112 @@ top_k = 10
 kind = "empty"
 
 [[row]]
+id = "runtime_native_file_has_content_scoped_path_hit"
+query = "file.has.content(path:docs/colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.has.content", "path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_path_hit"
+query = "file:has.content(path:docs/colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content", "path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_path_miss"
+query = "file.has.content(path:src/lib.rs, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.has.content", "path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_path_miss"
+query = "file:has.content(path:src/lib.rs, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content", "path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
 id = "runtime_native_file_contains_scoped_file_hit"
 query = "file.contains(file:colors.md, \"lemon yellow banana\")"
 gate = "active"
 engines = ["lexical_phrase"]
 filters = ["file.contains", "file"]
 syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_file_hit"
+query = "file.has.content(file:colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.has.content", "file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_file_hit"
+query = "file:has.content(file:colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content", "file"]
+syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
@@ -976,6 +1276,86 @@ expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
+
+[[row]]
+id = "runtime_native_file_contains_scoped_file_miss"
+query = "file.contains(file:missing.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.contains", "file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_file_miss"
+query = "file.has.content(file:missing.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.has.content", "file"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_file_miss"
+query = "file:has.content(file:missing.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content", "file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_lang_regex_miss"
+query = "file.has.content(lang:markdown, /v\\d+\\.\\d+\\.\\d+/)"
+gate = "active"
+engines = ["lexical_regex"]
+filters = ["file.has.content", "lang"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_lang_regex_miss"
+query = "file:has.content(lang:markdown, /v\\d+\\.\\d+\\.\\d+/)"
+gate = "active"
+engines = ["lexical_regex", "sourcegraph_lowering"]
+filters = ["file.has.content", "lang"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
 
 [[row]]
 id = "runtime_sourcegraph_file_has_content_scoped_lang_regex_hit"
@@ -1012,6 +1392,22 @@ expected_engines_touched = ["lexical"]
 kind = "single"
 
 [[row]]
+id = "runtime_native_file_contains_scoped_and_miss"
+query = "file.contains(path:src/lib.rs, \"lemon yellow banana\") AND ripens"
+gate = "active"
+engines = ["lexical_phrase", "boolean:and"]
+filters = ["file.contains", "path", "boolean:and"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
 id = "runtime_native_file_contains_scoped_or_typed_fail"
 query = "file.contains(path:docs/colors.md, \"lemon yellow banana\") OR alpha_content_needle"
 gate = "active"
@@ -1022,6 +1418,38 @@ classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
 runtime_error_code = "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_repo_has_content_scoped_typed_fail"
+query = "repo.has.content(path:src, 7)"
+gate = "active"
+engines = ["lexical_content"]
+filters = ["repo.has.content", "path"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_content_scoped_typed_fail"
+query = "repo:has.content(path:src, 7)"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.content", "path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
 top_k = 10
 
 [row.expected]
@@ -1149,6 +1577,40 @@ gate = "active"
 engines = ["lexical_symbol"]
 filters = ["type:symbol"]
 syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["theta_symbol"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_symbol_has_name"
+query = "symbol.has.name(MyTypeSymbol)"
+gate = "active"
+engines = ["lexical_symbol"]
+filters = ["symbol.has.name"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["theta_symbol"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_symbol_has_name"
+query = "symbol:has.name(MyTypeSymbol)"
+gate = "active"
+engines = ["lexical_symbol", "sourcegraph_lowering"]
+filters = ["symbol.has.name"]
+syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
@@ -2040,11 +2502,192 @@ top_k = 10
 kind = "single"
 
 [[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_path_alias_and"
+query = "patterntype:structural repo:has.path(src/main.rs) AND \"function_item { { identifier :[name] } }\""
+gate = "active"
+engines = ["structural", "lexical", "sourcegraph_lowering"]
+filters = ["structural", "mixed", "predicate", "repo.has.path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_has_content_and"
+query = "patterntype:structural repo:has.content(main) AND \"function_item { { identifier :[name] } }\""
+gate = "active"
+engines = ["structural", "lexical", "sourcegraph_lowering"]
+filters = ["structural", "mixed", "predicate", "repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_contains_content_and"
+query = "patterntype:structural repo:contains.content(main) AND \"function_item { { identifier :[name] } }\""
+gate = "active"
+engines = ["structural", "lexical", "sourcegraph_lowering"]
+filters = ["structural", "mixed", "predicate", "repo.contains.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_path_or"
+query = "patterntype:structural repo:has.file(path:src/main.rs) OR \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:or", "sourcegraph_lowering"]
+filters = ["structural", "boolean:or", "mixed", "predicate", "repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_path_alias_or"
+query = "patterntype:structural repo:has.path(src/main.rs) OR \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:or", "sourcegraph_lowering"]
+filters = ["structural", "boolean:or", "mixed", "predicate", "repo.has.path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_has_content_or"
+query = "patterntype:structural repo:has.content(main) OR \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:or", "sourcegraph_lowering"]
+filters = ["structural", "boolean:or", "mixed", "predicate", "repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_contains_content_or"
+query = "patterntype:structural repo:contains.content(main) OR \"trait_item\""
+gate = "active"
+engines = ["structural", "lexical", "boolean:or", "sourcegraph_lowering"]
+filters = ["structural", "boolean:or", "mixed", "predicate", "repo.contains.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
+top_k = 10
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
 id = "runtime_sourcegraph_structural_mixed_predicate_scalar_path_and_not"
 query = "patterntype:structural \"identifier :[name]\" AND NOT repo:has.file(src/main.rs)"
 gate = "active"
 engines = ["structural", "lexical", "boolean:not", "sourcegraph_lowering"]
 filters = ["structural", "boolean:not", "mixed", "predicate", "repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_path_alias_and_not"
+query = "patterntype:structural \"identifier :[name]\" AND NOT repo:has.path(src/main.rs)"
+gate = "active"
+engines = ["structural", "lexical", "boolean:not", "sourcegraph_lowering"]
+filters = ["structural", "boolean:not", "mixed", "predicate", "repo.has.path"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_has_content_and_not"
+query = "patterntype:structural \"identifier :[name]\" AND NOT repo:has.content(main)"
+gate = "active"
+engines = ["structural", "lexical", "boolean:not", "sourcegraph_lowering"]
+filters = ["structural", "boolean:not", "mixed", "predicate", "repo.has.content"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_structural_mixed_predicate_contains_content_and_not"
+query = "patterntype:structural \"identifier :[name]\" AND NOT repo:contains.content(main)"
+gate = "active"
+engines = ["structural", "lexical", "boolean:not", "sourcegraph_lowering"]
+filters = ["structural", "boolean:not", "mixed", "predicate", "repo.contains.content"]
 syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "structural"

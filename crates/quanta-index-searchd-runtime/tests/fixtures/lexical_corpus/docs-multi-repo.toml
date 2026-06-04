@@ -15,3 +15,15 @@ id = "corp_a_only_path"
 path = "src/gate-a.rs"
 content = "shared_oracle_needle gate-a only 123"
 source_repo_id = "corp-a"
+
+[[doc]]
+id = "corp_b_name_only"
+path = "lib/gate-a.rs"
+content = "shared_oracle_needle corp-b gate-a branch"
+source_repo_id = "corp-b"
+
+[[doc]]
+id = "corp_b_path_lang"
+path = "src/gate-b.py"
+content = "shared_oracle_needle corp-b python branch"
+source_repo_id = "corp-b"

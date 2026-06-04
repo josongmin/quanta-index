@@ -2354,6 +2354,42 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         .into());
                     }
                 }
+                SdkFrontdoorSurface::Symbol => {
+                    let response =
+                        wait_for_symbol_query(SOCKET_TIMEOUT, || match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .symbol()
+                                .query()
+                                .native(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .symbol()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                        })?;
+                    let observed = response
+                        .results
+                        .iter()
+                        .map(|candidate| candidate.candidate_id.clone())
+                        .collect::<Vec<_>>();
+                    let expected = expected_ids
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect::<Vec<_>>();
+                    if observed != expected {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} symbol candidate drift: expected {:?}, got {:?}",
+                            scenario.name, expected, observed
+                        )
+                        .into());
+                    }
+                }
                 SdkFrontdoorSurface::RuntimeMetadata => {
                     let response = wait_for_sdk_observation(
                         SOCKET_TIMEOUT,

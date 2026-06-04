@@ -219,12 +219,9 @@ fn lower_sourcegraph_structural_shape(
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StructuralLeafVerdict<'a> {
     /// Lexical sibling the active LQ wire can represent unchanged (`Keyword`,
-    /// `RawString`, `Predicate`). A preserved `Predicate` is gated by the
-    /// lexical executor downstream exactly as on the native route: executable
-    /// predicates (`repo.has.file`, `file.contains`, …) run; non-executable
-    /// ones typed-fail with `LEX_PREDICATE_UNIMPLEMENTED` at execution — same
-    /// code and layer as native, so SG mirrors native for every predicate
-    /// sibling (ADV-02).
+    /// `RawString`, `Predicate`). Predicate leaves still pass through the SG
+    /// structural family gate in [`structural_route_supports_predicate`]
+    /// before they are preserved.
     PreserveLexical,
     /// Phrase body to lower into a structural block.
     LowerPhraseBody(&'a str),
@@ -252,6 +249,24 @@ pub(crate) fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_
     }
 }
 
+fn structural_route_supports_predicate(name: &str) -> bool {
+    matches!(
+        name,
+        "repo.has.file" | "repo.has.path" | "repo.has.content" | "repo.contains.content"
+    )
+}
+
+fn structural_route_unsupported_predicate(name: &str) -> CoreError {
+    CoreError::Typed {
+        code: BridgeErrorCode::BridgeTranslateFail
+            .as_code_str()
+            .to_string(),
+        message: format!(
+            "bridge: Sourcegraph structural route preserves only repo gate predicates in mixed boolean cells; `{name}` is unsupported"
+        ),
+    }
+}
+
 /// Typed-fail for a leaf kind the SG structural route does not represent.
 fn structural_route_typed_fail() -> CoreError {
     CoreError::Typed {
@@ -266,11 +281,11 @@ fn structural_route_typed_fail() -> CoreError {
 
 /// Rewrite a Sourcegraph structural expression against the leaf-kind legality
 /// matrix ([`structural_leaf_verdict`]). Mixed-domain lexical siblings that the
-/// active LQ wire can represent (`Keyword`, `RawString`, `Predicate`) are
-/// preserved unchanged to mirror native execution (a preserved `Predicate` is
-/// gated by the lexical executor downstream); `Phrase` / `Regex` bodies become
-/// structural blocks; `StructuralBlock` typed-fails. Native execution stays the
-/// source of truth — SG widening only follows it.
+/// active LQ wire can represent (`Keyword`, `RawString`, supported repo-gate
+/// `Predicate` families) are preserved unchanged to mirror native execution;
+/// `Phrase` / `Regex` bodies become structural blocks; `StructuralBlock`
+/// typed-fails. Native execution stays the source of truth — SG widening only
+/// follows it.
 fn rewrite_sourcegraph_structural_expr(
     query_text: &str,
     expr: &LqExpr,
@@ -285,7 +300,14 @@ fn rewrite_sourcegraph_structural_expr(
                     .to_string(),
         }),
         LqExpr::Leaf(leaf) => match structural_leaf_verdict(leaf) {
-            StructuralLeafVerdict::PreserveLexical => Ok(LqExpr::Leaf(leaf.clone())),
+            StructuralLeafVerdict::PreserveLexical => {
+                if let LqLeaf::Predicate { name, .. } = leaf
+                    && !structural_route_supports_predicate(name)
+                {
+                    return Err(structural_route_unsupported_predicate(name));
+                }
+                Ok(LqExpr::Leaf(leaf.clone()))
+            }
             StructuralLeafVerdict::LowerPhraseBody(body) => Ok(LqExpr::Leaf(
                 LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
             )),
@@ -842,8 +864,8 @@ mod tests {
     }
 
     #[test]
-    fn sourcegraph_structural_route_preserves_scalar_path_predicate_sibling_in_mixed_boolean(
-    ) -> TestResult {
+    fn sourcegraph_structural_route_preserves_scalar_path_predicate_sibling_in_mixed_boolean()
+    -> TestResult {
         let lowered = lower_sourcegraph_structural_query_text(
             r#"patterntype:structural repo:has.file(src/lib.rs) AND "function_item { { identifier :[name] } }""#,
         )
@@ -936,8 +958,8 @@ mod tests {
     }
 
     #[test]
-    fn sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean_and_not(
-    ) -> TestResult {
+    fn sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean_and_not()
+    -> TestResult {
         let lowered = lower_sourcegraph_structural_query_text(
             r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:has.file(src/lib.rs)"#,
         )
@@ -965,16 +987,41 @@ mod tests {
                                     && matches!(args.as_slice(), [LqPredicateArg::Keyword(v)] if v == "src/lib.rs")
                         )
                 ) {
-                    return Err(format!(
-                        "expected NOT predicate child, got {not_predicate:?}"
-                    )
-                    .into());
+                    return Err(
+                        format!("expected NOT predicate child, got {not_predicate:?}").into(),
+                    );
                 }
             }
             other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
                 return Err(format!("expected mixed AND tree, got {other:?}").into());
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
+    )]
+    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling() -> TestResult {
+        let err = match lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural symbol:has.name(MyTypeSymbol) AND "function_item { { identifier :[name] } }""#,
+        ) {
+            Ok(query) => {
+                return Err(format!(
+                    "expected unsupported predicate sibling failure, got {query:?}"
+                )
+                .into());
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert_eq!(
+            message,
+            "bridge: Sourcegraph structural route preserves only repo gate predicates in mixed boolean cells; `symbol.has.name` is unsupported"
+        );
         Ok(())
     }
 
@@ -1135,6 +1182,58 @@ mod tests {
                         value: "\"Cargo.toml\"".to_string(),
                     },
                 ],
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts active predicate leaf lowering via assert!/assert_eq! macros"
+    )]
+    fn repo_predicate_name_lang_lowering_preserves_both_matchers() -> TestResult {
+        let lowered = lower_sourcegraph_query_text(r#"repo:has.file(name:gate-a.rs, lang:rust)"#)
+            .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("repo predicate lowering must succeed: {err:?}").into()
+        })?;
+
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".to_string(),
+                args: vec![
+                    LqPredicateArg::Filter {
+                        name: "name".to_string(),
+                        value: "gate-a.rs".to_string(),
+                    },
+                    LqPredicateArg::Filter {
+                        name: "lang".to_string(),
+                        value: "rust".to_string(),
+                    },
+                ],
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts active predicate leaf lowering via assert!/assert_eq! macros"
+    )]
+    fn symbol_predicate_lowers_to_active_predicate_leaf() -> TestResult {
+        let lowered = lower_sourcegraph_query_text(r#"symbol:has.name(MyTypeSymbol)"#).map_err(
+            |err| -> Box<dyn std::error::Error> {
+                format!("symbol predicate lowering must succeed: {err:?}").into()
+            },
+        )?;
+
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "symbol.has.name".to_string(),
+                args: vec![LqPredicateArg::Keyword("MyTypeSymbol".to_string())],
             })
         );
         Ok(())

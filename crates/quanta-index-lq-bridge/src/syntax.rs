@@ -14,7 +14,7 @@
 //! term    := group | NOT term | predicate | filter | pattern
 //! group   := '(' query ')'
 //! filter  := ident ':' value
-//! predicate := ('repo' | 'file') ':' ident ('.' ident)* '(' ... ')'
+//! predicate := ('repo' | 'file' | 'symbol') ':' ident ('.' ident)* '(' ... ')'
 //! ident   := [A-Za-z][A-Za-z0-9_]*
 //! value   := non-whitespace, non-')' run
 //! pattern := one of:
@@ -931,7 +931,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let scope = self.slice_to_str(save, scope_end, "predicate scope")?;
-        if scope != "repo" && scope != "file" {
+        if scope != "repo" && scope != "file" && scope != "symbol" {
             self.pos = save;
             return Ok(None);
         }
@@ -1466,6 +1466,23 @@ mod tests {
         assert_eq!(&**scope, "file");
         assert_eq!(&**name, "contains");
         assert_eq!(&**args_raw, r#""impl Display""#);
+    }
+
+    #[test]
+    fn parses_symbol_predicate() {
+        let q = unwrap_ok(parse_sourcegraph(r#"symbol:has.name(MyTypeSymbol)"#));
+        let SgQuery::Predicate {
+            scope,
+            name,
+            args_raw,
+        } = q
+        else {
+            assert!(false, "expected Predicate");
+            return;
+        };
+        assert_eq!(&*scope, "symbol");
+        assert_eq!(&*name, "has.name");
+        assert_eq!(&*args_raw, "MyTypeSymbol");
     }
 
     #[test]
