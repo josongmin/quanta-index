@@ -4166,6 +4166,7 @@ dependencies = [
  "quanta-index-lq-regex",
  "quanta-index-lq-trigram",
  "serde",
+ "serde_json",
  "tantivy",
  "tempfile",
 ]

@@ -34,17 +34,21 @@ Explicitly excluded:
 - closeout is done; executable DSL residue is gone on the shipped surface
 - predicate widening is now owned by a lexical capability registry:
   `crates/quanta-index-lexical/src/predicate_registry.rs`
-- the first widened predicate family is landed:
-  `repo.has.file(lang:<x>)`
+- predicate widening now covers:
+  - registry-owned native aliases `repo.has.path(...)`,
+    `file.contains.content(...)`, `repo.contains.content(...)`
+  - shared numeric content scalars on `file.contains(...)`,
+    `file.has.content(...)`, and `repo.has.content(...)`
+  - scoped file-content predicates (`file:` / `path:` / `lang:`) at top level
+    and conjunctive `AND`, with typed-fail scoped `OR` / `NOT`
 - SG structural mixed-domain legality is now code-owned in
-  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
+  `crates/quanta-index-search-plane/src/lowering.rs`
 - SG structural route now preserves:
-  - `file:contains('...')` raw sibling in mixed `AND` / `OR`
-  - `repo:has.file('...')` predicate sibling in mixed `AND` / `OR`
+  - `file:contains('...')` raw sibling in mixed `AND` / `OR` / bounded `AND NOT`
+  - `repo:has.file('...')` predicate sibling in mixed `AND` / `OR` / bounded `AND NOT`
 - SG structural route still fail-closes:
-  - root / `NOT` raw-string sibling
-  - root / `NOT` predicate sibling
-  - scoped metadata filters under mixed `OR` / `NOT`
+  - lexical-only structural queries with no structural leaf
+  - divergent scoped metadata filters under mixed `OR` / `NOT`
 - capability truth is now mechanically checkable from code-owned dump bins plus
   `tools/ci/lint/check-dsl-capability-truth.py`
 - warm/cold benchmark baselines are refreshed on the adopted command paths:
@@ -196,11 +200,11 @@ real evidence, not structure.
 
 | widening surface | current state | owning seam (code authority) | red rail first | claim gate (before “advanced”) |
 | --- | --- | --- | --- | --- |
-| predicate subset widening | hardcoded `match` in lexical lowering/planner; unsupported shapes typed-fail `LEX_PREDICATE_UNIMPLEMENTED` | `quanta-index-lexical` `predicate_registry.rs` + `planner.rs` + `lib.rs` | `tantivy_smoke` + `predicate_repo_has_file_plans_through_tantivy_route` | owner-local + runtime + parity proof for each widened family, and a registry row |
-| SG structural `RawString` sibling | typed-fail `BRIDGE_TRANSLATE_FAIL` on the SG structural route | `quanta-index-search-plane` `lowering.rs` legality table; mirrored in `quanta-index-lq-bridge` `translator.rs` | `sourcegraph_structural_route_preserves_lexical_keyword_in_mixed_boolean_or` | native↔SG parity row + bridge golden + explicit typed-fail remainder |
-| SG structural `Predicate` sibling | typed-fail `BRIDGE_TRANSLATE_FAIL` on the SG structural route | same as `RawString` sibling | same lowering owner rail | same as `RawString` sibling; cannot start before `RawString` lane is green |
+| predicate subset widening | landed: registry SSOT + native alias normalization + shared numeric content scalar contract + scoped file-content family; unsupported remainder typed-fails (`LEX_PREDICATE_UNIMPLEMENTED`, `LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED`) | `quanta-index-lexical` `predicate_registry.rs` + `planner.rs` + `lib.rs` | `tantivy_smoke` + `predicate_repo_has_file_plans_through_tantivy_route` | owner-local + runtime + parity proof for each widened family, and a registry row |
+| SG structural `RawString` sibling | landed for mixed `AND` / `OR` / bounded `AND NOT`; lexical-only root still invalid | `quanta-index-search-plane` `lowering.rs` legality table; mirrored in `quanta-index-lq-bridge` `translator.rs` | `sourcegraph_structural_route_preserves_lexical_keyword_in_mixed_boolean_or` | native↔SG parity row + runtime row + explicit typed-fail remainder |
+| SG structural `Predicate` sibling | landed for mixed `AND` / `OR` / bounded `AND NOT`; lexical-only root still invalid | same as `RawString` sibling | same lowering owner rail | same as `RawString` sibling; widened family includes scalar-path `repo.has.file(...)` |
 | SG scoped-filter under mixed `OR` | typed-fail `BRIDGE_TRANSLATE_FAIL` by closeout design | `quanta-index-search-plane` `lowering.rs` legality table | `sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or` | per-family verdict (`accept` / `accept-with-rewrite` / permanent reject) with proof or a permanent typed-fail rail |
-| generated capability truth + benchmark bar | hand-maintained ledger/matrix prose; no drift gate | `tools/ci/lint/check-dsl-capability-truth.py` consuming code-owned metadata | `python3 tools/ci/lint/check-dsl-capability-truth.py` | checker fails closed on drift, and a widening claim without a benchmark/shadow section |
+| generated capability truth + benchmark bar | landed: checker consumes owner dump bins plus SG flat-table guard; benchmark authority and baselines are fail-closed | `tools/ci/lint/check-dsl-capability-truth.py` consuming code-owned metadata | `python3 tools/ci/lint/check-dsl-capability-truth.py` | checker fails closed on drift, and a widening claim without a benchmark/shadow section |
 
 ### 9.1 Frozen start order
 

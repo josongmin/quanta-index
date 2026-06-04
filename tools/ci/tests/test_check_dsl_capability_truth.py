@@ -208,6 +208,15 @@ def test_predicate_parity_flags_docs_only_widening():
     assert len(v) == 1 and "docs-only widening is forbidden" in v[0]
 
 
+def test_predicate_parity_flags_alias_documented_as_standalone_surface():
+    v = MODULE.check_predicate_parity(
+        {"repo.has.file"},
+        {"repo.has.file", "repo.has.path"},
+        {"repo.has.path": "repo.has.file"},
+    )
+    assert len(v) == 1 and "standalone surface" in v[0]
+
+
 # --- advanced-claim gate -----------------------------------------------------
 
 
@@ -261,12 +270,9 @@ def test_main_fails_closed_on_guarded_predicate_widening(tmp_path, monkeypatch):
     assert MODULE.main() == 1
 
 
-def test_main_fails_closed_on_flipped_verdict(tmp_path, monkeypatch):
-    """A flat (non-guarded) verdict flip must trip the snapshot legality check."""
-    real = REAL_LOWERING.read_text()
-    assert CANON_PHRASE_ARM in real
-    flipped = "LqLeaf::Phrase(_body) => StructuralLeafVerdict::TypedFail,"
-    mutated = tmp_path / "lowering.rs"
-    mutated.write_text(real.replace(CANON_PHRASE_ARM, flipped), encoding="utf-8")
-    monkeypatch.setattr(MODULE, "LOWERING_RS", mutated)
+def test_main_fails_closed_on_flipped_verdict(monkeypatch):
+    """A flat verdict flip in the owner dump must trip the snapshot legality check."""
+    verdicts = dict(MODULE.EXPECTED_STRUCTURAL_VERDICTS)
+    verdicts["Phrase"] = "TypedFail"
+    monkeypatch.setattr(MODULE, "load_structural_verdicts", lambda: verdicts)
     assert MODULE.main() == 1

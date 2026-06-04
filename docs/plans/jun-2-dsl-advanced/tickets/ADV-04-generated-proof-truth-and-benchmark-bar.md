@@ -56,7 +56,8 @@ calling the widened surface “advanced”.
 - code-owned dump bins now exist for predicate subset truth and SG legality:
   `crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs`
   `crates/quanta-index-search-plane/src/bin/dump_sg_structural_legality.rs`
-- checker path now exists:
+- checker path now exists and consumes owner dump bins plus the SG flat-table
+  shape guard:
   `tools/ci/lint/check-dsl-capability-truth.py`
 - structural improvement alone is not enough to justify an “advanced” claim
 - warm benchmark path must remain runnable; the owning manifest/profile seams are
@@ -81,7 +82,7 @@ calling the widened surface “advanced”.
 - predicate capability source:
   `crates/quanta-index-lexical/src/predicate_registry.rs`
 - SG legality source:
-  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
+  `crates/quanta-index-search-plane/src/lowering.rs`
 - checker precedents:
   `tools/ci/lint/check-public-api.py`
   and `tools/ci/lint/check-cargo-modules-snapshot.py`

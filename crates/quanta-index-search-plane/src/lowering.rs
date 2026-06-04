@@ -217,7 +217,7 @@ fn lower_sourcegraph_structural_shape(
 /// The body-carrying variants hand the borrowed leaf body straight to the
 /// rewrite so the rewrite never has to re-match the leaf to recover it.
 #[derive(Debug, PartialEq, Eq)]
-enum StructuralLeafVerdict<'a> {
+pub(crate) enum StructuralLeafVerdict<'a> {
     /// Lexical sibling the active LQ wire can represent unchanged (`Keyword`,
     /// `RawString`, `Predicate`). A preserved `Predicate` is gated by the
     /// lexical executor downstream exactly as on the native route: executable
@@ -241,7 +241,7 @@ enum StructuralLeafVerdict<'a> {
 /// travel with parity proof per the ADV-02 admission bar (enforced by
 /// `sourcegraph_structural_leaf_verdict_matrix_is_frozen` and the
 /// `check-dsl-capability-truth` gate).
-fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_> {
+pub(crate) fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_> {
     match leaf {
         LqLeaf::Keyword(_) | LqLeaf::RawString(_) | LqLeaf::Predicate { .. } => {
             StructuralLeafVerdict::PreserveLexical
@@ -842,6 +842,45 @@ mod tests {
     }
 
     #[test]
+    fn sourcegraph_structural_route_preserves_scalar_path_predicate_sibling_in_mixed_boolean(
+    ) -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural repo:has.file(src/lib.rs) AND "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural scalar-path Predicate AND lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "repo.has.file"
+                            && matches!(args.as_slice(), [LqPredicateArg::Keyword(v)] if v == "src/lib.rs")
+                ) {
+                    return Err(format!(
+                        "expected scalar-path predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn sourcegraph_structural_route_rejects_repo_scoped_filter_under_mixed_or() -> TestResult {
         let err = match lower_sourcegraph_structural_query_text(
             r#"repo:repo-e2e patterntype:structural parity_needle_alpha OR "function_item { { identifier :[name] } }""#,
@@ -859,6 +898,83 @@ mod tests {
             message,
             "bridge: scoped filters under OR/NOT are not representable on the active LQ wire"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_and_not() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT file:contains('parity_raw_needle')"#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural RawString AND NOT lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [structural, not_raw] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+                if !matches!(
+                    not_raw,
+                    LqExpr::Not(inner)
+                        if matches!(inner.as_ref(), LqExpr::Leaf(LqLeaf::RawString(body)) if body == "parity_raw_needle")
+                ) {
+                    return Err(format!("expected NOT RawString child, got {not_raw:?}").into());
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean_and_not(
+    ) -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:has.file(src/lib.rs)"#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural Predicate AND NOT lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [structural, not_predicate] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+                if !matches!(
+                    not_predicate,
+                    LqExpr::Not(inner)
+                        if matches!(
+                            inner.as_ref(),
+                            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                                if name == "repo.has.file"
+                                    && matches!(args.as_slice(), [LqPredicateArg::Keyword(v)] if v == "src/lib.rs")
+                        )
+                ) {
+                    return Err(format!(
+                        "expected NOT predicate child, got {not_predicate:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
         Ok(())
     }
 

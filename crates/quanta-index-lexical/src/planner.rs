@@ -14,7 +14,9 @@ use crate::filters::{FilterPlannerError, plan_filters};
 use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
 use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
 use crate::predicate_registry::{
-    PREDICATE_OWNER, PredicateKind, kind_of, parse_repo_file_matchers,
+    PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call,
+    kind_of, parse_content_predicate_constraint, parse_content_scalar_arg,
+    parse_repo_file_matchers,
 };
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
@@ -239,25 +241,44 @@ impl LexicalPlanner {
                 .map_err(LexicalPlannerError::SymbolPlan)?;
             return Ok(PlanLeaf::Symbol { name: needle, plan });
         }
-        match kind_of(name) {
+        let Some(canonical) = canonicalize_predicate_call(name, args).map_err(|_err| {
+            LexicalPlannerError::Unimplemented {
+                node: predicate_arity_label(name),
+                owner_ticket: PREDICATE_OWNER,
+            }
+        })? else {
+            return Err(LexicalPlannerError::Unimplemented {
+                node: "predicate_leaf",
+                owner_ticket: PREDICATE_OWNER,
+            });
+        };
+        match kind_of(canonical.name) {
             Some(PredicateKind::RepoFileGate) => {
-                validate_repo_has_file_args(name, args)?;
+                validate_repo_has_file_args(canonical.name, &canonical.args)?;
                 Ok(PlanLeaf::Predicate {
-                    name: name.to_owned(),
+                    name: canonical.name.to_owned(),
                 })
             }
             Some(PredicateKind::ContentLeaf) => {
-                let _needle = single_string_arg(name, args)?;
+                let _constraint = parse_content_predicate_constraint(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
                 Ok(PlanLeaf::Predicate {
-                    name: name.to_owned(),
+                    name: canonical.name.to_owned(),
                 })
             }
             Some(PredicateKind::RepoContentGate) => {
-                // Textual-scalar contract matches `single_string_arg` exactly
-                // (rejects `Number` / `filter:`), so planner and lowering agree.
-                let _needle = single_string_arg(name, args)?;
+                let _arg = parse_content_scalar_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
                 Ok(PlanLeaf::Predicate {
-                    name: name.to_owned(),
+                    name: canonical.name.to_owned(),
                 })
             }
             None => Err(LexicalPlannerError::Unimplemented {
@@ -307,10 +328,14 @@ fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, Lexi
 fn predicate_arity_label(name: &str) -> &'static str {
     if name == "symbol.has.name" {
         "predicate_symbol_has_name_arity"
-    } else if name == "repo.has.file" {
+    } else if matches!(canonical_predicate_name(name), Some("repo.has.file")) {
         "predicate_repo_has_file_arity"
-    } else if name == "repo.has.content" {
+    } else if matches!(canonical_predicate_name(name), Some("repo.has.content")) {
         "predicate_repo_has_content_arity"
+    } else if matches!(canonical_predicate_name(name), Some("file.contains")) {
+        "predicate_file_contains_arity"
+    } else if matches!(canonical_predicate_name(name), Some("file.has.content")) {
+        "predicate_file_has_content_arity"
     } else {
         "predicate_leaf_arity"
     }
@@ -543,27 +568,32 @@ mod tests {
     #[test]
     fn predicate_repo_has_file_plans_through_tantivy_route() {
         use quanta_index_contract::LqPredicateArg;
-        let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
-            name: "repo.has.file".to_owned(),
-            args: vec![LqPredicateArg::Filter {
+        for args in [
+            vec![LqPredicateArg::Filter {
                 name: "path".to_owned(),
                 value: "src/lib.rs".to_owned(),
             }],
-        }));
-        let outcome = LexicalPlanner::plan(&q);
-        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
-        if let Ok(plan) = outcome {
-            let matched_leaf = matches!(
-                &plan.root,
-                PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
-                    if name == "repo.has.file"
-            );
-            assert!(
-                matched_leaf,
-                "expected predicate leaf for repo.has.file, got {:?}",
-                plan.root
-            );
-            assert!(plan.engines.contains(&EngineKind::Tantivy));
+            vec![LqPredicateArg::Keyword("src/lib.rs".to_owned())],
+        ] {
+            let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".to_owned(),
+                args,
+            }));
+            let outcome = LexicalPlanner::plan(&q);
+            assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+            if let Ok(plan) = outcome {
+                let matched_leaf = matches!(
+                    &plan.root,
+                    PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
+                        if name == "repo.has.file"
+                );
+                assert!(
+                    matched_leaf,
+                    "expected predicate leaf for repo.has.file, got {:?}",
+                    plan.root
+                );
+                assert!(plan.engines.contains(&EngineKind::Tantivy));
+            }
         }
     }
 
@@ -592,11 +622,105 @@ mod tests {
     }
 
     #[test]
-    fn predicate_repo_has_content_rejects_non_textual_args() {
+    fn predicate_native_aliases_plan_through_canonical_tantivy_route() {
+        use quanta_index_contract::LqPredicateArg;
+        for (name, args, expected_name) in [
+            (
+                "repo.has.path",
+                vec![LqPredicateArg::Keyword("src/lib.rs".to_owned())],
+                "repo.has.file",
+            ),
+            (
+                "file.contains.content",
+                vec![LqPredicateArg::Phrase("needle".to_owned())],
+                "file.contains",
+            ),
+            (
+                "repo.contains.content",
+                vec![LqPredicateArg::RawString("needle".to_owned())],
+                "repo.has.content",
+            ),
+        ] {
+            let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+                name: name.to_owned(),
+                args,
+            }));
+            let outcome = LexicalPlanner::plan(&q);
+            assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+            if let Ok(plan) = outcome {
+                let matched_leaf = matches!(
+                    &plan.root,
+                    PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
+                        if name == expected_name
+                );
+                assert!(
+                    matched_leaf,
+                    "expected canonical predicate leaf for {name}, got {:?}",
+                    plan.root
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_content_number_and_scope_shapes_plan_through_tantivy_route() {
+        use quanta_index_contract::LqPredicateArg;
+        for (name, args) in [
+            ("file.contains", vec![LqPredicateArg::Number(1)]),
+            ("file.has.content", vec![LqPredicateArg::Number(1)]),
+            ("repo.has.content", vec![LqPredicateArg::Number(123)]),
+            (
+                "file.contains",
+                vec![
+                    LqPredicateArg::Filter {
+                        name: "path".to_owned(),
+                        value: "src".to_owned(),
+                    },
+                    LqPredicateArg::Phrase("needle".to_owned()),
+                ],
+            ),
+            (
+                "file.has.content",
+                vec![
+                    LqPredicateArg::Filter {
+                        name: "lang".to_owned(),
+                        value: "rust".to_owned(),
+                    },
+                    LqPredicateArg::Keyword("/v\\d+/".to_owned()),
+                ],
+            ),
+        ] {
+            let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+                name: name.to_owned(),
+                args,
+            }));
+            let outcome = LexicalPlanner::plan(&q);
+            assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+            if let Ok(plan) = outcome {
+                assert!(
+                    matches!(
+                        &plan.root,
+                        PlanNode::Leaf { leaf: PlanLeaf::Predicate { .. }, .. }
+                    ),
+                    "expected predicate leaf, got {:?}",
+                    plan.root
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_repo_has_content_rejects_scoped_args() {
         use quanta_index_contract::LqPredicateArg;
         let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.content".to_owned(),
-            args: vec![LqPredicateArg::Number(7)],
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_owned(),
+                    value: "src".to_owned(),
+                },
+                LqPredicateArg::Number(7),
+            ],
         }));
         let outcome = LexicalPlanner::plan(&q);
         assert!(

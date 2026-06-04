@@ -64,9 +64,11 @@ use quanta_index_lq_trigram::{
 
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
 use crate::predicate_registry::{
-    PREDICATE_OWNER, PredicateKind, RepoContentArg, RepoContentArgError, RepoFileArgError,
-    RepoFileConstraint, RepoFileMatcher, kind_of, parse_repo_content_arg, parse_repo_file_matchers,
-    unimplemented_predicate,
+    ContentPredicateArgError, ContentPredicateConstraint, ContentPathScope, ContentScalarArg,
+    ContentScalarArgError, PREDICATE_OWNER, PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE,
+    PredicateKind, RepoFileArgError, RepoFileConstraint, RepoFileMatcher,
+    canonicalize_predicate_call, kind_of, parse_content_predicate_constraint,
+    parse_content_scalar_arg, parse_repo_file_matchers, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
 use tantivy::collector::TopDocs;
@@ -1787,21 +1789,22 @@ enum RepoScopeConstraint {
 /// Lower a validated `repo.has.content` scalar into a content leaf, applying the
 /// same `/regex/`-delimiter stripping the `ContentLeaf` family uses so a regex
 /// content gate stays a regex.
-fn content_leaf_from_scalar(arg: &RepoContentArg) -> LqLeaf {
+fn content_leaf_from_scalar(arg: &ContentScalarArg) -> LqLeaf {
     match arg {
-        RepoContentArg::Keyword(value) => {
+        ContentScalarArg::Keyword(value) => {
             if let Some(regex) = strip_regex_delimiters(value) {
                 return LqLeaf::Regex(regex.to_string());
             }
             LqLeaf::Keyword(value.clone())
         }
-        RepoContentArg::Phrase(value) => LqLeaf::Phrase(value.clone()),
-        RepoContentArg::RawString(value) => {
+        ContentScalarArg::Phrase(value) => LqLeaf::Phrase(value.clone()),
+        ContentScalarArg::RawString(value) => {
             if let Some(regex) = strip_regex_delimiters(value) {
                 return LqLeaf::Regex(regex.to_string());
             }
             LqLeaf::RawString(value.clone())
         }
+        ContentScalarArg::Number(value) => LqLeaf::Keyword(value.to_string()),
     }
 }
 
@@ -2360,18 +2363,59 @@ impl TantivySearcher {
         Ok(out)
     }
 
+    fn canonicalize_predicate_call(
+        &self,
+        name: &str,
+        args: &[LqPredicateArg],
+    ) -> Result<Option<(String, Vec<LqPredicateArg>)>, CoreError> {
+        canonicalize_predicate_call(name, args)
+            .map(|call| call.map(|canonical| (canonical.name.to_string(), canonical.args)))
+            .map_err(|_err| {
+                unimplemented_predicate(format!(
+                    "lexical: predicate leaf `{name}` does not admit this alias argument shape (owner: {PREDICATE_OWNER})"
+                ))
+            })
+    }
+
+    fn content_predicate_constraint(
+        &self,
+        name: &str,
+        args: &[LqPredicateArg],
+    ) -> Result<ContentPredicateConstraint, CoreError> {
+        parse_content_predicate_constraint(args).map_err(|err| match err {
+            ContentPredicateArgError::MissingContentScalar => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` requires exactly one content scalar argument (owner: {PREDICATE_OWNER})"
+            )),
+            ContentPredicateArgError::MultipleContentScalars => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports one content scalar argument (owner: {PREDICATE_OWNER})"
+            )),
+            ContentPredicateArgError::UnsupportedFilter => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports one content scalar plus optional file:/path:/lang: scope filters (owner: {PREDICATE_OWNER})"
+            )),
+            ContentPredicateArgError::DuplicatePathScope => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports one file:/path: scope filter (owner: {PREDICATE_OWNER})"
+            )),
+            ContentPredicateArgError::DuplicateLanguage => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports one lang: scope filter (owner: {PREDICATE_OWNER})"
+            )),
+            ContentPredicateArgError::EmptyLanguageValue => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` lang: argument cannot be empty (owner: {PREDICATE_OWNER})"
+            )),
+        })
+    }
+
     /// Validate `repo.has.content(...)` and lower it to its content leaf.
     fn repo_content_constraint(
         &self,
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<LqLeaf, CoreError> {
-        let arg = parse_repo_content_arg(args).map_err(|err| match err {
-            RepoContentArgError::WrongArity => unimplemented_predicate(format!(
+        let arg = parse_content_scalar_arg(args).map_err(|err| match err {
+            ContentScalarArgError::WrongArity => unimplemented_predicate(format!(
                 "lexical: predicate leaf `{name}` requires exactly one content scalar argument (owner: {PREDICATE_OWNER})"
             )),
-            RepoContentArgError::NonTextualArg => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` only supports a keyword/phrase/raw-string content argument (owner: {PREDICATE_OWNER})"
+            ContentScalarArgError::UnsupportedArg => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports a keyword/phrase/raw-string/number content argument (owner: {PREDICATE_OWNER})"
             )),
         })?;
         Ok(content_leaf_from_scalar(&arg))
@@ -2424,35 +2468,65 @@ impl TantivySearcher {
         Ok(out)
     }
 
-    fn predicate_content_leaf(
+    fn predicate_content_leaf_from_constraint(&self, constraint: &ContentPredicateConstraint) -> LqLeaf {
+        content_leaf_from_scalar(&constraint.content)
+    }
+
+    fn collect_matching_paths_for_content_scope(
         &self,
-        name: &str,
-        args: &[LqPredicateArg],
-    ) -> Result<LqLeaf, CoreError> {
-        let [arg] = args else {
-            return Err(unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` requires exactly one scalar argument (owner: {PREDICATE_OWNER})"
-            )));
-        };
-        match arg {
-            LqPredicateArg::Keyword(value) => {
-                if let Some(regex) = strip_regex_delimiters(value) {
-                    return Ok(LqLeaf::Regex(regex.to_string()));
-                }
-                Ok(LqLeaf::Keyword(value.clone()))
-            }
-            LqPredicateArg::Phrase(value) => Ok(LqLeaf::Phrase(value.clone())),
-            LqPredicateArg::RawString(value) => {
-                if let Some(regex) = strip_regex_delimiters(value) {
-                    return Ok(LqLeaf::Regex(regex.to_string()));
-                }
-                Ok(LqLeaf::RawString(value.clone()))
-            }
-            LqPredicateArg::Number(value) => Ok(LqLeaf::Keyword(value.to_string())),
-            LqPredicateArg::Filter { .. } => Err(unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` filter arguments are not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
-            ))),
+        constraint: &ContentPredicateConstraint,
+    ) -> Result<Option<BTreeSet<String>>, CoreError> {
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref() {
+            clauses.push((Occur::Must, self.compile_file_filter(pattern, *scope)?));
         }
+        if let Some(language) = constraint.language.as_ref() {
+            let Some(normalized) = normalize_language(language) else {
+                return Err(CoreError::InvalidContract(
+                    "lexical: scoped content predicate escaped with an empty lang value"
+                        .to_string(),
+                ));
+            };
+            clauses.push((Occur::Must, self.exact_text_query(self.fields.language, &normalized)));
+        }
+        if clauses.is_empty() {
+            return Ok(None);
+        }
+        let compiled = self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND);
+        let searcher = self.reader.searcher();
+        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while collecting scoped content paths: {err}"
+            ))
+        })?;
+        if limit == 0 {
+            return Ok(Some(BTreeSet::new()));
+        }
+        let hits = searcher.search(&*compiled, &TopDocs::with_limit(limit)).map_err(|err| {
+            CoreError::Storage(format!("lexical: scoped content path search: {err}"))
+        })?;
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for (_, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if let Some(path) = stored_text(&doc, self.fields.repo_relative_path) {
+                let _inserted: bool = out.insert(path);
+            }
+        }
+        Ok(Some(out))
+    }
+
+    fn allowed_paths_for_content_predicate(
+        &self,
+        constraint: &ContentPredicateConstraint,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let content_leaf = self.predicate_content_leaf_from_constraint(constraint);
+        let content_paths = self.collect_matching_paths_for_leaf(&content_leaf)?;
+        let Some(scope_paths) = self.collect_matching_paths_for_content_scope(constraint)? else {
+            return Ok(content_paths);
+        };
+        Ok(content_paths.intersection(&scope_paths).cloned().collect())
     }
 
     fn repo_has_file_constraint(
@@ -2462,10 +2536,10 @@ impl TantivySearcher {
     ) -> Result<RepoFileConstraint, CoreError> {
         parse_repo_file_matchers(args).map_err(|err| match err {
             RepoFileArgError::UnsupportedArg => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` only supports path:/name:/lang: filter arguments (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` only supports one scalar path argument or path:/name:/lang: filter arguments (owner: {PREDICATE_OWNER})"
             )),
             RepoFileArgError::NoMatcher => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` requires at least one path:/name:/lang: argument (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` requires either one scalar path argument or at least one path:/name:/lang: argument (owner: {PREDICATE_OWNER})"
             )),
             RepoFileArgError::EmptyLanguageValue => unimplemented_predicate(format!(
                 "lexical: predicate leaf `{name}` lang: argument cannot be empty (owner: {PREDICATE_OWNER})"
@@ -2478,26 +2552,44 @@ impl TantivySearcher {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<LqExpr, CoreError> {
-        match kind_of(name) {
+        let Some((canonical_name, canonical_args)) = self.canonicalize_predicate_call(name, args)?
+        else {
+            return Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+            )));
+        };
+        match kind_of(&canonical_name) {
             Some(PredicateKind::RepoFileGate) => {
-                let _constraint = self.repo_has_file_constraint(name, args)?;
+                let _constraint = self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
-                    name: name.to_string(),
-                    args: args.to_vec(),
+                    name: canonical_name,
+                    args: canonical_args,
                 }))
             }
             Some(PredicateKind::RepoContentGate) => {
-                let _leaf = self.repo_content_constraint(name, args)?;
+                let _leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
-                    name: name.to_string(),
-                    args: args.to_vec(),
+                    name: canonical_name,
+                    args: canonical_args,
                 }))
             }
             Some(PredicateKind::ContentLeaf) => {
-                Ok(LqExpr::Leaf(self.predicate_content_leaf(name, args)?))
+                let constraint =
+                    self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                if constraint.has_scopes() {
+                    return Err(CoreError::Typed {
+                        code: PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE.to_string(),
+                        message: format!(
+                            "lexical: predicate leaf `{canonical_name}` with file:/path:/lang: scope is not executable inside OR/NOT boolean scope (owner: {PREDICATE_OWNER})"
+                        ),
+                    });
+                }
+                Ok(LqExpr::Leaf(
+                    self.predicate_content_leaf_from_constraint(&constraint),
+                ))
             }
             None => Err(unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{canonical_name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
             ))),
         }
     }
@@ -2531,38 +2623,48 @@ impl TantivySearcher {
     fn extract_predicate_plan(
         &self,
         expr: &LqExpr,
-    ) -> Result<(LqExpr, Vec<RepoScopeConstraint>, Vec<LqLeaf>), CoreError> {
+    ) -> Result<(LqExpr, Vec<RepoScopeConstraint>, Vec<ContentPredicateConstraint>), CoreError> {
         match expr {
             LqExpr::Empty => Ok((LqExpr::Empty, Vec::new(), Vec::new())),
-            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => match kind_of(name) {
-                Some(PredicateKind::RepoFileGate) => Ok((
-                    LqExpr::Empty,
-                    vec![RepoScopeConstraint::File(
-                        self.repo_has_file_constraint(name, args)?,
-                    )],
-                    Vec::new(),
-                )),
-                Some(PredicateKind::RepoContentGate) => Ok((
-                    LqExpr::Empty,
-                    vec![RepoScopeConstraint::Content(
-                        self.repo_content_constraint(name, args)?,
-                    )],
-                    Vec::new(),
-                )),
-                Some(PredicateKind::ContentLeaf) => Ok((
-                    LqExpr::Empty,
-                    Vec::new(),
-                    vec![self.predicate_content_leaf(name, args)?],
-                )),
-                None => Err(unimplemented_predicate(format!(
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                let Some((canonical_name, canonical_args)) =
+                    self.canonicalize_predicate_call(name, args)?
+                else {
+                    return Err(unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
-                ))),
-            },
+                )));
+                };
+                match kind_of(&canonical_name) {
+                    Some(PredicateKind::RepoFileGate) => Ok((
+                        LqExpr::Empty,
+                        vec![RepoScopeConstraint::File(
+                            self.repo_has_file_constraint(&canonical_name, &canonical_args)?,
+                        )],
+                        Vec::new(),
+                    )),
+                    Some(PredicateKind::RepoContentGate) => Ok((
+                        LqExpr::Empty,
+                        vec![RepoScopeConstraint::Content(self.repo_content_constraint(
+                            &canonical_name,
+                            &canonical_args,
+                        )?)],
+                        Vec::new(),
+                    )),
+                    Some(PredicateKind::ContentLeaf) => Ok((
+                        LqExpr::Empty,
+                        Vec::new(),
+                        vec![self.content_predicate_constraint(&canonical_name, &canonical_args)?],
+                    )),
+                    None => Err(unimplemented_predicate(format!(
+                        "lexical: predicate leaf `{canonical_name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                    ))),
+                }
+            }
             LqExpr::Leaf(_) => Ok((expr.clone(), Vec::new(), Vec::new())),
             LqExpr::All(parts) => {
                 let mut exprs: Vec<LqExpr> = Vec::new();
                 let mut repo_predicates: Vec<RepoScopeConstraint> = Vec::new();
-                let mut file_predicates: Vec<LqLeaf> = Vec::new();
+                let mut file_predicates: Vec<ContentPredicateConstraint> = Vec::new();
                 for part in parts {
                     let (lowered, repo_parts, file_parts) = self.extract_predicate_plan(part)?;
                     if !matches!(lowered, LqExpr::Empty) {
@@ -2586,15 +2688,33 @@ impl TantivySearcher {
     }
 
     fn prepare_predicate_plan(&self, query: &LqQuery) -> Result<PreparedPredicatePlan, CoreError> {
-        if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr
-            && matches!(kind_of(name), Some(PredicateKind::ContentLeaf))
-        {
-            return Ok(PreparedPredicatePlan {
-                expr: LqExpr::Leaf(self.predicate_content_leaf(name, args)?),
-                allowed_paths: None,
-                allowed_repo_ids: None,
-                force_empty: false,
-            });
+        if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr {
+            let Some((canonical_name, canonical_args)) = self.canonicalize_predicate_call(name, args)?
+            else {
+                return Err(unimplemented_predicate(format!(
+                    "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                )));
+            };
+            if matches!(kind_of(&canonical_name), Some(PredicateKind::ContentLeaf)) {
+                let constraint =
+                    self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                let allowed_paths = self.collect_matching_paths_for_content_scope(&constraint)?;
+                if allowed_paths.as_ref().is_some_and(BTreeSet::is_empty) {
+                    return Ok(PreparedPredicatePlan {
+                        expr: LqExpr::Empty,
+                        allowed_paths: None,
+                        allowed_repo_ids: None,
+                        force_empty: true,
+                    });
+                }
+                let lowered = self.predicate_content_leaf_from_constraint(&constraint);
+                return Ok(PreparedPredicatePlan {
+                    expr: LqExpr::Leaf(lowered),
+                    allowed_paths,
+                    allowed_repo_ids: None,
+                    force_empty: false,
+                });
+            }
         }
         let (expr, repo_constraints, file_predicates) = self.extract_predicate_plan(&query.expr)?;
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
@@ -2627,8 +2747,8 @@ impl TantivySearcher {
             });
         }
         let mut allowed_paths: Option<BTreeSet<String>> = None;
-        for predicate_leaf in &file_predicates {
-            let paths = self.collect_matching_paths_for_leaf(predicate_leaf)?;
+        for predicate in &file_predicates {
+            let paths = self.allowed_paths_for_content_predicate(predicate)?;
             if paths.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
@@ -3168,7 +3288,15 @@ impl TantivySearcher {
             }
             LqLeaf::Predicate { name, args } => match kind_of(name) {
                 Some(PredicateKind::RepoFileGate) => {
-                    let constraint = self.repo_has_file_constraint(name, args)?;
+                    let Some((canonical_name, canonical_args)) =
+                        self.canonicalize_predicate_call(name, args)?
+                    else {
+                        return Err(unimplemented_predicate(format!(
+                            "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                        )));
+                    };
+                    let constraint =
+                        self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
                     let repo_ids = self.collect_repo_ids_for_repo_has_file(&constraint)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
@@ -3176,7 +3304,14 @@ impl TantivySearcher {
                     return Ok(self.repo_id_restriction_query(&repo_ids));
                 }
                 Some(PredicateKind::RepoContentGate) => {
-                    let leaf = self.repo_content_constraint(name, args)?;
+                    let Some((canonical_name, canonical_args)) =
+                        self.canonicalize_predicate_call(name, args)?
+                    else {
+                        return Err(unimplemented_predicate(format!(
+                            "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                        )));
+                    };
+                    let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
                     let repo_ids = self.collect_repo_ids_for_repo_has_content(&leaf, options)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
@@ -3184,7 +3319,21 @@ impl TantivySearcher {
                     return Ok(self.repo_id_restriction_query(&repo_ids));
                 }
                 Some(PredicateKind::ContentLeaf) => {
-                    let lowered = self.predicate_content_leaf(name, args)?;
+                    let Some((canonical_name, canonical_args)) =
+                        self.canonicalize_predicate_call(name, args)?
+                    else {
+                        return Err(unimplemented_predicate(format!(
+                            "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                        )));
+                    };
+                    let constraint =
+                        self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                    if constraint.has_scopes() {
+                        return Err(CoreError::InvalidContract(format!(
+                            "lexical: scoped content predicate `{canonical_name}` must be prepared before compile_leaf"
+                        )));
+                    }
+                    let lowered = self.predicate_content_leaf_from_constraint(&constraint);
                     return self.compile_leaf(&lowered, options, false);
                 }
                 None => {

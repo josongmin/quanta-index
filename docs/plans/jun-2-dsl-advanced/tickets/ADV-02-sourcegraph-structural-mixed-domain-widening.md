@@ -19,10 +19,15 @@ Increment log:
   `PreserveLexical`), mirroring native `'...' OR match { ... }`. On the SG side
   the reachable raw leaf is `file:contains('...')` (executable bridge
   predicate). Proof: owner-local lowering test
-  `sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or`;
-  cross-route parity row
+  `sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or` and
+  `sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_and_not`;
+  cross-route parity rows
   `structural_sourcegraph_native_mixed_raw_string_or_parity` in
-  `e2e_dual_syntax_lowering_parity` (green); bridge golden rail unchanged (21).
+  `e2e_dual_syntax_lowering_parity` and
+  `structural_sourcegraph_native_mixed_raw_string_and_not_parity`; runtime rows
+  `runtime_sourcegraph_structural_mixed_raw_string_or` and
+  `runtime_sourcegraph_structural_mixed_raw_string_and_not`; bridge golden rail
+  unchanged.
 - `predicate-sibling` (done, widened + parity-proven) — `Predicate` leaves are
   now preserved as lexical siblings (verdict `PreserveLexical`, flat — no guard,
   so the checker's flat-table invariant holds). The lexical executor gates a
@@ -33,11 +38,18 @@ Increment log:
   (the old behavior typed-failed *all* predicate siblings at lowering, strictly
   narrower than native). Native-parity-first: the parity rail is the judge and
   is green. Proof: owner-local
-  `sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean`;
+  `sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean`,
+  `sourcegraph_structural_route_preserves_scalar_path_predicate_sibling_in_mixed_boolean`,
+  and `sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean_and_not`;
   matrix-freeze cell `Predicate => PreserveLexical`; native↔SG parity
   `structural_sourcegraph_native_mixed_predicate_sibling_and_parity`
   (`repo:has.file(path:src/lib.rs) AND <structural body>` → `["alpha_rust"]` on
-  both syntaxes). `StructuralBlock` remains the only `TypedFail` leaf.
+  both syntaxes),
+  `structural_sourcegraph_native_mixed_predicate_scalar_path_sibling_and_parity`,
+  and `structural_sourcegraph_native_mixed_predicate_and_not_parity`; runtime
+  rows `runtime_sourcegraph_structural_mixed_predicate_scalar_path_and` and
+  `runtime_sourcegraph_structural_mixed_predicate_scalar_path_and_not`.
+  `StructuralBlock` remains the only `TypedFail` leaf.
 
 ## Objective
 
@@ -49,9 +61,11 @@ bridge unchanged.
 
 - native mixed lexical/structural boolean already executes
 - SG structural legality is now code-owned in
-  `crates/quanta-index-search-plane/src/lowering/structural_matrix.rs`
-- `RawString` and `Predicate` siblings are now widened for mixed `AND` / `OR`
-  and remain typed-fail in root / `NOT`
+  `crates/quanta-index-search-plane/src/lowering.rs`
+- `RawString` and `Predicate` siblings are now widened for mixed `AND` / `OR` /
+  bounded `AND NOT`
+- lexical-only structural queries with no structural leaf remain invalid by
+  design
 
 ## Current Code Pointers
 

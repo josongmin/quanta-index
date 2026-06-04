@@ -50,19 +50,24 @@ proof_rail = [
   "runtime_sourcegraph_repo_has_file_miss_multi_repo",
   "runtime_native_repo_has_file_true_gate_multi_repo",
   "runtime_sourcegraph_repo_has_file_true_gate_multi_repo",
+  "runtime_native_repo_has_file_scalar_path_true_gate_multi_repo",
+  "runtime_sourcegraph_repo_has_file_scalar_path_true_gate_multi_repo",
+  "runtime_sourcegraph_repo_has_file_scalar_path_miss_multi_repo",
   "runtime_native_repo_has_file_not_false_multi_repo",
   "tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id",
   "runtime_native_repo_allow_list_universe_baseline",
   "dsl_scenarios:sourcegraph_repo_has_file_predicate_executes_live",
   "e2e_filter_execution:repo_has_path_alias_executes_on_sourcegraph_surface",
+  "e2e_filter_execution:repo_has_file_scalar_path_executes_on_sourcegraph_surface",
   "e2e_perf_chaos:predicate_repo_has_file_executes_and_miss_does_not_poison_next_query",
   "e2e_lexical_full_fidelity:repo_has_file_predicate_under_or_short_circuits_true_repo_gate",
   "tantivy_executes_repo_has_file_predicate_with_lang_matcher",
+  "e2e_dual_syntax_lowering_parity:repo_has_file_scalar_path_predicate_parity",
   "e2e_dual_syntax_lowering_parity:repo_has_file_lang_predicate_parity",
   "e2e_dual_syntax_lowering_parity:repo_has_path_alias_parity",
   "tantivy_smoke",
 ]
-expected_live_behavior = "repo-wide existence gate is runtime-proved via miss and NOT-false rows on docs-multi-repo.toml; per-path narrowing stays on companion OR/NOT rails; arg subset is path:/name: (regex) plus lang: (ADV-01, exact language-field match), and SG repo:has.path(...) sugar lowers onto the same path matcher surface, owned by predicate_registry::parse_repo_file_matchers"
+expected_live_behavior = "repo-wide existence gate is runtime-proved via miss and NOT-false rows on docs-multi-repo.toml; per-path narrowing stays on companion OR/NOT rails; arg subset is one scalar path shorthand plus path:/name: regex matchers and lang: exact language-field match, and native alias repo.has.path(...) plus SG repo:has.path(...) sugar both lower onto the same path matcher surface, owned by predicate_registry::parse_repo_file_matchers"
 
 [[entry]]
 surface = "Predicate repo.has.content(...)"
@@ -73,12 +78,23 @@ proof_rail = [
   "runtime_native_repo_has_content_true_gate_multi_repo",
   "runtime_sourcegraph_repo_has_content_true_gate_multi_repo",
   "runtime_sourcegraph_repo_has_content_miss_multi_repo",
+  "runtime_native_repo_contains_content_true_gate_multi_repo",
+  "runtime_native_repo_contains_content_miss_multi_repo",
+  "runtime_native_repo_has_content_number_true_gate_multi_repo",
+  "runtime_sourcegraph_repo_has_content_number_true_gate_multi_repo",
+  "runtime_native_repo_has_content_number_miss_multi_repo",
   "tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id",
   "tantivy_executes_repo_has_content_predicate_under_or_and_not",
+  "e2e_filter_execution:repo_contains_content_alias_executes_on_sourcegraph_surface",
+  "e2e_filter_execution:numeric_content_predicates_execute_on_sourcegraph_surface",
   "e2e_filter_execution:repo_has_content_predicate_executes_on_sourcegraph_surface",
   "e2e_dual_syntax_lowering_parity:repo_has_content_predicate_parity",
+  "e2e_dual_syntax_lowering_parity:repo_contains_content_native_alias_parity",
+  "e2e_dual_syntax_lowering_parity:repo_has_content_number_parity",
+  "tantivy_smoke:tantivy_executes_native_predicate_aliases",
+  "tantivy_smoke:tantivy_executes_numeric_content_predicates",
 ]
-expected_live_behavior = "repo-wide content existence gate is runtime-proved on textual scalar args only; matching repos return the lexical hits selected by the surrounding query rather than projecting only the matching file"
+expected_live_behavior = "repo-wide content existence gate is runtime-proved on the shared content scalar subset (keyword / phrase / raw-string / number); native alias repo.contains.content(...) lowers onto the same gate, numeric scalars canonicalize to decimal keywords, and scoped repo-content shapes remain typed-fail"
 
 [[entry]]
 surface = "Predicate file.contains(...)"
@@ -91,30 +107,72 @@ proof_rail = [
   "runtime_native_file_contains_phrase_miss",
   "runtime_sourcegraph_file_contains_content_phrase_hit",
   "runtime_sourcegraph_file_contains_content_phrase_miss",
+  "runtime_native_file_contains_content_phrase_hit",
+  "runtime_native_file_contains_content_phrase_miss",
+  "runtime_native_file_contains_number_hit",
+  "runtime_native_file_contains_number_miss",
+  "runtime_native_file_contains_scoped_path_hit",
+  "runtime_sourcegraph_file_contains_scoped_path_hit",
+  "runtime_native_file_contains_scoped_path_miss",
+  "runtime_native_file_contains_scoped_file_hit",
+  "runtime_native_file_contains_scoped_and_hit",
+  "runtime_native_file_contains_scoped_or_typed_fail",
+  "runtime_native_file_contains_scoped_not_typed_fail",
+  "runtime_native_file_contains_scoped_unknown_matcher_typed_fail",
+  "runtime_native_file_contains_multiple_scalars_typed_fail",
   "sdk_frontdoor:sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth",
   "e2e_filter_execution:file_contains_content_alias_executes_on_sourcegraph_surface",
+  "e2e_filter_execution:numeric_content_predicates_execute_on_sourcegraph_surface",
+  "e2e_filter_execution:scoped_file_content_predicates_execute_on_sourcegraph_surface",
+  "e2e_filter_execution:scoped_file_content_predicates_fail_closed_under_or_not_and_bad_matchers",
   "e2e_perf_chaos:predicate_file_contains_executes_and_miss_does_not_poison_next_query",
   "tantivy_smoke:file_has_content_predicate_phrase_and_regex",
+  "tantivy_smoke:tantivy_executes_native_predicate_aliases",
+  "tantivy_smoke:tantivy_executes_numeric_content_predicates",
+  "tantivy_smoke:tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not",
   "e2e_dual_syntax_lowering_parity:file_contains_raw_substring_parity",
   "e2e_dual_syntax_lowering_parity:file_contains_phrase_parity",
   "e2e_dual_syntax_lowering_parity:file_contains_content_alias_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_content_native_alias_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_number_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_path_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_file_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_and_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_or_typed_fail_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_not_typed_fail_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_scoped_unknown_matcher_typed_fail_parity",
+  "e2e_dual_syntax_lowering_parity:file_contains_multiple_scalars_typed_fail_parity",
 ]
-expected_live_behavior = "native dotted predicate surface executes on the shipped raw/content leaf subset with direct runtime raw-hit, phrase-hit, and phrase-miss rows; SG file:contains.content(...) alias lowers onto the same phrase/content substrate and is runtime/parity proved on that shared surface"
+expected_live_behavior = "native dotted predicate surface executes on the shared content scalar subset, including alias file.contains.content(...), numeric scalar canonicalization, and file/path/lang-scoped top-level or conjunctive-AND execution; scoped OR/NOT stays typed-fail with LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED"
 
 [[entry]]
 surface = "Predicate file.has.content(...)"
 proof_status = "active_runtime"
 authority_owner = "runtime_corpus"
 carrier_kind = "search_result"
-proof_rail = ["runtime_sourcegraph_file_has_content_regex_hit", "runtime_sourcegraph_file_has_content_phrase_miss", "tantivy_smoke:file_has_content_predicate_phrase_and_regex", "e2e_dual_syntax_lowering_parity:file_has_content_regex_parity"]
-expected_live_behavior = "SG alias executes on lexical content-leaf substrate with direct regex hit and phrase miss oracle rows; native predicate name is owner-local proved in tantivy_smoke"
+proof_rail = [
+  "runtime_sourcegraph_file_has_content_regex_hit",
+  "runtime_sourcegraph_file_has_content_phrase_miss",
+  "runtime_native_file_has_content_number_hit",
+  "runtime_native_file_has_content_scoped_lang_regex_hit",
+  "runtime_sourcegraph_file_has_content_scoped_lang_regex_hit",
+  "tantivy_smoke:file_has_content_predicate_phrase_and_regex",
+  "tantivy_smoke:tantivy_executes_numeric_content_predicates",
+  "tantivy_smoke:tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not",
+  "e2e_filter_execution:numeric_content_predicates_execute_on_sourcegraph_surface",
+  "e2e_filter_execution:scoped_file_content_predicates_execute_on_sourcegraph_surface",
+  "e2e_dual_syntax_lowering_parity:file_has_content_regex_parity",
+  "e2e_dual_syntax_lowering_parity:file_has_content_number_parity",
+  "e2e_dual_syntax_lowering_parity:file_has_content_scoped_lang_regex_parity",
+]
+expected_live_behavior = "native dotted predicate name and SG alias share the same content-leaf substrate; numeric scalar support and lang-scoped regex are runtime/parity proved, while scoped OR/NOT remains typed-fail via the shared scoped-content boundary"
 
 [[entry]]
 surface = "Predicate outside shipped subset"
 proof_status = "typed_fail_closed"
 authority_owner = "lexical_planner"
 proof_rail = ["quanta-index-lexical planner typed-unavailable paths", "golden_bridge"]
-expected_live_behavior = "unsupported predicate lowering does not silently widen"
+expected_live_behavior = "unsupported predicate lowering does not silently widen; executable canonical names are registry-owned, native aliases must canonicalize onto those names, and arg shapes outside the shared/scoped content contracts remain typed-fail"
 
 [[entry]]
 surface = "Empty"
@@ -708,12 +766,13 @@ authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_mixed_lexical_or",
   "runtime_sourcegraph_structural_mixed_lexical_or",
+  "runtime_sourcegraph_structural_mixed_raw_string_or",
   "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_lexical_or_parity",
   "quanta-index-search-plane lowering mixed OR",
   "sdk_frontdoor",
   "e2e_perf_chaos",
 ]
-expected_live_behavior = "mixed-domain OR unions lexical and structural candidate identity; repo-scoped filters under mixed OR remain bridge fail-closed on the SG structural route"
+expected_live_behavior = "mixed-domain OR unions lexical and structural candidate identity; raw-string siblings are runtime-proved on the SG structural route; divergent repo-scoped filters under mixed OR remain bridge fail-closed"
 
 [[entry]]
 surface = "SG structural mixed RawString sibling (ADV-02)"
@@ -721,10 +780,14 @@ proof_status = "active_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_or",
+  "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_raw_string_in_mixed_boolean_and_not",
   "quanta-index-search-plane lowering sourcegraph_structural_leaf_verdict_matrix_is_frozen",
+  "runtime_sourcegraph_structural_mixed_raw_string_or",
+  "runtime_sourcegraph_structural_mixed_raw_string_and_not",
   "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_raw_string_or_parity",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_raw_string_and_not_parity",
 ]
-expected_live_behavior = "RawString leaves (reachable via file:contains('...')) are preserved as lexical siblings of a structural body on the SG structural route, matching native '...' OR match {...}"
+expected_live_behavior = "RawString leaves (reachable via file:contains('...')) are preserved as lexical siblings of a structural body on the SG structural route, matching native mixed OR and bounded-NOT semantics"
 
 [[entry]]
 surface = "SG structural mixed Predicate sibling (ADV-02)"
@@ -732,10 +795,16 @@ proof_status = "active_runtime"
 authority_owner = "search_plane_planner"
 proof_rail = [
   "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean",
+  "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_scalar_path_predicate_sibling_in_mixed_boolean",
+  "quanta-index-search-plane lowering sourcegraph_structural_route_preserves_predicate_sibling_in_mixed_boolean_and_not",
   "quanta-index-search-plane lowering sourcegraph_structural_leaf_verdict_matrix_is_frozen",
   "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_predicate_sibling_and_parity",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_predicate_scalar_path_sibling_and_parity",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_predicate_and_not_parity",
+  "runtime_sourcegraph_structural_mixed_predicate_scalar_path_and",
+  "runtime_sourcegraph_structural_mixed_predicate_scalar_path_and_not",
 ]
-expected_live_behavior = "Predicate leaves are preserved as lexical siblings of a structural body and gated by the lexical executor exactly as on native (repo.has.file etc. execute; non-executable predicates typed-fail with LEX_PREDICATE_UNIMPLEMENTED at execution); only StructuralBlock remains BRIDGE_TRANSLATE_FAIL on the route"
+expected_live_behavior = "Predicate leaves are preserved as lexical siblings of a structural body and gated by the lexical executor exactly as on native (repo.has.file etc. execute; non-executable predicates typed-fail with LEX_PREDICATE_UNIMPLEMENTED at execution); scalar-path repo.has.file shorthand is inside the preserved subset; only StructuralBlock remains BRIDGE_TRANSLATE_FAIL on the route"
 
 [[entry]]
 surface = "mixed lexical + structural boolean AND NOT"
@@ -744,11 +813,15 @@ authority_owner = "search_plane_planner"
 proof_rail = [
   "runtime_native_structural_mixed_lexical_and_not",
   "runtime_sourcegraph_structural_mixed_lexical_and_not",
+  "runtime_sourcegraph_structural_mixed_raw_string_and_not",
+  "runtime_sourcegraph_structural_mixed_predicate_scalar_path_and_not",
   "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_lexical_and_not_parity",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_raw_string_and_not_parity",
+  "e2e_dual_syntax_lowering_parity:structural_sourcegraph_native_mixed_predicate_and_not_parity",
   "sdk_frontdoor",
   "e2e_perf_chaos",
 ]
-expected_live_behavior = "mixed-domain bounded NOT subtracts structural matches from lexical-positive candidates"
+expected_live_behavior = "mixed-domain bounded NOT subtracts structural matches or preserved lexical siblings from the seeded candidate set"
 
 [[entry]]
 surface = "pure negative structural root"

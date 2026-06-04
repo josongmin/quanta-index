@@ -34,7 +34,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,10 +46,15 @@ PREDICATE_REGISTRY_RS = (
     ROOT / "crates" / "quanta-index-lexical" / "src" / "predicate_registry.rs"
 )
 LOWERING_RS = ROOT / "crates" / "quanta-index-search-plane" / "src" / "lowering.rs"
+GARGOW = ROOT / "scripts" / "cargow"
 CAPABILITY_MATRIX_MD = (
     ROOT / "docs" / "plans" / "may-25-lexical-enhancement" / "lexical-capability-matrix.md"
 )
 ADV_TICKETS_DIR = ROOT / "docs" / "plans" / "jun-2-dsl-advanced" / "tickets"
+PREDICATE_DUMP_PACKAGE = "quanta-index-lexical"
+PREDICATE_DUMP_BIN = "dump_predicate_capabilities"
+STRUCTURAL_DUMP_PACKAGE = "quanta-index-search-plane"
+STRUCTURAL_DUMP_BIN = "dump_sg_structural_legality"
 
 # Frozen SG structural leaf-kind verdict map. Every LqLeaf variant the route
 # handles appears here with its exact verdict. Changing a cell or adding a
@@ -202,11 +209,78 @@ def documented_predicates(matrix_md: str) -> set:
     return set(re.findall(r"Predicate\s+([A-Za-z][\w.]*)\(", matrix_md))
 
 
+def run_json_dump(package: str, bin_name: str) -> dict:
+    """Execute an owner dump bin and return parsed JSON.
+
+    The checker remains fail-closed: a missing bin, cargo failure, or malformed
+    JSON is surfaced as a violation rather than silently skipped.
+    """
+
+    result = subprocess.run(
+        [
+            str(GARGOW),
+            "run",
+            "-q",
+            "-p",
+            package,
+            "--bin",
+            bin_name,
+            "--locked",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{package}:{bin_name} failed: "
+            f"{(result.stderr or result.stdout).strip() or 'no output'}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"{package}:{bin_name} emitted invalid JSON: {exc}"
+        ) from exc
+
+
+def load_predicate_capabilities() -> tuple[set[str], dict[str, str]]:
+    dump = run_json_dump(PREDICATE_DUMP_PACKAGE, PREDICATE_DUMP_BIN)
+    canonical = dump.get("canonical_predicates")
+    aliases = dump.get("aliases")
+    if not isinstance(canonical, list) or not all(isinstance(x, str) for x in canonical):
+        raise RuntimeError(
+            f"{PREDICATE_DUMP_PACKAGE}:{PREDICATE_DUMP_BIN} missing string list `canonical_predicates`"
+        )
+    if not isinstance(aliases, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in aliases.items()
+    ):
+        raise RuntimeError(
+            f"{PREDICATE_DUMP_PACKAGE}:{PREDICATE_DUMP_BIN} missing string map `aliases`"
+        )
+    return set(canonical), aliases
+
+
+def load_structural_verdicts() -> dict[str, str]:
+    dump = run_json_dump(STRUCTURAL_DUMP_PACKAGE, STRUCTURAL_DUMP_BIN)
+    verdicts = dump.get("verdicts")
+    if not isinstance(verdicts, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in verdicts.items()
+    ):
+        raise RuntimeError(
+            f"{STRUCTURAL_DUMP_PACKAGE}:{STRUCTURAL_DUMP_BIN} missing string map `verdicts`"
+        )
+    return verdicts
+
+
 # --- checks ------------------------------------------------------------------
 
 
-def check_predicate_parity(code_names: set, doc_names: set) -> list:
+def check_predicate_parity(
+    code_names: set[str], doc_names: set[str], aliases: dict[str, str] | None = None
+) -> list[str]:
     """Code-owned predicate subset must exactly match the documented subset."""
+    aliases = aliases or {}
     violations = []
     for missing in sorted(code_names - doc_names):
         violations.append(
@@ -214,6 +288,12 @@ def check_predicate_parity(code_names: set, doc_names: set) -> list:
             f"in the capability matrix"
         )
     for extra in sorted(doc_names - code_names):
+        if extra in aliases:
+            violations.append(
+                f"predicate alias `{extra}` is documented as a standalone surface; "
+                f"document it under canonical `{aliases[extra]}` instead"
+            )
+            continue
         violations.append(
             f"predicate `{extra}` is documented as executable but is not in "
             f"PREDICATE_REGISTRY (docs-only widening is forbidden)"
@@ -264,28 +344,35 @@ def advanced_claim_violations(ticket_name: str, text: str) -> list:
 def main() -> int:
     violations = []
 
-    registry_src = PREDICATE_REGISTRY_RS.read_text(encoding="utf-8")
     lowering_src = LOWERING_RS.read_text(encoding="utf-8")
     matrix_md = CAPABILITY_MATRIX_MD.read_text(encoding="utf-8")
 
-    code_predicates = extract_registry_predicates(registry_src)
+    code_predicates: set[str] = set()
+    aliases: dict[str, str] = {}
+    try:
+        code_predicates, aliases = load_predicate_capabilities()
+    except RuntimeError as exc:
+        violations.append(str(exc))
     if not code_predicates:
         violations.append(
-            "could not extract any predicate from PREDICATE_REGISTRY — the "
+            "could not load any predicate from the lexical dump bin — the "
             "checker is blind, refusing to pass (fail-closed)"
         )
     doc_predicates = documented_predicates(matrix_md)
-    violations += check_predicate_parity(code_predicates, doc_predicates)
+    violations += check_predicate_parity(code_predicates, doc_predicates, aliases)
 
     # Shape FIRST: only read the verdict map if the matrix is a flat table.
     verdicts: dict = {}
     shape_violations = structural_matrix_shape_violations(lowering_src)
     violations += shape_violations
     if not shape_violations:
-        verdicts = extract_structural_verdicts(lowering_src)
+        try:
+            verdicts = load_structural_verdicts()
+        except RuntimeError as exc:
+            violations.append(str(exc))
         if not verdicts:
             violations.append(
-                "could not extract any leaf verdict from structural_leaf_verdict — "
+                "could not load any leaf verdict from the search-plane dump bin — "
                 "the checker is blind, refusing to pass"
             )
         violations += check_structural_legality(verdicts)
@@ -308,6 +395,7 @@ def main() -> int:
     print(
         "dsl-capability-truth: in sync "
         f"(predicates={sorted(code_predicates)}, "
+        f"aliases={dict(sorted(aliases.items()))}, "
         f"sg_verdicts={dict(sorted(verdicts.items()))})."
     )
     return 0

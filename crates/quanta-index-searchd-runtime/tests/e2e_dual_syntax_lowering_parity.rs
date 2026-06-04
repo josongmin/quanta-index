@@ -132,7 +132,7 @@ const CORPUS: &[CorpusRow] = &[
     CorpusRow {
         id: "gamma_md",
         path: "docs/intro.md",
-        content: "parity documentation lives here",
+        content: "parity documentation lives here 1 123",
         symbol_name: None,
         structural_identifier: None,
     },
@@ -333,6 +333,116 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "file_contains_content_native_alias_parity",
+        sg_query: "file:contains.content(\"lemon yellow banana\")",
+        lq_query: "file.contains.content(\"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_number_parity",
+        sg_query: "file:contains(123)",
+        lq_query: "file.contains(123)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["gamma_md"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_number_parity",
+        sg_query: "file:has.content(123)",
+        lq_query: "file.has.content(123)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["gamma_md"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_path_parity",
+        sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_file_parity",
+        sg_query: "file:contains(file:phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.contains(file:phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_lang_regex_parity",
+        sg_query: "file:has.content(lang:rust, /v\\d+\\.\\d+\\.\\d+/)",
+        lq_query: "file.has.content(lang:rust, /v\\d+\\.\\d+\\.\\d+/)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["epsilon_regex"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_and_parity",
+        sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\") AND banana",
+        lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\") AND banana",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_or_typed_fail_parity",
+        sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\") OR parity_needle_alpha",
+        lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\") OR parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_not_typed_fail_parity",
+        sg_query: "NOT file:contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        lq_query: "NOT file.contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_scoped_unknown_matcher_typed_fail_parity",
+        sg_query: "file:contains(name:phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.contains(name:phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_contains_multiple_scalars_typed_fail_parity",
+        sg_query: "file:contains(\"lemon\", \"banana\")",
+        lq_query: "file.contains(\"lemon\", \"banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "patterntype_regexp_parity",
         sg_query: "patterntype:regexp v\\d+\\.\\d+\\.\\d+",
         lq_query: "/v\\d+\\.\\d+\\.\\d+/",
@@ -416,9 +526,29 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
+        id: "repo_has_file_scalar_path_predicate_parity",
+        sg_query: "repo:has.file(src/lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
         id: "repo_has_path_alias_parity",
         sg_query: "repo:has.path(src/lib.rs) parity_needle_alpha",
         lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_path_native_alias_parity",
+        sg_query: "repo:has.path(src/lib.rs) parity_needle_alpha",
+        lq_query: "repo.has.path(src/lib.rs) parity_needle_alpha",
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
@@ -462,6 +592,26 @@ const SCENARIOS: &[ParityScenario] = &[
         id: "repo_has_content_raw_predicate_parity",
         sg_query: "repo:has.content('parity_foo_bar_baz') parity_needle_alpha",
         lq_query: "repo:has.content('parity_foo_bar_baz') parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_content_native_alias_parity",
+        sg_query: "repo:contains.content(parity_needle_alpha) parity_needle_alpha",
+        lq_query: "repo.contains.content(parity_needle_alpha) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_content_number_parity",
+        sg_query: "repo:has.content(123) parity_needle_alpha",
+        lq_query: "repo.has.content(123) parity_needle_alpha",
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
@@ -563,6 +713,16 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust"],
         },
     },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_scalar_path_sibling_and_parity",
+        sg_query: r#"patterntype:structural repo:has.file(src/lib.rs) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "repo:has.file(src/lib.rs) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
     // Repo-scoped filters under mixed OR are bridge fail-closed; see lowering scoped-filter test.
     ParityScenario {
         route: QueryRoute::Structural,
@@ -587,6 +747,22 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &["alpha_rust", "zeta_raw"],
         },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_raw_string_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT file:contains('parity_needle_alpha')"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT 'parity_needle_alpha'",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_predicate_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT repo:has.file(src/lib.rs)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT repo:has.file(src/lib.rs)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Structural,

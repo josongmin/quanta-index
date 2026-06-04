@@ -20,7 +20,7 @@ use quanta_index_contract::{
     LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, RepoId, RepoRelativePath,
     RevisionId, SymbolId, UpsertChunk, UpsertSymbol,
 };
-use quanta_index_core::{LexicalIndexBuildPort, LexicalIndexOpenPort};
+use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1532,7 +1532,7 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -1634,7 +1634,7 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -1661,6 +1661,26 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         return Err(
             format!("expected corp-a repo.has.file true-gate ids, got {gate_ids:?}").into(),
         );
+    }
+
+    let scalar_gate_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Keyword("src/gate-a.rs".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let mut scalar_gate_ids: Vec<String> = searcher
+        .search(&scalar_gate_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    scalar_gate_ids.sort();
+    if scalar_gate_ids != vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()] {
+        return Err(format!(
+            "expected corp-a repo.has.file(<scalar-path>) true-gate ids, got {scalar_gate_ids:?}"
+        )
+        .into());
     }
 
     let name_gate_query = make_query(LqExpr::All(vec![
@@ -1704,6 +1724,21 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
         .into());
     }
 
+    let scalar_miss_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::RawString("src/missing.rs".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let scalar_miss_hits = searcher.search(&scalar_miss_query, 10)?;
+    if !scalar_miss_hits.is_empty() {
+        return Err(format!(
+            "expected repo.has.file(<scalar-path>) miss to return zero hits, got {scalar_miss_hits:?}"
+        )
+        .into());
+    }
+
     Ok(())
 }
 
@@ -1737,7 +1772,7 @@ fn tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id() -> Tes
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -1812,7 +1847,7 @@ fn tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_s
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -1843,6 +1878,193 @@ fn tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_s
             )
             .into());
         }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_native_predicate_aliases() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_source_repo(
+            "corp-a-doc",
+            "src/corp-a.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle corp-a branch",
+            "corp-a",
+        )?,
+        upsert_with_source_repo(
+            "corp-b-doc",
+            "src/corp-b.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle corp-b branch",
+            "corp-b",
+        )?,
+        upsert_with_source_repo(
+            "corp-a-gate",
+            "src/gate-a.rs",
+            "rust",
+            1,
+            2,
+            "shared_oracle_needle gate-a only 123",
+            "corp-a",
+        )?,
+        upsert_with_metadata(
+            "phrase_hit",
+            "docs/colors.md",
+            "markdown",
+            3,
+            4,
+            "the lemon yellow banana ripens",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let repo_path_alias = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.path".to_string(),
+            args: vec![LqPredicateArg::Keyword("src/gate-a.rs".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let mut repo_path_alias_ids: Vec<String> = searcher
+        .search(&repo_path_alias, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    repo_path_alias_ids.sort();
+    if repo_path_alias_ids != vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()] {
+        return Err(format!(
+            "expected repo.has.path alias to gate corp-a only, got {repo_path_alias_ids:?}"
+        )
+        .into());
+    }
+
+    let repo_content_alias = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.contains.content".to_string(),
+            args: vec![LqPredicateArg::Phrase("gate-a only".to_string())],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let mut repo_content_alias_ids: Vec<String> = searcher
+        .search(&repo_content_alias, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    repo_content_alias_ids.sort();
+    if repo_content_alias_ids != vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()] {
+        return Err(format!(
+            "expected repo.contains.content alias to gate corp-a only, got {repo_content_alias_ids:?}"
+        )
+        .into());
+    }
+
+    let file_contains_alias = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains.content".to_string(),
+        args: vec![LqPredicateArg::Phrase("lemon yellow banana".to_string())],
+    }));
+    let file_contains_alias_ids: Vec<String> = searcher
+        .search(&file_contains_alias, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    if file_contains_alias_ids != vec!["phrase_hit".to_string()] {
+        return Err(format!(
+            "expected file.contains.content alias to hit [phrase_hit], got {file_contains_alias_ids:?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_numeric_content_predicates() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata(
+            "number_hit",
+            "config/path_only_needle.toml",
+            "text",
+            1,
+            2,
+            "value = 1",
+        )?,
+        upsert_with_source_repo(
+            "corp-a-doc",
+            "src/corp-a.rs",
+            "rust",
+            3,
+            4,
+            "shared_oracle_needle corp-a branch",
+            "corp-a",
+        )?,
+        upsert_with_source_repo(
+            "corp-b-doc",
+            "src/corp-b.rs",
+            "rust",
+            5,
+            6,
+            "shared_oracle_needle corp-b branch",
+            "corp-b",
+        )?,
+        upsert_with_source_repo(
+            "corp-a-gate",
+            "src/gate-a.rs",
+            "rust",
+            7,
+            8,
+            "shared_oracle_needle gate-a only 123",
+            "corp-a",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    for name in ["file.contains", "file.has.content"] {
+        let query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: name.to_string(),
+            args: vec![LqPredicateArg::Number(1)],
+        }));
+        let ids: Vec<String> = searcher
+            .search(&query, 10)?
+            .into_iter()
+            .map(|hit| hit.candidate_id)
+            .collect();
+        if ids != vec!["number_hit".to_string()] {
+            return Err(format!("expected {name}(1) to hit [number_hit], got {ids:?}").into());
+        }
+    }
+
+    let repo_number_gate = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.content".to_string(),
+            args: vec![LqPredicateArg::Number(123)],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("shared_oracle_needle".to_string())),
+    ]));
+    let mut repo_number_ids: Vec<String> = searcher
+        .search(&repo_number_gate, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    repo_number_ids.sort();
+    if repo_number_ids != vec!["corp-a-doc".to_string(), "corp-a-gate".to_string()] {
+        return Err(format!(
+            "expected repo.has.content(123) to gate corp-a only, got {repo_number_ids:?}"
+        )
+        .into());
     }
 
     Ok(())
@@ -1924,7 +2146,7 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -2085,7 +2307,7 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
             "rust",
             1,
             2,
-            "shared_oracle_needle gate-a only",
+            "shared_oracle_needle gate-a only 123",
             "corp-a",
         )?,
     ];
@@ -2310,6 +2532,204 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
             "expected file.contains reversed phrase predicate to miss, got {contains_miss_hits:?}"
         )
         .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata(
+            "phrase_hit",
+            "docs/colors.md",
+            "markdown",
+            1,
+            2,
+            "the lemon yellow banana ripens",
+        )?,
+        upsert_with_metadata(
+            "phrase_miss",
+            "docs/other.md",
+            "markdown",
+            3,
+            4,
+            "banana near lemon but not adjacent",
+        )?,
+        upsert_with_metadata(
+            "regex_hit",
+            "src/version.rs",
+            "rust",
+            10,
+            11,
+            "const VERSION: &str = \"v1.2.3-rc.4\";",
+        )?,
+        upsert_with_metadata(
+            "alpha",
+            "src/lib.rs",
+            "rust",
+            12,
+            13,
+            "fn alpha_content_needle() {}",
+        )?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    for (args, expected) in [
+        (
+            vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "docs/colors.md".to_string(),
+                },
+                LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+            ],
+            vec!["phrase_hit".to_string()],
+        ),
+        (
+            vec![
+                LqPredicateArg::Filter {
+                    name: "file".to_string(),
+                    value: "colors.md".to_string(),
+                },
+                LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+            ],
+            vec!["phrase_hit".to_string()],
+        ),
+        (
+            vec![
+                LqPredicateArg::Filter {
+                    name: "lang".to_string(),
+                    value: "rust".to_string(),
+                },
+                LqPredicateArg::Keyword("/v\\d+\\.\\d+\\.\\d+/".to_string()),
+            ],
+            vec!["regex_hit".to_string()],
+        ),
+    ] {
+        let query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.has.content".to_string(),
+            args: args.clone(),
+        }));
+        let ids: Vec<String> = searcher
+            .search(&query, 10)?
+            .into_iter()
+            .map(|hit| hit.candidate_id)
+            .collect();
+        if ids != expected {
+            return Err(format!("expected scoped file.has.content hits {expected:?}, got {ids:?}").into());
+        }
+    }
+
+    let and_query = make_query(LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".to_string(),
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "docs/colors.md".to_string(),
+                },
+                LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+            ],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("ripens".to_string())),
+    ]));
+    let and_ids: Vec<String> = searcher
+        .search(&and_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    if and_ids != vec!["phrase_hit".to_string()] {
+        return Err(format!(
+            "expected scoped file.contains AND to hit [phrase_hit], got {and_ids:?}"
+        )
+        .into());
+    }
+
+    let or_query = make_query(LqExpr::Any(vec![
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".to_string(),
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "docs/colors.md".to_string(),
+                },
+                LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+            ],
+        }),
+        LqExpr::Leaf(LqLeaf::Keyword("alpha_content_needle".to_string())),
+    ]));
+    match searcher.search(&or_query, 10) {
+        Err(CoreError::Typed { code, .. })
+            if code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED" => {}
+        other => {
+            return Err(format!(
+                "expected scoped file.contains OR to fail closed with LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    let not_query = make_query(LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "docs/colors.md".to_string(),
+            },
+            LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+        ],
+    }))));
+    match searcher.search(&not_query, 10) {
+        Err(CoreError::Typed { code, .. })
+            if code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED" => {}
+        other => {
+            return Err(format!(
+                "expected scoped file.contains NOT to fail closed with LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    let bad_matcher_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: "colors.md".to_string(),
+            },
+            LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+        ],
+    }));
+    match searcher.search(&bad_matcher_query, 10) {
+        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
+        other => {
+            return Err(format!(
+                "expected file.contains(name:...) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    let multiple_scalars_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Phrase("lemon".to_string()),
+            LqPredicateArg::Phrase("banana".to_string()),
+        ],
+    }));
+    match searcher.search(&multiple_scalars_query, 10) {
+        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
+        other => {
+            return Err(format!(
+                "expected file.contains(two scalars) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
+            )
+            .into());
+        }
     }
 
     Ok(())

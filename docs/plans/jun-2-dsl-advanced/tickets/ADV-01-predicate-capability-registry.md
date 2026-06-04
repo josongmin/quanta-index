@@ -2,8 +2,9 @@
 
 Parent packet: [../README.md](../README.md)
 
-Status: `landed` (registry-only increment + first widened predicate family both
-landed and verified)
+Status: `landed` (registry SSOT, native alias normalization, shared numeric
+content scalar contract, and scoped file-content family all landed and
+verified)
 
 Increment log:
 
@@ -33,6 +34,45 @@ Increment log:
   `repo_has_file_lang_predicate_parity` in `e2e_dual_syntax_lowering_parity`
   (green). Unsupported filters (e.g. `size:`) still typed-fail
   `LEX_PREDICATE_UNIMPLEMENTED`.
+- `alias-normalization` (done) — added registry-owned native aliases
+  `repo.has.path(...)` → `repo.has.file(...)`,
+  `file.contains.content(...)` → `file.contains(...)`, and
+  `repo.contains.content(...)` → `repo.has.content(...)`. Planner and lexical
+  lowering now canonicalize aliases before validation/execution so diagnostics
+  and proof inventory stay on the canonical surface. Proof: planner unit
+  `predicate_native_aliases_plan_through_canonical_tantivy_route`; runtime rows
+  `runtime_*_repo_has_path_*`, `runtime_native_repo_contains_content_*`,
+  front-door rails `repo_has_path_alias_executes_on_sourcegraph_surface`,
+  `file_contains_content_alias_executes_on_sourcegraph_surface`,
+  `repo_contains_content_alias_executes_on_sourcegraph_surface`, and parity rows
+  `repo_has_path_alias_parity`, `repo_has_path_native_alias_parity`,
+  `file_contains_content_alias_parity`,
+  `file_contains_content_native_alias_parity`,
+  `repo_contains_content_native_alias_parity`.
+- `shared-content-scalar` (done) — unified `file.contains(...)`,
+  `file.has.content(...)`, and `repo.has.content(...)` onto one registry-owned
+  scalar contract (`keyword` / `phrase` / `raw-string` / `number`). Numeric
+  scalars canonicalize to decimal keywords instead of planner/executor drift.
+  Proof: planner unit `predicate_content_number_and_scope_shapes_plan_through_tantivy_route`,
+  owner-local `tantivy_executes_numeric_content_predicates`, runtime rows
+  `runtime_*_repo_has_content_number_*`, `runtime_native_file_contains_number_*`,
+  `runtime_native_file_has_content_number_hit`, front-door
+  `numeric_content_predicates_execute_on_sourcegraph_surface`, parity
+  `repo_has_content_number_parity`, `file_contains_number_parity`,
+  `file_has_content_number_parity`.
+- `scoped-file-content-family` (done) — widened `file.contains(...)` and
+  `file.has.content(...)` to admit one content scalar plus optional
+  `file:` / `path:` / `lang:` scopes at top level and conjunctive `AND`.
+  Scoped forms under `OR` / `NOT` now typed-fail with
+  `LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED` rather than silently losing scope.
+  Proof: planner units `predicate_content_number_and_scope_shapes_plan_through_tantivy_route`
+  and `predicate_repo_has_content_rejects_scoped_args`, owner-local
+  `tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not`,
+  runtime rows `runtime_*_file_contains_scoped_*`,
+  `runtime_*_file_has_content_scoped_lang_regex_hit`, front-door
+  `scoped_file_content_predicates_execute_on_sourcegraph_surface`,
+  `scoped_file_content_predicates_fail_closed_under_or_not_and_bad_matchers`,
+  and parity rows `file_contains_scoped_*`, `file_has_content_scoped_lang_regex_parity`.
 
 ## Objective
 
@@ -46,8 +86,11 @@ one-off branches.
   `crates/quanta-index-lexical/src/predicate_registry.rs`
 - unsupported names / argument shapes still typed-fail with
   `LEX_PREDICATE_UNIMPLEMENTED`
-- the shipped executable subset is registry-driven, and the first widened family
-  `repo.has.file(lang:...)` is landed
+- scoped file-content predicates under `OR` / `NOT` typed-fail with
+  `LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED`
+- the shipped executable subset is registry-driven and now includes:
+  `repo.has.file(lang:...)`, native aliases, shared numeric content scalars,
+  and scoped file-content top-level / conjunctive-`AND` execution
 
 ## Current Code Pointers
 
@@ -55,10 +98,15 @@ one-off branches.
   `crates/quanta-index-lexical/src/lib.rs`
   `predicate_content_leaf`, `repo_has_file_constraint`,
   `lower_predicate_for_boolean_scope`, `prepare_predicate_plan`,
-  `RepoHasFileConstraint`, `RepoHasFileMatcher`
+  `content_predicate_constraint`, `allowed_paths_for_content_predicate`
 - planner truth:
   `crates/quanta-index-lexical/src/planner.rs`
   `plan_predicate_leaf`, `single_string_arg`, `validate_repo_has_file_args`
+- registry truth:
+  `crates/quanta-index-lexical/src/predicate_registry.rs`
+  `canonicalize_predicate_call`, `parse_content_scalar_arg`,
+  `parse_content_predicate_constraint`, `parse_repo_file_matchers`,
+  `PREDICATE_REGISTRY`, `PREDICATE_ALIASES`
 - parser / AST shape truth:
   `crates/quanta-index-lq-norm/src/parser/implementation.rs`
   `predicate_repo_has_file_with_filter_arg`,
@@ -70,7 +118,10 @@ one-off branches.
   `tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id`,
   `tantivy_executes_repo_has_file_predicate_as_repo_gate`,
   `tantivy_executes_repo_has_file_predicate_under_or_and_not`,
-  `tantivy_executes_file_has_content_predicate_phrase_and_regex`
+  `tantivy_executes_file_has_content_predicate_phrase_and_regex`,
+  `tantivy_executes_native_predicate_aliases`,
+  `tantivy_executes_numeric_content_predicates`,
+  `tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not`
 - runtime/parity truth:
   `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`,
   `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
@@ -124,6 +175,9 @@ one-off branches.
 - [x] choose and land the first widened predicate/arg-shape subset (`repo.has.file(lang:…)`)
 - [x] add direct runtime rows and owner-local rails for every widened predicate (owner-local + parity)
 - [x] keep unsupported shapes on stable typed-fail rails (`LEX_PREDICATE_UNIMPLEMENTED` centralized in the registry)
+- [x] canonicalize native aliases onto the registry-owned canonical predicate names
+- [x] unify content-scalar admission across file/repo content predicates, including numeric scalars
+- [x] land scoped file-content predicates for top-level / `AND` and typed-fail scoped `OR` / `NOT`
 
 ## Concrete First Increment
 

@@ -278,6 +278,32 @@ fn row6_repo_predicate_lowers_to_predicate_placeholder() {
 }
 
 #[test]
+fn row6a_repo_predicate_scalar_path_lowers_to_predicate_keyword_arg() {
+    let q = match parse_sourcegraph("repo:has.file(src/lib.rs)") {
+        Ok(q) => q,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    let raw = "repo:has.file(src/lib.rs)";
+    let lq = match translate_query(q, &ver(), raw.len()) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(false, "{e}");
+            return;
+        }
+    };
+    assert_eq!(
+        lq.expr,
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.file".to_string(),
+            args: vec![LqPredicateArg::Keyword("src/lib.rs".to_string())],
+        })
+    );
+}
+
+#[test]
 fn row6b_repo_has_path_alias_lowers_to_repo_has_file_path_filter() {
     let q = match parse_sourcegraph("repo:has.path(src/lib.rs)") {
         Ok(q) => q,
