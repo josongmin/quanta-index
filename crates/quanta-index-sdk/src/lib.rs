@@ -28,8 +28,8 @@ pub use generations::{ActivationBuilder, GenerationNamespace};
 pub use history::{
     DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,
     FileOwnershipMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
-    RepoCommitRecencyBatch, RepoCommitRecencyMutation, RepoMetaBatch, RepoMetaMutation,
-    RepoTopicBatch, RepoTopicMutation,
+    RepoCommitRecencyBatch, RepoCommitRecencyMutation, RepoDescriptionBatch,
+    RepoDescriptionMutation, RepoMetaBatch, RepoMetaMutation, RepoTopicBatch, RepoTopicMutation,
 };
 pub use lexical::{LexicalBatch, LexicalNamespace, LexicalQueryBuilder};
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};

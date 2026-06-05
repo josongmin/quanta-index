@@ -77,7 +77,7 @@
 | lexical predicate | `file:contains("a", "b")` 같은 multi-scalar content shape | 아니오 | 아니오 | typed fail |
 | runtime catalog | `dirty:only` | 아니오 | 아니오 | explicit typed fail |
 | Sourcegraph predicate family | `repo:has.meta(/key/:/value/)` | 아니오 | 아니오 | SGT-03 closed as typed-fail; SGX-03 keeps it deferred. metadata authority is exact-string `BTreeMap` with no regex engine over the key/value set yet |
-| Sourcegraph predicate family | `repo:has.description(...)` | 아니오 | 아니오 | SGT-02/SGX-02: no producer-published repo-description authority exists yet (no SDK publish surface, contract DTO, or shard). search-plane cannot fabricate source bytes; typed fail until the authority lands |
+| Sourcegraph predicate family | `repo:has.description(...)` | 예 | 예 | SGX-02: distinct producer-published repo-description authority (`RepoDescriptionIngestBatch` → `repo-description.cbor` shard) is executable on current tree. one textual pattern scalar compiled as a regex over each repo's verbatim description; malformed pattern → `LEX_REGEX_*`, missing authority → `REPO_DESCRIPTION_UNAVAILABLE`. runtime/round-trip/parity/public-api green |
 | Sourcegraph predicate family | `file:has.contributor(/<regex>/)` | 아니오 | 아니오 | SGT-04: contributor authority is a flat, case-folded exact-string set with no name/email split and no regex engine. `/.../ ` delimited arg is typed fail, not regex theater over exact strings |
 | structural | SG structural direct lexical `Phrase` sibling | 예 | 아니오 | direct SG surface 없음. quoted phrase는 structural body로 해석됨 |
 | structural | SG structural direct lexical `Regex` sibling | 예 | 아니오 | direct SG surface 없음. `/.../`는 structural regex body로 해석됨 |
@@ -200,11 +200,11 @@
   - 지원됨으로 승격 (real owner seam + proof, machine-checked):
     - `repo:has.file(path:... content:...)` (SGX-01: per-document path∧content correlation)
     - `repo:has.meta(key)` / `repo:has.meta(tag:)` (SGX-03: genuine key-existence via `contains_key`)
+    - `repo:has.description(<regex>)` (SGX-02: distinct producer-published description authority — `RepoDescriptionIngestBatch` → `repo-description.cbor` shard — matched by `RegexExecutor::verify`; not folded into repo:has.meta. fail-closed on bad regex / missing authority. runtime + round-trip + parity + public-api proof)
   - 미지원 재확인 (verdict holds, no real seam yet):
     - `file:has.contributor(<name-or-email regex>)` (SGX-04: producer must emit split name/email; exact-string set today)
     - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05: grammar gives no distinct sibling slot; permanent demotion)
     - SG structural mixed `symbol.has.name(...)` (SGX-06: symbol_id↔chunk_id key mismatch; no projection authority)
     - SG structural mixed `file.contains(path|file:...)` / `file.has.content(path|file:...)` (SGX-06: preserve-only widening was attempted under TDD and rolled back — the scoped content-leaf sibling returns a **silently empty** candidate intersection through the structural subexpr evaluator (runtime AND/OR proof returned `[]`; native LQ `AND NOT` form also `PARSE_FAIL`), so it is reaffirmed as explicit `BridgeTranslateFail` demotion, not a partial green)
   - 남은 widening backlog:
-    - `repo:has.description(...)` (SGX-02: full new producer-publishable authority; large breaking contract/SDK + fuzz + public-api)
     - `repo:has.meta(/key/:/value/)` (SGX-03 regex: synthetic DocResolver + RegexExecutor over the enumerable meta set)

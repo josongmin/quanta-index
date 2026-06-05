@@ -77,6 +77,11 @@ pub(crate) enum PredicateKind {
     /// repo-existence gate evaluated against source-repo keyed repo-topic
     /// authority materialized alongside the lexical generation.
     RepoTopicGate,
+    /// `repo.has.description` — exactly one textual pattern scalar, lowered to a
+    /// repo-existence gate evaluated by compiling the pattern as a regex and
+    /// matching it against source-repo keyed repo-description authority
+    /// materialized alongside the lexical generation.
+    RepoDescriptionGate,
     /// `file.has.owner` — zero args (`any owner`) or exactly one textual owner
     /// identity, lowered to a file-level candidate restriction evaluated
     /// against source-repo/path keyed ownership authority materialized
@@ -140,6 +145,10 @@ pub(crate) const PREDICATE_REGISTRY: &[PredicateSpec] = &[
     PredicateSpec {
         name: "repo.has.topic",
         kind: PredicateKind::RepoTopicGate,
+    },
+    PredicateSpec {
+        name: "repo.has.description",
+        kind: PredicateKind::RepoDescriptionGate,
     },
     PredicateSpec {
         name: "file.has.owner",
@@ -453,6 +462,14 @@ pub(crate) struct RepoTopicArg {
     pub topic: String,
 }
 
+/// A validated `repo.has.description(pattern)` argument. The pattern is the
+/// verbatim regex source supplied by the caller; it is compiled and matched
+/// against the repo description authority at execution time, not here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RepoDescriptionArg {
+    pub pattern: String,
+}
+
 /// A validated `file.has.owner` argument.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileOwnerArg {
@@ -492,6 +509,18 @@ pub(crate) enum RepoTopicArgError {
     WrongArity,
     UnsupportedArg,
     EmptyTopic,
+}
+
+/// Why a `repo.has.description` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoDescriptionArgError {
+    /// Not exactly one positional argument.
+    WrongArity,
+    /// The single argument was not a keyword/phrase/raw-string pattern (e.g. a
+    /// numeric or `key:value` filter arg).
+    UnsupportedArg,
+    /// The argument carried an empty/whitespace-only pattern.
+    EmptyPattern,
 }
 
 /// Why a `repo.has.meta` argument set is not admissible.
@@ -603,6 +632,35 @@ pub(crate) fn parse_repo_topic_arg(
         }
         LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
             Err(RepoTopicArgError::UnsupportedArg)
+        }
+    }
+}
+
+/// Parse a `repo.has.description(pattern)` argument.
+///
+/// Admitted shape: exactly one keyword/phrase/raw-string scalar, taken
+/// verbatim as the regex pattern source (validated for compilation at
+/// execution time). A numeric or `key:value` filter arg, or an empty pattern,
+/// is rejected.
+pub(crate) fn parse_repo_description_arg(
+    args: &[LqPredicateArg],
+) -> Result<RepoDescriptionArg, RepoDescriptionArgError> {
+    let [arg] = args else {
+        return Err(RepoDescriptionArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Keyword(value)
+        | LqPredicateArg::Phrase(value)
+        | LqPredicateArg::RawString(value) => {
+            if value.trim().is_empty() {
+                return Err(RepoDescriptionArgError::EmptyPattern);
+            }
+            Ok(RepoDescriptionArg {
+                pattern: value.clone(),
+            })
+        }
+        LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
+            Err(RepoDescriptionArgError::UnsupportedArg)
         }
     }
 }

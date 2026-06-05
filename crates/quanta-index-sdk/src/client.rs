@@ -211,6 +211,9 @@ impl QuantaIndex {
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(
                 _,
+            )
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(
+                _,
             )) => Ok(payload),
         }
     }
@@ -270,6 +273,7 @@ impl QuantaIndex {
             SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_) => "file_ownership_receipt",
             SearchPlaneIngestIpcResponse::FileContributorReceipt(_) => "file_contributor_receipt",
             SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => "repo_meta_receipt",
+            SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => "repo_description_receipt",
             SearchPlaneIngestIpcResponse::DirtyReceipt(_) => "dirty_receipt",
             SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_) => "runtime_catalog_receipt",
             SearchPlaneIngestIpcResponse::StructuralReceipt(_) => "structural_receipt",

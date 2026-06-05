@@ -8,6 +8,7 @@ pub use inbound::LexicalQueryPort;
 pub use outbound::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalReadiness,
-    LexicalSearcher, RepoCommitRecencyIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort,
 };
 pub use service::LexicalPolicy;

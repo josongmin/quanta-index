@@ -47,13 +47,13 @@ use quanta_index_contract::{
     FileOwnershipIngestBatch, LexicalCandidate, LexicalFullBundle, LexicalIngestBatch, LexicalSeal,
     LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery,
     LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
-    RepoCommitRecencyIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicIngestBatch, RevisionId, SymbolCandidate, TombstoneLexicalScope,
+    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
+    RepoRelativePath, RepoTopicIngestBatch, RevisionId, SymbolCandidate, TombstoneLexicalScope,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -72,11 +72,12 @@ use crate::predicate_registry::{
     ContentPathScope, ContentPredicateArgError, ContentPredicateConstraint, ContentScalarArg,
     ContentScalarArgError, FileContributorArg, FileContributorArgError, FileOwnerArg,
     FileOwnerArgError, PREDICATE_OWNER, PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE, PredicateKind,
-    RepoFileArgError, RepoFileConstraint, RepoFileMatcher, RepoMetaArg, RepoMetaArgError,
-    RepoTopicArg, RepoTopicArgError, TimerefScalarArgError, canonicalize_predicate_call, kind_of,
+    RepoDescriptionArg, RepoDescriptionArgError, RepoFileArgError, RepoFileConstraint,
+    RepoFileMatcher, RepoMetaArg, RepoMetaArgError, RepoTopicArg, RepoTopicArgError,
+    TimerefScalarArgError, canonicalize_predicate_call, kind_of,
     parse_content_predicate_constraint, parse_content_scalar_arg, parse_file_contributor_arg,
-    parse_file_owner_arg, parse_repo_file_matchers, parse_repo_meta_arg, parse_repo_topic_arg,
-    parse_timeref_scalar_arg, unimplemented_predicate,
+    parse_file_owner_arg, parse_repo_description_arg, parse_repo_file_matchers,
+    parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::regex::RegexPolicy;
 use tantivy::collector::TopDocs;
@@ -97,6 +98,7 @@ const REPO_METADATA_FILE_NAME: &str = "repo-metadata.cbor";
 const REPO_COMMIT_RECENCY_FILE_NAME: &str = "repo-commit-recency.cbor";
 const REPO_META_FILE_NAME: &str = "repo-meta.cbor";
 const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
+const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
 const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
 const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
 const CASE_SENSITIVE_TOKENIZER_NAME: &str = "qi_case_sensitive";
@@ -1238,6 +1240,200 @@ fn load_repo_topic_snapshot(path: &Path) -> Result<Option<RepoTopicShard>, CoreE
         })
 }
 
+/// Validate a producer-published repo description. Unlike topics, the
+/// description is stored verbatim (case and internal whitespace preserved) so
+/// regex matching at query time is faithful; only a non-empty constraint is
+/// enforced. Returns the original string when it carries a non-whitespace
+/// character, `None` otherwise.
+fn validate_repo_description_value(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn encode_repo_description_snapshot(shard: &RepoDescriptionShard) -> Result<Vec<u8>, CoreError> {
+    let mut payload = Vec::new();
+    let mut entries = Vec::new();
+    for (source_repo_id, description) in &shard.descriptions_by_repo_id {
+        entries.push(CborValue::Map(vec![
+            (
+                CborValue::Text("source_repo_id".to_string()),
+                CborValue::Text(source_repo_id.clone()),
+            ),
+            (
+                CborValue::Text("description".to_string()),
+                CborValue::Text(description.clone()),
+            ),
+        ]));
+    }
+    let wire = CborValue::Map(vec![(
+        CborValue::Text("entries".to_string()),
+        CborValue::Array(entries),
+    )]);
+    ciborium::into_writer(&wire, &mut payload).map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: repo description encode: {err}"))
+    })?;
+    Ok(payload)
+}
+
+fn decode_repo_description_snapshot(bytes: &[u8]) -> Result<RepoDescriptionShard, CoreError> {
+    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
+        CoreError::InvalidContract(format!("lexical: repo description decode: {err}"))
+    })?;
+    let CborValue::Map(fields) = wire else {
+        return Err(CoreError::InvalidContract(
+            "lexical: repo description decode: expected map".to_string(),
+        ));
+    };
+    let mut entries: Option<Vec<CborValue>> = None;
+    for (key, value) in fields {
+        let CborValue::Text(field_name) = key else {
+            return Err(CoreError::InvalidContract(
+                "lexical: repo description decode: field name must be text".to_string(),
+            ));
+        };
+        match field_name.as_str() {
+            "entries" => {
+                if entries.is_some() {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: repo description decode: duplicate field `entries`".to_string(),
+                    ));
+                }
+                let CborValue::Array(items) = value else {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: repo description decode: `entries` must be an array".to_string(),
+                    ));
+                };
+                entries = Some(items);
+            }
+            other => {
+                return Err(CoreError::InvalidContract(format!(
+                    "lexical: repo description decode: unknown field `{other}`"
+                )));
+            }
+        }
+    }
+    let mut descriptions_by_repo_id: BTreeMap<String, String> = BTreeMap::new();
+    for entry in entries.ok_or_else(|| {
+        CoreError::InvalidContract(
+            "lexical: repo description decode: missing field `entries`".to_string(),
+        )
+    })? {
+        let CborValue::Map(fields) = entry else {
+            return Err(CoreError::InvalidContract(
+                "lexical: repo description decode: entry must be a map".to_string(),
+            ));
+        };
+        let mut source_repo_id: Option<String> = None;
+        let mut description: Option<String> = None;
+        for (field_key, field_value) in fields {
+            let CborValue::Text(field_name) = field_key else {
+                return Err(CoreError::InvalidContract(
+                    "lexical: repo description decode: entry field name must be text".to_string(),
+                ));
+            };
+            match field_name.as_str() {
+                "source_repo_id" => {
+                    let CborValue::Text(text) = field_value else {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: repo description decode: `source_repo_id` must be text"
+                                .to_string(),
+                        ));
+                    };
+                    source_repo_id = Some(text);
+                }
+                "description" => {
+                    let CborValue::Text(text) = field_value else {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: repo description decode: `description` must be text"
+                                .to_string(),
+                        ));
+                    };
+                    let value = validate_repo_description_value(&text).ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "lexical: repo description decode: description must be non-empty"
+                                .to_string(),
+                        )
+                    })?;
+                    description = Some(value);
+                }
+                other => {
+                    return Err(CoreError::InvalidContract(format!(
+                        "lexical: repo description decode: unknown entry field `{other}`"
+                    )));
+                }
+            }
+        }
+        let source_repo_id = source_repo_id.ok_or_else(|| {
+            CoreError::InvalidContract(
+                "lexical: repo description decode: missing field `source_repo_id`".to_string(),
+            )
+        })?;
+        let description = description.ok_or_else(|| {
+            CoreError::InvalidContract(
+                "lexical: repo description decode: missing field `description`".to_string(),
+            )
+        })?;
+        let _prior = descriptions_by_repo_id.insert(source_repo_id, description);
+    }
+    Ok(RepoDescriptionShard {
+        descriptions_by_repo_id,
+    })
+}
+
+fn persist_repo_description_snapshot(
+    path: &Path,
+    batch: &RepoDescriptionIngestBatch,
+) -> Result<(), CoreError> {
+    let mut descriptions_by_repo_id: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &batch.entries {
+        let description = validate_repo_description_value(&entry.description).ok_or_else(|| {
+            CoreError::InvalidContract(
+                "lexical: repo description ingest entry description must not be empty".to_string(),
+            )
+        })?;
+        let _prior =
+            descriptions_by_repo_id.insert(entry.source_repo_id.as_str().to_string(), description);
+    }
+    let payload = encode_repo_description_snapshot(&RepoDescriptionShard {
+        descriptions_by_repo_id,
+    })?;
+    std::fs::write(path, payload).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: write repo description snapshot {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn load_repo_description_snapshot(path: &Path) -> Result<Option<RepoDescriptionShard>, CoreError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let payload = std::fs::read(path).map_err(|err| {
+        CoreError::Storage(format!(
+            "lexical: read repo description snapshot {}: {err}",
+            path.display()
+        ))
+    })?;
+    decode_repo_description_snapshot(payload.as_slice())
+        .map(Some)
+        .map_err(|err| match err {
+            CoreError::InvalidContract(message) => CoreError::InvalidContract(format!(
+                "lexical: repo description decode {}: {message}",
+                path.display()
+            )),
+            other @ (CoreError::Typed { .. }
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => other,
+        })
+}
+
 fn encode_file_ownership_snapshot(shard: &FileOwnershipShard) -> Result<Vec<u8>, CoreError> {
     let mut payload = Vec::new();
     let mut entries = Vec::new();
@@ -1875,6 +2071,15 @@ struct RepoTopicShard {
     topics_by_repo_id: BTreeMap<String, BTreeSet<String>>,
 }
 
+/// Source-repo keyed repo-description authority. One verbatim description string
+/// per `source_repo_id`, matched as a regex at `repo:has.description(<pattern>)`
+/// query time. Distinct substrate from [`RepoTopicShard`] (topic set) and the
+/// repo-meta key/value store so description support never silently piggybacks
+/// on unrelated authority.
+struct RepoDescriptionShard {
+    descriptions_by_repo_id: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct FileOwnershipShard {
     owners_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
@@ -2375,6 +2580,10 @@ impl LexicalAdapter {
         self.index_path(key).join(REPO_TOPIC_FILE_NAME)
     }
 
+    fn repo_description_path(&self, key: &GenKey) -> PathBuf {
+        self.index_path(key).join(REPO_DESCRIPTION_FILE_NAME)
+    }
+
     fn file_ownership_path(&self, key: &GenKey) -> PathBuf {
         self.index_path(key).join(FILE_OWNERSHIP_FILE_NAME)
     }
@@ -2821,6 +3030,35 @@ impl RepoTopicIngestPort for LexicalAdapter {
     }
 }
 
+impl RepoDescriptionIngestPort for LexicalAdapter {
+    fn publish_batch(
+        &self,
+        batch: &RepoDescriptionIngestBatch,
+    ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        let key = GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        };
+        let index_path = self.index_path(&key);
+        std::fs::create_dir_all(&index_path).map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: create repo description dir {}: {err}",
+                index_path.display()
+            ))
+        })?;
+        persist_repo_description_snapshot(self.repo_description_path(&key).as_path(), batch)?;
+        let mut receipt = quanta_index_contract::BatchPublishReceipt::empty_for(
+            batch.generation,
+            batch.batch_digest.clone(),
+        );
+        for _entry in &batch.entries {
+            receipt.accept_replace_scope();
+        }
+        Ok(receipt)
+    }
+}
+
 impl FileOwnershipIngestPort for LexicalAdapter {
     fn publish_batch(
         &self,
@@ -3002,6 +3240,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             load_repo_commit_recency_snapshot(&self.repo_commit_recency_path(&key))?;
         let repo_meta = load_repo_meta_snapshot(&self.repo_meta_path(&key))?;
         let repo_topic = load_repo_topic_snapshot(&self.repo_topic_path(&key))?;
+        let repo_description = load_repo_description_snapshot(&self.repo_description_path(&key))?;
         let file_ownership = load_file_ownership_snapshot(&self.file_ownership_path(&key))?;
         let file_contributor = load_file_contributor_snapshot(&self.file_contributor_path(&key))?;
         Ok(Box::new(TantivySearcher {
@@ -3017,6 +3256,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             repo_commit_recency,
             repo_meta,
             repo_topic,
+            repo_description,
             file_ownership,
             file_contributor,
         }))
@@ -3039,6 +3279,7 @@ struct TantivySearcher {
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
     repo_topic: Option<RepoTopicShard>,
+    repo_description: Option<RepoDescriptionShard>,
     file_ownership: Option<FileOwnershipShard>,
     file_contributor: Option<FileContributorShard>,
 }
@@ -3068,6 +3309,7 @@ enum RepoScopeConstraint {
     CommitAfter(String),
     Meta(RepoMetaArg),
     Topic(RepoTopicArg),
+    Description(RepoDescriptionArg),
 }
 
 /// Lower a validated `repo.has.content` scalar into a content leaf, applying the
@@ -3468,6 +3710,13 @@ impl TantivySearcher {
         self.repo_topic.as_ref().ok_or_else(|| CoreError::Typed {
             code: "REPO_TOPIC_UNAVAILABLE".to_string(),
             message: "lexical: repo.has.topic execution requires materialized source-repo repo topic authority for this generation".to_string(),
+        })
+    }
+
+    fn repo_description_authority(&self) -> Result<&RepoDescriptionShard, CoreError> {
+        self.repo_description.as_ref().ok_or_else(|| CoreError::Typed {
+            code: "REPO_DESCRIPTION_UNAVAILABLE".to_string(),
+            message: "lexical: repo.has.description execution requires materialized source-repo repo description authority for this generation".to_string(),
         })
     }
 
@@ -3968,6 +4217,48 @@ impl TantivySearcher {
             .collect())
     }
 
+    fn repo_description_constraint(
+        &self,
+        name: &str,
+        args: &[LqPredicateArg],
+    ) -> Result<RepoDescriptionArg, CoreError> {
+        parse_repo_description_arg(args).map_err(|err| match err {
+            RepoDescriptionArgError::WrongArity => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` requires exactly one description pattern scalar argument (owner: {PREDICATE_OWNER})"
+            )),
+            RepoDescriptionArgError::UnsupportedArg => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` only supports one keyword/phrase/raw-string description pattern argument (owner: {PREDICATE_OWNER})"
+            )),
+            RepoDescriptionArgError::EmptyPattern => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` description pattern cannot be empty (owner: {PREDICATE_OWNER})"
+            )),
+        })
+    }
+
+    fn collect_repo_ids_for_repo_has_description(
+        &self,
+        arg: &RepoDescriptionArg,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let authority = self.repo_description_authority()?;
+        // SG `repo:has.description(<pattern>)` matches the repo description as a
+        // regex. Compile the producer-published pattern once and verify it
+        // against each repo's verbatim description. A malformed pattern is a
+        // typed query error, not a silent empty result.
+        let executor = RegexExecutor::compile(&arg.pattern).map_err(|err| CoreError::Typed {
+            code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+            message: format!(
+                "lexical: repo.has.description pattern {:?} failed to compile: {err}",
+                arg.pattern
+            ),
+        })?;
+        Ok(authority
+            .descriptions_by_repo_id
+            .iter()
+            .filter(|(_, description)| executor.verify(description.as_bytes()))
+            .map(|(repo_id, _)| repo_id.clone())
+            .collect())
+    }
+
     fn file_owner_constraint(
         &self,
         name: &str,
@@ -4268,6 +4559,13 @@ impl TantivySearcher {
                     args: canonical_args,
                 }))
             }
+            Some(PredicateKind::RepoDescriptionGate) => {
+                let _arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
+                Ok(LqExpr::Leaf(LqLeaf::Predicate {
+                    name: canonical_name,
+                    args: canonical_args,
+                }))
+            }
             Some(PredicateKind::FileOwnerGate) => {
                 let _arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
@@ -4387,6 +4685,13 @@ impl TantivySearcher {
                         )],
                         Vec::new(),
                     )),
+                    Some(PredicateKind::RepoDescriptionGate) => Ok((
+                        LqExpr::Empty,
+                        vec![RepoScopeConstraint::Description(
+                            self.repo_description_constraint(&canonical_name, &canonical_args)?,
+                        )],
+                        Vec::new(),
+                    )),
                     Some(PredicateKind::FileOwnerGate) => {
                         let _arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
                         Ok((
@@ -4494,6 +4799,9 @@ impl TantivySearcher {
                 }
                 RepoScopeConstraint::Meta(arg) => self.collect_repo_ids_for_repo_has_meta(arg)?,
                 RepoScopeConstraint::Topic(arg) => self.collect_repo_ids_for_repo_has_topic(arg)?,
+                RepoScopeConstraint::Description(arg) => {
+                    self.collect_repo_ids_for_repo_has_description(arg)?
+                }
             };
             if repo_ids.is_empty() {
                 return Ok(PreparedPredicatePlan {
@@ -5204,6 +5512,21 @@ impl TantivySearcher {
                     }
                     return Ok(self.repo_id_restriction_query(&repo_ids));
                 }
+                Some(PredicateKind::RepoDescriptionGate) => {
+                    let Some((canonical_name, canonical_args)) =
+                        self.canonicalize_predicate_call(name, args)?
+                    else {
+                        return Err(unimplemented_predicate(format!(
+                            "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+                        )));
+                    };
+                    let arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
+                    let repo_ids = self.collect_repo_ids_for_repo_has_description(&arg)?;
+                    if repo_ids.is_empty() {
+                        return Ok(self.match_none_query());
+                    }
+                    return Ok(self.repo_id_restriction_query(&repo_ids));
+                }
                 Some(PredicateKind::ContentLeaf) => {
                     let Some((canonical_name, canonical_args)) =
                         self.canonicalize_predicate_call(name, args)?
@@ -5387,7 +5710,8 @@ impl TantivySearcher {
         query: &LqQuery,
         default_doc_kind: QueryDocKind,
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
-        let (prepared_query, doc_kind) = self.prepare_query_for_doc_kind(query, default_doc_kind)?;
+        let (prepared_query, doc_kind) =
+            self.prepare_query_for_doc_kind(query, default_doc_kind)?;
         let predicate_plan = self.prepare_predicate_plan(&prepared_query)?;
         if predicate_plan.force_empty {
             return Ok(None);
@@ -5671,10 +5995,8 @@ impl LexicalSearcher for TantivySearcher {
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
         }
-        let Some(base) = self.compile_query_from_prepared(
-            &prepared_query.query,
-            &prepared_query.predicate_plan,
-        )?
+        let Some(base) = self
+            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
         else {
             return Ok(Vec::new());
         };
@@ -5789,10 +6111,8 @@ impl LexicalSearcher for TantivySearcher {
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
         }
-        let Some(base) = self.compile_query_from_prepared(
-            &prepared_query.query,
-            &prepared_query.predicate_plan,
-        )?
+        let Some(base) = self
+            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
         else {
             return Ok(Vec::new());
         };
@@ -5837,10 +6157,9 @@ impl LexicalSearcher for TantivySearcher {
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(base) = self.compile_query_from_prepared(
-            &prepared_query.query,
-            &prepared_query.predicate_plan,
-        )? else {
+        let Some(base) = self
+            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        else {
             return Ok(Vec::new());
         };
         let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());

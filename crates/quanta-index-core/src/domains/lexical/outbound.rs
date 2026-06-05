@@ -2,8 +2,8 @@ use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, FileContributorIngestBatch, FileOwnerProjectionRow,
     FileOwnershipIngestBatch, LexicalCandidate, LexicalIngestBatch, LqQuery, ManifestGeneration,
-    RepoCommitRecencyIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
-    SymbolCandidate,
+    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
+    RepoTopicIngestBatch, RevisionId, SymbolCandidate,
 };
 
 use crate::error::CoreError;
@@ -96,6 +96,21 @@ pub trait RepoMetaIngestPort: Send + Sync {
 pub trait RepoTopicIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &RepoTopicIngestBatch)
     -> Result<BatchPublishReceipt, CoreError>;
+}
+
+/// Ingest a source-repo keyed repo-description authority snapshot for one
+/// lexical generation.
+///
+/// This authority powers the regex-matched repo-description gate on the lexical
+/// text route (`repo:has.description(<pattern>)`). It is distinct from generic
+/// repo metadata and the repo-topic set: the description is a single free-text
+/// string per `source_repo_id`, matched as a regex at query time, so it does
+/// not silently piggyback on key/value or topic substrate.
+pub trait RepoDescriptionIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &RepoDescriptionIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 /// Ingest a source-repo and repo-relative-path keyed file-ownership authority

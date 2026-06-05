@@ -696,6 +696,15 @@ impl E2eRuntime {
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch))
     }
 
+    pub fn publish_repo_description_batch(
+        &mut self,
+        batch: quanta_index_contract::RepoDescriptionIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
+            batch,
+        ))
+    }
+
     pub fn publish_file_ownership_batch(
         &mut self,
         batch: quanta_index_contract::FileOwnershipIngestBatch,
@@ -1726,7 +1735,8 @@ impl E2eRuntime {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => Ok(()),
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
         }
     }
 }

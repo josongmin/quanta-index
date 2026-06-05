@@ -19,7 +19,8 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIngestBatch,
     FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, HistoryIngestBatch,
     HistoryRefMutation, HistoryRefUpsert, LexicalIngestBatch, LexicalReplaceScope, LqVisibility,
-    ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId,
+    ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
+    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId,
     RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch,
     RevisionId, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
     lex::CommitSha, lex::LanguageCode,
@@ -328,6 +329,30 @@ fn boot_with_multi_repo_and_repo_topic() -> AnyResult<E2eRuntime> {
             RepoTopicEntry {
                 source_repo_id: RepoId::new("corp-b"),
                 topic: "ml".to_string(),
+            },
+        ],
+    })?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(rt)
+}
+
+fn boot_with_multi_repo_and_repo_description() -> AnyResult<E2eRuntime> {
+    let mut rt = E2eRuntime::boot()?;
+    seed_multi_repo_chunks(&mut rt)?;
+    rt.publish_repo_description_batch(RepoDescriptionIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "e2e-repo-description".to_string(),
+        entries: vec![
+            RepoDescriptionEntry {
+                source_repo_id: RepoId::new("corp-a"),
+                description: "Apache distributed systems platform".to_string(),
+            },
+            RepoDescriptionEntry {
+                source_repo_id: RepoId::new("corp-b"),
+                description: "Machine learning training pipelines".to_string(),
             },
         ],
     })?;
@@ -895,14 +920,116 @@ fn repo_has_meta_rejects_slash_delimited_regex_shape_typed() -> AnyResult<()> {
 }
 
 #[test]
-fn repo_has_description_is_typed_unsupported() -> AnyResult<()> {
-    // SGT-02: Sourcegraph's `repo:has.description(...)` filters repos by their
-    // description text. No producer authority publishes repo descriptions on
-    // this stack (no SDK publish surface, no contract DTO, no shard), so the
-    // predicate is intentionally never registered and resolves through the
-    // generic unregistered-predicate typed-fail path (`kind_of` -> None). The
-    // search-plane must not fabricate source bytes, so the cell stays explicitly
-    // unsupported and fails closed — never silently empty or best-effort.
+fn repo_has_description_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    // SGX-02: Sourcegraph's `repo:has.description(<regex>)` filters repos by their
+    // producer-published description text, matched as a regex. The description is
+    // a distinct source-repo keyed authority (RepoDescriptionIngestBatch ->
+    // repo-description.cbor shard), NOT folded into repo:has.meta or repo topics,
+    // and the search-plane never fabricates source bytes — the producer publishes
+    // the description and the gate matches it.
+    let mut rt = boot_with_multi_repo_and_repo_description()?;
+
+    // Literal substring pattern gates to the owning repo's docs.
+    let corp_a = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(distributed) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        corp_a.typed_error.is_none(),
+        "repo:has.description positive must not error: {:?}",
+        corp_a.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&corp_a) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.description(distributed) must gate to corp-a description-owned paths, got {:?}",
+        sorted_candidate_paths(&corp_a),
+    );
+
+    // A different pattern selects the other repo — proving per-repo correlation,
+    // not a single shared match set.
+    let corp_b = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(learning) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        corp_b.typed_error.is_none(),
+        "repo:has.description(learning) must not error: {:?}",
+        corp_b.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&corp_b) == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
+        "repo:has.description(learning) must gate to corp-b description-owned paths, got {:?}",
+        sorted_candidate_paths(&corp_b),
+    );
+
+    // Regex semantics, not literal substring: `distribut.d` matches
+    // "distributed" via the `.` wildcard (a literal-substring match would miss).
+    let regex_hit = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(\"distribut.d\") shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        regex_hit.typed_error.is_none(),
+        "repo:has.description regex must not error: {:?}",
+        regex_hit.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&regex_hit) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.description regex `distribut.d` must match corp-a via wildcard, got {:?}",
+        sorted_candidate_paths(&regex_hit),
+    );
+
+    // Miss returns no docs, fails open to neither all nor a fabricated set.
+    let miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(nonexistentxyz) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        miss.typed_error.is_none(),
+        "repo:has.description miss must not error: {:?}",
+        miss.typed_error,
+    );
+    ensure!(
+        miss.candidate_ids.is_empty(),
+        "repo:has.description miss must return no docs, got {:?}",
+        miss.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_description_invalid_regex_fails_closed() -> AnyResult<()> {
+    // A malformed regex pattern must surface a typed error, never a silently
+    // empty candidate set.
+    let mut rt = boot_with_multi_repo_and_repo_description()?;
+    let result = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(\"a[b\") shared_oracle_needle",
+        10,
+    );
+    let Some(error) = result.typed_error else {
+        anyhow::bail!(
+            "malformed repo:has.description regex must typed-fail, got {:?}",
+            result.candidate_ids
+        );
+    };
+    ensure!(
+        error.code.starts_with("LEX_REGEX_"),
+        "malformed description regex must fail with a LEX_REGEX_* code, got {}",
+        error.code
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_description_without_authority_fails_closed() -> AnyResult<()> {
+    // When no producer has published a description authority for the generation,
+    // the gate must fail closed with a typed unavailable error — never silently
+    // match nothing as if every repo lacked a description.
     let mut rt = boot_with_multi_repo_and_repo_meta()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -911,19 +1038,14 @@ fn repo_has_description_is_typed_unsupported() -> AnyResult<()> {
     );
     let Some(error) = result.typed_error else {
         anyhow::bail!(
-            "repo:has.description must typed-fail (no producer description authority), got {:?}",
+            "repo:has.description without authority must typed-fail, got {:?}",
             result.candidate_ids
         );
     };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-        "repo:has.description must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
+        error.code == "REPO_DESCRIPTION_UNAVAILABLE",
+        "missing description authority must fail with REPO_DESCRIPTION_UNAVAILABLE, got {}",
         error.code
-    );
-    ensure!(
-        error.message.contains("repo.has.description"),
-        "diagnostic must name the canonical predicate, got {:?}",
-        error.message
     );
     Ok(())
 }

@@ -16,8 +16,8 @@ use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, Pla
 use crate::predicate_registry::{
     PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call, kind_of,
     parse_content_predicate_constraint, parse_content_scalar_arg, parse_file_contributor_arg,
-    parse_file_owner_arg, parse_repo_file_matchers, parse_repo_meta_arg, parse_repo_topic_arg,
-    parse_timeref_scalar_arg,
+    parse_file_owner_arg, parse_repo_description_arg, parse_repo_file_matchers,
+    parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg,
 };
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
@@ -308,6 +308,17 @@ impl LexicalPlanner {
             }
             Some(PredicateKind::RepoTopicGate) => {
                 let _arg = parse_repo_topic_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
+            Some(PredicateKind::RepoDescriptionGate) => {
+                let _arg = parse_repo_description_arg(&canonical.args).map_err(|_err| {
                     LexicalPlannerError::Unimplemented {
                         node: predicate_arity_label(name),
                         owner_ticket: PREDICATE_OWNER,

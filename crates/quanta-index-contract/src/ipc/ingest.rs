@@ -2060,6 +2060,168 @@ impl<'de> Deserialize<'de> for RepoTopicIngestBatch {
     }
 }
 
+/// One producer-published repo description, keyed by source repo. The producer
+/// is the sole authority for the description string (e.g. the code-host repo
+/// description); the search plane stores it verbatim and matches it as a regex
+/// at `repo:has.description(<pattern>)` query time. Distinct from
+/// [`RepoMetaEntry`] (key/value tags) and [`RepoTopicEntry`] (topic set) — the
+/// description is a single free-text string per repo.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoDescriptionEntry {
+    pub source_repo_id: RepoId,
+    pub description: String,
+}
+
+const REPO_DESCRIPTION_ENTRY_FIELDS: &[&str] = &["source_repo_id", "description"];
+
+impl Serialize for RepoDescriptionEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoDescriptionEntry", 2)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("description", &self.description)?;
+        state.end()
+    }
+}
+
+struct RepoDescriptionEntryVisitor;
+
+impl<'de> Visitor<'de> for RepoDescriptionEntryVisitor {
+    type Value = RepoDescriptionEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoDescriptionEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut description: Option<String> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "description" => description = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_DESCRIPTION_ENTRY_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoDescriptionEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            description: description.ok_or_else(|| de::Error::missing_field("description"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoDescriptionEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoDescriptionEntry",
+            REPO_DESCRIPTION_ENTRY_FIELDS,
+            RepoDescriptionEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoDescriptionIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoDescriptionEntry>,
+}
+
+const REPO_DESCRIPTION_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for RepoDescriptionIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoDescriptionIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct RepoDescriptionIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for RepoDescriptionIngestBatchVisitor {
+    type Value = RepoDescriptionIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoDescriptionIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<RepoDescriptionEntry>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_DESCRIPTION_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoDescriptionIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoDescriptionIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoDescriptionIngestBatch",
+            REPO_DESCRIPTION_INGEST_BATCH_FIELDS,
+            RepoDescriptionIngestBatchVisitor,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileOwnershipEntry {
     pub source_repo_id: RepoId,
@@ -3606,6 +3768,7 @@ pub enum SearchPlaneIngestIpcRequest {
     PublishStructuralBatch(StructuralIngestBatch),
     PublishRepoMapBundle(RepoMapSourceBundle),
     PublishRepoMetaBatch(RepoMetaIngestBatch),
+    PublishRepoDescriptionBatch(RepoDescriptionIngestBatch),
 }
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
@@ -3620,6 +3783,7 @@ const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishStructuralBatch",
     "PublishRepoMapBundle",
     "PublishRepoMetaBatch",
+    "PublishRepoDescriptionBatch",
 ];
 
 impl Serialize for SearchPlaneIngestIpcRequest {
@@ -3694,6 +3858,12 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishRepoMetaBatch",
                 payload,
             ),
+            Self::PublishRepoDescriptionBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                12,
+                "PublishRepoDescriptionBatch",
+                payload,
+            ),
         }
     }
 }
@@ -3750,6 +3920,11 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishRepoMetaBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
                 variant.newtype_variant()?,
             )),
+            "PublishRepoDescriptionBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
+                    variant.newtype_variant()?,
+                ))
+            }
             other => Err(de::Error::unknown_variant(
                 other,
                 SEARCH_PLANE_INGEST_REQUEST_VARIANTS,
@@ -3785,6 +3960,7 @@ pub enum SearchPlaneIngestIpcResponse {
     StructuralReceipt(BatchPublishReceipt),
     RepoMapReceipt(RepoMapMutationAck),
     RepoMetaReceipt(BatchPublishReceipt),
+    RepoDescriptionReceipt(BatchPublishReceipt),
     Error(SearchPlaneIpcError),
 }
 
@@ -3800,6 +3976,7 @@ const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "StructuralReceipt",
     "RepoMapReceipt",
     "RepoMetaReceipt",
+    "RepoDescriptionReceipt",
     "Error",
 ];
 
@@ -3875,6 +4052,12 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "RepoMetaReceipt",
                 payload,
             ),
+            Self::RepoDescriptionReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                13,
+                "RepoDescriptionReceipt",
+                payload,
+            ),
             Self::Error(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 10,
@@ -3931,6 +4114,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
                 variant.newtype_variant()?,
             )),
             "RepoMetaReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMetaReceipt(
+                variant.newtype_variant()?,
+            )),
+            "RepoDescriptionReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(
                 variant.newtype_variant()?,
             )),
             "Error" => Ok(SearchPlaneIngestIpcResponse::Error(
@@ -4426,6 +4612,25 @@ mod tests {
         }
     }
 
+    fn fixture_repo_description_batch() -> RepoDescriptionIngestBatch {
+        RepoDescriptionIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            batch_digest: "batch:repo-description".to_string(),
+            entries: vec![
+                RepoDescriptionEntry {
+                    source_repo_id: RepoId::new("corp-a"),
+                    description: "Apache distributed systems toolkit".to_string(),
+                },
+                RepoDescriptionEntry {
+                    source_repo_id: RepoId::new("corp-b"),
+                    description: "Machine-learning training pipelines".to_string(),
+                },
+            ],
+        }
+    }
+
     fn fixture_file_contributor_batch() -> FileContributorIngestBatch {
         FileContributorIngestBatch {
             repo_id: fixture_repo_id(),
@@ -4663,6 +4868,20 @@ mod tests {
     }
 
     #[test]
+    fn search_plane_ingest_request_envelope_round_trip_repo_description() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 12,
+            payload: SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
+                fixture_repo_description_batch(),
+            ),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
     fn search_plane_ingest_request_envelope_round_trip_file_contributor() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 11,
@@ -4776,6 +4995,24 @@ mod tests {
             payload: SearchPlaneIngestIpcResponse::RepoMetaReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(5),
                 manifest_digest: "digest-repo-meta".to_string(),
+                accepted_replace_scopes: 2,
+                accepted_tombstone_scopes: 0,
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_repo_description_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 13,
+            payload: SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(7),
+                manifest_digest: "digest-repo-description".to_string(),
                 accepted_replace_scopes: 2,
                 accepted_tombstone_scopes: 0,
                 sealed: false,

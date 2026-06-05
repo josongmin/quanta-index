@@ -395,6 +395,7 @@ pub fn quanta_index_sdk::HistoryNamespace<'a>::publish(&self, batch: &quanta_ind
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_file_contributor(&self, batch: &quanta_index_sdk::FileContributorBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_file_ownership(&self, batch: &quanta_index_sdk::FileOwnershipBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_commit_recency(&self, batch: &quanta_index_sdk::RepoCommitRecencyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_description(&self, batch: &quanta_index_sdk::RepoDescriptionBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_meta(&self, batch: &quanta_index_sdk::RepoMetaBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_topic(&self, batch: &quanta_index_sdk::RepoTopicBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::query(&self) -> quanta_index_sdk::HistoryQueryBuilder<'a>
@@ -614,6 +615,48 @@ impl core::marker::Unpin for quanta_index_sdk::RepoCommitRecencyMutation
 impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoCommitRecencyMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
+pub struct quanta_index_sdk::RepoDescriptionBatch
+pub quanta_index_sdk::RepoDescriptionBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::RepoDescriptionBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoDescriptionMutation>
+pub quanta_index_sdk::RepoDescriptionBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::RepoDescriptionBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoDescriptionBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::RepoDescriptionBatch
+pub fn quanta_index_sdk::RepoDescriptionBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, description: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoDescriptionBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::RepoDescriptionBatch
+pub fn quanta_index_sdk::RepoDescriptionBatch::clone(&self) -> quanta_index_sdk::RepoDescriptionBatch
+impl core::cmp::Eq for quanta_index_sdk::RepoDescriptionBatch
+impl core::cmp::PartialEq for quanta_index_sdk::RepoDescriptionBatch
+pub fn quanta_index_sdk::RepoDescriptionBatch::eq(&self, other: &quanta_index_sdk::RepoDescriptionBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoDescriptionBatch
+pub fn quanta_index_sdk::RepoDescriptionBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoDescriptionBatch
+impl core::marker::Freeze for quanta_index_sdk::RepoDescriptionBatch
+impl core::marker::Send for quanta_index_sdk::RepoDescriptionBatch
+impl core::marker::Sync for quanta_index_sdk::RepoDescriptionBatch
+impl core::marker::Unpin for quanta_index_sdk::RepoDescriptionBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoDescriptionBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoDescriptionBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoDescriptionBatch
+pub struct quanta_index_sdk::RepoDescriptionMutation
+pub quanta_index_sdk::RepoDescriptionMutation::description: alloc::string::String
+pub quanta_index_sdk::RepoDescriptionMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+impl core::clone::Clone for quanta_index_sdk::RepoDescriptionMutation
+pub fn quanta_index_sdk::RepoDescriptionMutation::clone(&self) -> quanta_index_sdk::RepoDescriptionMutation
+impl core::cmp::Eq for quanta_index_sdk::RepoDescriptionMutation
+impl core::cmp::PartialEq for quanta_index_sdk::RepoDescriptionMutation
+pub fn quanta_index_sdk::RepoDescriptionMutation::eq(&self, other: &quanta_index_sdk::RepoDescriptionMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoDescriptionMutation
+pub fn quanta_index_sdk::RepoDescriptionMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoDescriptionMutation
+impl core::marker::Freeze for quanta_index_sdk::RepoDescriptionMutation
+impl core::marker::Send for quanta_index_sdk::RepoDescriptionMutation
+impl core::marker::Sync for quanta_index_sdk::RepoDescriptionMutation
+impl core::marker::Unpin for quanta_index_sdk::RepoDescriptionMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoDescriptionMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoDescriptionMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoDescriptionMutation
 pub struct quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> quanta_index_sdk::RepoMapNamespace<'a>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>

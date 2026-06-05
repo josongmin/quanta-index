@@ -15,9 +15,9 @@ use std::sync::atomic::AtomicBool;
 use anyhow::Result;
 use quanta_index_core::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SemanticBatchBuildPort, SemanticIndexOpenPort,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -53,6 +53,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync> =
         lex_adapter.clone();
     let repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync> = lex_adapter.clone();
+    let repo_description_ingest_port: Arc<dyn RepoDescriptionIngestPort + Send + Sync> =
+        lex_adapter.clone();
     let file_ownership_ingest_port: Arc<dyn FileOwnershipIngestPort + Send + Sync> =
         lex_adapter.clone();
     let file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync> =
@@ -73,6 +75,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
+            repo_description_ingest_port,
             file_ownership_ingest_port,
             file_contributor_ingest_port,
             repo_meta_ingest_port,

@@ -19,7 +19,7 @@ pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalPolicy,
     LexicalQueryPort, LexicalReadiness, LexicalSearcher, RepoCommitRecencyIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,

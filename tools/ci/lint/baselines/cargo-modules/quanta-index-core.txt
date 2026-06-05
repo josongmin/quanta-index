@@ -12,12 +12,18 @@
 [2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
 [2m│   │   │   └── [0m[38;5;68mtrait[0m LexicalQueryPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m FileContributorIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m FileOwnershipIngestPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalBatchBuildPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexBuildPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexOpenPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIngestPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   │   ├── [0m[38;5;68mstruct[0m LexicalReadiness[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m LexicalSearcher[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalSearcher[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoCommitRecencyIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoDescriptionIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoMetaIngestPort[2m:[0m [38;5;107mpub[0m
+[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoTopicIngestPort[2m:[0m [38;5;107mpub[0m
 [2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
 [2m│   │       └── [0m[38;5;68mstruct[0m LexicalPolicy[2m:[0m [38;5;107mpub[0m
 [2m│   ├── [0m[38;5;68mmod[0m repomap[2m:[0m [38;5;107mpub[0m
@@ -57,5 +63,6 @@
 [2m│           ├── [0m[38;5;68menum[0m StructuralExecutableFilter[2m:[0m [38;5;107mpub[0m
 [2m│           ├── [0m[38;5;68mstruct[0m StructuralMatchBinding[2m:[0m [38;5;107mpub[0m
 [2m│           └── [0m[38;5;68mstruct[0m StructuralMatchCandidate[2m:[0m [38;5;107mpub[0m
-[2m└── [0m[38;5;68mmod[0m error[2m:[0m [38;5;107mpub[0m
-[2m    └── [0m[38;5;68menum[0m CoreError[2m:[0m [38;5;107mpub[0m
+[2m├── [0m[38;5;68mmod[0m error[2m:[0m [38;5;107mpub[0m
+[2m│   └── [0m[38;5;68menum[0m CoreError[2m:[0m [38;5;107mpub[0m
+[2m└── [0m[38;5;68mmod[0m timeref[2m:[0m [38;5;107mpub[0m

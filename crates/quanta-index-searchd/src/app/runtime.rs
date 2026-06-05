@@ -19,10 +19,11 @@ use quanta_index_core::domains::structural::{
 };
 use quanta_index_core::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexOpenPort, LexicalIngestPort, RepoCommitRecencyIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
-    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
+    LexicalIndexOpenPort, LexicalIngestPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SemanticBatchBuildPort,
+    SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
+    StructuralMatchCandidate, StructuralReadiness,
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_lq_structural::{
@@ -56,6 +57,7 @@ pub struct SearchdRuntimeParts {
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
     pub repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync>,
+    pub repo_description_ingest_port: Arc<dyn RepoDescriptionIngestPort + Send + Sync>,
     pub file_ownership_ingest_port: Arc<dyn FileOwnershipIngestPort + Send + Sync>,
     pub file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync>,
     pub repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync>,
@@ -464,6 +466,7 @@ impl SearchdRuntime {
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
+            repo_description_ingest_port,
             file_ownership_ingest_port,
             file_contributor_ingest_port,
             repo_meta_ingest_port,
@@ -548,6 +551,7 @@ impl SearchdRuntime {
             direct_history_ingest_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
+            repo_description_ingest_port,
             file_ownership_ingest_port,
             file_contributor_ingest_port,
             repo_meta_ingest_port,

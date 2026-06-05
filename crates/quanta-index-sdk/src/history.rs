@@ -4,7 +4,8 @@ use quanta_index_contract::{
     GenerationPin, GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch,
     HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
     HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry,
+    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
+    RepoRelativePath, RepoTopicEntry,
     RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
     TextQuerySyntax,
@@ -83,6 +84,21 @@ pub struct RepoTopicBatch {
 pub struct RepoTopicMutation {
     pub source_repo_id: RepoId,
     pub topic: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoDescriptionBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoDescriptionMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoDescriptionMutation {
+    pub source_repo_id: RepoId,
+    pub description: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,6 +299,33 @@ impl RepoTopicBatch {
     }
 }
 
+impl RepoDescriptionBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(mut self, source_repo_id: RepoId, description: impl Into<String>) -> Self {
+        self.entries.push(RepoDescriptionMutation {
+            source_repo_id,
+            description: description.into(),
+        });
+        self
+    }
+}
+
 impl FileOwnershipBatch {
     #[must_use]
     pub fn new(
@@ -400,6 +443,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo commit recency receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -438,6 +482,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo meta receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -475,8 +520,52 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo topic receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
+    pub fn publish_repo_description(
+        &self,
+        batch: &RepoDescriptionBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        let wire = RepoDescriptionIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| RepoDescriptionEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    description: entry.description.clone(),
+                })
+                .collect(),
+        };
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
+                wire,
+            ))?;
+        match response {
+            SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "repo description receipt",
                 QuantaIndex::ingest_response_kind(&other),
             )),
         }
@@ -516,6 +605,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file ownership receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -557,6 +647,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file contributor receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -614,6 +705,7 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "history receipt",
                 QuantaIndex::ingest_response_kind(&other),
