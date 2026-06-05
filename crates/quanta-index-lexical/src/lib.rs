@@ -1376,7 +1376,13 @@ fn decode_repo_description_snapshot(bytes: &[u8]) -> Result<RepoDescriptionShard
                 "lexical: repo description decode: missing field `description`".to_string(),
             )
         })?;
-        let _prior = descriptions_by_repo_id.insert(source_repo_id, description);
+        // A well-formed snapshot (written from a BTreeMap) has one entry per
+        // repo; a duplicate means a corrupted or foreign file. Fail closed.
+        if let Some(prior) = descriptions_by_repo_id.insert(source_repo_id.clone(), description) {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: repo description decode: duplicate entry for source_repo_id `{source_repo_id}` (prior `{prior}`)"
+            )));
+        }
     }
     Ok(RepoDescriptionShard {
         descriptions_by_repo_id,
@@ -1394,8 +1400,18 @@ fn persist_repo_description_snapshot(
                 "lexical: repo description ingest entry description must not be empty".to_string(),
             )
         })?;
-        let _prior =
-            descriptions_by_repo_id.insert(entry.source_repo_id.as_str().to_string(), description);
+        // The description is a single scalar per repo: a batch carrying two
+        // entries for the same source repo is a malformed/conflicting authority
+        // input. Fail closed rather than silently last-wins — never let a buggy
+        // producer batch pick a description non-deterministically.
+        if let Some(prior) = descriptions_by_repo_id
+            .insert(entry.source_repo_id.as_str().to_string(), description)
+        {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical: repo description ingest carries conflicting entries for source_repo_id `{}` (prior `{prior}`); one description per repo per batch",
+                entry.source_repo_id.as_str()
+            )));
+        }
     }
     let payload = encode_repo_description_snapshot(&RepoDescriptionShard {
         descriptions_by_repo_id,
@@ -4244,6 +4260,14 @@ impl TantivySearcher {
         // regex. Compile the producer-published pattern once and verify it
         // against each repo's verbatim description. A malformed pattern is a
         // typed query error, not a silent empty result.
+        //
+        // We compile directly via `RegexExecutor::compile` (which applies the
+        // upstream fixed NFA-state ceiling) rather than `crate::regex::plan_regex`:
+        // `plan_regex` exists to drive the trigram pre-filter over the indexed
+        // content corpus (`require_literal`, candidate caps), none of which apply
+        // when we verify a handful of in-memory description strings. The RE2
+        // engine is linear-time with no backtracking, so the bounded compile is
+        // the only cost and the fixed ceiling is sufficient here.
         let executor = RegexExecutor::compile(&arg.pattern).map_err(|err| CoreError::Typed {
             code: format!("LEX_REGEX_{}", err.code.as_code_str()),
             message: format!(

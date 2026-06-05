@@ -982,6 +982,55 @@ fn repo_has_description_predicate_executes_on_sourcegraph_surface() -> AnyResult
         sorted_candidate_paths(&regex_hit),
     );
 
+    // Anchored regex is honored, not stripped: `^Apache` matches corp-a (its
+    // description starts with "Apache"); `^distributed` misses because
+    // "distributed" is not at offset 0 of "Apache distributed systems platform".
+    let anchor_hit = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(\"^Apache\") shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        anchor_hit.typed_error.is_none()
+            && sorted_candidate_paths(&anchor_hit) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.description(^Apache) must anchor-match corp-a, got err={:?} paths={:?}",
+        anchor_hit.typed_error,
+        sorted_candidate_paths(&anchor_hit),
+    );
+    let anchor_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(\"^distributed\") shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        anchor_miss.typed_error.is_none() && anchor_miss.candidate_ids.is_empty(),
+        "repo:has.description(^distributed) must anchor-miss (not at start), got err={:?} ids={:?}",
+        anchor_miss.typed_error,
+        anchor_miss.candidate_ids,
+    );
+
+    // A single pattern matching BOTH repos returns the full corpus — proving the
+    // collector yields a multi-repo id set, not single-repo selection.
+    let both = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(\"systems|pipelines\") shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        both.typed_error.is_none()
+            && sorted_candidate_paths(&both)
+                == [
+                    "lib/gate-a.rs",
+                    "src/corp-a.rs",
+                    "src/corp-b.rs",
+                    "src/gate-a.rs",
+                    "src/gate-b.py",
+                ],
+        "repo:has.description(systems|pipelines) must gate to both repos, got err={:?} paths={:?}",
+        both.typed_error,
+        sorted_candidate_paths(&both),
+    );
+
     // Miss returns no docs, fails open to neither all nor a fabricated set.
     let miss = rt.query_text(
         TextQuerySyntax::Sourcegraph,
@@ -1045,6 +1094,61 @@ fn repo_has_description_without_authority_fails_closed() -> AnyResult<()> {
     ensure!(
         error.code == "REPO_DESCRIPTION_UNAVAILABLE",
         "missing description authority must fail with REPO_DESCRIPTION_UNAVAILABLE, got {}",
+        error.code
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_description_conflicting_batch_fails_closed() -> AnyResult<()> {
+    // A batch carrying two different descriptions for the same source repo is a
+    // conflicting authority input. Publish must fail closed, never silently
+    // last-wins one of the two.
+    let mut rt = E2eRuntime::boot()?;
+    seed_multi_repo_chunks(&mut rt)?;
+    let publish = rt.publish_repo_description_batch(RepoDescriptionIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "e2e-repo-description-conflict".to_string(),
+        entries: vec![
+            RepoDescriptionEntry {
+                source_repo_id: RepoId::new("corp-a"),
+                description: "First description".to_string(),
+            },
+            RepoDescriptionEntry {
+                source_repo_id: RepoId::new("corp-a"),
+                description: "Conflicting second description".to_string(),
+            },
+        ],
+    });
+    ensure!(
+        publish.is_err(),
+        "conflicting repo description batch must fail closed at publish, but it succeeded",
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_description_non_textual_arg_is_typed_unsupported() -> AnyResult<()> {
+    // A numeric argument is not an admissible description pattern; it must
+    // typed-fail through the unimplemented-predicate path, never coerce to a
+    // string pattern or silently match nothing.
+    let mut rt = boot_with_multi_repo_and_repo_description()?;
+    let result = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.description(123) shared_oracle_needle",
+        10,
+    );
+    let Some(error) = result.typed_error else {
+        anyhow::bail!(
+            "numeric repo:has.description arg must typed-fail, got {:?}",
+            result.candidate_ids
+        );
+    };
+    ensure!(
+        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
+        "numeric description arg must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
         error.code
     );
     Ok(())
