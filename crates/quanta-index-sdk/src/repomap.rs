@@ -26,6 +26,7 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -94,12 +95,7 @@ impl crate::NamespaceIngest for RepoMapNs {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+            other => Err(SdkError::unexpected_response(
                 "repomap receipt",
                 QuantaIndex::ingest_response_kind(&other),
             )),

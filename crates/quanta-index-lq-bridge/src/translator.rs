@@ -641,6 +641,7 @@ fn apply_bridge_filter(
             let dim = match value {
                 "repo" => LqSelect::Repo,
                 "file" => LqSelect::File,
+                "file.owners" => LqSelect::FileOwners,
                 "path" => LqSelect::Path,
                 "symbol" => LqSelect::Symbol,
                 "content" => LqSelect::Content,
@@ -1063,6 +1064,36 @@ mod tests {
                     name: "path".to_string(),
                     value: "src/lib.rs".to_string(),
                 }],
+            })
+        );
+    }
+
+    #[test]
+    fn repo_contains_file_alias_preserves_predicate_leaf() {
+        // Sourcegraph `repo:contains.file(...)` is preserved by the bridge as a
+        // predicate leaf; the lexical executor canonicalizes the alias onto
+        // `repo.has.file`. The bridge forwards the full matcher surface.
+        let lowered = run("repo:contains.file(name:lib.rs)");
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.contains.file".to_string(),
+                args: vec![LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "lib.rs".to_string(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn repo_contains_path_alias_preserves_predicate_leaf() {
+        let lowered = run("repo:contains.path(src/lib.rs)");
+        assert_eq!(
+            lowered.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.contains.path".to_string(),
+                args: vec![LqPredicateArg::Keyword("src/lib.rs".to_string())],
             })
         );
     }

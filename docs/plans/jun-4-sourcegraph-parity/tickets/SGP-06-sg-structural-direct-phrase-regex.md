@@ -2,11 +2,11 @@
 
 Parent RFC: [../rfc.md](../rfc.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
-Resolve the direct SG structural lexical sibling gap for:
+Close the direct SG structural lexical sibling gap for:
 
 - `Phrase`
 - `Regex`
@@ -17,35 +17,35 @@ Resolve the direct SG structural lexical sibling gap for:
   - `Phrase -> LowerPhraseBody`
   - `Regex -> LowerRegexBody`
 - local analysis currently classifies both as explicit unsupported direct surfaces
+- the same Sourcegraph tokens are already the pure structural body syntax:
+  - quoted `"..."`
+  - regex `/.../`
+- therefore a global `PreserveLexical` flip would change existing pure structural meaning, not just widen a mixed-domain subset
 
-## Files To Touch
+## Files Touched
 
 - `crates/quanta-index-search-plane/src/lowering.rs`
-- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- `tools/benchmark/sourcegraph_parity.py`
+- `tools/benchmark/SOURCEGRAPH_PARITY.md`
 - `docs/analysis/jun-4-dsl-capabilty.md`
 
-## Required Decision
+## Final Verdict
 
-Exactly one per surface:
-
-1. preserve as lexical sibling with exact parity
-2. keep as explicit unsupported and strengthen that demotion
-
-## Concrete First Increment
-
-Handle `Phrase` first.
-
-Do not touch `Regex` until `Phrase` has an exact parity or explicit demotion rail.
-
-## Red Rail First
-
-- `./scripts/cargow test -p quanta-index-search-plane --lib -- --nocapture`
-- `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity -- --nocapture`
+- kept as explicit unsupported direct surfaces
+- no new escape syntax in this packet
+- quoted `"...“` and `/.../` remain structural body syntax on the SG route
 
 ## DoD
 
 - no ambiguous middle state remains for direct SG structural phrase/regex
+- parity guard carries explicit unsupported direct-surface inventory
+- capability doc says unsupported, not partial/parity
 
-## Not Done If
+## Landed Evidence
 
-- docs say parity while code still rewrites to structural body semantics
+- owner-local:
+  - `sourcegraph_structural_route_rewrites_single_pattern_body_into_structural_leaf`
+  - `sourcegraph_structural_route_rewrites_regex_body_into_structural_leaf`
+- guard/docs:
+  - `tools/benchmark/sourcegraph_parity.py --check`
+  - `docs/analysis/jun-4-dsl-capabilty.md`

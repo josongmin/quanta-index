@@ -15,7 +15,9 @@ use crate::phrase::{PhraseField, PhrasePlannerError, PhrasePolicy, plan_phrase};
 use crate::plan::{CandidateCap, EngineKind, LexicalPlan, PlanLeaf, PlanNode, PlanTraceNode};
 use crate::predicate_registry::{
     PREDICATE_OWNER, PredicateKind, canonical_predicate_name, canonicalize_predicate_call, kind_of,
-    parse_content_predicate_constraint, parse_content_scalar_arg, parse_repo_file_matchers,
+    parse_content_predicate_constraint, parse_content_scalar_arg, parse_file_contributor_arg,
+    parse_file_owner_arg, parse_repo_file_matchers, parse_repo_meta_arg, parse_repo_topic_arg,
+    parse_timeref_scalar_arg,
 };
 use crate::regex::{RegexPlannerError, RegexPolicy, plan_regex};
 use crate::symbol::{SymbolPlannerError, SymbolPolicy, plan_symbol};
@@ -282,6 +284,61 @@ impl LexicalPlanner {
                     name: canonical.name.to_owned(),
                 })
             }
+            Some(PredicateKind::RepoCommitRecencyGate) => {
+                let _arg = parse_timeref_scalar_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
+            Some(PredicateKind::RepoMetaGate) => {
+                let _arg = parse_repo_meta_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
+            Some(PredicateKind::RepoTopicGate) => {
+                let _arg = parse_repo_topic_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
+            Some(PredicateKind::FileOwnerGate) => {
+                let _arg = parse_file_owner_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
+            Some(PredicateKind::FileContributorGate) => {
+                let _arg = parse_file_contributor_arg(&canonical.args).map_err(|_err| {
+                    LexicalPlannerError::Unimplemented {
+                        node: predicate_arity_label(name),
+                        owner_ticket: PREDICATE_OWNER,
+                    }
+                })?;
+                Ok(PlanLeaf::Predicate {
+                    name: canonical.name.to_owned(),
+                })
+            }
             None => Err(LexicalPlannerError::Unimplemented {
                 node: "predicate_leaf",
                 owner_ticket: PREDICATE_OWNER,
@@ -333,6 +390,15 @@ fn predicate_arity_label(name: &str) -> &'static str {
         "predicate_repo_has_file_arity"
     } else if matches!(canonical_predicate_name(name), Some("repo.has.content")) {
         "predicate_repo_has_content_arity"
+    } else if matches!(
+        canonical_predicate_name(name),
+        Some("repo.has.commit.after")
+    ) {
+        "predicate_repo_has_commit_after_arity"
+    } else if matches!(canonical_predicate_name(name), Some("repo.has.meta")) {
+        "predicate_repo_has_meta_arity"
+    } else if matches!(canonical_predicate_name(name), Some("repo.has.topic")) {
+        "predicate_repo_has_topic_arity"
     } else if matches!(canonical_predicate_name(name), Some("file.contains")) {
         "predicate_file_contains_arity"
     } else if matches!(canonical_predicate_name(name), Some("file.has.content")) {
@@ -623,6 +689,30 @@ mod tests {
     }
 
     #[test]
+    fn predicate_repo_has_commit_after_plans_through_tantivy_route() {
+        use quanta_index_contract::LqPredicateArg;
+        let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {
+            name: "repo.has.commit.after".to_owned(),
+            args: vec![LqPredicateArg::Phrase("1 year ago".to_owned())],
+        }));
+        let outcome = LexicalPlanner::plan(&q);
+        assert!(outcome.is_ok(), "expected Ok, got {outcome:?}");
+        if let Ok(plan) = outcome {
+            let matched_leaf = matches!(
+                &plan.root,
+                PlanNode::Leaf { leaf: PlanLeaf::Predicate { name }, .. }
+                    if name == "repo.has.commit.after"
+            );
+            assert!(
+                matched_leaf,
+                "expected predicate leaf for repo.has.commit.after, got {:?}",
+                plan.root
+            );
+            assert!(plan.engines.contains(&EngineKind::Tantivy));
+        }
+    }
+
+    #[test]
     fn predicate_native_aliases_plan_through_canonical_tantivy_route() {
         use quanta_index_contract::LqPredicateArg;
         for (name, args, expected_name) in [
@@ -640,6 +730,11 @@ mod tests {
                 "repo.contains.content",
                 vec![LqPredicateArg::RawString("needle".to_owned())],
                 "repo.has.content",
+            ),
+            (
+                "repo.contains.commit.after",
+                vec![LqPredicateArg::Phrase("yesterday".to_owned())],
+                "repo.has.commit.after",
             ),
         ] {
             let q = query_with_expr(LqExpr::Leaf(LqLeaf::Predicate {

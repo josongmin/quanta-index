@@ -36,9 +36,14 @@
 
 use quanta_index_searchd_harness as e2e_harness;
 
-use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use anyhow::{Result as AnyResult, ensure};
+use quanta_index_contract::{
+    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry,
+    RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, TextQuerySyntax,
+};
 use std::fmt::Write as _;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::e2e_harness::{
     E2eHistoryFixtureSpec, E2eHistoryResult, E2eQueryResult, E2eRuntime, E2eRuntimeCatalogSpec,
@@ -638,6 +643,70 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
         },
     },
+    // SGT-01: `repo:contains.path(...)` is Sourcegraph's alias of
+    // `repo:has.path(...)`, canonicalizing onto `repo:has.file(path:...)`.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_path_alias_parity",
+        sg_query: "repo:contains.path(src/lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_path_native_alias_parity",
+        sg_query: "repo:contains.path(src/lib.rs) parity_needle_alpha",
+        lq_query: "repo.contains.path(src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    // SGT-01: `repo:contains.file(...)` is Sourcegraph's alias of
+    // `repo:has.file(...)`; it forwards the full matcher surface unchanged.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_file_alias_parity",
+        sg_query: "repo:contains.file(path:src/lib.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_file_native_alias_parity",
+        sg_query: "repo:contains.file(path:src/lib.rs) parity_needle_alpha",
+        lq_query: "repo.contains.file(path:src/lib.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    // SGT-01 (gate must be load-bearing): a MISSING path closes the gate to the
+    // empty set. A no-op alias that silently dropped the predicate would instead
+    // return the bare `parity_needle_alpha` hits, so these rows prove the alias
+    // actually gates rather than passing trivially on an always-open path.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_path_alias_missing_path_gates_empty_parity",
+        sg_query: "repo:contains.path(src/does-not-exist.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/does-not-exist.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_file_alias_missing_path_gates_empty_parity",
+        sg_query: "repo:contains.file(path:src/does-not-exist.rs) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/does-not-exist.rs) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
     // ADV-01 widened arg-shape family: `repo.has.file(lang:<x>)`. The corpus
     // repo contains `beta_py` (scripts/helper.py, python), so the `lang:python`
     // gate opens identically on both syntaxes and returns the parity set.
@@ -1092,6 +1161,20 @@ const SCENARIOS: &[ParityScenario] = &[
 
 const AUTHORITY_CORPUS: &[CorpusRow] = &[
     CorpusRow {
+        id: "repo_commit_after_alpha",
+        path: "src/repo-commit-after-a.rs",
+        content: "fn parity_needle_alpha() {}",
+        symbol_name: None,
+        structural_identifier: None,
+    },
+    CorpusRow {
+        id: "repo_commit_after_beta",
+        path: "src/repo-commit-after-b.py",
+        content: "def parity_needle_alpha(): pass",
+        symbol_name: None,
+        structural_identifier: None,
+    },
+    CorpusRow {
         id: "catalog_changed",
         path: "src/changed.rs",
         content: "fn parity_changed_needle() {}",
@@ -1193,6 +1276,7 @@ const AUTHORITY_CORPUS: &[CorpusRow] = &[
 
 const PARITY_HISTORY_COMMIT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const PARITY_HISTORY_COMMIT_SHA_LATER: &str = "89abcdef0123456789abcdef0123456789abcdef";
+const PARITY_SOURCE_REPO_ID: &str = "corp-parity";
 
 const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
     ParityScenario {
@@ -1409,6 +1493,98 @@ const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
     },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_commit_after_predicate_parity",
+        sg_query: "repo:has.commit.after(2024-01-01) parity_needle_alpha",
+        lq_query: "repo.has.commit.after(2024-01-01) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_contains_commit_after_alias_human_parity",
+        sg_query: "repo:contains.commit.after(yesterday) parity_needle_alpha",
+        lq_query: "repo.contains.commit.after(yesterday) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_predicate_parity",
+        sg_query: "repo:has.meta(license:apache-2.0) parity_needle_alpha",
+        lq_query: "repo.has.meta(license:apache-2.0) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_key_only_typed_fail_parity",
+        sg_query: "repo:has.meta(license) parity_needle_alpha",
+        lq_query: "repo.has.meta(license) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    // SGT-03: tag/null-value and slash-delimited regex meta shapes fail closed
+    // identically on both syntaxes — the exact-string substrate supports neither.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_tag_null_typed_fail_parity",
+        sg_query: "repo:has.meta(tag:) parity_needle_alpha",
+        lq_query: "repo.has.meta(tag:) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_regex_key_value_typed_fail_parity",
+        sg_query: "repo:has.meta(/license/:/apache.*/) parity_needle_alpha",
+        lq_query: "repo.has.meta(/license/:/apache.*/) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::TypedError {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_topic_predicate_parity",
+        sg_query: "repo:has.topic(security) parity_needle_alpha",
+        lq_query: "repo.has.topic(security) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_owner_predicate_parity",
+        sg_query: "file:has.owner(@alice) parity_needle_alpha",
+        lq_query: "file.has.owner(@alice) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_contributor_predicate_parity",
+        sg_query: "file:has.contributor(alice) parity_needle_alpha",
+        lq_query: "file.has.contributor(alice) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha"],
+        },
+    },
 ];
 
 fn ingest_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
@@ -1457,8 +1633,90 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
         removed_text: "secondary removed line",
         touched_text: "secondary touched line",
     })?;
+    rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "repo-commit-recency:parity".to_string(),
+        entries: vec![RepoCommitRecencyEntry {
+            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+            latest_committer_time_ms: now_epoch_ms()?,
+        }],
+    })?;
+    rt.publish_repo_meta_batch(RepoMetaIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "repo-meta:parity".to_string(),
+        entries: vec![RepoMetaEntry {
+            source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+            key: "license".to_string(),
+            value: "apache-2.0".to_string(),
+        }],
+    })?;
+    rt.publish_repo_topic_batch(RepoTopicIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "repo-topic:parity".to_string(),
+        entries: vec![
+            RepoTopicEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                topic: "security".to_string(),
+            },
+            RepoTopicEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                topic: "platform".to_string(),
+            },
+        ],
+    })?;
+    rt.publish_file_ownership_batch(FileOwnershipIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "file-ownership:parity".to_string(),
+        entries: vec![
+            FileOwnershipEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                repo_relative_path: RepoRelativePath::new("src/repo-commit-after-a.rs"),
+                owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
+            },
+            FileOwnershipEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                repo_relative_path: RepoRelativePath::new("src/repo-commit-after-b.py"),
+                owners: vec!["@bob".to_string()],
+            },
+        ],
+    })?;
+    rt.publish_file_contributor_batch(FileContributorIngestBatch {
+        repo_id: rt.repo(),
+        revision_id: rt.revision(),
+        generation: rt.current_generation(),
+        batch_digest: "file-contributor:parity".to_string(),
+        entries: vec![
+            FileContributorEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                repo_relative_path: RepoRelativePath::new("src/repo-commit-after-a.rs"),
+                contributors: vec!["alice".to_string(), "carol".to_string()],
+            },
+            FileContributorEntry {
+                source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
+                repo_relative_path: RepoRelativePath::new("src/repo-commit-after-b.py"),
+                contributors: vec!["bob".to_string()],
+            },
+        ],
+    })?;
     for row in AUTHORITY_CORPUS {
-        rt.ingest_text("repo-e2e", row.path, row.content)?;
+        let _candidate_ids = rt.ingest_text_chunks(
+            "repo-e2e",
+            row.path,
+            &[e2e_harness::E2eTextChunkSpec {
+                content: row.content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some(PARITY_SOURCE_REPO_ID),
+            }],
+        )?;
     }
     rt.ingest_runtime_catalog(&E2eRuntimeCatalogSpec {
         producer_head_applied_at_ms: 100,
@@ -1545,6 +1803,13 @@ fn corpus_tables() -> [&'static [CorpusRow]; 2] {
     [CORPUS, AUTHORITY_CORPUS]
 }
 
+fn now_epoch_ms() -> AnyResult<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow::anyhow!("system clock before unix epoch: {err}"))?
+        .as_millis() as u64)
+}
+
 fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
     for table in corpus_tables() {
         if let Some(row) = table.iter().find(|row| row.id == candidate_id) {
@@ -1579,6 +1844,20 @@ fn observed_corpus_ids(result: &E2eQueryResult) -> Result<Vec<&'static str>, Vec
 
 fn raw_candidate_ids(result: &E2eQueryResult) -> Vec<String> {
     result.candidate_ids.clone()
+}
+
+fn sorted_file_owner_projection_rows(result: &E2eQueryResult) -> Vec<(String, Vec<String>)> {
+    let mut rows = result
+        .file_owner_rows
+        .iter()
+        .map(|row| {
+            let mut owners = row.owners.clone();
+            owners.sort();
+            (row.repo_relative_path.as_str().to_string(), owners)
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows
 }
 
 #[derive(Debug)]
@@ -1637,6 +1916,7 @@ fn execute_text_or_structural(
             E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1955,4 +2235,65 @@ fn dual_syntax_lowering_parity_matrix() -> AnyResult<()> {
         }
     }
     Err(anyhow::anyhow!("{buf}"))
+}
+
+#[test]
+fn select_file_owners_dual_syntax_projection_parity() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_authority_fixtures(&mut rt)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let mut rt = rt.reopen();
+
+    let sg = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "select:file.owners parity_needle_alpha",
+        10,
+    );
+    let lq = rt.query_text(
+        TextQuerySyntax::Native,
+        "select:file.owners parity_needle_alpha",
+        10,
+    );
+    ensure!(
+        sg.typed_error.is_none(),
+        "sg select:file.owners typed-error: {:?}",
+        sg.typed_error,
+    );
+    ensure!(
+        lq.typed_error.is_none(),
+        "lq select:file.owners typed-error: {:?}",
+        lq.typed_error,
+    );
+    ensure!(
+        raw_candidate_ids(&sg) == raw_candidate_ids(&lq),
+        "select:file.owners candidate parity drift: sg={:?} lq={:?}",
+        raw_candidate_ids(&sg),
+        raw_candidate_ids(&lq),
+    );
+    ensure!(
+        sorted_file_owner_projection_rows(&sg) == sorted_file_owner_projection_rows(&lq),
+        "select:file.owners projection parity drift: sg={:?} lq={:?}",
+        sorted_file_owner_projection_rows(&sg),
+        sorted_file_owner_projection_rows(&lq),
+    );
+    ensure!(
+        sorted_file_owner_projection_rows(&sg)
+            == [
+                ("scripts/helper.py".to_string(), Vec::new()),
+                ("src/lib.rs".to_string(), Vec::new()),
+                ("src/other.rs".to_string(), Vec::new()),
+                (
+                    "src/repo-commit-after-a.rs".to_string(),
+                    vec!["@acme/platform".to_string(), "@alice".to_string()],
+                ),
+                (
+                    "src/repo-commit-after-b.py".to_string(),
+                    vec!["@bob".to_string()],
+                ),
+            ],
+        "select:file.owners projection rows drifted: {:?}",
+        sorted_file_owner_projection_rows(&sg),
+    );
+    Ok(())
 }

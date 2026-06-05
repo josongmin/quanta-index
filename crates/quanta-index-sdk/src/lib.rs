@@ -26,13 +26,16 @@ pub use config::ConnectOptions;
 pub use error::SdkError;
 pub use generations::{ActivationBuilder, GenerationNamespace};
 pub use history::{
-    DiffHunkMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
+    DiffHunkMutation, FileContributorBatch, FileContributorMutation, FileOwnershipBatch,
+    FileOwnershipMutation, HistoryBatch, HistoryNamespace, HistoryQueryBuilder, RefMutation,
+    RepoCommitRecencyBatch, RepoCommitRecencyMutation, RepoMetaBatch, RepoMetaMutation,
+    RepoTopicBatch, RepoTopicMutation,
 };
 pub use lexical::{LexicalBatch, LexicalNamespace, LexicalQueryBuilder};
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
-pub use search::{HybridQueryBuilder, SearchNamespace};
+pub use search::{HybridSeedQueryBuilder, SearchNamespace};
 pub use semantic::{SemanticNamespace, SemanticQueryBuilder};
 pub use structural::{StructuralBatch, StructuralNamespace, StructuralQueryBuilder};
 pub use symbol::{SymbolNamespace, SymbolQueryBuilder};
@@ -49,14 +52,15 @@ pub use quanta_index_contract::lex::{
 pub use quanta_index_contract::{
     ChunkId, ChunkRecord, ChunkStructuralMetadata, EmbeddingDistanceMetric, EmbeddingId,
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
-    GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
-    LexicalCandidate, LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind,
-    RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode,
-    RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage,
-    RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode,
-    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId, SearchExplanation,
-    SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridSeedCandidate,
+    HybridSeedLane, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
+    LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind, RepoId,
+    RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
+    RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge,
+    RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode, RepoMapNodeRef,
+    RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
+    RepoMapSymbolNode, RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivationAck,
+    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
     StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,

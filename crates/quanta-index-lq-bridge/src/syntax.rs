@@ -794,11 +794,19 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b'/') {
             return self.parse_regex();
         }
-        // Filter or pattern: read a non-whitespace, non-')' run.
+        // Filter or pattern: read a non-whitespace run. Keep balanced
+        // parenthesized payloads inside the token so shapes like
+        // `rev:at.time(...)` survive bridge parsing as a single filter cell
+        // instead of dying early on the closing `)`.
         let start = self.pos;
+        let mut paren_depth = 0usize;
         while let Some(b) = self.peek() {
-            if b == b' ' || b == b'\t' || b == b')' {
-                break;
+            match b {
+                b' ' | b'\t' if paren_depth == 0 => break,
+                b')' if paren_depth == 0 => break,
+                b'(' => paren_depth = paren_depth.saturating_add(1),
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                _ => {}
             }
             self.pos = self.pos.saturating_add(1);
         }
@@ -1425,6 +1433,26 @@ mod tests {
             return;
         };
         assert_eq!(&**v, "^src/");
+    }
+
+    #[test]
+    fn parses_rev_at_time_filter_value() {
+        let q = unwrap_ok(parse_sourcegraph("rev:at.time(2025-01-01T00:00:00Z) foo"));
+        let SgQuery::Filtered { filters, body } = q else {
+            assert!(false, "expected Filtered");
+            return;
+        };
+        let Some(SgFilter::Rev(v)) = filters.first() else {
+            assert!(false, "expected Rev");
+            return;
+        };
+        assert_eq!(&**v, "at.time(2025-01-01T00:00:00Z)");
+        let SgQuery::Pattern { kind, body } = *body else {
+            assert!(false, "expected Pattern body");
+            return;
+        };
+        assert_eq!(kind, SgPatternKind::Literal);
+        assert_eq!(&*body, "foo");
     }
 
     #[test]

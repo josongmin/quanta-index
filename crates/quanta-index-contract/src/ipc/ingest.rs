@@ -1592,6 +1592,796 @@ impl<'de> Deserialize<'de> for HistoryIngestBatch {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoCommitRecencyEntry {
+    pub source_repo_id: RepoId,
+    pub latest_committer_time_ms: u64,
+}
+
+const REPO_COMMIT_RECENCY_ENTRY_FIELDS: &[&str] = &["source_repo_id", "latest_committer_time_ms"];
+
+impl Serialize for RepoCommitRecencyEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoCommitRecencyEntry", 2)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("latest_committer_time_ms", &self.latest_committer_time_ms)?;
+        state.end()
+    }
+}
+
+struct RepoCommitRecencyEntryVisitor;
+
+impl<'de> Visitor<'de> for RepoCommitRecencyEntryVisitor {
+    type Value = RepoCommitRecencyEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoCommitRecencyEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut latest_committer_time_ms: Option<u64> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "latest_committer_time_ms" => latest_committer_time_ms = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_COMMIT_RECENCY_ENTRY_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoCommitRecencyEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            latest_committer_time_ms: latest_committer_time_ms
+                .ok_or_else(|| de::Error::missing_field("latest_committer_time_ms"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoCommitRecencyEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoCommitRecencyEntry",
+            REPO_COMMIT_RECENCY_ENTRY_FIELDS,
+            RepoCommitRecencyEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoCommitRecencyIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoCommitRecencyEntry>,
+}
+
+const REPO_COMMIT_RECENCY_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for RepoCommitRecencyIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoCommitRecencyIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct RepoCommitRecencyIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for RepoCommitRecencyIngestBatchVisitor {
+    type Value = RepoCommitRecencyIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoCommitRecencyIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<RepoCommitRecencyEntry>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_COMMIT_RECENCY_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoCommitRecencyIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoCommitRecencyIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoCommitRecencyIngestBatch",
+            REPO_COMMIT_RECENCY_INGEST_BATCH_FIELDS,
+            RepoCommitRecencyIngestBatchVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMetaEntry {
+    pub source_repo_id: RepoId,
+    pub key: String,
+    pub value: String,
+}
+
+const REPO_META_ENTRY_FIELDS: &[&str] = &["source_repo_id", "key", "value"];
+
+impl Serialize for RepoMetaEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMetaEntry", 3)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("key", &self.key)?;
+        state.serialize_field("value", &self.value)?;
+        state.end()
+    }
+}
+
+struct RepoMetaEntryVisitor;
+
+impl<'de> Visitor<'de> for RepoMetaEntryVisitor {
+    type Value = RepoMetaEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoMetaEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut key: Option<String> = None;
+        let mut value: Option<String> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "key" => key = Some(map.next_value()?),
+                "value" => value = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(other, REPO_META_ENTRY_FIELDS));
+                }
+            }
+        }
+        Ok(RepoMetaEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            key: key.ok_or_else(|| de::Error::missing_field("key"))?,
+            value: value.ok_or_else(|| de::Error::missing_field("value"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoMetaEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoMetaEntry",
+            REPO_META_ENTRY_FIELDS,
+            RepoMetaEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMetaIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoMetaEntry>,
+}
+
+const REPO_META_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for RepoMetaIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoMetaIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct RepoMetaIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for RepoMetaIngestBatchVisitor {
+    type Value = RepoMetaIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoMetaIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<RepoMetaEntry>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_META_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoMetaIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoMetaIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoMetaIngestBatch",
+            REPO_META_INGEST_BATCH_FIELDS,
+            RepoMetaIngestBatchVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoTopicEntry {
+    pub source_repo_id: RepoId,
+    pub topic: String,
+}
+
+const REPO_TOPIC_ENTRY_FIELDS: &[&str] = &["source_repo_id", "topic"];
+
+impl Serialize for RepoTopicEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoTopicEntry", 2)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("topic", &self.topic)?;
+        state.end()
+    }
+}
+
+struct RepoTopicEntryVisitor;
+
+impl<'de> Visitor<'de> for RepoTopicEntryVisitor {
+    type Value = RepoTopicEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoTopicEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut topic: Option<String> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "topic" => topic = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(other, REPO_TOPIC_ENTRY_FIELDS));
+                }
+            }
+        }
+        Ok(RepoTopicEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            topic: topic.ok_or_else(|| de::Error::missing_field("topic"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoTopicEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoTopicEntry",
+            REPO_TOPIC_ENTRY_FIELDS,
+            RepoTopicEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoTopicIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoTopicEntry>,
+}
+
+const REPO_TOPIC_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for RepoTopicIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RepoTopicIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct RepoTopicIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for RepoTopicIngestBatchVisitor {
+    type Value = RepoTopicIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a RepoTopicIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<RepoTopicEntry>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        REPO_TOPIC_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(RepoTopicIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoTopicIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "RepoTopicIngestBatch",
+            REPO_TOPIC_INGEST_BATCH_FIELDS,
+            RepoTopicIngestBatchVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileOwnershipEntry {
+    pub source_repo_id: RepoId,
+    pub repo_relative_path: RepoRelativePath,
+    pub owners: Vec<String>,
+}
+
+const FILE_OWNERSHIP_ENTRY_FIELDS: &[&str] = &["source_repo_id", "repo_relative_path", "owners"];
+
+impl Serialize for FileOwnershipEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileOwnershipEntry", 3)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("owners", &self.owners)?;
+        state.end()
+    }
+}
+
+struct FileOwnershipEntryVisitor;
+
+impl<'de> Visitor<'de> for FileOwnershipEntryVisitor {
+    type Value = FileOwnershipEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FileOwnershipEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut owners: Option<Vec<String>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "repo_relative_path" => repo_relative_path = Some(map.next_value()?),
+                "owners" => owners = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(other, FILE_OWNERSHIP_ENTRY_FIELDS));
+                }
+            }
+        }
+        Ok(FileOwnershipEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            repo_relative_path: repo_relative_path
+                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            owners: owners.ok_or_else(|| de::Error::missing_field("owners"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FileOwnershipEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "FileOwnershipEntry",
+            FILE_OWNERSHIP_ENTRY_FIELDS,
+            FileOwnershipEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileOwnershipIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<FileOwnershipEntry>,
+}
+
+const FILE_OWNERSHIP_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for FileOwnershipIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileOwnershipIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct FileOwnershipIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for FileOwnershipIngestBatchVisitor {
+    type Value = FileOwnershipIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FileOwnershipIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<FileOwnershipEntry>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        FILE_OWNERSHIP_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(FileOwnershipIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FileOwnershipIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "FileOwnershipIngestBatch",
+            FILE_OWNERSHIP_INGEST_BATCH_FIELDS,
+            FileOwnershipIngestBatchVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileContributorEntry {
+    pub source_repo_id: RepoId,
+    pub repo_relative_path: RepoRelativePath,
+    pub contributors: Vec<String>,
+}
+
+const FILE_CONTRIBUTOR_ENTRY_FIELDS: &[&str] =
+    &["source_repo_id", "repo_relative_path", "contributors"];
+
+impl Serialize for FileContributorEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileContributorEntry", 3)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
+        state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
+        state.serialize_field("contributors", &self.contributors)?;
+        state.end()
+    }
+}
+
+struct FileContributorEntryVisitor;
+
+impl<'de> Visitor<'de> for FileContributorEntryVisitor {
+    type Value = FileContributorEntry;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FileContributorEntry map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut source_repo_id: Option<RepoId> = None;
+        let mut repo_relative_path: Option<RepoRelativePath> = None;
+        let mut contributors: Option<Vec<String>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "source_repo_id" => source_repo_id = Some(map.next_value()?),
+                "repo_relative_path" => repo_relative_path = Some(map.next_value()?),
+                "contributors" => contributors = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        FILE_CONTRIBUTOR_ENTRY_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(FileContributorEntry {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+            repo_relative_path: repo_relative_path
+                .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
+            contributors: contributors.ok_or_else(|| de::Error::missing_field("contributors"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FileContributorEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "FileContributorEntry",
+            FILE_CONTRIBUTOR_ENTRY_FIELDS,
+            FileContributorEntryVisitor,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileContributorIngestBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<FileContributorEntry>,
+}
+
+const FILE_CONTRIBUTOR_INGEST_BATCH_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "generation",
+    "batch_digest",
+    "entries",
+];
+
+impl Serialize for FileContributorIngestBatch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileContributorIngestBatch", 5)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("batch_digest", &self.batch_digest)?;
+        state.serialize_field("entries", &self.entries)?;
+        state.end()
+    }
+}
+
+struct FileContributorIngestBatchVisitor;
+
+impl<'de> Visitor<'de> for FileContributorIngestBatchVisitor {
+    type Value = FileContributorIngestBatch;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a FileContributorIngestBatch map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id: Option<RepoId> = None;
+        let mut revision_id: Option<RevisionId> = None;
+        let mut generation: Option<ManifestGeneration> = None;
+        let mut batch_digest: Option<String> = None;
+        let mut entries: Option<Vec<FileContributorEntry>> = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "repo_id" => repo_id = Some(map.next_value()?),
+                "revision_id" => revision_id = Some(map.next_value()?),
+                "generation" => generation = Some(map.next_value()?),
+                "batch_digest" => batch_digest = Some(map.next_value()?),
+                "entries" => entries = Some(map.next_value()?),
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        FILE_CONTRIBUTOR_INGEST_BATCH_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(FileContributorIngestBatch {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            batch_digest: batch_digest.ok_or_else(|| de::Error::missing_field("batch_digest"))?,
+            entries: entries.ok_or_else(|| de::Error::missing_field("entries"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FileContributorIngestBatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "FileContributorIngestBatch",
+            FILE_CONTRIBUTOR_INGEST_BATCH_FIELDS,
+            FileContributorIngestBatchVisitor,
+        )
+    }
+}
+
 // =============================================================================
 // Runtime dirty ingest batch
 // =============================================================================
@@ -2807,19 +3597,29 @@ impl Default for BatchPublishReceipt {
 pub enum SearchPlaneIngestIpcRequest {
     PublishLexicalBatch(LexicalIngestBatch),
     PublishHistoryBatch(HistoryIngestBatch),
+    PublishRepoCommitRecencyBatch(RepoCommitRecencyIngestBatch),
+    PublishRepoTopicBatch(RepoTopicIngestBatch),
+    PublishFileOwnershipBatch(FileOwnershipIngestBatch),
+    PublishFileContributorBatch(FileContributorIngestBatch),
     PublishDirtyBatch(DirtyIngestBatch),
     PublishRuntimeCatalogBatch(RuntimeCatalogIngestBatch),
     PublishStructuralBatch(StructuralIngestBatch),
     PublishRepoMapBundle(RepoMapSourceBundle),
+    PublishRepoMetaBatch(RepoMetaIngestBatch),
 }
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
     "PublishLexicalBatch",
     "PublishHistoryBatch",
+    "PublishRepoCommitRecencyBatch",
+    "PublishRepoTopicBatch",
+    "PublishFileOwnershipBatch",
+    "PublishFileContributorBatch",
     "PublishDirtyBatch",
     "PublishRuntimeCatalogBatch",
     "PublishStructuralBatch",
     "PublishRepoMapBundle",
+    "PublishRepoMetaBatch",
 ];
 
 impl Serialize for SearchPlaneIngestIpcRequest {
@@ -2840,28 +3640,58 @@ impl Serialize for SearchPlaneIngestIpcRequest {
                 "PublishHistoryBatch",
                 payload,
             ),
-            Self::PublishDirtyBatch(payload) => serializer.serialize_newtype_variant(
+            Self::PublishRepoCommitRecencyBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 3,
+                "PublishRepoCommitRecencyBatch",
+                payload,
+            ),
+            Self::PublishRepoTopicBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                4,
+                "PublishRepoTopicBatch",
+                payload,
+            ),
+            Self::PublishFileOwnershipBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                5,
+                "PublishFileOwnershipBatch",
+                payload,
+            ),
+            Self::PublishFileContributorBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                11,
+                "PublishFileContributorBatch",
+                payload,
+            ),
+            Self::PublishDirtyBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                6,
                 "PublishDirtyBatch",
                 payload,
             ),
             Self::PublishRuntimeCatalogBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
-                4,
+                7,
                 "PublishRuntimeCatalogBatch",
                 payload,
             ),
             Self::PublishStructuralBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
-                5,
+                8,
                 "PublishStructuralBatch",
                 payload,
             ),
             Self::PublishRepoMapBundle(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
-                6,
+                9,
                 "PublishRepoMapBundle",
+                payload,
+            ),
+            Self::PublishRepoMetaBatch(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcRequest",
+                10,
+                "PublishRepoMetaBatch",
                 payload,
             ),
         }
@@ -2889,6 +3719,22 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
             "PublishHistoryBatch" => Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
                 variant.newtype_variant()?,
             )),
+            "PublishRepoCommitRecencyBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
+                    variant.newtype_variant()?,
+                ))
+            }
+            "PublishRepoTopicBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(
+                variant.newtype_variant()?,
+            )),
+            "PublishFileOwnershipBatch" => Ok(
+                SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(variant.newtype_variant()?),
+            ),
+            "PublishFileContributorBatch" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
+                    variant.newtype_variant()?,
+                ))
+            }
             "PublishDirtyBatch" => Ok(SearchPlaneIngestIpcRequest::PublishDirtyBatch(
                 variant.newtype_variant()?,
             )),
@@ -2899,6 +3745,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
                 variant.newtype_variant()?,
             )),
             "PublishRepoMapBundle" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMapBundle(
+                variant.newtype_variant()?,
+            )),
+            "PublishRepoMetaBatch" => Ok(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(
                 variant.newtype_variant()?,
             )),
             other => Err(de::Error::unknown_variant(
@@ -2927,20 +3776,30 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 pub enum SearchPlaneIngestIpcResponse {
     LexicalReceipt(BatchPublishReceipt),
     HistoryReceipt(BatchPublishReceipt),
+    RepoCommitRecencyReceipt(BatchPublishReceipt),
+    RepoTopicReceipt(BatchPublishReceipt),
+    FileOwnershipReceipt(BatchPublishReceipt),
+    FileContributorReceipt(BatchPublishReceipt),
     DirtyReceipt(BatchPublishReceipt),
     RuntimeCatalogReceipt(BatchPublishReceipt),
     StructuralReceipt(BatchPublishReceipt),
     RepoMapReceipt(RepoMapMutationAck),
+    RepoMetaReceipt(BatchPublishReceipt),
     Error(SearchPlaneIpcError),
 }
 
 const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
     "LexicalReceipt",
     "HistoryReceipt",
+    "RepoCommitRecencyReceipt",
+    "RepoTopicReceipt",
+    "FileOwnershipReceipt",
+    "FileContributorReceipt",
     "DirtyReceipt",
     "RuntimeCatalogReceipt",
     "StructuralReceipt",
     "RepoMapReceipt",
+    "RepoMetaReceipt",
     "Error",
 ];
 
@@ -2962,33 +3821,63 @@ impl Serialize for SearchPlaneIngestIpcResponse {
                 "HistoryReceipt",
                 payload,
             ),
-            Self::DirtyReceipt(payload) => serializer.serialize_newtype_variant(
+            Self::RepoCommitRecencyReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 3,
+                "RepoCommitRecencyReceipt",
+                payload,
+            ),
+            Self::RepoTopicReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                4,
+                "RepoTopicReceipt",
+                payload,
+            ),
+            Self::FileOwnershipReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                5,
+                "FileOwnershipReceipt",
+                payload,
+            ),
+            Self::FileContributorReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                12,
+                "FileContributorReceipt",
+                payload,
+            ),
+            Self::DirtyReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                6,
                 "DirtyReceipt",
                 payload,
             ),
             Self::RuntimeCatalogReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                4,
+                7,
                 "RuntimeCatalogReceipt",
                 payload,
             ),
             Self::StructuralReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                5,
+                8,
                 "StructuralReceipt",
                 payload,
             ),
             Self::RepoMapReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                6,
+                9,
                 "RepoMapReceipt",
+                payload,
+            ),
+            Self::RepoMetaReceipt(payload) => serializer.serialize_newtype_variant(
+                "SearchPlaneIngestIpcResponse",
+                11,
+                "RepoMetaReceipt",
                 payload,
             ),
             Self::Error(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
-                7,
+                10,
                 "Error",
                 payload,
             ),
@@ -3017,6 +3906,18 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
             "HistoryReceipt" => Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(
                 variant.newtype_variant()?,
             )),
+            "RepoCommitRecencyReceipt" => Ok(
+                SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(variant.newtype_variant()?),
+            ),
+            "RepoTopicReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoTopicReceipt(
+                variant.newtype_variant()?,
+            )),
+            "FileOwnershipReceipt" => Ok(SearchPlaneIngestIpcResponse::FileOwnershipReceipt(
+                variant.newtype_variant()?,
+            )),
+            "FileContributorReceipt" => Ok(SearchPlaneIngestIpcResponse::FileContributorReceipt(
+                variant.newtype_variant()?,
+            )),
             "DirtyReceipt" => Ok(SearchPlaneIngestIpcResponse::DirtyReceipt(
                 variant.newtype_variant()?,
             )),
@@ -3027,6 +3928,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
                 variant.newtype_variant()?,
             )),
             "RepoMapReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMapReceipt(
+                variant.newtype_variant()?,
+            )),
+            "RepoMetaReceipt" => Ok(SearchPlaneIngestIpcResponse::RepoMetaReceipt(
                 variant.newtype_variant()?,
             )),
             "Error" => Ok(SearchPlaneIngestIpcResponse::Error(
@@ -3463,6 +4367,86 @@ mod tests {
         }
     }
 
+    fn fixture_repo_commit_recency_batch() -> RepoCommitRecencyIngestBatch {
+        RepoCommitRecencyIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            batch_digest: "batch:repo-commit-recency".to_string(),
+            entries: vec![
+                RepoCommitRecencyEntry {
+                    source_repo_id: RepoId::new("corp-a"),
+                    latest_committer_time_ms: 1_717_171_717_000,
+                },
+                RepoCommitRecencyEntry {
+                    source_repo_id: RepoId::new("corp-b"),
+                    latest_committer_time_ms: 1_617_171_717_000,
+                },
+            ],
+        }
+    }
+
+    fn fixture_repo_meta_batch() -> RepoMetaIngestBatch {
+        RepoMetaIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            batch_digest: "batch:repo-meta".to_string(),
+            entries: vec![
+                RepoMetaEntry {
+                    source_repo_id: RepoId::new("corp-a"),
+                    key: "license".to_string(),
+                    value: "apache-2.0".to_string(),
+                },
+                RepoMetaEntry {
+                    source_repo_id: RepoId::new("corp-b"),
+                    key: "license".to_string(),
+                    value: "gpl-3.0".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn fixture_repo_topic_batch() -> RepoTopicIngestBatch {
+        RepoTopicIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            batch_digest: "batch:repo-topic".to_string(),
+            entries: vec![
+                RepoTopicEntry {
+                    source_repo_id: RepoId::new("corp-a"),
+                    topic: "security".to_string(),
+                },
+                RepoTopicEntry {
+                    source_repo_id: RepoId::new("corp-b"),
+                    topic: "ml".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn fixture_file_contributor_batch() -> FileContributorIngestBatch {
+        FileContributorIngestBatch {
+            repo_id: fixture_repo_id(),
+            revision_id: fixture_revision_id(),
+            generation: fixture_generation(),
+            batch_digest: "batch:file-contributor".to_string(),
+            entries: vec![
+                FileContributorEntry {
+                    source_repo_id: RepoId::new("corp-a"),
+                    repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
+                    contributors: vec!["alice".to_string(), "carol".to_string()],
+                },
+                FileContributorEntry {
+                    source_repo_id: RepoId::new("corp-b"),
+                    repo_relative_path: RepoRelativePath::new("src/gate-b.rs"),
+                    contributors: vec!["bob".to_string()],
+                },
+            ],
+        }
+    }
+
     fn fixture_dirty_batch() -> DirtyIngestBatch {
         DirtyIngestBatch {
             repo_id: fixture_repo_id(),
@@ -3548,6 +4532,42 @@ mod tests {
     }
 
     #[test]
+    fn repo_commit_recency_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_repo_commit_recency_batch();
+        let bytes = encode(&batch)?;
+        let decoded: RepoCommitRecencyIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
+    fn repo_meta_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_repo_meta_batch();
+        let bytes = encode(&batch)?;
+        let decoded: RepoMetaIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
+    fn repo_topic_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_repo_topic_batch();
+        let bytes = encode(&batch)?;
+        let decoded: RepoTopicIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
+    fn file_contributor_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_file_contributor_batch();
+        let bytes = encode(&batch)?;
+        let decoded: FileContributorIngestBatch = decode(&bytes)?;
+        assert_eq!(decoded, batch);
+        Ok(())
+    }
+
+    #[test]
     fn dirty_ingest_batch_round_trip() -> TestRes {
         let batch = fixture_dirty_batch();
         let bytes = encode(&batch)?;
@@ -3605,9 +4625,61 @@ mod tests {
     }
 
     #[test]
-    fn search_plane_ingest_request_envelope_round_trip_dirty() -> TestRes {
+    fn search_plane_ingest_request_envelope_round_trip_repo_commit_recency() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 4,
+            payload: SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
+                fixture_repo_commit_recency_batch(),
+            ),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_repo_meta() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 5,
+            payload: SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(fixture_repo_meta_batch()),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_repo_topic() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 6,
+            payload: SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(fixture_repo_topic_batch()),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_file_contributor() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 11,
+            payload: SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
+                fixture_file_contributor_batch(),
+            ),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_request_envelope_round_trip_dirty() -> TestRes {
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 6,
             payload: SearchPlaneIngestIpcRequest::PublishDirtyBatch(fixture_dirty_batch()),
         };
         let bytes = encode(&envelope)?;
@@ -3619,7 +4691,7 @@ mod tests {
     #[test]
     fn search_plane_ingest_request_envelope_round_trip_structural() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
-            request_id: 5,
+            request_id: 7,
             payload: SearchPlaneIngestIpcRequest::PublishStructuralBatch(fixture_structural_batch()),
         };
         let bytes = encode(&envelope)?;
@@ -3680,9 +4752,81 @@ mod tests {
     }
 
     #[test]
-    fn search_plane_ingest_response_envelope_round_trip_dirty_receipt() -> TestRes {
+    fn search_plane_ingest_response_envelope_round_trip_repo_commit_recency_receipt() -> TestRes {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 6,
+            payload: SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(4),
+                manifest_digest: "digest-repo-commit-recency".to_string(),
+                accepted_replace_scopes: 2,
+                accepted_tombstone_scopes: 0,
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_repo_meta_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 7,
+            payload: SearchPlaneIngestIpcResponse::RepoMetaReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(5),
+                manifest_digest: "digest-repo-meta".to_string(),
+                accepted_replace_scopes: 2,
+                accepted_tombstone_scopes: 0,
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_repo_topic_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 8,
+            payload: SearchPlaneIngestIpcResponse::RepoTopicReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(6),
+                manifest_digest: "digest-repo-topic".to_string(),
+                accepted_replace_scopes: 2,
+                accepted_tombstone_scopes: 0,
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_file_contributor_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 12,
+            payload: SearchPlaneIngestIpcResponse::FileContributorReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(7),
+                manifest_digest: "digest-file-contributor".to_string(),
+                accepted_replace_scopes: 2,
+                accepted_tombstone_scopes: 0,
+                sealed: false,
+            }),
+        };
+        let bytes = encode(&envelope)?;
+        let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;
+        assert_eq!(decoded, envelope);
+        Ok(())
+    }
+
+    #[test]
+    fn search_plane_ingest_response_envelope_round_trip_dirty_receipt() -> TestRes {
+        let envelope = SearchPlaneIngestIpcResponseEnvelope {
+            request_id: 8,
             payload: SearchPlaneIngestIpcResponse::DirtyReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(4),
                 manifest_digest: "digest-dirty".to_string(),
@@ -3700,7 +4844,7 @@ mod tests {
     #[test]
     fn search_plane_ingest_response_envelope_round_trip_structural_receipt() -> TestRes {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
-            request_id: 7,
+            request_id: 9,
             payload: SearchPlaneIngestIpcResponse::StructuralReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(5),
                 manifest_digest: "digest-struct".to_string(),

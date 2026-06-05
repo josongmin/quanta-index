@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
-    EngineTouched, GenerationPin, HybridQueryResponse, LexicalCandidate, ManifestGeneration,
-    PlannerStage, PlannerTraceEntry, RepoId, RepoMapDocType, RepoMapEntryDto,
-    RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
+    EngineTouched, GenerationPin, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse,
+    LexicalCandidate, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapDocType,
+    RepoMapEntryDto, RepoMapExactnessSummary, RepoMapFocusSubjectDto, RepoMapGraphCoverageClass,
     RepoMapItemIndexAvailability, RepoMapQueryResponse, RepoMapRedactionState, RepoMapSnapshotMeta,
     RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneExplainQueryResponse,
     SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
@@ -24,7 +24,7 @@ enum SmokeScenario {
     LexicalJson,
     ExplainPretty,
     SemanticJson,
-    HybridPretty,
+    HybridSeedPretty,
     RepoMapPretty,
 }
 
@@ -40,7 +40,7 @@ impl IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse> for 
             SmokeScenario::LexicalJson => dispatch_lexical_request(request),
             SmokeScenario::ExplainPretty => dispatch_explain_request(request),
             SmokeScenario::SemanticJson => dispatch_semantic_request(request),
-            SmokeScenario::HybridPretty => dispatch_hybrid_request(request),
+            SmokeScenario::HybridSeedPretty => dispatch_hybrid_seed_request(request),
             SmokeScenario::RepoMapPretty => dispatch_repomap_request(request),
         }
     }
@@ -215,9 +215,9 @@ fn semantic_query_text_json_roundtrip_impl() -> Result<(), Box<dyn std::error::E
 
 fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
-    let shutdown = start_server(&socket_path, SmokeScenario::HybridPretty)?;
+    let shutdown = start_server(&socket_path, SmokeScenario::HybridSeedPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
-        .arg("hybrid")
+        .arg("hybrid-seed")
         .arg("--socket")
         .arg(&socket_path)
         .arg("--repo-id")
@@ -240,11 +240,11 @@ fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::E
         return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
     }
     let stdout = String::from_utf8(output.stdout)?;
-    if !stdout.contains("kind: hybrid") {
-        return Err(format!("missing hybrid kind in stdout: {stdout}").into());
+    if !stdout.contains("kind: hybrid-seed") {
+        return Err(format!("missing hybrid-seed kind in stdout: {stdout}").into());
     }
-    if !stdout.contains("summary: hybrid explanation") {
-        return Err(format!("missing hybrid summary in stdout: {stdout}").into());
+    if !stdout.contains("summary: hybrid seed explanation") {
+        return Err(format!("missing hybrid-seed summary in stdout: {stdout}").into());
     }
     Ok(())
 }
@@ -461,6 +461,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
         generation: generation.clone(),
         results: vec![stub_candidate(generation)],
+        file_owner_rows: None,
     })
 }
 
@@ -529,11 +530,13 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
     })
 }
 
-fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQueryIpcResponse {
-    let SearchPlaneQueryIpcRequest::Hybrid(payload) = request else {
+fn dispatch_hybrid_seed_request(
+    request: SearchPlaneQueryIpcRequest,
+) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcRequest::HybridSeed(payload) = request else {
         return error_response(
             "TEST_UNEXPECTED_REQUEST",
-            format!("expected hybrid request, got {request:?}"),
+            format!("expected hybrid-seed request, got {request:?}"),
         );
     };
     let expected_generation = stub_generation();
@@ -568,11 +571,19 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
             format!("unexpected hybrid top_k: {}", payload.top_k),
         );
     }
-    SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+    SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
         generation: expected_generation.clone(),
-        results: vec![stub_candidate(expected_generation)],
+        seed_candidates: vec![HybridSeedCandidate {
+            candidate: stub_candidate(expected_generation),
+            seed_rank: 1,
+            lexical_rank: Some(1),
+            lexical_score_raw: Some(1.0),
+            semantic_rank: Some(1),
+            semantic_score_raw: Some(0.5),
+            source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
+        }],
         explanation: stub_explanation(
-            "hybrid explanation",
+            "hybrid seed explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],
         ),
     })

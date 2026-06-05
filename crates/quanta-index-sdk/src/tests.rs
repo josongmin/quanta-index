@@ -8,10 +8,11 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchPublishReceipt, ChunkId, ChunkRecord, DiffHunkSide, GenerationSelector,
-    HistoryQueryRequest, HybridQueryResponse, ManifestGeneration, PlannerStage, PlannerTraceEntry,
-    RepoId, RepoMapChunkExactness, RepoMapExactnessSummary, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath,
-    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneActivationAck,
+    HistoryQueryRequest, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse,
+    ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapChunkExactness,
+    RepoMapExactnessSummary, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapMutationAck, RepoMapRedactionState, RepoRelativePath, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneActivationAck,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponseEnvelope,
     SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
@@ -174,6 +175,18 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
         end_line: 20,
         score: 1.0,
         snippet: "fn sample() {}".to_string(),
+    }
+}
+
+fn sample_hybrid_seed_candidate() -> HybridSeedCandidate {
+    HybridSeedCandidate {
+        candidate: sample_hit(),
+        seed_rank: 1,
+        lexical_rank: Some(1),
+        lexical_score_raw: Some(1.0),
+        semantic_rank: Some(2),
+        semantic_score_raw: Some(0.5),
+        source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
     }
 }
 
@@ -394,6 +407,7 @@ fn unused_query() -> Arc<StubQueryTransport> {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![],
+            file_owner_rows: None,
         },
     )))
 }
@@ -588,6 +602,7 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            file_owner_rows: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -624,6 +639,7 @@ fn lexical_query_request_forwards_contract_dto_unchanged() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            file_owner_rows: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -678,11 +694,11 @@ fn symbol_query_request_forwards_contract_dto_unchanged() {
 }
 
 #[test]
-fn hybrid_search_builder_dispatches_hybrid_request_with_semantic_text() {
+fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text() {
     let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
             generation: sample_generation_pin(),
-            results: vec![sample_hit()],
+            seed_candidates: vec![sample_hybrid_seed_candidate()],
             explanation: sample_explanation(),
         }),
     ));
@@ -690,7 +706,7 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_semantic_text() {
     let _response = ok_or_fail!(
         client
             .search()
-            .hybrid()
+            .hybrid_seed()
             .native("scope text")
             .semantic_text("0.25 0.75")
             .active(repo_id(), revision_id())
@@ -701,12 +717,13 @@ fn hybrid_search_builder_dispatches_hybrid_request_with_semantic_text() {
     assert!(
         matches!(
             &captured.payload,
-            quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(_)
+            quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(_)
         ),
-        "expected hybrid request, got {:?}",
+        "expected hybrid seed request, got {:?}",
         captured.payload
     );
-    let quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(req) = &captured.payload else {
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(req) = &captured.payload
+    else {
         return;
     };
     assert_eq!(req.top_k, 7);
@@ -749,16 +766,16 @@ fn semantic_query_request_forwards_contract_dto_unchanged() {
 }
 
 #[test]
-fn hybrid_request_forwards_contract_dto_unchanged() {
+fn hybrid_seed_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
-        SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
             generation: sample_generation_pin(),
-            results: vec![sample_hit()],
+            seed_candidates: vec![sample_hybrid_seed_candidate()],
             explanation: sample_explanation(),
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    let request = quanta_index_contract::HybridQueryRequest {
+    let request = quanta_index_contract::HybridSeedQueryRequest {
         text_query: quanta_index_contract::TextQueryRequest {
             syntax: quanta_index_contract::TextQuerySyntax::Native,
             query_text: "hybrid text".to_string(),
@@ -774,11 +791,11 @@ fn hybrid_request_forwards_contract_dto_unchanged() {
         }),
         top_k: 12,
     };
-    let _response = ok_or_fail!(client.search().hybrid_request(request.clone()));
+    let _response = ok_or_fail!(client.search().hybrid_seed_request(request.clone()));
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert_eq!(
         captured.payload,
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request)
+        quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(request)
     );
 }
 
@@ -788,6 +805,7 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            file_owner_rows: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -888,6 +906,7 @@ fn reader_client_routes_lexical_query_surface() {
         TextQueryResponse {
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
+            file_owner_rows: None,
         },
     )));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
@@ -1075,6 +1094,246 @@ fn history_publish_routes_through_ingest_transport_and_carries_typed_authority_r
         return;
     };
     assert_eq!(first_diff.record.hunk_header.as_ref(), "@@ -1,1 +1,2 @@");
+}
+
+#[test]
+fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(3),
+        manifest_digest: "batch:repo-commit-recency-3".to_string(),
+        accepted_replace_scopes: 2,
+        accepted_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = crate::RepoCommitRecencyBatch::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(3),
+        "batch:repo-commit-recency-3",
+    )
+    .entry(RepoId::new("corp-a"), 1_717_171_717_000)
+    .entry(RepoId::new("corp-b"), 1_617_171_717_000);
+    let observed = ok_or_fail!(client.history().publish_repo_commit_recency(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+        ),
+        "expected PublishRepoCommitRecencyBatch, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert_eq!(wire.batch_digest, "batch:repo-commit-recency-3");
+    assert_eq!(wire.entries.len(), 2);
+    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[0].latest_committer_time_ms, 1_717_171_717_000);
+    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
+    assert_eq!(wire.entries[1].latest_committer_time_ms, 1_617_171_717_000);
+}
+
+#[test]
+fn history_publish_repo_meta_routes_through_ingest_transport() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(4),
+        manifest_digest: "batch:repo-meta-4".to_string(),
+        accepted_replace_scopes: 2,
+        accepted_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = crate::RepoMetaBatch::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(4),
+        "batch:repo-meta-4",
+    )
+    .entry(RepoId::new("corp-a"), "license", "apache-2.0")
+    .entry(RepoId::new("corp-b"), "license", "gpl-3.0");
+    let observed = ok_or_fail!(client.history().publish_repo_meta(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+        ),
+        "expected PublishRepoMetaBatch, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert_eq!(wire.batch_digest, "batch:repo-meta-4");
+    assert_eq!(wire.entries.len(), 2);
+    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[0].key, "license");
+    assert_eq!(wire.entries[0].value, "apache-2.0");
+    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
+    assert_eq!(wire.entries[1].key, "license");
+    assert_eq!(wire.entries[1].value, "gpl-3.0");
+}
+
+#[test]
+fn history_publish_repo_topic_routes_through_ingest_transport() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(5),
+        manifest_digest: "batch:repo-topic-5".to_string(),
+        accepted_replace_scopes: 3,
+        accepted_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = crate::RepoTopicBatch::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(5),
+        "batch:repo-topic-5",
+    )
+    .entry(RepoId::new("corp-a"), "security")
+    .entry(RepoId::new("corp-a"), "platform")
+    .entry(RepoId::new("corp-b"), "ml");
+    let observed = ok_or_fail!(client.history().publish_repo_topic(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+        ),
+        "expected PublishRepoTopicBatch, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert_eq!(wire.batch_digest, "batch:repo-topic-5");
+    assert_eq!(wire.entries.len(), 3);
+    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[0].topic, "security");
+    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[1].topic, "platform");
+    assert_eq!(wire.entries[2].source_repo_id.as_str(), "corp-b");
+    assert_eq!(wire.entries[2].topic, "ml");
+}
+
+#[test]
+fn history_publish_file_ownership_routes_through_ingest_transport() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(5),
+        manifest_digest: "batch:file-ownership-5".to_string(),
+        accepted_replace_scopes: 2,
+        accepted_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = crate::FileOwnershipBatch::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(5),
+        "batch:file-ownership-5",
+    )
+    .entry(
+        RepoId::new("corp-a"),
+        RepoRelativePath::new("src/gate-a.rs"),
+        vec!["@alice".to_string(), "@acme/platform".to_string()],
+    )
+    .entry(
+        RepoId::new("corp-b"),
+        RepoRelativePath::new("src/gate-b.rs"),
+        Vec::new(),
+    );
+    let observed = ok_or_fail!(client.history().publish_file_ownership(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+        ),
+        "expected PublishFileOwnershipBatch, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert_eq!(wire.batch_digest, "batch:file-ownership-5");
+    assert_eq!(wire.entries.len(), 2);
+    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[0].repo_relative_path.as_str(), "src/gate-a.rs");
+    assert_eq!(wire.entries[0].owners, vec!["@alice", "@acme/platform"]);
+    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
+    assert_eq!(wire.entries[1].repo_relative_path.as_str(), "src/gate-b.rs");
+    assert!(wire.entries[1].owners.is_empty());
+}
+
+#[test]
+fn history_publish_file_contributor_routes_through_ingest_transport() {
+    let receipt = BatchPublishReceipt {
+        generation: ManifestGeneration::new(6),
+        manifest_digest: "batch:file-contributor-6".to_string(),
+        accepted_replace_scopes: 2,
+        accepted_tombstone_scopes: 0,
+        sealed: false,
+    };
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = crate::FileContributorBatch::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(6),
+        "batch:file-contributor-6",
+    )
+    .entry(
+        RepoId::new("corp-a"),
+        RepoRelativePath::new("src/gate-a.rs"),
+        vec!["alice".to_string(), "carol".to_string()],
+    )
+    .entry(
+        RepoId::new("corp-b"),
+        RepoRelativePath::new("src/gate-b.rs"),
+        vec!["bob".to_string()],
+    );
+    let observed = ok_or_fail!(client.history().publish_file_contributor(&batch));
+    assert_eq!(observed, receipt);
+    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    assert!(
+        matches!(
+            &captured.payload,
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+        ),
+        "expected PublishFileContributorBatch, got {:?}",
+        captured.payload
+    );
+    let SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire) = &captured.payload else {
+        return;
+    };
+    assert_eq!(wire.batch_digest, "batch:file-contributor-6");
+    assert_eq!(wire.entries.len(), 2);
+    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
+    assert_eq!(wire.entries[0].repo_relative_path.as_str(), "src/gate-a.rs");
+    assert_eq!(wire.entries[0].contributors, vec!["alice", "carol"]);
+    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
+    assert_eq!(wire.entries[1].repo_relative_path.as_str(), "src/gate-b.rs");
+    assert_eq!(wire.entries[1].contributors, vec!["bob"]);
 }
 
 #[test]
@@ -1588,17 +1847,16 @@ fn structural_sourcegraph_query_preserves_syntax() {
         }),
     ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
-    let _response = ok_or_fail!(
-        client
-            .structural()
-            .query()
-            .sourcegraph(
-                r#"repo:repo-1 path:src/lib.rs lang:rust patterntype:structural "function_item""#
-            )
-            .pinned(sample_generation_pin())
-            .top_k(4)
-            .execute()
-    );
+    let _response =
+        ok_or_fail!(client
+        .structural()
+        .query()
+        .sourcegraph(
+            r#"repo:repo-1 path:src/lib.rs lang:rust patterntype:structural "function_item""#
+        )
+        .pinned(sample_generation_pin())
+        .top_k(4)
+        .execute());
     let captured = ok_or_fail!(only_query_request(query.as_ref()));
     assert!(
         matches!(

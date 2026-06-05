@@ -62,6 +62,7 @@ pub enum LqCountBound {
 pub enum LqSelect {
     Repo,
     File,
+    FileOwners,
     Path,
     Symbol,
     Content,
@@ -74,6 +75,7 @@ impl LqSelect {
         match self {
             Self::Repo => "repo",
             Self::File => "file",
+            Self::FileOwners => "file.owners",
             Self::Path => "path",
             Self::Symbol => "symbol",
             Self::Content => "content",
@@ -585,13 +587,22 @@ impl<'de> serde::Deserialize<'de> for LqSelect {
                 match v {
                     "repo" => Ok(LqSelect::Repo),
                     "file" => Ok(LqSelect::File),
+                    "file.owners" => Ok(LqSelect::FileOwners),
                     "path" => Ok(LqSelect::Path),
                     "symbol" => Ok(LqSelect::Symbol),
                     "content" => Ok(LqSelect::Content),
                     "content.match" => Ok(LqSelect::ContentMatch),
                     other => Err(E::unknown_variant(
                         other,
-                        &["repo", "file", "path", "symbol", "content", "content.match"],
+                        &[
+                            "repo",
+                            "file",
+                            "file.owners",
+                            "path",
+                            "symbol",
+                            "content",
+                            "content.match",
+                        ],
                     )),
                 }
             }

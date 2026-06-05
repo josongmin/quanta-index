@@ -262,12 +262,7 @@ fn publish_lexical_batch<const SEALED: bool>(
     ))?;
     match response {
         SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
-        other @ (SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-        | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+        other => Err(SdkError::unexpected_response(
             "lexical receipt",
             QuantaIndex::ingest_response_kind(&other),
         )),
@@ -389,6 +384,7 @@ fn dispatch_text_query_request_v1(
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)

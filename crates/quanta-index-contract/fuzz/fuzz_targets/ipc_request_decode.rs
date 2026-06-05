@@ -18,7 +18,8 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, LexicalIngestBatch, RepoMapQueryRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, LexicalIngestBatch,
+    RepoMapQueryRequest,
     RepoMapSourceBundle, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
@@ -32,6 +33,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<SymbolQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SemanticQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HybridQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<HybridSeedQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HistoryQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<StructuralQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapQueryRequest, _>(data);

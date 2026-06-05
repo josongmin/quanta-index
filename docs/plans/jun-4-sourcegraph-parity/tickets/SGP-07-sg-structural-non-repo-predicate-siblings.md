@@ -2,11 +2,11 @@
 
 Parent RFC: [../rfc.md](../rfc.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
-Resolve SG structural mixed predicate gaps outside the shipped repo-gate family.
+Close SG structural mixed predicate gaps outside the shipped repo-gate family with exact explicit unsupported verdicts per family.
 
 Primary candidates:
 
@@ -16,45 +16,59 @@ Primary candidates:
 
 ## Current Source Truth
 
-- SG structural route preserves only repo gate predicates:
+- SG structural route originally preserved only repo gate predicates:
   - `repo.has.file`
   - `repo.has.path`
   - `repo.has.content`
   - `repo.contains.content`
-- non-repo predicate sibling is typed `BridgeTranslateFail`
-- native structural evaluator has a generic lexical-leaf path, but shared exact inventory for non-repo families is absent
+- `file.contains(path|file:..., <scalar>)` sibling remains typed `BridgeTranslateFail`
+- `file.has.content(path|file:..., <scalar>)` sibling remains typed `BridgeTranslateFail`
+- `symbol.has.name(...)` sibling remains typed `BridgeTranslateFail`
+- native structural evaluator still has a broader generic lexical-leaf path, but shared SG proof remains family-scoped
 
-## Files To Touch
+## Files Touched
 
 - `crates/quanta-index-search-plane/src/lowering.rs`
-- `crates/quanta-index-search-plane/src/query_dispatcher.rs`
-- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- `crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs`
+- `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
+- `tools/benchmark/sourcegraph_parity.py`
+- `tools/benchmark/SOURCEGRAPH_PARITY.md`
 - `docs/analysis/jun-4-dsl-capabilty.md`
 
-## Concrete First Increment
+## Final Verdict
 
-Pick one family first:
+- explicit unsupported:
+  - `file.contains(path|file:...)`
+  - `file.has.content(path|file:...)`
+  - `symbol.has.name(...)`
 
-1. `file.contains(...)`
+Boolean contexts proven:
 
-Do not mix `file.has.content(...)` and `symbol.has.name(...)` into the same first PR.
-
-## Implementation Steps
-
-1. prove native structural mixed exact row for the chosen family
-2. decide SG preserve vs explicit unsupported
-3. add parity or stronger demotion rail
-
-## Red Rail First
-
-- new exact native structural mixed row for the chosen family
-- SG parity or SG typed-fail rail for the same family
+- `AND`
+- `OR`
+- `AND NOT`
 
 ## DoD
 
-- each non-repo family is either exact green or explicit unsupported
+- explicit unsupported families have:
+  - owner-local lowering rail
+  - runtime corpus typed-fail row
+  - SDK/front-door typed-fail row
+  - parity guard demotion inventory entry
 
-## Not Done If
+## Landed Evidence
 
-- native generic code path is mistaken for shipped exact support
+- owner-local:
+  - `sourcegraph_structural_route_rejects_file_contains_predicate_sibling`
+  - `sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_or`
+  - `sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_and_not`
+  - `sourcegraph_structural_route_rejects_file_has_content_predicate_sibling`
+  - `sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_or`
+  - `sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_and_not`
+  - `sourcegraph_structural_route_rejects_non_repo_predicate_sibling`
+  - `sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_or`
+  - `sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_and_not`
+- runtime/front-door:
+  - `sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth`
+  - `full_corpus_runtime_fixture_executes_real_rows_only`

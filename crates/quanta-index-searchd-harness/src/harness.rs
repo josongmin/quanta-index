@@ -25,12 +25,12 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, GenerationPin, HistoryQueryRequest,
-    HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope,
-    LexicalTombstoneScope, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneActivateGenerationRequest,
-    SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, FileOwnerProjectionRow, GenerationPin,
+    HistoryQueryRequest, HybridQueryRequest, LexicalCandidate, LexicalIngestBatch,
+    LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
@@ -152,6 +152,7 @@ struct DriverState {
 pub struct E2eQueryResult {
     pub candidates: Vec<LexicalCandidate>,
     pub candidate_ids: Vec<String>,
+    pub file_owner_rows: Vec<FileOwnerProjectionRow>,
     pub structural_results: Vec<StructuralCandidate>,
     pub engines_touched: Vec<EngineTouched>,
     pub explanation: Option<SearchExplanation>,
@@ -333,6 +334,23 @@ impl E2eRuntime {
         Ok(())
     }
 
+    pub fn activate_generation(
+        &self,
+        pin: GenerationPin,
+        manifest_digest: &str,
+        tracks: &[SearchPlaneTrackKind],
+    ) -> AnyResult<()> {
+        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
+        catalog.activate(&SearchPlaneActivateGenerationRequest {
+            repo_id: pin.repo_id,
+            revision_id: pin.revision_id,
+            manifest_generation: pin.manifest_generation,
+            manifest_digest: manifest_digest.to_string(),
+            tracks: tracks.to_vec(),
+        })?;
+        Ok(())
+    }
+
     /// Ingest one chunk through the typed ingest front door.
     ///
     /// `repo` is informational metadata only — the publish itself goes
@@ -466,6 +484,10 @@ impl E2eRuntime {
             },
         ))?;
         Ok(())
+    }
+
+    pub fn publish_lexical_batch(&mut self, batch: LexicalIngestBatch) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(batch))
     }
 
     pub fn ingest_structural_function_tree(
@@ -649,6 +671,47 @@ impl E2eRuntime {
         batch: quanta_index_contract::HistoryIngestBatch,
     ) -> AnyResult<()> {
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch))
+    }
+
+    pub fn publish_repo_commit_recency_batch(
+        &mut self,
+        batch: quanta_index_contract::RepoCommitRecencyIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(
+            batch,
+        ))
+    }
+
+    pub fn publish_repo_meta_batch(
+        &mut self,
+        batch: quanta_index_contract::RepoMetaIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch))
+    }
+
+    pub fn publish_repo_topic_batch(
+        &mut self,
+        batch: quanta_index_contract::RepoTopicIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch))
+    }
+
+    pub fn publish_file_ownership_batch(
+        &mut self,
+        batch: quanta_index_contract::FileOwnershipIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(
+            batch,
+        ))
+    }
+
+    pub fn publish_file_contributor_batch(
+        &mut self,
+        batch: quanta_index_contract::FileContributorIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
+            batch,
+        ))
     }
 
     pub fn ingest_dirty_for_path(&mut self, path: &str, applied_at_ms: u64) -> AnyResult<()> {
@@ -1072,6 +1135,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_history_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_history_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_history_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_history_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
                 unexpected_history_response("RepoMapQuery")
@@ -1108,6 +1172,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1132,6 +1197,7 @@ impl E2eRuntime {
                     .map(|candidate| candidate.candidate_id.clone())
                     .collect(),
                 candidates: runtime.results,
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1140,6 +1206,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1152,6 +1219,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
@@ -1185,6 +1253,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1216,6 +1285,7 @@ impl E2eRuntime {
                     .iter()
                     .map(|c| c.candidate_id.clone())
                     .collect(),
+                file_owner_rows: text.file_owner_rows.unwrap_or_default(),
                 candidates: text.results,
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
@@ -1225,6 +1295,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1236,6 +1307,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
@@ -1272,6 +1344,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1300,6 +1373,7 @@ impl E2eRuntime {
                         .map(|candidate| candidate.candidate_id.clone())
                         .collect(),
                     candidates: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: results,
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1309,6 +1383,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1321,6 +1396,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
@@ -1361,6 +1437,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1385,6 +1462,7 @@ impl E2eRuntime {
                     .map(|c| c.candidate_id.clone())
                     .collect(),
                 candidates: semantic.results,
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: semantic.explanation.engines_touched.clone(),
                 explanation: Some(semantic.explanation),
@@ -1393,6 +1471,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1404,6 +1483,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
@@ -1445,6 +1525,7 @@ impl E2eRuntime {
                 return E2eQueryResult {
                     candidates: Vec::new(),
                     candidate_ids: Vec::new(),
+                    file_owner_rows: Vec::new(),
                     structural_results: Vec::new(),
                     engines_touched: Vec::new(),
                     explanation: None,
@@ -1469,6 +1550,7 @@ impl E2eRuntime {
                     .map(|c| c.candidate_id.clone())
                     .collect(),
                 candidates: hybrid.results,
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: hybrid.explanation.engines_touched.clone(),
                 explanation: Some(hybrid.explanation),
@@ -1477,6 +1559,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Error(err) => E2eQueryResult {
                 candidates: Vec::new(),
                 candidate_ids: Vec::new(),
+                file_owner_rows: Vec::new(),
                 structural_results: Vec::new(),
                 engines_touched: Vec::new(),
                 explanation: None,
@@ -1489,6 +1572,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => unexpected_response("RepoMapQuery"),
             SearchPlaneQueryIpcResponse::Explain(_) => unexpected_response("Explain"),
@@ -1535,6 +1619,7 @@ impl E2eRuntime {
         E2eQueryResult {
             candidates: Vec::new(),
             candidate_ids: Vec::new(),
+            file_owner_rows: Vec::new(),
             structural_results: Vec::new(),
             engines_touched: Vec::new(),
             explanation: None,
@@ -1593,6 +1678,7 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_explain_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_explain_response("Semantic"),
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_explain_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_explain_response("History"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_explain_response("Structural"),
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => {
@@ -1625,17 +1711,12 @@ impl E2eRuntime {
         };
         let response: SearchPlaneIngestIpcResponseEnvelope = send_request(&socket, &envelope)?;
         match response.payload {
-            SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
             SearchPlaneIngestIpcResponse::Error(err) => Err(anyhow::anyhow!(
                 "e2e-harness ingest failed code={} message={}",
                 err.code,
                 err.message
             )),
+            _ => Ok(()),
         }
     }
 }
@@ -1675,6 +1756,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -1694,6 +1776,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -1783,6 +1866,7 @@ fn unexpected_response(kind: &str) -> E2eQueryResult {
     E2eQueryResult {
         candidates: Vec::new(),
         candidate_ids: Vec::new(),
+        file_owner_rows: Vec::new(),
         structural_results: Vec::new(),
         engines_touched: Vec::new(),
         explanation: None,

@@ -14,8 +14,10 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 use quanta_index_core::{
-    LexicalBatchBuildPort, LexicalIndexOpenPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
+    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -47,7 +49,15 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     )?);
 
     let lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync> = lex_adapter.clone();
-    let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter;
+    let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter.clone();
+    let repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync> =
+        lex_adapter.clone();
+    let repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync> = lex_adapter.clone();
+    let file_ownership_ingest_port: Arc<dyn FileOwnershipIngestPort + Send + Sync> =
+        lex_adapter.clone();
+    let file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync> =
+        lex_adapter.clone();
+    let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter;
     let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
@@ -61,6 +71,11 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         SearchdRuntimeParts {
             lex_build_port,
             lex_open_port,
+            repo_commit_recency_ingest_port,
+            repo_topic_ingest_port,
+            file_ownership_ingest_port,
+            file_contributor_ingest_port,
+            repo_meta_ingest_port,
             sem_build_port,
             sem_open_port,
             repo_map_query_port,

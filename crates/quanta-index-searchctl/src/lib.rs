@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridQueryRequest,
+    EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
     LexicalCandidate, ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType,
     RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
     SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
@@ -93,7 +93,7 @@ enum CommandKind {
     Lexical,
     Symbol,
     Semantic,
-    Hybrid,
+    HybridSeed,
     Explain,
     RepoMap,
     RuntimeMetadata,
@@ -159,7 +159,7 @@ enum CliRequest {
     Lexical(TextQueryRequest),
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
-    Hybrid(HybridQueryRequest),
+    HybridSeed(HybridSeedQueryRequest),
     Explain {
         generation: GenerationPin,
         candidate: LexicalCandidate,
@@ -205,7 +205,16 @@ impl ParsedCommand {
                 CommandKind::Semantic,
                 parse_semantic(&mut common, &mut rest)?,
             ),
-            "hybrid" => (CommandKind::Hybrid, parse_hybrid(&mut common, &mut rest)?),
+            "hybrid" => {
+                return Err(CliError::usage(
+                    "subcommand `hybrid` was retired; use `hybrid-seed` or the Semantica hybrid rerank surface"
+                        .to_string(),
+                ));
+            }
+            "hybrid-seed" => (
+                CommandKind::HybridSeed,
+                parse_hybrid_seed(&mut common, &mut rest)?,
+            ),
             "explain" => (CommandKind::Explain, parse_explain(&mut common, &mut rest)?),
             "repomap" | "repomap-query" => {
                 (CommandKind::RepoMap, parse_repomap(&mut common, &mut rest)?)
@@ -221,7 +230,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|explain|repomap|runtime-metadata|history|structural"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural"
                 )));
             }
         };
@@ -564,7 +573,10 @@ fn parse_semantic(
     }))
 }
 
-fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+fn parse_hybrid_seed(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
     let mut generation_args = PinnedGenerationArgs::default();
     let mut lexical_query_text: Option<String> = None;
     let mut lexical_syntax: Option<TextQuerySyntax> = None;
@@ -574,7 +586,7 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
         common,
         &mut generation_args,
         rest,
-        "hybrid",
+        "hybrid-seed",
         |current, rest| match current {
             "--lexical-query" => {
                 lexical_query_text = Some(take_value(rest, "--lexical-query")?);
@@ -606,7 +618,7 @@ fn parse_hybrid(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliR
         generation_selector: None,
         top_k: text_query_top_k,
     };
-    Ok(CliRequest::Hybrid(HybridQueryRequest {
+    Ok(CliRequest::HybridSeed(HybridSeedQueryRequest {
         text_query,
         semantic_query_text: semantic_query_text
             .ok_or_else(|| CliError::usage("missing --semantic-query".to_string()))?,
@@ -740,10 +752,10 @@ fn dispatch_query_request(
                 .query_request(semantic)
                 .map_err(map_sdk_error)?,
         ),
-        CliRequest::Hybrid(hybrid) => SearchPlaneQueryIpcResponse::Hybrid(
+        CliRequest::HybridSeed(hybrid) => SearchPlaneQueryIpcResponse::HybridSeed(
             client
                 .search()
-                .hybrid_request(hybrid)
+                .hybrid_seed_request(hybrid)
                 .map_err(map_sdk_error)?,
         ),
         CliRequest::RepoMap(repomap) => SearchPlaneQueryIpcResponse::RepoMapQuery(
@@ -874,7 +886,7 @@ fn validate_response_kind(
         (CommandKind::Lexical, SearchPlaneQueryIpcResponse::Text(_))
         | (CommandKind::Symbol, SearchPlaneQueryIpcResponse::Symbol(_))
         | (CommandKind::Semantic, SearchPlaneQueryIpcResponse::Semantic(_))
-        | (CommandKind::Hybrid, SearchPlaneQueryIpcResponse::Hybrid(_))
+        | (CommandKind::HybridSeed, SearchPlaneQueryIpcResponse::HybridSeed(_))
         | (CommandKind::Explain, SearchPlaneQueryIpcResponse::Explain(_))
         | (CommandKind::RepoMap, SearchPlaneQueryIpcResponse::RepoMapQuery(_))
         | (CommandKind::RuntimeMetadata, SearchPlaneQueryIpcResponse::RuntimeMetadata(_))
@@ -929,15 +941,31 @@ fn render_pretty(
             &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
+                file_owner_rows: None,
             },
             Some(&payload.explanation),
             rendered,
         ),
         SearchPlaneQueryIpcResponse::Hybrid(payload) => render_lexical_payload(
-            "hybrid",
+            "hybrid-internal",
             &TextQueryResponse {
                 generation: payload.generation.clone(),
                 results: payload.results.clone(),
+                file_owner_rows: None,
+            },
+            Some(&payload.explanation),
+            rendered,
+        ),
+        SearchPlaneQueryIpcResponse::HybridSeed(payload) => render_lexical_payload(
+            "hybrid-seed",
+            &TextQueryResponse {
+                generation: payload.generation.clone(),
+                results: payload
+                    .seed_candidates
+                    .iter()
+                    .map(|candidate| candidate.candidate.clone())
+                    .collect(),
+                file_owner_rows: None,
             },
             Some(&payload.explanation),
             rendered,
@@ -1134,6 +1162,31 @@ fn render_lexical_payload(
             fmt_ok(writeln!(rendered, "   {line}"))?;
         }
     }
+    if let Some(file_owner_rows) = &payload.file_owner_rows {
+        fmt_ok(writeln!(
+            rendered,
+            "file_owner_rows: {}",
+            file_owner_rows.len()
+        ))?;
+        for (index, row) in file_owner_rows.iter().enumerate() {
+            let display_index = index.checked_add(1).ok_or_else(|| {
+                CliError::protocol("file owner projection index overflow".to_string())
+            })?;
+            let owners = if row.owners.is_empty() {
+                "-".to_string()
+            } else {
+                row.owners.join(",")
+            };
+            fmt_ok(writeln!(
+                rendered,
+                "owner_row {}. candidate_id={} path={} owners={}",
+                display_index,
+                row.candidate_id,
+                row.repo_relative_path.as_str(),
+                owners
+            ))?;
+        }
+    }
     if let Some(explanation) = explanation {
         render_explanation(explanation, rendered)?;
     }
@@ -1273,6 +1326,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
+        SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural",
         SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "RepoMapQuery",
@@ -1287,7 +1341,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::Lexical => "lexical",
         CommandKind::Symbol => "symbol",
         CommandKind::Semantic => "semantic",
-        CommandKind::Hybrid => "hybrid",
+        CommandKind::HybridSeed => "hybrid-seed",
         CommandKind::Explain => "explain",
         CommandKind::RepoMap => "repomap",
         CommandKind::RuntimeMetadata => "runtime-metadata",
@@ -1358,7 +1412,7 @@ Read-only subcommands:
   lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
-  hybrid           --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
+  hybrid-seed      --repo-id ID --revision-id REV --manifest-generation N --lexical-query TEXT --lexical-syntax native|sourcegraph --semantic-query TEXT --top-k N
   explain          --repo-id ID --revision-id REV --manifest-generation N --candidate-json PATH|-
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
   runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
@@ -1481,7 +1535,7 @@ mod tests {
     )]
     fn parses_hybrid_semantic_query_text() {
         let parsed = ParsedCommand::parse([
-            "hybrid",
+            "hybrid-seed",
             "--repo-id",
             "repo",
             "--revision-id",
@@ -1501,8 +1555,8 @@ mod tests {
         let Ok(parsed) = parsed else {
             return;
         };
-        let CliRequest::Hybrid(request) = parsed.request else {
-            panic!("expected hybrid payload");
+        let CliRequest::HybridSeed(request) = parsed.request else {
+            panic!("expected hybrid-seed payload");
         };
         assert_eq!(request.semantic_query_text, "1 0 2.5".to_string());
     }
@@ -1556,7 +1610,7 @@ mod tests {
     #[test]
     fn rejects_legacy_hybrid_semantic_handle_flag() {
         let parsed = ParsedCommand::parse([
-            "hybrid",
+            "hybrid-seed",
             "--repo-id",
             "repo",
             "--revision-id",
@@ -1578,6 +1632,33 @@ mod tests {
         };
         assert_eq!(error.exit_code, EXIT_USAGE);
         assert!(error.message.contains("--semantic-vector-handle"));
+    }
+
+    #[test]
+    fn rejects_retired_hybrid_subcommand() {
+        let parsed = ParsedCommand::parse([
+            "hybrid",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--lexical-query",
+            "needle",
+            "--lexical-syntax",
+            "native",
+            "--semantic-query",
+            "1 0 2.5",
+            "--top-k",
+            "5",
+        ]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("retired"));
     }
 
     #[test]
@@ -1863,6 +1944,14 @@ mod tests {
                     score: 0.5,
                     snippet: "fn sample() {}".to_string(),
                 }],
+                file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
+                    candidate_id: "cand-1".to_string(),
+                    repo_id: RepoId::new("repo"),
+                    revision_id: RevisionId::new("rev"),
+                    manifest_generation: ManifestGeneration::new(7),
+                    repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
+                    owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
+                }]),
             }),
         };
         let mut stdout = Vec::new();
@@ -1873,6 +1962,8 @@ mod tests {
         if let Ok(text) = text {
             assert!(text.contains("kind: lexical"));
             assert!(text.contains("results: 1"));
+            assert!(text.contains("file_owner_rows: 1"));
+            assert!(text.contains("owners=@alice,@acme/platform"));
         }
     }
 

@@ -4,8 +4,8 @@
 )]
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridQueryRequest, SemanticQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    GenerationPin, GenerationSelector, HybridSeedQueryRequest, SemanticQueryRequest,
+    TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -115,21 +115,21 @@ impl VectorQueryBuilderState {
         })
     }
 
-    pub(crate) fn build_hybrid_request(self) -> Result<HybridQueryRequest, SdkError> {
+    pub(crate) fn build_hybrid_seed_request(self) -> Result<HybridSeedQueryRequest, SdkError> {
         let (syntax, query_text) = self
             .text_leg
-            .ok_or_else(|| SdkError::Usage("hybrid text query is required".to_string()))?;
-        let semantic_query_text = self
-            .semantic_query_text
-            .ok_or_else(|| SdkError::Usage("hybrid semantic query text is required".to_string()))?;
+            .ok_or_else(|| SdkError::Usage("hybrid seed text query is required".to_string()))?;
+        let semantic_query_text = self.semantic_query_text.ok_or_else(|| {
+            SdkError::Usage("hybrid seed semantic query text is required".to_string())
+        })?;
         let selection = self.selection.ok_or_else(|| {
-            SdkError::Usage("hybrid generation selection is required".to_string())
+            SdkError::Usage("hybrid seed generation selection is required".to_string())
         })?;
         let top_k = self
             .top_k
-            .ok_or_else(|| SdkError::Usage("hybrid top_k is required".to_string()))?;
+            .ok_or_else(|| SdkError::Usage("hybrid seed top_k is required".to_string()))?;
         let (generation, generation_selector) = Self::selection_fields(selection);
-        Ok(HybridQueryRequest {
+        Ok(HybridSeedQueryRequest {
             text_query: TextQueryRequest {
                 syntax,
                 query_text,

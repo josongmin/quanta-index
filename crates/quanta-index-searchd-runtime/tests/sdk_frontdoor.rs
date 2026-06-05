@@ -23,7 +23,7 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, HistoryQueryRequest,
-    HybridQueryRequest, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
+    HybridSeedQueryRequest, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
     RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge,
     RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
     RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
@@ -37,9 +37,10 @@ use quanta_index_contract::{
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
-    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord, LexicalBatch,
-    ParseNode, ParseRoleTag, ParseTreeRecord, QuantaIndex, RepoRelativePath, SdkError,
-    SearchScopeKey, SearchScopeSurface, StructuralBatch,
+    CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
+    FileContributorBatch, FileOwnershipBatch, LexicalBatch, ParseNode, ParseRoleTag,
+    ParseTreeRecord, QuantaIndex, RepoCommitRecencyBatch, RepoMetaBatch, RepoRelativePath,
+    RepoTopicBatch, SdkError, SearchScopeKey, SearchScopeSurface, StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
@@ -206,15 +207,10 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         },
     )?;
     match response.payload {
-        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
         SearchPlaneIngestIpcResponse::Error(err) => {
             Err(format!("ingest failed code={} message={}", err.code, err.message).into())
         }
+        _ => Ok(()),
     }
 }
 
@@ -367,22 +363,74 @@ fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
 }
 
 fn lexical_frontdoor_matrix_batch() -> Result<LexicalBatch, Box<dyn Error>> {
-    Ok(lexical_batch()?.replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/file_contains.rs"),
-        },
-        "scope:lexical-file-contains",
-        vec![lexical_chunk(
-            "chunk-file-contains",
-            "src/file_contains.rs",
-            "foo oo_ba file_contains_needle",
-            "text:file-contains",
-            "shape:file-contains",
-            29,
-        )?],
-        Vec::new(),
-    ))
+    Ok(lexical_batch()?
+        .replace_scope(
+            SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/file_contains.rs"),
+            },
+            "scope:lexical-file-contains",
+            vec![lexical_chunk(
+                "chunk-file-contains",
+                "src/file_contains.rs",
+                "foo oo_ba file_contains_needle",
+                "text:file-contains",
+                "shape:file-contains",
+                29,
+            )?],
+            Vec::new(),
+        )
+        .replace_scope(
+            SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/recency_a.rs"),
+            },
+            "scope:lexical-recency-a",
+            vec![lexical_chunk_with_source_repo(
+                "chunk-recency-a",
+                "src/recency_a.rs",
+                "shared_oracle_needle corp-a branch",
+                "text:recency-a",
+                "shape:recency-a",
+                33,
+                Some("corp-a"),
+            )?],
+            Vec::new(),
+        )
+        .replace_scope(
+            SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/recency_gate.rs"),
+            },
+            "scope:lexical-recency-gate",
+            vec![lexical_chunk_with_source_repo(
+                "chunk-recency-a-gate",
+                "src/recency_gate.rs",
+                "shared_oracle_needle gate-a only",
+                "text:recency-gate",
+                "shape:recency-gate",
+                32,
+                Some("corp-a"),
+            )?],
+            Vec::new(),
+        )
+        .replace_scope(
+            SearchScopeKey {
+                doc_surface: SearchScopeSurface::File,
+                repo_relative_path: RepoRelativePath::new("src/recency_b.rs"),
+            },
+            "scope:lexical-recency-b",
+            vec![lexical_chunk_with_source_repo(
+                "chunk-recency-b",
+                "src/recency_b.rs",
+                "shared_oracle_needle corp-b branch",
+                "text:recency-b",
+                "shape:recency-b",
+                33,
+                Some("corp-b"),
+            )?],
+            Vec::new(),
+        ))
 }
 
 fn lexical_batch_two() -> Result<LexicalBatch, Box<dyn Error>> {
@@ -445,6 +493,26 @@ fn lexical_chunk(
     _shape_digest: &str,
     end_byte: u32,
 ) -> Result<ChunkRecord, Box<dyn Error>> {
+    lexical_chunk_with_source_repo(
+        chunk_id,
+        path,
+        snippet,
+        _text_digest,
+        _shape_digest,
+        end_byte,
+        None,
+    )
+}
+
+fn lexical_chunk_with_source_repo(
+    chunk_id: &str,
+    path: &str,
+    snippet: &str,
+    _text_digest: &str,
+    _shape_digest: &str,
+    end_byte: u32,
+    source_repo_id: Option<&str>,
+) -> Result<ChunkRecord, Box<dyn Error>> {
     Ok(ChunkRecord {
         chunk_id: ChunkId::new(chunk_id),
         repo_relative_path: RepoRelativePath::new(path),
@@ -456,8 +524,201 @@ fn lexical_chunk(
         text: snippet.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
-        source_repo_id: None,
+        source_repo_id: source_repo_id.map(RepoId::new),
     })
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("epoch millis overflow u64")
+}
+
+fn repo_commit_recency_batch() -> RepoCommitRecencyBatch {
+    let now_ms = now_epoch_ms();
+    RepoCommitRecencyBatch::new(
+        repo(),
+        revision(),
+        generation(),
+        "batch:repo-commit-recency-sdk",
+    )
+    .entry(
+        RepoId::new("corp-a"),
+        now_ms.saturating_sub(6 * 60 * 60 * 1000),
+    )
+    .entry(RepoId::new("corp-b"), 1_700_000_000_000)
+}
+
+fn repo_meta_batch() -> RepoMetaBatch {
+    RepoMetaBatch::new(repo(), revision(), generation(), "batch:repo-meta-sdk")
+        .entry(RepoId::new("corp-a"), "license", "apache-2.0")
+        .entry(RepoId::new("corp-b"), "license", "gpl-3.0")
+}
+
+fn repo_topic_batch() -> RepoTopicBatch {
+    RepoTopicBatch::new(repo(), revision(), generation(), "batch:repo-topic-sdk")
+        .entry(RepoId::new("corp-a"), "security")
+        .entry(RepoId::new("corp-a"), "platform")
+        .entry(RepoId::new("corp-b"), "ml")
+}
+
+fn file_ownership_batch() -> FileOwnershipBatch {
+    FileOwnershipBatch::new(repo(), revision(), generation(), "batch:file-ownership-sdk")
+        .entry(
+            RepoId::new("corp-a"),
+            RepoRelativePath::new("src/recency_a.rs"),
+            vec!["@alice".to_string(), "@acme/platform".to_string()],
+        )
+        .entry(
+            RepoId::new("corp-a"),
+            RepoRelativePath::new("src/recency_gate.rs"),
+            vec!["@alice".to_string()],
+        )
+        .entry(
+            RepoId::new("corp-b"),
+            RepoRelativePath::new("src/recency_b.rs"),
+            vec!["@bob".to_string()],
+        )
+}
+
+fn file_contributor_batch() -> FileContributorBatch {
+    FileContributorBatch::new(
+        repo(),
+        revision(),
+        generation(),
+        "batch:file-contributor-sdk",
+    )
+    .entry(
+        RepoId::new("corp-a"),
+        RepoRelativePath::new("src/recency_a.rs"),
+        vec!["alice".to_string(), "carol".to_string()],
+    )
+    .entry(
+        RepoId::new("corp-a"),
+        RepoRelativePath::new("src/recency_gate.rs"),
+        vec!["alice".to_string()],
+    )
+    .entry(
+        RepoId::new("corp-b"),
+        RepoRelativePath::new("src/recency_b.rs"),
+        vec!["bob".to_string()],
+    )
+}
+
+fn rev_at_time_ancestor_revision() -> RevisionId {
+    RevisionId::new("1111111111111111111111111111111111111111")
+}
+
+fn rev_at_time_head_revision() -> RevisionId {
+    RevisionId::new("2222222222222222222222222222222222222222")
+}
+
+fn rev_at_time_ancestor_generation() -> ManifestGeneration {
+    ManifestGeneration::new(41)
+}
+
+fn rev_at_time_head_generation() -> ManifestGeneration {
+    ManifestGeneration::new(42)
+}
+
+fn rev_at_time_ancestor_pin() -> GenerationPin {
+    GenerationPin::new(
+        repo(),
+        rev_at_time_ancestor_revision(),
+        rev_at_time_ancestor_generation(),
+    )
+}
+
+fn rev_at_time_head_pin() -> GenerationPin {
+    GenerationPin::new(
+        repo(),
+        rev_at_time_head_revision(),
+        rev_at_time_head_generation(),
+    )
+}
+
+fn rev_at_time_lexical_batch(
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    path: &str,
+    candidate_id: &str,
+    snippet: &str,
+) -> Result<LexicalBatch, Box<dyn Error>> {
+    Ok(LexicalBatch::replace_generation(
+        repo(),
+        revision_id,
+        generation,
+        &format!("manifest:rev-at-time:{}:{}", path, generation.get()),
+        &format!("batch:rev-at-time:{}:{}", path, generation.get()),
+    )
+    .replace_scope(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::File,
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        &format!("scope:rev-at-time:{path}"),
+        vec![lexical_chunk(
+            candidate_id,
+            path,
+            snippet,
+            "text:rev-at-time",
+            "shape:rev-at-time",
+            u32::try_from(snippet.len()).map_err(|err| -> Box<dyn Error> {
+                format!("rev_at_time lexical chunk overflow: {err}").into()
+            })?,
+        )?],
+        Vec::new(),
+    ))
+}
+
+fn rev_at_time_history_batch() -> quanta_index_sdk::HistoryBatch {
+    let now_ms = now_epoch_ms();
+    quanta_index_sdk::HistoryBatch::new(
+        repo(),
+        rev_at_time_head_revision(),
+        rev_at_time_head_generation(),
+        "batch:rev-at-time-history-sdk",
+    )
+    .manifest_digest("manifest:rev-at-time-history-sdk")
+    .commit(CommitRecord {
+        wire_version: 1,
+        sha: CommitSha::from_hex("1111111111111111111111111111111111111111")
+            .expect("valid rev-at-time ancestor sha"),
+        parents: Vec::new(),
+        author_time_ms: now_ms.saturating_sub(63_072_000_000),
+        committer_time_ms: now_ms.saturating_sub(63_072_000_000),
+        applied_at_ms: now_ms.saturating_sub(63_072_000_000),
+        author: "alice".to_string().into_boxed_str(),
+        committer: "alice".to_string().into_boxed_str(),
+        message: "legacy rev-at-time commit".to_string().into_boxed_str(),
+        is_merge: false,
+        tags: Vec::new(),
+    })
+    .commit(CommitRecord {
+        wire_version: 1,
+        sha: CommitSha::from_hex("2222222222222222222222222222222222222222")
+            .expect("valid rev-at-time head sha"),
+        parents: vec![
+            CommitSha::from_hex("1111111111111111111111111111111111111111")
+                .expect("valid rev-at-time parent sha"),
+        ],
+        author_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
+        committer_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
+        applied_at_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
+        author: "alice".to_string().into_boxed_str(),
+        committer: "alice".to_string().into_boxed_str(),
+        message: "head rev-at-time commit".to_string().into_boxed_str(),
+        is_merge: false,
+        tags: Vec::new(),
+    })
+    .ref_upsert(
+        "HEAD",
+        CommitSha::from_hex("2222222222222222222222222222222222222222")
+            .expect("valid rev-at-time HEAD sha"),
+    )
 }
 
 fn symbol_record() -> Result<SymbolRecord, Box<dyn Error>> {
@@ -1379,25 +1640,25 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
         || {
             client
                 .search()
-                .hybrid()
+                .hybrid_seed()
                 .sourcegraph("sphinx")
                 .semantic_text("quartz")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
         },
-        |response| response.generation == pin() && !response.results.is_empty(),
+        |response| response.generation == pin() && !response.seed_candidates.is_empty(),
     )?;
     let hybrid_top = hybrid
-        .results
+        .seed_candidates
         .first()
-        .ok_or_else(|| "missing hybrid candidate".to_string())?;
+        .ok_or_else(|| "missing hybrid seed candidate".to_string())?;
     if hybrid.generation != pin()
-        || hybrid_top.candidate_id != "alpha"
+        || hybrid_top.candidate.candidate_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected hybrid response: {hybrid:?}").into());
+        return Err(format!("unexpected hybrid-seed response: {hybrid:?}").into());
     }
 
     let repo_map = wait_for_sdk_observation(
@@ -2298,6 +2559,17 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         .lexical()
         .publish(&lexical_frontdoor_matrix_batch()?)?;
     let _history_receipt = client.history().publish(&history_batch())?;
+    let _repo_commit_recency_receipt = client
+        .history()
+        .publish_repo_commit_recency(&repo_commit_recency_batch())?;
+    let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
+    let _repo_topic_receipt = client.history().publish_repo_topic(&repo_topic_batch())?;
+    let _file_ownership_receipt = client
+        .history()
+        .publish_file_ownership(&file_ownership_batch())?;
+    let _file_contributor_receipt = client
+        .history()
+        .publish_file_contributor(&file_contributor_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     publish_runtime_catalog_batch(&ingest_socket)?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
@@ -2385,6 +2657,45 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                         stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} symbol candidate drift: expected {:?}, got {:?}",
+                            scenario.name, expected, observed
+                        )
+                        .into());
+                    }
+                }
+                SdkFrontdoorSurface::Structural => {
+                    let response = wait_for_sdk_observation(
+                        SOCKET_TIMEOUT,
+                        || match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .structural()
+                                .query()
+                                .native(scenario.query_text)
+                                .pinned(pin())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .structural()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .pinned(pin())
+                                .top_k(10)
+                                .execute(),
+                        },
+                        |response| response.generation == pin(),
+                    )?;
+                    let observed = response
+                        .results
+                        .iter()
+                        .map(|candidate| candidate.candidate_id.clone())
+                        .collect::<Vec<_>>();
+                    let expected = expected_ids
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect::<Vec<_>>();
+                    if observed != expected {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} structural candidate drift: expected {:?}, got {:?}",
                             scenario.name, expected, observed
                         )
                         .into());
@@ -2486,33 +2797,75 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                 }
             }
             SdkFrontdoorExpectation::TypedError(expected_error) => {
-                if scenario.surface != SdkFrontdoorSurface::History {
-                    stop_runtime(&shutdown, join)?;
-                    return Err(format!(
-                        "{} typed error expectation on unsupported SDK surface",
-                        scenario.name
-                    )
-                    .into());
-                }
-                let err =
-                    wait_for_sdk_terminal_error(SOCKET_TIMEOUT, &["NOT_READY"], || match scenario
-                        .syntax
-                    {
-                        TextQuerySyntax::Native => client
-                            .history()
-                            .query()
-                            .native(scenario.query_text)
-                            .active(repo(), revision())
-                            .top_k(10)
-                            .execute(),
-                        TextQuerySyntax::Sourcegraph => client
-                            .history()
-                            .query()
-                            .sourcegraph(scenario.query_text)
-                            .active(repo(), revision())
-                            .top_k(10)
-                            .execute(),
-                    })?;
+                let err = match scenario.surface {
+                    SdkFrontdoorSurface::Lexical => expect_sdk_error(
+                        match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .lexical()
+                                .query()
+                                .native(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .lexical()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .active(repo(), revision())
+                                .top_k(10)
+                                .execute(),
+                        },
+                        &format!("{} lexical typed error", scenario.name),
+                    )?,
+                    SdkFrontdoorSurface::History => {
+                        wait_for_sdk_terminal_error(SOCKET_TIMEOUT, &["NOT_READY"], || {
+                            match scenario.syntax {
+                                TextQuerySyntax::Native => client
+                                    .history()
+                                    .query()
+                                    .native(scenario.query_text)
+                                    .active(repo(), revision())
+                                    .top_k(10)
+                                    .execute(),
+                                TextQuerySyntax::Sourcegraph => client
+                                    .history()
+                                    .query()
+                                    .sourcegraph(scenario.query_text)
+                                    .active(repo(), revision())
+                                    .top_k(10)
+                                    .execute(),
+                            }
+                        })?
+                    }
+                    SdkFrontdoorSurface::Structural => expect_sdk_error(
+                        match scenario.syntax {
+                            TextQuerySyntax::Native => client
+                                .structural()
+                                .query()
+                                .native(scenario.query_text)
+                                .pinned(pin())
+                                .top_k(10)
+                                .execute(),
+                            TextQuerySyntax::Sourcegraph => client
+                                .structural()
+                                .query()
+                                .sourcegraph(scenario.query_text)
+                                .pinned(pin())
+                                .top_k(10)
+                                .execute(),
+                        },
+                        &format!("{} structural typed error", scenario.name),
+                    )?,
+                    other
+                    @ (SdkFrontdoorSurface::Symbol | SdkFrontdoorSurface::RuntimeMetadata) => {
+                        stop_runtime(&shutdown, join)?;
+                        return Err(format!(
+                            "{} typed error expectation on unsupported SDK surface {:?}",
+                            scenario.name, other
+                        )
+                        .into());
+                    }
+                };
                 match err {
                     SdkError::Remote { code, message }
                         if code == expected_error.code
@@ -2529,6 +2882,138 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
             }
         }
     }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
+fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
+    let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-rev-at-time")?;
+
+    let _ancestor_receipt = client.lexical().publish(&rev_at_time_lexical_batch(
+        rev_at_time_ancestor_revision(),
+        rev_at_time_ancestor_generation(),
+        "src/legacy.rs",
+        "chunk-rev-at-time-ancestor",
+        "needle_token legacy_choice",
+    )?)?;
+    let _head_receipt = client.lexical().publish(&rev_at_time_lexical_batch(
+        rev_at_time_head_revision(),
+        rev_at_time_head_generation(),
+        "src/head.rs",
+        "chunk-rev-at-time-head",
+        "needle_token head_choice",
+    )?)?;
+    let _history_receipt = client.history().publish(&rev_at_time_history_batch())?;
+
+    let _activate_ancestor = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(rev_at_time_ancestor_revision())
+            .generation(rev_at_time_ancestor_generation())
+            .manifest_digest("manifest:rev-at-time:src/legacy.rs:41")
+            .tracks([SearchPlaneTrackKind::Lexical])?
+            .commit()
+    })?;
+    let _activate_head = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
+        client
+            .generations()
+            .activate()
+            .repo(repo())
+            .revision(rev_at_time_head_revision())
+            .generation(rev_at_time_head_generation())
+            .manifest_digest("manifest:rev-at-time:src/head.rs:42")
+            .tracks([SearchPlaneTrackKind::Lexical])?
+            .commit()
+    })?;
+
+    let head = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("rev:at.time(2100-01-01T00:00:00Z) needle_token")
+                .pinned(rev_at_time_head_pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == rev_at_time_head_pin() && response.results.len() == 1,
+    )?;
+    if head.results.len() != 1 || head.results[0].candidate_id != "chunk-rev-at-time-head" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected future rev:at.time response: {head:?}").into());
+    }
+
+    let relative = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("rev:at.time(1 year ago) needle_token")
+                .pinned(rev_at_time_head_pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
+    )?;
+    if relative.results.len() != 1
+        || relative.results[0].candidate_id != "chunk-rev-at-time-ancestor"
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
+    }
+
+    let named = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("rev:at.time(yesterday) needle_token")
+                .pinned(rev_at_time_head_pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
+    )?;
+    if named.results.len() != 1 || named.results[0].candidate_id != "chunk-rev-at-time-ancestor" {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
+    }
+
+    let calendar = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .sourcegraph("rev:at.time(june 25 2017) needle_token")
+                .pinned(rev_at_time_head_pin())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == rev_at_time_head_pin() && response.results.is_empty(),
+    )?;
+    if !calendar.results.is_empty() {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected calendar rev:at.time response: {calendar:?}").into());
+    }
+
+    let invalid = expect_sdk_error(
+        client
+            .lexical()
+            .query()
+            .sourcegraph("rev:at.time(definitely-not-a-timeref) needle_token")
+            .pinned(rev_at_time_head_pin())
+            .top_k(10)
+            .execute(),
+        "rev:at.time invalid timeref",
+    )?;
+    expect_remote_code(invalid, "HISTORY_INVALID_TIMEREF")?;
 
     stop_runtime(&shutdown, join)
 }
@@ -3142,7 +3627,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         return Err(format!("unexpected contract-exact semantic response: {semantic:?}").into());
     }
 
-    let hybrid_request = HybridQueryRequest {
+    let hybrid_request = HybridSeedQueryRequest {
         text_query: TextQueryRequest {
             syntax: TextQuerySyntax::Native,
             query_text: "sphinx".to_string(),
@@ -3157,19 +3642,19 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     };
     let hybrid = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
-        || client.search().hybrid_request(hybrid_request.clone()),
-        |response| response.generation == pin() && !response.results.is_empty(),
+        || client.search().hybrid_seed_request(hybrid_request.clone()),
+        |response| response.generation == pin() && !response.seed_candidates.is_empty(),
     )?;
     let hybrid_top = hybrid
-        .results
+        .seed_candidates
         .first()
-        .ok_or_else(|| "missing contract-exact hybrid candidate".to_string())?;
+        .ok_or_else(|| "missing contract-exact hybrid seed candidate".to_string())?;
     if hybrid.generation != pin()
-        || hybrid_top.candidate_id != "alpha"
+        || hybrid_top.candidate.candidate_id != "alpha"
         || hybrid.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected contract-exact hybrid response: {hybrid:?}").into());
+        return Err(format!("unexpected contract-exact hybrid-seed response: {hybrid:?}").into());
     }
 
     stop_runtime(&shutdown, join)
@@ -3408,25 +3893,27 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
         || {
             client
                 .search()
-                .hybrid()
+                .hybrid_seed()
                 .native("sphinx")
                 .semantic_text("quartz")
                 .pinned(pin())
                 .top_k(2)
                 .execute()
         },
-        |response| response.generation == pin() && !response.results.is_empty(),
+        |response| response.generation == pin() && !response.seed_candidates.is_empty(),
     )?;
     let hybrid_inline_top = hybrid_inline
-        .results
+        .seed_candidates
         .first()
-        .ok_or_else(|| "missing hybrid inline-vector candidate".to_string())?;
+        .ok_or_else(|| "missing hybrid inline-vector seed candidate".to_string())?;
     if hybrid_inline.generation != pin()
-        || hybrid_inline_top.candidate_id != "alpha"
+        || hybrid_inline_top.candidate.candidate_id != "alpha"
         || hybrid_inline.explanation.summary.is_empty()
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected hybrid inline-vector response: {hybrid_inline:?}").into());
+        return Err(
+            format!("unexpected hybrid inline-vector seed response: {hybrid_inline:?}").into(),
+        );
     }
 
     stop_runtime(&shutdown, join)

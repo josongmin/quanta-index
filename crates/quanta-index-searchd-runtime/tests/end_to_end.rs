@@ -401,15 +401,10 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         },
     )?;
     match response.payload {
-        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => Ok(()),
         SearchPlaneIngestIpcResponse::Error(err) => {
             Err(format!("ingest failed code={} message={}", err.code, err.message).into())
         }
+        _ => Ok(()),
     }
 }
 

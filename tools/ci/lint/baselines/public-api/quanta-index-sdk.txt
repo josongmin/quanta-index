@@ -15,7 +15,10 @@ pub use quanta_index_sdk::GenerationPin
 pub use quanta_index_sdk::GenerationSelector
 pub use quanta_index_sdk::GenerationSnapshot
 pub use quanta_index_sdk::GenerationStatusReport
-pub use quanta_index_sdk::HybridQueryResponse
+pub use quanta_index_sdk::HybridSeedCandidate
+pub use quanta_index_sdk::HybridSeedLane
+pub use quanta_index_sdk::HybridSeedQueryRequest
+pub use quanta_index_sdk::HybridSeedQueryResponse
 pub use quanta_index_sdk::LanguageCode
 pub use quanta_index_sdk::LexicalCandidate
 pub use quanta_index_sdk::LexicalReplaceScope
@@ -253,6 +256,92 @@ impl core::marker::Unpin for quanta_index_sdk::DirtyBatch
 impl core::marker::UnsafeUnpin for quanta_index_sdk::DirtyBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::DirtyBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::DirtyBatch
+pub struct quanta_index_sdk::FileContributorBatch
+pub quanta_index_sdk::FileContributorBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::FileContributorBatch::entries: alloc::vec::Vec<quanta_index_sdk::FileContributorMutation>
+pub quanta_index_sdk::FileContributorBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::FileContributorBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::FileContributorBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::FileContributorBatch
+pub fn quanta_index_sdk::FileContributorBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::FileContributorBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::FileContributorBatch
+pub fn quanta_index_sdk::FileContributorBatch::clone(&self) -> quanta_index_sdk::FileContributorBatch
+impl core::cmp::Eq for quanta_index_sdk::FileContributorBatch
+impl core::cmp::PartialEq for quanta_index_sdk::FileContributorBatch
+pub fn quanta_index_sdk::FileContributorBatch::eq(&self, other: &quanta_index_sdk::FileContributorBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::FileContributorBatch
+pub fn quanta_index_sdk::FileContributorBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::FileContributorBatch
+impl core::marker::Freeze for quanta_index_sdk::FileContributorBatch
+impl core::marker::Send for quanta_index_sdk::FileContributorBatch
+impl core::marker::Sync for quanta_index_sdk::FileContributorBatch
+impl core::marker::Unpin for quanta_index_sdk::FileContributorBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::FileContributorBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileContributorBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileContributorBatch
+pub struct quanta_index_sdk::FileContributorMutation
+pub quanta_index_sdk::FileContributorMutation::contributors: alloc::vec::Vec<alloc::string::String>
+pub quanta_index_sdk::FileContributorMutation::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_sdk::FileContributorMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+impl core::clone::Clone for quanta_index_sdk::FileContributorMutation
+pub fn quanta_index_sdk::FileContributorMutation::clone(&self) -> quanta_index_sdk::FileContributorMutation
+impl core::cmp::Eq for quanta_index_sdk::FileContributorMutation
+impl core::cmp::PartialEq for quanta_index_sdk::FileContributorMutation
+pub fn quanta_index_sdk::FileContributorMutation::eq(&self, other: &quanta_index_sdk::FileContributorMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::FileContributorMutation
+pub fn quanta_index_sdk::FileContributorMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::FileContributorMutation
+impl core::marker::Freeze for quanta_index_sdk::FileContributorMutation
+impl core::marker::Send for quanta_index_sdk::FileContributorMutation
+impl core::marker::Sync for quanta_index_sdk::FileContributorMutation
+impl core::marker::Unpin for quanta_index_sdk::FileContributorMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::FileContributorMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileContributorMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileContributorMutation
+pub struct quanta_index_sdk::FileOwnershipBatch
+pub quanta_index_sdk::FileOwnershipBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::FileOwnershipBatch::entries: alloc::vec::Vec<quanta_index_sdk::FileOwnershipMutation>
+pub quanta_index_sdk::FileOwnershipBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::FileOwnershipBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::FileOwnershipBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::FileOwnershipBatch
+pub fn quanta_index_sdk::FileOwnershipBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, owners: alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::FileOwnershipBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::FileOwnershipBatch
+pub fn quanta_index_sdk::FileOwnershipBatch::clone(&self) -> quanta_index_sdk::FileOwnershipBatch
+impl core::cmp::Eq for quanta_index_sdk::FileOwnershipBatch
+impl core::cmp::PartialEq for quanta_index_sdk::FileOwnershipBatch
+pub fn quanta_index_sdk::FileOwnershipBatch::eq(&self, other: &quanta_index_sdk::FileOwnershipBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::FileOwnershipBatch
+pub fn quanta_index_sdk::FileOwnershipBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::FileOwnershipBatch
+impl core::marker::Freeze for quanta_index_sdk::FileOwnershipBatch
+impl core::marker::Send for quanta_index_sdk::FileOwnershipBatch
+impl core::marker::Sync for quanta_index_sdk::FileOwnershipBatch
+impl core::marker::Unpin for quanta_index_sdk::FileOwnershipBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::FileOwnershipBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileOwnershipBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileOwnershipBatch
+pub struct quanta_index_sdk::FileOwnershipMutation
+pub quanta_index_sdk::FileOwnershipMutation::owners: alloc::vec::Vec<alloc::string::String>
+pub quanta_index_sdk::FileOwnershipMutation::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
+pub quanta_index_sdk::FileOwnershipMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+impl core::clone::Clone for quanta_index_sdk::FileOwnershipMutation
+pub fn quanta_index_sdk::FileOwnershipMutation::clone(&self) -> quanta_index_sdk::FileOwnershipMutation
+impl core::cmp::Eq for quanta_index_sdk::FileOwnershipMutation
+impl core::cmp::PartialEq for quanta_index_sdk::FileOwnershipMutation
+pub fn quanta_index_sdk::FileOwnershipMutation::eq(&self, other: &quanta_index_sdk::FileOwnershipMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::FileOwnershipMutation
+pub fn quanta_index_sdk::FileOwnershipMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::FileOwnershipMutation
+impl core::marker::Freeze for quanta_index_sdk::FileOwnershipMutation
+impl core::marker::Send for quanta_index_sdk::FileOwnershipMutation
+impl core::marker::Sync for quanta_index_sdk::FileOwnershipMutation
+impl core::marker::Unpin for quanta_index_sdk::FileOwnershipMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::FileOwnershipMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileOwnershipMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileOwnershipMutation
 pub struct quanta_index_sdk::GenerationNamespace<'a>
 impl<'a> quanta_index_sdk::GenerationNamespace<'a>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::activate(&self) -> quanta_index_sdk::ActivationBuilder<'a>
@@ -303,6 +392,11 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HistoryBatch
 pub struct quanta_index_sdk::HistoryNamespace<'a>
 impl<'a> quanta_index_sdk::HistoryNamespace<'a>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::publish(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_file_contributor(&self, batch: &quanta_index_sdk::FileContributorBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_file_ownership(&self, batch: &quanta_index_sdk::FileOwnershipBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_commit_recency(&self, batch: &quanta_index_sdk::RepoCommitRecencyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_meta(&self, batch: &quanta_index_sdk::RepoMetaBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HistoryNamespace<'a>::publish_repo_topic(&self, batch: &quanta_index_sdk::RepoTopicBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::query(&self) -> quanta_index_sdk::HistoryQueryBuilder<'a>
 pub fn quanta_index_sdk::HistoryNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::HistoryQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneHistoryQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::HistoryNamespace<'a>
@@ -328,23 +422,23 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HistoryQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
-pub struct quanta_index_sdk::HybridQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
-impl quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>
-pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::semantic_text(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::top_k(self, top_k: u32) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, true>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Freeze for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Send for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Sync for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Unpin for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
-impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub struct quanta_index_sdk::HybridSeedQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
+impl quanta_index_sdk::HybridSeedQueryBuilder<'_, true, true, true, true>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::semantic_text(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::top_k(self, top_k: u32) -> quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, true>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Freeze for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Send for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Sync for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Unpin for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub struct quanta_index_sdk::LexicalBatch<const SEALED: bool>
 impl quanta_index_sdk::LexicalBatch
 pub fn quanta_index_sdk::LexicalBatch::delta(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, base_generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: impl core::convert::Into<alloc::string::String>, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
@@ -455,8 +549,8 @@ impl<'a> quanta_index_sdk::ReaderClient<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::history(&self) -> quanta_index_sdk::HistoryQueryBuilder<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::history_request(&self, request: quanta_index_contract::query::requests::HistoryQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneHistoryQueryResponse, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::ReaderClient<'a>::hybrid(&self) -> quanta_index_sdk::HybridQueryBuilder<'a>
-pub fn quanta_index_sdk::ReaderClient<'a>::hybrid_request(&self, request: quanta_index_contract::query::requests::HybridQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ReaderClient<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>
+pub fn quanta_index_sdk::ReaderClient<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::lexical(&self) -> quanta_index_sdk::LexicalQueryBuilder<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::lexical_request(&self, request: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::repomap_query(&self, request: quanta_index_contract::repomap::RepoMapQueryRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapQueryResponse, quanta_index_sdk::SdkError>
@@ -478,6 +572,48 @@ impl<'a> core::marker::Unpin for quanta_index_sdk::ReaderClient<'a>
 impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::ReaderClient<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ReaderClient<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ReaderClient<'a>
+pub struct quanta_index_sdk::RepoCommitRecencyBatch
+pub quanta_index_sdk::RepoCommitRecencyBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::RepoCommitRecencyBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoCommitRecencyMutation>
+pub quanta_index_sdk::RepoCommitRecencyBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::RepoCommitRecencyBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoCommitRecencyBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::RepoCommitRecencyBatch
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, latest_committer_time_ms: u64) -> Self
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::RepoCommitRecencyBatch
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::clone(&self) -> quanta_index_sdk::RepoCommitRecencyBatch
+impl core::cmp::Eq for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::cmp::PartialEq for quanta_index_sdk::RepoCommitRecencyBatch
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::eq(&self, other: &quanta_index_sdk::RepoCommitRecencyBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoCommitRecencyBatch
+pub fn quanta_index_sdk::RepoCommitRecencyBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::marker::Freeze for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::marker::Send for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::marker::Sync for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::marker::Unpin for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoCommitRecencyBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoCommitRecencyBatch
+pub struct quanta_index_sdk::RepoCommitRecencyMutation
+pub quanta_index_sdk::RepoCommitRecencyMutation::latest_committer_time_ms: u64
+pub quanta_index_sdk::RepoCommitRecencyMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+impl core::clone::Clone for quanta_index_sdk::RepoCommitRecencyMutation
+pub fn quanta_index_sdk::RepoCommitRecencyMutation::clone(&self) -> quanta_index_sdk::RepoCommitRecencyMutation
+impl core::cmp::Eq for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::cmp::PartialEq for quanta_index_sdk::RepoCommitRecencyMutation
+pub fn quanta_index_sdk::RepoCommitRecencyMutation::eq(&self, other: &quanta_index_sdk::RepoCommitRecencyMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoCommitRecencyMutation
+pub fn quanta_index_sdk::RepoCommitRecencyMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::marker::Freeze for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::marker::Send for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::marker::Sync for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::marker::Unpin for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoCommitRecencyMutation
 pub struct quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> quanta_index_sdk::RepoMapNamespace<'a>
 pub fn quanta_index_sdk::RepoMapNamespace<'a>::activate(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
@@ -490,6 +626,91 @@ impl<'a> core::marker::Unpin for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoMapNamespace<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoMapNamespace<'a>
+pub struct quanta_index_sdk::RepoMetaBatch
+pub quanta_index_sdk::RepoMetaBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::RepoMetaBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoMetaMutation>
+pub quanta_index_sdk::RepoMetaBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::RepoMetaBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoMetaBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::RepoMetaBatch
+pub fn quanta_index_sdk::RepoMetaBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, key: impl core::convert::Into<alloc::string::String>, value: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoMetaBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::RepoMetaBatch
+pub fn quanta_index_sdk::RepoMetaBatch::clone(&self) -> quanta_index_sdk::RepoMetaBatch
+impl core::cmp::Eq for quanta_index_sdk::RepoMetaBatch
+impl core::cmp::PartialEq for quanta_index_sdk::RepoMetaBatch
+pub fn quanta_index_sdk::RepoMetaBatch::eq(&self, other: &quanta_index_sdk::RepoMetaBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoMetaBatch
+pub fn quanta_index_sdk::RepoMetaBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoMetaBatch
+impl core::marker::Freeze for quanta_index_sdk::RepoMetaBatch
+impl core::marker::Send for quanta_index_sdk::RepoMetaBatch
+impl core::marker::Sync for quanta_index_sdk::RepoMetaBatch
+impl core::marker::Unpin for quanta_index_sdk::RepoMetaBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoMetaBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoMetaBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoMetaBatch
+pub struct quanta_index_sdk::RepoMetaMutation
+pub quanta_index_sdk::RepoMetaMutation::key: alloc::string::String
+pub quanta_index_sdk::RepoMetaMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoMetaMutation::value: alloc::string::String
+impl core::clone::Clone for quanta_index_sdk::RepoMetaMutation
+pub fn quanta_index_sdk::RepoMetaMutation::clone(&self) -> quanta_index_sdk::RepoMetaMutation
+impl core::cmp::Eq for quanta_index_sdk::RepoMetaMutation
+impl core::cmp::PartialEq for quanta_index_sdk::RepoMetaMutation
+pub fn quanta_index_sdk::RepoMetaMutation::eq(&self, other: &quanta_index_sdk::RepoMetaMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoMetaMutation
+pub fn quanta_index_sdk::RepoMetaMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoMetaMutation
+impl core::marker::Freeze for quanta_index_sdk::RepoMetaMutation
+impl core::marker::Send for quanta_index_sdk::RepoMetaMutation
+impl core::marker::Sync for quanta_index_sdk::RepoMetaMutation
+impl core::marker::Unpin for quanta_index_sdk::RepoMetaMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoMetaMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoMetaMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoMetaMutation
+pub struct quanta_index_sdk::RepoTopicBatch
+pub quanta_index_sdk::RepoTopicBatch::batch_digest: alloc::string::String
+pub quanta_index_sdk::RepoTopicBatch::entries: alloc::vec::Vec<quanta_index_sdk::RepoTopicMutation>
+pub quanta_index_sdk::RepoTopicBatch::generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_sdk::RepoTopicBatch::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoTopicBatch::revision_id: quanta_index_contract_base::ids::RevisionId
+impl quanta_index_sdk::RepoTopicBatch
+pub fn quanta_index_sdk::RepoTopicBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, topic: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::RepoTopicBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for quanta_index_sdk::RepoTopicBatch
+pub fn quanta_index_sdk::RepoTopicBatch::clone(&self) -> quanta_index_sdk::RepoTopicBatch
+impl core::cmp::Eq for quanta_index_sdk::RepoTopicBatch
+impl core::cmp::PartialEq for quanta_index_sdk::RepoTopicBatch
+pub fn quanta_index_sdk::RepoTopicBatch::eq(&self, other: &quanta_index_sdk::RepoTopicBatch) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoTopicBatch
+pub fn quanta_index_sdk::RepoTopicBatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoTopicBatch
+impl core::marker::Freeze for quanta_index_sdk::RepoTopicBatch
+impl core::marker::Send for quanta_index_sdk::RepoTopicBatch
+impl core::marker::Sync for quanta_index_sdk::RepoTopicBatch
+impl core::marker::Unpin for quanta_index_sdk::RepoTopicBatch
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoTopicBatch
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoTopicBatch
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoTopicBatch
+pub struct quanta_index_sdk::RepoTopicMutation
+pub quanta_index_sdk::RepoTopicMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_sdk::RepoTopicMutation::topic: alloc::string::String
+impl core::clone::Clone for quanta_index_sdk::RepoTopicMutation
+pub fn quanta_index_sdk::RepoTopicMutation::clone(&self) -> quanta_index_sdk::RepoTopicMutation
+impl core::cmp::Eq for quanta_index_sdk::RepoTopicMutation
+impl core::cmp::PartialEq for quanta_index_sdk::RepoTopicMutation
+pub fn quanta_index_sdk::RepoTopicMutation::eq(&self, other: &quanta_index_sdk::RepoTopicMutation) -> bool
+impl core::fmt::Debug for quanta_index_sdk::RepoTopicMutation
+pub fn quanta_index_sdk::RepoTopicMutation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::RepoTopicMutation
+impl core::marker::Freeze for quanta_index_sdk::RepoTopicMutation
+impl core::marker::Send for quanta_index_sdk::RepoTopicMutation
+impl core::marker::Sync for quanta_index_sdk::RepoTopicMutation
+impl core::marker::Unpin for quanta_index_sdk::RepoTopicMutation
+impl core::marker::UnsafeUnpin for quanta_index_sdk::RepoTopicMutation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RepoTopicMutation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RepoTopicMutation
 pub struct quanta_index_sdk::RuntimeNamespace<'a>
 impl<'a> quanta_index_sdk::RuntimeNamespace<'a>
 pub fn quanta_index_sdk::RuntimeNamespace<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
@@ -521,8 +742,8 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 pub struct quanta_index_sdk::SearchNamespace<'a>
 impl<'a> quanta_index_sdk::SearchNamespace<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid(&self) -> quanta_index_sdk::HybridQueryBuilder<'a>
-pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_request(&self, request: quanta_index_contract::query::requests::HybridQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>
+pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SearchNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SearchNamespace<'a>

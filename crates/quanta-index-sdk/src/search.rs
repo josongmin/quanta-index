@@ -1,6 +1,7 @@
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, HybridQueryRequest, HybridQueryResponse, LexicalCandidate,
-    RepoId, RevisionId, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    GenerationPin, GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse,
 };
 
 use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -15,17 +16,15 @@ impl<'a> SearchNamespace<'a> {
     }
 
     #[must_use]
-    pub fn hybrid(&self) -> HybridQueryBuilder<'a> {
-        HybridQueryBuilder::new(self.client)
+    pub fn hybrid_seed(&self) -> HybridSeedQueryBuilder<'a> {
+        HybridSeedQueryBuilder::new(self.client)
     }
 
-    /// Contract-exact hybrid query replay surface. Accepts the shared wire
-    /// DTO unchanged and routes it through the query transport.
-    pub fn hybrid_request(
+    pub fn hybrid_seed_request(
         &self,
-        request: HybridQueryRequest,
-    ) -> Result<HybridQueryResponse, SdkError> {
-        dispatch_hybrid_query_request_v1(self.client, request)
+        request: HybridSeedQueryRequest,
+    ) -> Result<HybridSeedQueryResponse, SdkError> {
+        dispatch_hybrid_seed_query_request_v1(self.client, request)
     }
 
     pub fn explain(
@@ -47,6 +46,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -61,7 +61,7 @@ impl<'a> SearchNamespace<'a> {
     }
 }
 
-pub struct HybridQueryBuilder<
+pub struct HybridSeedQueryBuilder<
     'a,
     const HAS_TEXT: bool = false,
     const HAS_SEMANTIC_TEXT: bool = false,
@@ -72,7 +72,7 @@ pub struct HybridQueryBuilder<
     state: VectorQueryBuilderState,
 }
 
-impl<'a> HybridQueryBuilder<'a> {
+impl<'a> HybridSeedQueryBuilder<'a> {
     const fn new(client: &'a QuantaIndex) -> Self {
         Self {
             client,
@@ -87,7 +87,7 @@ impl<
     const HAS_SEMANTIC_TEXT: bool,
     const HAS_SELECTION: bool,
     const HAS_TOP_K: bool,
-> HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
+> HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
 {
     fn transition<
         const NEXT_TEXT: bool,
@@ -97,9 +97,9 @@ impl<
     >(
         mut self,
         update: impl FnOnce(&mut VectorQueryBuilderState),
-    ) -> HybridQueryBuilder<'a, NEXT_TEXT, NEXT_SEMANTIC_TEXT, NEXT_SELECTION, NEXT_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, NEXT_TEXT, NEXT_SEMANTIC_TEXT, NEXT_SELECTION, NEXT_TOP_K> {
         update(&mut self.state);
-        HybridQueryBuilder {
+        HybridSeedQueryBuilder {
             client: self.client,
             state: self.state,
         }
@@ -109,7 +109,7 @@ impl<
     pub fn native(
         self,
         query_text: impl Into<String>,
-    ) -> HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K> {
         self.transition(|state| {
             state.text_leg = Some((crate::TextQuerySyntax::Native, query_text.into()));
         })
@@ -119,7 +119,7 @@ impl<
     pub fn sourcegraph(
         self,
         query_text: impl Into<String>,
-    ) -> HybridQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, true, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K> {
         self.transition(|state| {
             state.text_leg = Some((crate::TextQuerySyntax::Sourcegraph, query_text.into()));
         })
@@ -129,7 +129,7 @@ impl<
     pub fn semantic_text(
         self,
         query_text: impl Into<String>,
-    ) -> HybridQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, HAS_TEXT, true, HAS_SELECTION, HAS_TOP_K> {
         self.transition(|state| {
             state.semantic_query_text = Some(query_text.into());
         })
@@ -139,7 +139,7 @@ impl<
     pub fn pinned(
         self,
         pin: GenerationPin,
-    ) -> HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K> {
         self.transition(|state| {
             state.selection = Some(GenerationSelector::Pinned(pin));
         })
@@ -150,7 +150,7 @@ impl<
         self,
         repo_id: RepoId,
         revision_id: RevisionId,
-    ) -> HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K> {
+    ) -> HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K> {
         self.transition(|state| {
             state.selection = Some(GenerationSelector::Active {
                 repo_id,
@@ -163,31 +163,31 @@ impl<
     pub fn top_k(
         self,
         top_k: u32,
-    ) -> HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, true> {
+    ) -> HybridSeedQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, true> {
         self.transition(|state| {
             state.top_k = Some(top_k);
         })
     }
 }
 
-impl HybridQueryBuilder<'_, true, true, true, true> {
-    pub fn execute(self) -> Result<HybridQueryResponse, SdkError> {
-        dispatch_hybrid_query_request_v1(self.client, self.state.build_hybrid_request()?)
+impl HybridSeedQueryBuilder<'_, true, true, true, true> {
+    pub fn execute(self) -> Result<HybridSeedQueryResponse, SdkError> {
+        dispatch_hybrid_seed_query_request_v1(self.client, self.state.build_hybrid_seed_request()?)
     }
 }
 
-fn dispatch_hybrid_query_request_v1(
+fn dispatch_hybrid_seed_query_request_v1(
     client: &QuantaIndex,
-    request: HybridQueryRequest,
-) -> Result<HybridQueryResponse, SdkError> {
-    let response = client.dispatch_query(
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Hybrid(request),
-    )?;
+    request: HybridSeedQueryRequest,
+) -> Result<HybridSeedQueryResponse, SdkError> {
+    let response = client
+        .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(request))?;
     match response {
-        quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(results) => Ok(results),
+        quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -195,7 +195,7 @@ fn dispatch_hybrid_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
             Err(SdkError::Protocol(format!(
-                "expected hybrid query response, got {}",
+                "expected hybrid seed query response, got {}",
                 QuantaIndex::query_response_kind(&other)
             )))
         }

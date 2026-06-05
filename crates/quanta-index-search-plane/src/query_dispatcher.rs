@@ -17,12 +17,13 @@ use quanta_index_contract::lex::{CommitSha, LexicalErrorCode};
 use quanta_index_contract::{
     ChunkId, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched,
     GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
-    HybridQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope, LqFilter,
-    LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock, LqStructuralConstraint,
-    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef, LqStructuralNode, LqType,
-    LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry, RepoId, RepoMapQueryRequest,
-    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
+    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope,
+    LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
+    LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
+    LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry,
+    RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest,
+    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
@@ -38,6 +39,7 @@ use quanta_index_core::{
     LexicalPolicy, LexicalQueryPort, RepoMapPolicy, RepoMapQueryPort, SemanticIndexOpenPort,
     SemanticPolicy, SemanticQueryPort, StructuralMatchBinding, StructuralMatchCandidate,
     StructuralService,
+    timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
 };
 use quanta_index_lq_obs::{
     CardinalityGuard, Dimensions, MetricKind, MetricSample, OBS_OVERFLOW_LABEL, ObsError,
@@ -250,23 +252,44 @@ impl SearchPlaneDispatcher {
     /// Lower the request and forward it to the live lexical searcher.
     fn lexical(&self, request: &TextQueryRequest) -> Result<TextQueryResponse, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
-        LexicalPolicy::validate_query(&lowered)?;
-        let pin = resolve_lexical_request_pin(
+        let base_pin = resolve_lexical_request_pin(
             self.activation_catalog.as_ref(),
             request,
             SearchPlaneTrackKind::Lexical,
             "lexical",
         )?;
+        let prepared = prepare_lexical_text_query_for_execution(
+            self.activation_catalog.as_ref(),
+            self.ledger.as_ref(),
+            &base_pin,
+            lowered,
+        )?;
+        LexicalPolicy::validate_query(&prepared.query)?;
+        let wants_file_owner_projection = query_selects_file_owner_projection(&prepared.query);
+        if prepared.force_empty {
+            return Ok(TextQueryResponse {
+                generation: prepared.pin,
+                results: Vec::new(),
+                file_owner_rows: wants_file_owner_projection.then(Vec::new),
+            });
+        }
+        let pin = prepared.pin.clone();
         let materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
         LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, materialized)?;
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let mut results = searcher.search(&lowered, request.top_k)?;
+        let mut results = searcher.search(&prepared.query, request.top_k)?;
         stabilize_ranked_candidates(&mut results);
+        let file_owner_rows = if wants_file_owner_projection {
+            Some(searcher.project_file_owners(&results)?)
+        } else {
+            None
+        };
         Ok(TextQueryResponse {
-            generation: pin,
+            generation: prepared.pin,
             results,
+            file_owner_rows,
         })
     }
 
@@ -421,6 +444,72 @@ impl SearchPlaneDispatcher {
         Ok(HybridQueryResponse {
             generation: pin,
             results: fused,
+            explanation,
+        })
+    }
+
+    fn hybrid_seed(
+        &self,
+        request: &HybridSeedQueryRequest,
+    ) -> Result<HybridSeedQueryResponse, CoreError> {
+        HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
+        let selection =
+            resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
+        let pin = selection.pin.clone();
+        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
+        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
+        self.validate_semantic_selection(&selection, "hybrid seed")?;
+
+        let lex_searcher =
+            self.lex_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let sem_searcher =
+            self.sem_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let lexical_query = lower_lexical_text_query(&request.text_query)?;
+        LexicalPolicy::validate_query(&lexical_query)?;
+        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
+        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        stabilize_ranked_candidates(&mut lex_results);
+        let lexical_ids = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<BTreeSet<_>>();
+        let query_vector = self
+            .query_embedder
+            .embed_query(request.semantic_query_text.as_str())
+            .map_err(|err| prefix_semantic_query_error("hybrid seed", err))?;
+        let mut sem_results =
+            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        stabilize_ranked_candidates(&mut sem_results);
+        let fused_universe_size = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .chain(
+                sem_results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str()),
+            )
+            .collect::<BTreeSet<_>>()
+            .len();
+        let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k);
+        let early_stop_reason = if fused_universe_size > fused.len() {
+            Some(EarlyStopReason::CountReached)
+        } else {
+            None
+        };
+        let explanation = build_hybrid_response_explanation(
+            lexical_ids.len(),
+            lex_results.len(),
+            sem_results.len(),
+            fused.len(),
+            internal_top_k,
+            early_stop_reason,
+        );
+        let seed_candidates = build_hybrid_seed_candidates_v1(&fused, &lex_results, &sem_results)?;
+        Ok(HybridSeedQueryResponse {
+            generation: pin,
+            seed_candidates,
             explanation,
         })
     }
@@ -679,6 +768,7 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
+            SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(req),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
             SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
@@ -760,6 +850,30 @@ impl SearchPlaneDispatcher {
                     response.explanation.early_stop_reason,
                 );
                 SearchPlaneQueryIpcResponse::Hybrid(response)
+            }
+            Err(err) => {
+                self.emit_error_metric(requested_pin.as_ref(), &err);
+                SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        }
+    }
+
+    fn dispatch_hybrid_seed(&self, request: HybridSeedQueryRequest) -> SearchPlaneQueryIpcResponse {
+        let requested_pin = request.text_query.generation.clone();
+        self.emit_intake_metric(requested_pin.as_ref());
+        match self.hybrid_seed(&request) {
+            Ok(response) => {
+                self.emit_planner_metric(&response.generation);
+                self.emit_engine_fanout_metric(
+                    &response.generation,
+                    response.explanation.engines_touched.len(),
+                );
+                self.emit_merge_count_metric(&response.generation, response.seed_candidates.len());
+                self.emit_early_stop_metric(
+                    &response.generation,
+                    response.explanation.early_stop_reason,
+                );
+                SearchPlaneQueryIpcResponse::HybridSeed(response)
             }
             Err(err) => {
                 self.emit_error_metric(requested_pin.as_ref(), &err);
@@ -1042,6 +1156,17 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
         CoreError::Storage(msg) => (ERR_INTERNAL.to_string(), msg),
     };
     SearchPlaneIpcError { code, message }
+}
+
+fn query_selects_file_owner_projection(query: &LqQuery) -> bool {
+    query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::Select {
+                dim: quanta_index_contract::LqSelect::FileOwners
+            }
+        )
+    })
 }
 
 const fn default_top_k() -> u32 {
@@ -3654,6 +3779,17 @@ fn selection_from_active_semantic_record(record: ActiveGenerationRecord) -> Sema
     }
 }
 
+struct PreparedLexicalTextQuery {
+    pin: GenerationPin,
+    query: LqQuery,
+    force_empty: bool,
+}
+
+struct RevAtTimeSelection<'a> {
+    timeref: &'a str,
+    explicit_anchor: Option<&'a str>,
+}
+
 fn resolve_lexical_request_pin(
     activation_catalog: &ActivationCatalog,
     request: &TextQueryRequest,
@@ -3668,6 +3804,194 @@ fn resolve_lexical_request_pin(
         plane,
     )?
     .ok_or_else(|| CoreError::InvalidContract(format!("{plane}: generation pin required")))
+}
+
+fn prepare_lexical_text_query_for_execution(
+    activation_catalog: &ActivationCatalog,
+    ledger: &RwLock<Ledger>,
+    base_pin: &GenerationPin,
+    query: LqQuery,
+) -> Result<PreparedLexicalTextQuery, CoreError> {
+    let Some(selection) = rev_at_time_selection(&query)? else {
+        return Ok(PreparedLexicalTextQuery {
+            pin: base_pin.clone(),
+            query,
+            force_empty: false,
+        });
+    };
+
+    let boundary_ms = parse_search_timeref_ms(selection.timeref).ok_or_else(|| {
+        history_invalid_timeref(format!(
+            "history: timeref `{}` is not a valid RFC3339 timestamp, named date, human phrase, or duration",
+            selection.timeref
+        ))
+    })?;
+
+    let guard = ledger
+        .read()
+        .map_err(|err| CoreError::Storage(format!("search-plane ledger poisoned: {err}")))?;
+    let Some(history_state) = guard.history_state(
+        &base_pin.repo_id,
+        &base_pin.revision_id,
+        base_pin.manifest_generation,
+    ) else {
+        let lexical_materialized = guard.track_materialized(
+            &base_pin.repo_id,
+            &base_pin.revision_id,
+            SearchPlaneTrackKind::Lexical,
+        );
+        return Err(history_absent_error(base_pin, lexical_materialized));
+    };
+    ensure_rev_at_time_history_ready(history_state, selection.explicit_anchor, base_pin)?;
+    let anchor_sha =
+        resolve_rev_at_time_anchor_sha(history_state, selection.explicit_anchor, base_pin)?;
+    let stripped_query = strip_rev_filters(query);
+    let Some(selected_commit_sha) =
+        select_reachable_commit_at_or_before(history_state, anchor_sha, boundary_ms)?
+    else {
+        return Ok(PreparedLexicalTextQuery {
+            pin: base_pin.clone(),
+            query: stripped_query,
+            force_empty: true,
+        });
+    };
+    let rebound_revision = RevisionId::new(selected_commit_sha.to_hex());
+    let rebound_pin = activation_catalog.resolve(
+        &base_pin.repo_id,
+        &rebound_revision,
+        SearchPlaneTrackKind::Lexical,
+    )?;
+    Ok(PreparedLexicalTextQuery {
+        pin: rebound_pin,
+        query: stripped_query,
+        force_empty: false,
+    })
+}
+
+fn rev_at_time_selection(query: &LqQuery) -> Result<Option<RevAtTimeSelection<'_>>, CoreError> {
+    let mut timeref: Option<&str> = None;
+    let mut explicit_anchor: Option<&str> = None;
+    for filter in &query.filters {
+        let LqFilter::Rev { spec } = filter else {
+            continue;
+        };
+        if let Some(payload) = parse_rev_at_time_spec(spec) {
+            if timeref.replace(payload).is_some() {
+                return Err(CoreError::InvalidContract(
+                    "lexical: rev:at.time(...) accepts exactly one timeref selector".to_string(),
+                ));
+            }
+            continue;
+        }
+        if explicit_anchor.replace(spec.as_str()).is_some() {
+            return Err(CoreError::InvalidContract(
+                "lexical: rev:at.time(...) accepts at most one explicit rev anchor".to_string(),
+            ));
+        }
+    }
+    Ok(timeref.map(|timeref| RevAtTimeSelection {
+        timeref,
+        explicit_anchor,
+    }))
+}
+
+fn strip_rev_filters(mut query: LqQuery) -> LqQuery {
+    query
+        .filters
+        .retain(|filter| !matches!(filter, LqFilter::Rev { .. }));
+    query
+}
+
+fn ensure_rev_at_time_history_ready(
+    state: &HistoryAuthorityState,
+    explicit_anchor: Option<&str>,
+    base_pin: &GenerationPin,
+) -> Result<(), CoreError> {
+    if !state.commits_materialized() {
+        return Err(history_shard_unavailable(
+            "history: commit shard is unavailable for rev:at.time(...) selection",
+        ));
+    }
+    let requires_lookup_shards = explicit_anchor
+        .is_some_and(|spec| CommitSha::from_hex(spec).is_err())
+        || CommitSha::from_hex(base_pin.revision_id.as_str()).is_err();
+    if requires_lookup_shards && !state.refs_materialized() {
+        return Err(history_shard_unavailable(
+            "history: ref shard is unavailable for rev:at.time(...) selection",
+        ));
+    }
+    if requires_lookup_shards && !state.tags_materialized() {
+        return Err(history_shard_unavailable(
+            "history: tag shard is unavailable for rev:at.time(...) selection",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_rev_at_time_anchor_sha(
+    state: &HistoryAuthorityState,
+    explicit_anchor: Option<&str>,
+    base_pin: &GenerationPin,
+) -> Result<CommitSha, CoreError> {
+    if let Some(spec) = explicit_anchor {
+        return resolve_history_anchor_sha(state, spec).ok_or_else(|| {
+            CoreError::InvalidContract(format!(
+                "lexical: rev:at.time(...) anchor `{spec}` does not resolve to a materialized commit"
+            ))
+        });
+    }
+    if let Some(anchor_sha) = resolve_history_anchor_sha(state, base_pin.revision_id.as_str()) {
+        return Ok(anchor_sha);
+    }
+    if let Some(anchor_sha) = state.refs().get("HEAD") {
+        return Ok(*anchor_sha);
+    }
+    Err(CoreError::InvalidContract(
+        "lexical: rev:at.time(...) requires the selected revision to be a materialized commit/ref/tag or a materialized HEAD ref".to_string(),
+    ))
+}
+
+fn resolve_history_anchor_sha(state: &HistoryAuthorityState, spec: &str) -> Option<CommitSha> {
+    if let Ok(sha) = CommitSha::from_hex(spec)
+        && state.commits().contains_key(&sha)
+    {
+        return Some(sha);
+    }
+    state
+        .refs()
+        .get(spec)
+        .copied()
+        .or_else(|| state.tags().get(spec).copied())
+}
+
+fn select_reachable_commit_at_or_before(
+    state: &HistoryAuthorityState,
+    anchor_sha: CommitSha,
+    boundary_ms: u64,
+) -> Result<Option<CommitSha>, CoreError> {
+    let mut frontier = vec![anchor_sha];
+    let mut visited = BTreeSet::new();
+    let mut best: Option<(u64, CommitSha)> = None;
+    while let Some(current_sha) = frontier.pop() {
+        if !visited.insert(current_sha) {
+            continue;
+        }
+        let Some(record) = state.commits().get(&current_sha) else {
+            return Err(history_shard_unavailable(
+                "history: rev:at.time(...) anchor traversal encountered an unmapped commit shard entry",
+            ));
+        };
+        if record.committer_time_ms <= boundary_ms {
+            match best {
+                Some((best_time, best_sha))
+                    if best_time > record.committer_time_ms
+                        || (best_time == record.committer_time_ms && best_sha >= current_sha) => {}
+                _ => best = Some((record.committer_time_ms, current_sha)),
+            }
+        }
+        frontier.extend(record.parents.iter().copied());
+    }
+    Ok(best.map(|(_, sha)| sha))
 }
 
 fn resolve_semantic_request_selection(
@@ -3772,6 +4096,89 @@ fn resolve_hybrid_request_selection(
             expected_manifest_digest: None,
         }),
     }
+}
+
+fn resolve_hybrid_seed_request_selection(
+    activation_catalog: &ActivationCatalog,
+    request: &HybridSeedQueryRequest,
+) -> Result<SemanticSelection, CoreError> {
+    let legacy_request = HybridQueryRequest {
+        text_query: request.text_query.clone(),
+        semantic_query_text: request.semantic_query_text.clone(),
+        generation: request.generation.clone(),
+        generation_selector: request.generation_selector.clone(),
+        top_k: request.top_k,
+    };
+    resolve_hybrid_request_selection(activation_catalog, &legacy_request)
+}
+
+fn checked_rank_u32_v1(index: usize, label: &'static str) -> Result<u32, CoreError> {
+    let ordinal = index
+        .checked_add(1)
+        .ok_or_else(|| CoreError::Storage(format!("{label}: rank index overflow")))?;
+    u32::try_from(ordinal).map_err(|_| CoreError::Storage(format!("{label}: rank exceeds u32")))
+}
+
+fn build_hybrid_seed_candidates_v1(
+    fused: &[LexicalCandidate],
+    lex_results: &[LexicalCandidate],
+    sem_results: &[LexicalCandidate],
+) -> Result<Vec<HybridSeedCandidate>, CoreError> {
+    let lexical_positions = lex_results
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            Ok((
+                candidate.candidate_id.clone(),
+                (
+                    checked_rank_u32_v1(index, "hybrid seed lexical")?,
+                    candidate.score,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CoreError>>()?;
+    let semantic_positions = sem_results
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            Ok((
+                candidate.candidate_id.clone(),
+                (
+                    checked_rank_u32_v1(index, "hybrid seed semantic")?,
+                    candidate.score,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CoreError>>()?;
+
+    fused
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let lexical = lexical_positions
+                .get(candidate.candidate_id.as_str())
+                .copied();
+            let semantic = semantic_positions
+                .get(candidate.candidate_id.as_str())
+                .copied();
+            let mut source_lanes = Vec::new();
+            if lexical.is_some() {
+                source_lanes.push(HybridSeedLane::Lexical);
+            }
+            if semantic.is_some() {
+                source_lanes.push(HybridSeedLane::Semantic);
+            }
+            Ok(HybridSeedCandidate {
+                candidate: candidate.clone(),
+                seed_rank: checked_rank_u32_v1(index, "hybrid seed fused")?,
+                lexical_rank: lexical.map(|(rank, _score)| rank),
+                lexical_score_raw: lexical.map(|(_rank, score)| score),
+                semantic_rank: semantic.map(|(rank, _score)| rank),
+                semantic_score_raw: semantic.map(|(_rank, score)| score),
+                source_lanes,
+            })
+        })
+        .collect()
 }
 
 fn build_probe_query(probe_text: &str) -> LqQuery {
@@ -3902,11 +4309,12 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
-        BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
-        ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID, ERR_NOT_IMPLEMENTED,
-        ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED, FailClosedStructuralProducer, QueryObsSink,
-        SearchPlaneDispatcher, classify_error_metric_name, make_pin, runtime_generation_is_stale,
-        runtime_seed_ids, validate_history_query, validate_runtime_metadata_query,
+        BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_INVALID_TIMEREF,
+        ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
+        ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
+        FailClosedStructuralProducer, QueryObsSink, SearchPlaneDispatcher,
+        classify_error_metric_name, make_pin, runtime_generation_is_stale, runtime_seed_ids,
+        validate_history_query, validate_runtime_metadata_query,
     };
     use crate::{
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
@@ -4046,6 +4454,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::Explain(_)
@@ -4059,6 +4468,16 @@ mod tests {
     fn test_activation_catalog() -> Result<Arc<ActivationCatalog>, Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         Ok(Arc::new(ActivationCatalog::open(dir.keep())?))
+    }
+
+    fn activation_catalog_with_requests(
+        requests: &[quanta_index_contract::SearchPlaneActivateGenerationRequest],
+    ) -> Result<Arc<ActivationCatalog>, Box<dyn std::error::Error>> {
+        let catalog = test_activation_catalog()?;
+        for request in requests {
+            catalog.activate(request)?;
+        }
+        Ok(catalog)
     }
 
     fn ready_ledger() -> Arc<RwLock<Ledger>> {
@@ -4102,6 +4521,16 @@ mod tests {
             0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba,
             0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76,
         ])
+    }
+
+    fn rev_at_time_ancestor_sha() -> CommitSha {
+        CommitSha::from_hex("1111111111111111111111111111111111111111")
+            .unwrap_or_else(|_| std::process::abort())
+    }
+
+    fn rev_at_time_head_sha() -> CommitSha {
+        CommitSha::from_hex("2222222222222222222222222222222222222222")
+            .unwrap_or_else(|_| std::process::abort())
     }
 
     fn history_commit_record() -> CommitRecord {
@@ -4195,6 +4624,89 @@ mod tests {
             for op in ops {
                 guard.apply_lexical_authority_op(&op)?;
             }
+        }
+        Ok(ledger)
+    }
+
+    fn ledger_with_rev_at_time_history() -> Result<Arc<RwLock<Ledger>>, Box<dyn std::error::Error>>
+    {
+        let ledger = Arc::new(RwLock::new(Ledger::default()));
+        let repo_id = RepoId::new("repo-map-ipc");
+        let base_revision_id = RevisionId::new("2222222222222222222222222222222222222222");
+        let ancestor_revision_id = RevisionId::new("1111111111111111111111111111111111111111");
+        {
+            let mut guard = ledger
+                .write()
+                .map_err(|err| format!("rev_at_time ledger poisoned: {err}"))?;
+            guard.record_track_materialized(
+                &repo_id,
+                &base_revision_id,
+                SearchPlaneTrackKind::Lexical,
+                ManifestGeneration::new(9),
+                None,
+            );
+            guard.record_track_seal(
+                &repo_id,
+                &base_revision_id,
+                SearchPlaneTrackKind::Lexical,
+                ManifestGeneration::new(9),
+            );
+            guard.record_track_materialized(
+                &repo_id,
+                &ancestor_revision_id,
+                SearchPlaneTrackKind::Lexical,
+                ManifestGeneration::new(7),
+                None,
+            );
+            guard.record_track_seal(
+                &repo_id,
+                &ancestor_revision_id,
+                SearchPlaneTrackKind::Lexical,
+                ManifestGeneration::new(7),
+            );
+            guard.apply_history_batch(&quanta_index_contract::HistoryIngestBatch {
+                repo_id: repo_id.clone(),
+                revision_id: base_revision_id.clone(),
+                generation: ManifestGeneration::new(9),
+                manifest_digest: Some("history-rev-at-time".to_string()),
+                batch_digest: "history-rev-at-time-batch".to_string(),
+                commits: vec![
+                    CommitRecord {
+                        wire_version: 1,
+                        sha: rev_at_time_ancestor_sha(),
+                        parents: Vec::new(),
+                        author_time_ms: 100,
+                        committer_time_ms: 100,
+                        applied_at_ms: 100,
+                        author: "alice".to_string().into_boxed_str(),
+                        committer: "alice".to_string().into_boxed_str(),
+                        message: "old commit".to_string().into_boxed_str(),
+                        is_merge: false,
+                        tags: Vec::new(),
+                    },
+                    CommitRecord {
+                        wire_version: 1,
+                        sha: rev_at_time_head_sha(),
+                        parents: vec![rev_at_time_ancestor_sha()],
+                        author_time_ms: 200,
+                        committer_time_ms: 200,
+                        applied_at_ms: 200,
+                        author: "alice".to_string().into_boxed_str(),
+                        committer: "alice".to_string().into_boxed_str(),
+                        message: "head commit".to_string().into_boxed_str(),
+                        is_merge: false,
+                        tags: Vec::new(),
+                    },
+                ],
+                refs: vec![quanta_index_contract::HistoryRefMutation::Upsert(
+                    quanta_index_contract::HistoryRefUpsert {
+                        name: "HEAD".to_string().into_boxed_str(),
+                        sha: rev_at_time_head_sha(),
+                    },
+                )],
+                tags: Vec::new(),
+                diff_hunks: Vec::new(),
+            })?;
         }
         Ok(ledger)
     }
@@ -4299,6 +4811,23 @@ mod tests {
             Ok(self.results.clone())
         }
 
+        fn project_file_owners(
+            &self,
+            candidates: &[LexicalCandidate],
+        ) -> Result<Vec<quanta_index_contract::FileOwnerProjectionRow>, CoreError> {
+            Ok(candidates
+                .iter()
+                .map(|candidate| quanta_index_contract::FileOwnerProjectionRow {
+                    candidate_id: candidate.candidate_id.clone(),
+                    repo_id: candidate.repo_id.clone(),
+                    revision_id: candidate.revision_id.clone(),
+                    manifest_generation: candidate.manifest_generation,
+                    repo_relative_path: candidate.repo_relative_path.clone(),
+                    owners: Vec::new(),
+                })
+                .collect())
+        }
+
         fn search_symbols(
             &self,
             _query: &quanta_index_contract::LqQuery,
@@ -4341,6 +4870,8 @@ mod tests {
         search_top_ks: Vec<u32>,
         symbol_top_ks: Vec<u32>,
         search_all_calls: u32,
+        opened_pins: Vec<(RepoId, RevisionId, ManifestGeneration)>,
+        searched_queries: Vec<LqQuery>,
     }
 
     struct RecordingLexicalSearcher {
@@ -4351,15 +4882,33 @@ mod tests {
     impl LexicalSearcher for RecordingLexicalSearcher {
         fn search(
             &self,
-            _query: &quanta_index_contract::LqQuery,
+            query: &quanta_index_contract::LqQuery,
             top_k: u32,
         ) -> Result<Vec<LexicalCandidate>, CoreError> {
-            self.state
+            let mut guard = self
+                .state
                 .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
-                .search_top_ks
-                .push(top_k);
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
+            guard.search_top_ks.push(top_k);
+            guard.searched_queries.push(query.clone());
             Ok(self.results.clone())
+        }
+
+        fn project_file_owners(
+            &self,
+            candidates: &[LexicalCandidate],
+        ) -> Result<Vec<quanta_index_contract::FileOwnerProjectionRow>, CoreError> {
+            Ok(candidates
+                .iter()
+                .map(|candidate| quanta_index_contract::FileOwnerProjectionRow {
+                    candidate_id: candidate.candidate_id.clone(),
+                    repo_id: candidate.repo_id.clone(),
+                    revision_id: candidate.revision_id.clone(),
+                    manifest_generation: candidate.manifest_generation,
+                    repo_relative_path: candidate.repo_relative_path.clone(),
+                    owners: Vec::new(),
+                })
+                .collect())
         }
 
         fn search_symbols(
@@ -4401,10 +4950,15 @@ mod tests {
     impl LexicalIndexOpenPort for RecordingLexicalOpener {
         fn open(
             &self,
-            _repo: &RepoId,
-            _revision: &RevisionId,
-            _generation: ManifestGeneration,
+            repo: &RepoId,
+            revision: &RevisionId,
+            generation: ManifestGeneration,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+                .opened_pins
+                .push((repo.clone(), revision.clone(), generation));
             Ok(Box::new(RecordingLexicalSearcher {
                 state: Arc::clone(&self.state),
                 results: self.results.clone(),
@@ -4493,6 +5047,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -4546,6 +5101,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -4624,6 +5180,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -4723,6 +5280,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -4791,7 +5349,8 @@ mod tests {
                     return Err("expected non-empty hybrid results".into());
                 }
             }
-            other @ (SearchPlaneQueryIpcResponse::Text(_)
+            other @ (SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::History(_)
@@ -5394,6 +5953,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -5474,7 +6034,8 @@ mod tests {
                 top_k: 1,
             }));
         match response {
-            SearchPlaneQueryIpcResponse::Hybrid(_) => {}
+            SearchPlaneQueryIpcResponse::Hybrid(_) | SearchPlaneQueryIpcResponse::HybridSeed(_) => {
+            }
             other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
@@ -5586,6 +6147,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
@@ -5862,6 +6424,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -5946,6 +6509,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6111,6 +6675,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
@@ -6256,6 +6821,171 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+        let activation_catalog = activation_catalog_with_requests(&[
+            quanta_index_contract::SearchPlaneActivateGenerationRequest {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("1111111111111111111111111111111111111111"),
+                manifest_generation: ManifestGeneration::new(7),
+                manifest_digest: "ancestor-lex".to_string(),
+                tracks: vec![SearchPlaneTrackKind::Lexical],
+            },
+            quanta_index_contract::SearchPlaneActivateGenerationRequest {
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("2222222222222222222222222222222222222222"),
+                manifest_generation: ManifestGeneration::new(9),
+                manifest_digest: "head-lex".to_string(),
+                tracks: vec![SearchPlaneTrackKind::Lexical],
+            },
+        ])?;
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::clone(&state),
+                results: vec![candidate("ancestor-hit", 1.0)],
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger_with_rev_at_time_history()?,
+            activation_catalog,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+            generation: Some(GenerationPin::new(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("2222222222222222222222222222222222222222"),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        match response {
+            SearchPlaneQueryIpcResponse::Text(text) => {
+                if text.generation
+                    != GenerationPin::new(
+                        RepoId::new("repo-map-ipc"),
+                        RevisionId::new("1111111111111111111111111111111111111111"),
+                        ManifestGeneration::new(7),
+                    )
+                {
+                    return Err(
+                        format!("unexpected rebound generation: {:?}", text.generation).into(),
+                    );
+                }
+            }
+            other => return Err(format!("expected Text response, got {other:?}").into()),
+        }
+
+        let guard = state
+            .lock()
+            .map_err(|err| format!("lexical state poisoned: {err}"))?;
+        if guard.opened_pins.as_slice()
+            != [(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("1111111111111111111111111111111111111111"),
+                ManifestGeneration::new(7),
+            )]
+        {
+            return Err(format!("unexpected opened pins: {:?}", guard.opened_pins).into());
+        }
+        let Some(last_query) = guard.searched_queries.last() else {
+            return Err("expected search query after rev:at.time rebind".into());
+        };
+        if last_query
+            .filters
+            .iter()
+            .any(|filter| matches!(filter, LqFilter::Rev { .. }))
+        {
+            return Err(format!(
+                "rev filters must be consumed before lexical execution: {last_query:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_dispatch_rejects_rev_at_time_invalid_timeref() -> TestResult {
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(StubLexicalOpener {
+                results: Vec::new(),
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger_with_rev_at_time_history()?,
+            test_activation_catalog()?,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "rev:at.time(definitely-not-a-timeref) foo".to_string(),
+            generation: Some(GenerationPin::new(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("2222222222222222222222222222222222222222"),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        let (code, _message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_HISTORY_INVALID_TIMEREF {
+            return Err(format!("expected {ERR_HISTORY_INVALID_TIMEREF}, got {code}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_dispatch_rejects_rev_at_time_when_rebound_generation_is_unactivated() -> TestResult {
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(StubLexicalOpener {
+                results: Vec::new(),
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ledger_with_rev_at_time_history()?,
+            activation_catalog_with_requests(&[
+                quanta_index_contract::SearchPlaneActivateGenerationRequest {
+                    repo_id: RepoId::new("repo-map-ipc"),
+                    revision_id: RevisionId::new("2222222222222222222222222222222222222222"),
+                    manifest_generation: ManifestGeneration::new(9),
+                    manifest_digest: "head-lex".to_string(),
+                    tracks: vec![SearchPlaneTrackKind::Lexical],
+                },
+            ])?,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Sourcegraph,
+            query_text: "rev:at.time(1970-01-01T00:00:00.150Z) foo".to_string(),
+            generation: Some(GenerationPin::new(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("2222222222222222222222222222222222222222"),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: None,
+            top_k: 5,
+        }));
+
+        let (code, message) =
+            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+        if code != ERR_NOT_READY {
+            return Err(format!("expected {ERR_NOT_READY}, got {code}").into());
+        }
+        if !message.contains("no active Lexical generation") {
+            return Err(format!("unexpected rev:at.time not-ready message: {message}").into());
+        }
+        Ok(())
+    }
+
     /// LXE-02: a query without unavailable filters reaches the searcher.
     /// The full hit shape is D1's territory; this test only proves no
     /// typed-unavailable error fires on the happy path.
@@ -6303,6 +7033,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6372,6 +7103,7 @@ mod tests {
             other @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
@@ -6493,6 +7225,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6646,6 +7379,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6743,6 +7477,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6849,6 +7584,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6910,6 +7646,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -6960,6 +7697,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -7019,6 +7757,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -7104,6 +7843,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -7168,6 +7908,7 @@ mod tests {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)

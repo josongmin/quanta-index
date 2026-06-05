@@ -797,6 +797,7 @@ fn parse_select_value(v: &str) -> Option<LqSelect> {
     let s = match v {
         "repo" => LqSelect::Repo,
         "file" => LqSelect::File,
+        "file.owners" => LqSelect::FileOwners,
         "path" => LqSelect::Path,
         "symbol" => LqSelect::Symbol,
         "content" => LqSelect::Content,

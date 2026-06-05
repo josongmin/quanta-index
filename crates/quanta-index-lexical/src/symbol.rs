@@ -315,7 +315,9 @@ const fn surface_for_select(dim: LqSelect) -> ResultSurface {
         // - `File` selects the file row, content-shaped per the
         //   existing `LqSelect::File => QueryDocKind::Text` mapping
         //   at [lib.rs:1132].
-        LqSelect::Content | LqSelect::ContentMatch | LqSelect::File => ResultSurface::Content,
+        LqSelect::Content | LqSelect::ContentMatch | LqSelect::File | LqSelect::FileOwners => {
+            ResultSurface::Content
+        }
         LqSelect::Path => ResultSurface::Path,
         LqSelect::Symbol => ResultSurface::Symbol,
         LqSelect::Repo => ResultSurface::Repo,

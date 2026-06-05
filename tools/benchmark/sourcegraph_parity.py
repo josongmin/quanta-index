@@ -44,6 +44,7 @@ FILTER_EXEC_RS = REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/e2e_filt
 FRONTDOOR_SCENARIOS_RS = (
     REPO_ROOT / "crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs"
 )
+LOWERING_RS = REPO_ROOT / "crates/quanta-index-search-plane/src/lowering.rs"
 RUNTIME_ROWS_TOML = (
     REPO_ROOT
     / "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml"
@@ -109,6 +110,12 @@ SG_PREDICATES = [
     "file:contains.content(...)",
 ]
 
+SG_SELECT_SURFACES = [
+    "select:file.owners",
+]
+
+EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = ()
+
 OUTCOME_LABEL = {
     "Candidates": "candidates",
     "HistoryCommits": "commits",
@@ -141,6 +148,14 @@ EXECUTION_UNVERIFIED_WAIVER: set[str] = set()
 TOKEN_RE = re.compile(r"([a-z][a-z._]*[a-z])\s*[:(]")
 
 SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = [
+    ("rev.at.time", ("rev:at.time(",)),
+    (
+        "repo.contains.commit.after",
+        ("repo:contains.commit.after(", "repo.contains.commit.after("),
+    ),
+    ("repo.has.commit.after", ("repo:has.commit.after(", "repo.has.commit.after(")),
+    ("repo.has.meta", ("repo:has.meta(", "repo.has.meta(")),
+    ("repo.has.topic", ("repo:has.topic(", "repo.has.topic(")),
     ("repo.contains.content", ("repo:contains.content(", "repo.contains.content(")),
     ("repo.has.content", ("repo:has.content(", "repo.has.content(")),
     ("repo.has.path", ("repo:has.path(", "repo.has.path(")),
@@ -148,10 +163,18 @@ SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = [
     ("file.contains.content", ("file:contains.content(", "file.contains.content(")),
     ("file.has.content", ("file:has.content(", "file.has.content(")),
     ("file.contains", ("file:contains(", "file.contains(")),
+    ("file.has.owner", ("file:has.owner(", "file.has.owner(")),
+    ("file.has.contributor", ("file:has.contributor(", "file.has.contributor(")),
+    ("select.file.owners", ("select:file.owners",)),
     ("symbol.has.name", ("symbol:has.name(", "symbol.has.name(")),
 ]
 
 REQUIRED_SURFACES: tuple[str, ...] = (
+    "rev.at.time",
+    "repo.has.commit.after",
+    "repo.contains.commit.after",
+    "repo.has.meta",
+    "repo.has.topic",
     "repo.has.file",
     "repo.has.path",
     "repo.has.content",
@@ -159,8 +182,45 @@ REQUIRED_SURFACES: tuple[str, ...] = (
     "file.contains",
     "file.contains.content",
     "file.has.content",
+    "file.has.owner",
+    "file.has.contributor",
+    "select.file.owners",
     "symbol.has.name",
 )
+
+UNSUPPORTED_SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = []
+
+DEMOTED_STRUCTURAL_OWNER_TESTS: dict[str, tuple[str, ...]] = {
+    "sg_structural.direct_phrase_lexical_sibling": (
+        "sourcegraph_structural_route_rewrites_single_pattern_body_into_structural_leaf",
+    ),
+    "sg_structural.direct_regex_lexical_sibling": (
+        "sourcegraph_structural_route_rewrites_regex_body_into_structural_leaf",
+    ),
+    "sg_structural.file_contains_predicate_sibling": (
+        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling",
+        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_or",
+        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_and_not",
+    ),
+    "sg_structural.file_has_content_predicate_sibling": (
+        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling",
+        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_or",
+        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_and_not",
+    ),
+    "sg_structural.symbol_has_name_predicate_sibling": (
+        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling",
+        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_or",
+        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_and_not",
+    ),
+}
+
+DEMOTED_STRUCTURAL_NOTES: dict[str, str] = {
+    "sg_structural.direct_phrase_lexical_sibling": "quoted SG token is structural body syntax, not a distinct lexical sibling surface",
+    "sg_structural.direct_regex_lexical_sibling": "/.../ SG token is structural regex body syntax, not a distinct lexical sibling surface",
+    "sg_structural.file_contains_predicate_sibling": "mixed SG structural boolean cells reject non-repo `file.contains(...)` predicate siblings",
+    "sg_structural.file_has_content_predicate_sibling": "mixed SG structural boolean cells reject non-repo `file.has.content(...)` predicate siblings",
+    "sg_structural.symbol_has_name_predicate_sibling": "mixed SG structural boolean cells reject non-repo `symbol.has.name(...)` predicate siblings",
+}
 
 
 @dataclass
@@ -213,12 +273,35 @@ def surface_ids_in(query: str) -> set[str]:
     return found
 
 
+def demoted_structural_surface_ids_in(query: str) -> set[str]:
+    found: set[str] = set()
+    if "patterntype:structural" not in query:
+        return found
+    if "file:contains(path:" in query or "file:contains(file:" in query:
+        found.add("sg_structural.file_contains_predicate_sibling")
+    if "file:has.content(path:" in query or "file:has.content(file:" in query:
+        found.add("sg_structural.file_has_content_predicate_sibling")
+    if "symbol:has.name(" in query:
+        found.add("sg_structural.symbol_has_name_predicate_sibling")
+    return found
+
+
+def unsupported_surface_ids_in(query: str) -> set[str]:
+    found: set[str] = set()
+    for surface, tokens in UNSUPPORTED_SURFACE_TOKENS:
+        if any(token in query for token in tokens):
+            found.add(surface)
+    return found
+
+
 def record_query(
     query: str,
     outcome: str,
     test_name: str,
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> None:
     for kw in keywords_in(query):
         ev = keyword_evidence.setdefault(kw, Evidence())
@@ -230,11 +313,23 @@ def record_query(
         ev.outcomes.add(outcome)
         ev.tests.add(test_name)
         ev.samples += 1
+    for surface in demoted_structural_surface_ids_in(query):
+        ev = demoted_evidence.setdefault(surface, Evidence())
+        ev.outcomes.add(outcome)
+        ev.tests.add(test_name)
+        ev.samples += 1
+    for surface in unsupported_surface_ids_in(query):
+        ev = unsupported_evidence.setdefault(surface, Evidence())
+        ev.outcomes.add(outcome)
+        ev.tests.add(test_name)
+        ev.samples += 1
 
 
 def scan_parity(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> int:
     body = read(PARITY_RS)
     rows = 0
@@ -247,7 +342,13 @@ def scan_parity(
         label = OUTCOME_LABEL.get(outcome.group(1), outcome.group(1))
         for query in ids:
             record_query(
-                query, label, "e2e_dual_parity", keyword_evidence, surface_evidence
+                query,
+                label,
+                "e2e_dual_parity",
+                keyword_evidence,
+                surface_evidence,
+                demoted_evidence,
+                unsupported_evidence,
             )
     return rows
 
@@ -255,6 +356,8 @@ def scan_parity(
 def scan_bench(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> int:
     body = read(SCENARIOS_RS)
     rows = 0
@@ -269,13 +372,23 @@ def scan_bench(
         rows += 1
         label = SHAPE_LABEL.get(shape.group(1), shape.group(1).lower()) if shape else "candidates"
         decoded = decode_literal_query(query.group(1))
-        record_query(decoded, label, "dsl_bench", keyword_evidence, surface_evidence)
+        record_query(
+            decoded,
+            label,
+            "dsl_bench",
+            keyword_evidence,
+            surface_evidence,
+            demoted_evidence,
+            unsupported_evidence,
+        )
     return rows
 
 
 def scan_filter_exec(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> int:
     if not FILTER_EXEC_RS.exists():
         return 0
@@ -284,11 +397,20 @@ def scan_filter_exec(
     # queries route through a helper but always carry the `type:commit` /
     # `type:diff` discriminator, so match those literals wherever they appear.
     queries = re.findall(r'query_text\(\s*TextQuerySyntax::\w+,\s*"(.*?)"', body)
+    queries += re.findall(
+        r'query_text_with_pin\(\s*TextQuerySyntax::\w+,\s*"(.*?)"', body
+    )
     queries += re.findall(r'"(type:(?:commit|diff)[^"]*)"', body)
     for query in queries:
         decoded = decode_literal_query(query)
         record_query(
-            decoded, "executed", "e2e_filter_exec", keyword_evidence, surface_evidence
+            decoded,
+            "executed",
+            "e2e_filter_exec",
+            keyword_evidence,
+            surface_evidence,
+            demoted_evidence,
+            unsupported_evidence,
         )
     return len(queries)
 
@@ -296,6 +418,8 @@ def scan_filter_exec(
 def scan_frontdoor_scenarios(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> int:
     if not FRONTDOOR_SCENARIOS_RS.exists():
         return 0
@@ -304,7 +428,13 @@ def scan_frontdoor_scenarios(
     for query in queries:
         decoded = decode_literal_query(query)
         record_query(
-            decoded, "frontdoor", "frontdoor_scenarios", keyword_evidence, surface_evidence
+            decoded,
+            "frontdoor",
+            "frontdoor_scenarios",
+            keyword_evidence,
+            surface_evidence,
+            demoted_evidence,
+            unsupported_evidence,
         )
     return len(queries)
 
@@ -312,6 +442,8 @@ def scan_frontdoor_scenarios(
 def scan_runtime_rows(
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
 ) -> int:
     if not RUNTIME_ROWS_TOML.exists():
         return 0
@@ -320,9 +452,31 @@ def scan_runtime_rows(
     for query in queries:
         decoded = decode_literal_query(query)
         record_query(
-            decoded, "runtime_row", "runtime_rows", keyword_evidence, surface_evidence
+            decoded,
+            "runtime_row",
+            "runtime_rows",
+            keyword_evidence,
+            surface_evidence,
+            demoted_evidence,
+            unsupported_evidence,
         )
     return len(queries)
+
+
+def scan_lowering_owner_local_demotions(
+    demoted_evidence: dict[str, Evidence],
+) -> int:
+    body = read(LOWERING_RS)
+    hits = 0
+    for surface, test_names in DEMOTED_STRUCTURAL_OWNER_TESTS.items():
+        for test_name in test_names:
+            if test_name in body:
+                ev = demoted_evidence.setdefault(surface, Evidence())
+                ev.outcomes.add("owner_local")
+                ev.tests.add(test_name)
+                ev.samples += 1
+                hits += 1
+    return hits
 
 
 def ours_predicates() -> tuple[list[str], list[str], list[str]]:
@@ -331,7 +485,8 @@ def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     canonical = set(
         re.findall(r'PredicateSpec\s*\{\s*name:\s*"([^"]+)"', registry_body)
     )
-    aliases = set(
+    aliases = set(re.findall(r'alias:\s*"([^"]+)"', registry_body))
+    aliases.update(
         re.findall(
             r'"(repo\.has\.path|file\.contains\.content|repo\.contains\.content)"',
             translator_body,
@@ -341,16 +496,24 @@ def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     return sorted(canonical), sorted(aliases), route_owned
 
 
+def supported_select_surfaces() -> set[str]:
+    translator_body = read(TRANSLATOR_RS)
+    return set(re.findall(r'"([^"]+)"\s*=>\s*LqSelect::', translator_body))
+
+
 def build_report(
     variants: list[str],
     refused: set[str],
     keyword_evidence: dict[str, Evidence],
     surface_evidence: dict[str, Evidence],
+    demoted_evidence: dict[str, Evidence],
+    unsupported_evidence: dict[str, Evidence],
     parity_rows: int,
     bench_rows: int,
     exec_rows: int,
     frontdoor_rows: int,
     runtime_rows: int,
+    owner_local_demotion_hits: int,
 ) -> tuple[str, list[str], list[str]]:
     lines: list[str] = []
     untested: list[str] = []
@@ -364,7 +527,8 @@ def build_report(
         "the filter keywords exercised by asserting tests "
         f"({parity_rows} `e2e_dual` parity rows + {bench_rows} DSL bench rows + "
         f"{exec_rows} `e2e_filter_execution` queries + {frontdoor_rows} shared "
-        f"front-door queries + {runtime_rows} runtime rows). "
+        f"front-door queries + {runtime_rows} runtime rows + "
+        f"{owner_local_demotion_hits} owner-local structural demotion witnesses). "
         "Do not hand-edit; run `--write` to regenerate."
     )
     lines.append("")
@@ -418,6 +582,22 @@ def build_report(
         lines.append("(none detected)")
     lines.append("")
 
+    lines.append("## Explicit unsupported structural surfaces")
+    lines.append("")
+    lines.append("| surface id | evidence | note |")
+    lines.append("| --- | --- | --- |")
+    for surface, note in DEMOTED_STRUCTURAL_NOTES.items():
+        ev = demoted_evidence.get(surface)
+        if ev and ev.outcomes:
+            tests = ",".join(sorted(ev.tests))
+            outs = ",".join(sorted(ev.outcomes))
+            evid = f"✅ {tests} → {outs} ({ev.samples})"
+        else:
+            evid = "❌ DEMOTION SURFACE LACKS OWNER/RUNTIME EVIDENCE"
+            unverified_surfaces.append(surface)
+        lines.append(f"| `{surface}` | {evid} | {note} |")
+    lines.append("")
+
     lines.append("## Predicate coverage vs Sourcegraph")
     lines.append("")
     canonical, aliases, route_owned = ours_predicates()
@@ -451,6 +631,40 @@ def build_report(
     )
     lines.append("")
 
+    lines.append("## Sourcegraph select surface")
+    lines.append("")
+    for select_surface in SG_SELECT_SURFACES:
+        surface_id = select_surface.replace(":", ".", 1)
+        translator_surface = select_surface.split(":", 1)[1]
+        implemented = translator_surface in supported_select_surfaces()
+        ev = surface_evidence.get(surface_id)
+        if implemented and ev and ev.outcomes:
+            lines.append(f"- `{select_surface}` — ✅ have")
+            continue
+        if implemented:
+            lines.append(f"- `{select_surface}` — ⚠ unverified")
+            unverified_surfaces.append(surface_id)
+            continue
+        lines.append(f"- `{select_surface}` — ❌ lack")
+    lines.append("")
+
+    if EXPLICIT_UNSUPPORTED_COMPARISON_GAPS:
+        lines.append("## Explicit unsupported authority-backed comparison gaps")
+        lines.append("")
+        lines.append("| surface id | Sourcegraph surface | evidence | reason |")
+        lines.append("| --- | --- | --- | --- |")
+        for surface_id, display, reason in EXPLICIT_UNSUPPORTED_COMPARISON_GAPS:
+            ev = unsupported_evidence.get(surface_id)
+            if ev and ev.outcomes:
+                tests = ",".join(sorted(ev.tests))
+                outs = ",".join(sorted(ev.outcomes))
+                evid = f"✅ {tests} → {outs} ({ev.samples})"
+            else:
+                evid = "❌ EXPLICIT UNSUPPORTED GAP LACKS TYPED-FAIL EVIDENCE"
+                unverified_surfaces.append(surface_id)
+            lines.append(f"| `{surface_id}` | `{display}` | {evid} | {reason} |")
+        lines.append("")
+
     return "\n".join(lines) + "\n", untested, unverified_surfaces
 
 
@@ -471,11 +685,24 @@ def main() -> int:
     refused = refused_keywords()
     keyword_evidence: dict[str, Evidence] = {}
     surface_evidence: dict[str, Evidence] = {}
-    parity_rows = scan_parity(keyword_evidence, surface_evidence)
-    bench_rows = scan_bench(keyword_evidence, surface_evidence)
-    exec_rows = scan_filter_exec(keyword_evidence, surface_evidence)
-    frontdoor_rows = scan_frontdoor_scenarios(keyword_evidence, surface_evidence)
-    runtime_rows = scan_runtime_rows(keyword_evidence, surface_evidence)
+    demoted_evidence: dict[str, Evidence] = {}
+    unsupported_evidence: dict[str, Evidence] = {}
+    parity_rows = scan_parity(
+        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
+    )
+    bench_rows = scan_bench(
+        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
+    )
+    exec_rows = scan_filter_exec(
+        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
+    )
+    frontdoor_rows = scan_frontdoor_scenarios(
+        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
+    )
+    runtime_rows = scan_runtime_rows(
+        keyword_evidence, surface_evidence, demoted_evidence, unsupported_evidence
+    )
+    owner_local_demotion_hits = scan_lowering_owner_local_demotions(demoted_evidence)
 
     missing_map = [v for v in variants if v not in VARIANT_KEYWORD]
     report, untested_filters, unverified_surfaces = build_report(
@@ -483,11 +710,14 @@ def main() -> int:
         refused,
         keyword_evidence,
         surface_evidence,
+        demoted_evidence,
+        unsupported_evidence,
         parity_rows,
         bench_rows,
         exec_rows,
         frontdoor_rows,
         runtime_rows,
+        owner_local_demotion_hits,
     )
 
     if args.write:
@@ -518,12 +748,28 @@ def main() -> int:
             problems += len(unwaived)
         if unverified_surfaces:
             print(
-                "FAIL: accepted/shipped predicate surface(s) lack canonical execution evidence:",
+                "FAIL: accepted/shipped or explicit-unsupported surface(s) lack canonical evidence:",
                 file=sys.stderr,
             )
             for surface in unverified_surfaces:
                 print(f"  - {surface}", file=sys.stderr)
             problems += len(unverified_surfaces)
+        canonical, aliases, route_owned = ours_predicates()
+        supported_surface = set(canonical) | set(aliases) | set(route_owned)
+        implemented_unsupported = sorted(
+            surface_id
+            for surface_id, _display, _reason in EXPLICIT_UNSUPPORTED_COMPARISON_GAPS
+            if surface_id in supported_surface
+        )
+        if implemented_unsupported:
+            print(
+                "FAIL: explicit unsupported comparison gap now appears implemented; "
+                "promote the verdict and add canonical execution proof:",
+                file=sys.stderr,
+            )
+            for surface in implemented_unsupported:
+                print(f"  - {surface}", file=sys.stderr)
+            problems += len(implemented_unsupported)
         waived = [
             item
             for item in untested_filters

@@ -8,8 +8,9 @@ use serde::{
 
 use crate::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, RepoMapActivateGenerationRequest,
-    RepoMapMutationAck, RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
+    HistoryQueryRequest, HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest,
+    HybridSeedQueryResponse, RepoMapActivateGenerationRequest, RepoMapMutationAck,
+    RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
@@ -24,6 +25,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Symbol",
     "Semantic",
     "Hybrid",
+    "HybridSeed",
     "History",
     "RuntimeMetadata",
     "Structural",
@@ -35,6 +37,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Symbol",
     "Semantic",
     "Hybrid",
+    "HybridSeed",
     "History",
     "RuntimeMetadata",
     "Structural",
@@ -68,6 +71,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
     Hybrid(HybridQueryRequest),
+    HybridSeed(HybridSeedQueryRequest),
     History(HistoryQueryRequest),
     RuntimeMetadata(RuntimeMetadataQueryRequest),
     Structural(StructuralQueryRequest),
@@ -87,6 +91,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Symbol(SymbolQueryResponse),
     Semantic(SemanticQueryResponse),
     Hybrid(HybridQueryResponse),
+    HybridSeed(HybridSeedQueryResponse),
     History(SearchPlaneHistoryQueryResponse),
     RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse),
     Structural(SearchPlaneStructuralQueryResponse),
@@ -284,6 +289,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::HybridSeed(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "HybridSeed",
+                payload,
+                serializer,
+            ),
             Self::History(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "History",
@@ -353,6 +364,7 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                         "Symbol" => SearchPlaneQueryIpcRequest::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcRequest::Semantic(map.next_value()?),
                         "Hybrid" => SearchPlaneQueryIpcRequest::Hybrid(map.next_value()?),
+                        "HybridSeed" => SearchPlaneQueryIpcRequest::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcRequest::History(map.next_value()?),
                         "RuntimeMetadata" => {
                             SearchPlaneQueryIpcRequest::RuntimeMetadata(map.next_value()?)
@@ -481,6 +493,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::HybridSeed(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "HybridSeed",
+                payload,
+                serializer,
+            ),
             Self::History(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "History",
@@ -556,6 +574,7 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                         "Symbol" => SearchPlaneQueryIpcResponse::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcResponse::Semantic(map.next_value()?),
                         "Hybrid" => SearchPlaneQueryIpcResponse::Hybrid(map.next_value()?),
+                        "HybridSeed" => SearchPlaneQueryIpcResponse::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcResponse::History(map.next_value()?),
                         "RuntimeMetadata" => {
                             SearchPlaneQueryIpcResponse::RuntimeMetadata(map.next_value()?)

@@ -257,12 +257,26 @@ fn structural_route_supports_predicate(name: &str) -> bool {
 }
 
 fn structural_route_unsupported_predicate(name: &str) -> CoreError {
+    let guidance = match name {
+        "file.contains" => {
+            "move `file:contains(...)` to the lexical route, or keep only the structural body under `patterntype:structural`"
+        }
+        "file.has.content" => {
+            "move `file:has.content(...)` to the lexical route, or keep only the structural body under `patterntype:structural`"
+        }
+        "symbol.has.name" => {
+            "run `symbol:has.name(...)` on the symbol route outside `patterntype:structural`"
+        }
+        _ => {
+            "mixed structural boolean cells preserve only the shipped repo gate predicate subset on the active Sourcegraph route"
+        }
+    };
     CoreError::Typed {
         code: BridgeErrorCode::BridgeTranslateFail
             .as_code_str()
             .to_string(),
         message: format!(
-            "bridge: Sourcegraph structural route preserves only repo gate predicates in mixed boolean cells; `{name}` is unsupported"
+            "bridge: Sourcegraph structural route preserves only the shipped repo gate predicate subset in mixed boolean cells; `{name}` is unsupported. {guidance}"
         ),
     }
 }
@@ -281,7 +295,7 @@ fn structural_route_typed_fail() -> CoreError {
 
 /// Rewrite a Sourcegraph structural expression against the leaf-kind legality
 /// matrix ([`structural_leaf_verdict`]). Mixed-domain lexical siblings that the
-/// active LQ wire can represent (`Keyword`, `RawString`, supported repo-gate
+/// active LQ wire can represent (`Keyword`, `RawString`, supported repo
 /// `Predicate` families) are preserved unchanged to mirror native execution;
 /// `Phrase` / `Regex` bodies become structural blocks; `StructuralBlock`
 /// typed-fails. Native execution stays the source of truth — SG widening only
@@ -460,6 +474,33 @@ mod tests {
             | CoreError::NotFound(_)
             | CoreError::Storage(_)) => Err(format!("expected typed error, got {other:?}").into()),
         }
+    }
+
+    fn assert_structural_predicate_sibling_rejects(
+        query_text: &str,
+        predicate_name: &str,
+        guidance_fragment: &str,
+    ) -> TestResult {
+        let err = match lower_sourcegraph_structural_query_text(query_text) {
+            Ok(query) => {
+                return Err(format!(
+                    "expected unsupported {predicate_name} predicate sibling failure, got {query:?}"
+                )
+                .into());
+            }
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
+        assert!(
+            message.contains(&format!("`{predicate_name}` is unsupported")),
+            "expected unsupported predicate message for {predicate_name}, got {message}"
+        );
+        assert!(
+            message.contains(guidance_fragment),
+            "expected guidance fragment {guidance_fragment:?} for {predicate_name}, got {message}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1004,25 +1045,93 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "test asserts typed error code+message via assert!/assert_eq! macros"
     )]
+    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling() -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural file:contains(path:src, "main") AND "function_item { { identifier :[name] } }""#,
+            "file.contains",
+            "move `file:contains(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_or() -> TestResult
+    {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural file:contains(path:src, "main") OR "trait_item""#,
+            "file.contains",
+            "move `file:contains(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_and_not()
+    -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural "identifier :[name]" AND NOT file:contains(path:src, "main")"#,
+            "file.contains",
+            "move `file:contains(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling() -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural file:has.content(path:src, "main") AND "function_item { { identifier :[name] } }""#,
+            "file.has.content",
+            "move `file:has.content(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_or()
+    -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural file:has.content(path:src, "main") OR "trait_item""#,
+            "file.has.content",
+            "move `file:has.content(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_and_not()
+    -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural "identifier :[name]" AND NOT file:has.content(path:src, "main")"#,
+            "file.has.content",
+            "move `file:has.content(...)` to the lexical route",
+        )
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
+    )]
     fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling() -> TestResult {
-        let err = match lower_sourcegraph_structural_query_text(
+        assert_structural_predicate_sibling_rejects(
             r#"patterntype:structural symbol:has.name(MyTypeSymbol) AND "function_item { { identifier :[name] } }""#,
-        ) {
-            Ok(query) => {
-                return Err(format!(
-                    "expected unsupported predicate sibling failure, got {query:?}"
-                )
-                .into());
-            }
-            Err(err) => err,
-        };
-        let (code, message) = typed_error(err)?;
-        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
-        assert_eq!(
-            message,
-            "bridge: Sourcegraph structural route preserves only repo gate predicates in mixed boolean cells; `symbol.has.name` is unsupported"
-        );
-        Ok(())
+            "symbol.has.name",
+            "run `symbol:has.name(...)` on the symbol route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_or() -> TestResult {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural symbol:has.name(MyTypeSymbol) OR "trait_item""#,
+            "symbol.has.name",
+            "run `symbol:has.name(...)` on the symbol route",
+        )
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_and_not() -> TestResult
+    {
+        assert_structural_predicate_sibling_rejects(
+            r#"patterntype:structural "identifier :[name]" AND NOT symbol:has.name(MyTypeSymbol)"#,
+            "symbol.has.name",
+            "run `symbol:has.name(...)` on the symbol route",
+        )
     }
 
     #[test]

@@ -24,8 +24,9 @@ use quanta_index_contract::{
     StructuralIngestBatch,
 };
 use quanta_index_core::{
-    CoreError, LexicalBatchBuildPort, LexicalIngestPort, RepoMapBundleIngestPort,
-    SemanticBatchBuildPort, SemanticIngestPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
+    LexicalIngestPort, RepoCommitRecencyIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort,
+    RepoTopicIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
@@ -673,6 +674,11 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
 pub struct SearchPlaneIngestDispatcher {
     lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
     history: Arc<dyn HistoryIngestPort + Send + Sync>,
+    repo_commit_recency: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
+    repo_topic: Arc<dyn RepoTopicIngestPort + Send + Sync>,
+    file_ownership: Arc<dyn FileOwnershipIngestPort + Send + Sync>,
+    file_contributor: Arc<dyn FileContributorIngestPort + Send + Sync>,
+    repo_meta: Arc<dyn RepoMetaIngestPort + Send + Sync>,
     runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
     structural: Arc<dyn StructuralIngestPort + Send + Sync>,
     repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
@@ -683,6 +689,11 @@ impl SearchPlaneIngestDispatcher {
     pub fn new(
         lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
         history: Arc<dyn HistoryIngestPort + Send + Sync>,
+        repo_commit_recency: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
+        repo_topic: Arc<dyn RepoTopicIngestPort + Send + Sync>,
+        file_ownership: Arc<dyn FileOwnershipIngestPort + Send + Sync>,
+        file_contributor: Arc<dyn FileContributorIngestPort + Send + Sync>,
+        repo_meta: Arc<dyn RepoMetaIngestPort + Send + Sync>,
         runtime: Arc<dyn RuntimeMetadataIngestPort + Send + Sync>,
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
@@ -690,6 +701,11 @@ impl SearchPlaneIngestDispatcher {
         Self {
             lexical,
             history,
+            repo_commit_recency,
+            repo_topic,
+            file_ownership,
+            file_contributor,
+            repo_meta,
             runtime,
             structural,
             repomap,
@@ -708,6 +724,36 @@ impl SearchPlaneIngestDispatcher {
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
                 match self.history.publish_batch(&batch) {
                     Ok(receipt) => SearchPlaneIngestIpcResponse::HistoryReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
+                match self.repo_commit_recency.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
+                match self.repo_topic.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
+                match self.file_ownership.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
+                match self.file_contributor.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt),
+                    Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
+                match self.repo_meta.publish_batch(&batch) {
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }

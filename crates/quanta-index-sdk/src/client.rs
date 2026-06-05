@@ -136,6 +136,7 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
             | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
@@ -199,6 +200,13 @@ impl QuantaIndex {
             payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
+                _,
+            )
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(
@@ -224,6 +232,7 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Symbol(_) => "symbol",
             SearchPlaneQueryIpcResponse::Semantic(_) => "semantic",
             SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
+            SearchPlaneQueryIpcResponse::HybridSeed(_) => "hybrid_seed",
             SearchPlaneQueryIpcResponse::History(_) => "history",
             SearchPlaneQueryIpcResponse::Structural(_) => "structural",
             SearchPlaneQueryIpcResponse::RepoMapQuery(_) => "repomap",
@@ -254,6 +263,13 @@ impl QuantaIndex {
             SearchPlaneIngestIpcResponse::LexicalReceipt(_) => "lexical_receipt",
             SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
             SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
+            SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_) => {
+                "repo_commit_recency_receipt"
+            }
+            SearchPlaneIngestIpcResponse::RepoTopicReceipt(_) => "repo_topic_receipt",
+            SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_) => "file_ownership_receipt",
+            SearchPlaneIngestIpcResponse::FileContributorReceipt(_) => "file_contributor_receipt",
+            SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => "repo_meta_receipt",
             SearchPlaneIngestIpcResponse::DirtyReceipt(_) => "dirty_receipt",
             SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_) => "runtime_catalog_receipt",
             SearchPlaneIngestIpcResponse::StructuralReceipt(_) => "structural_receipt",
@@ -347,15 +363,15 @@ impl<'a> ReaderClient<'a> {
     }
 
     #[must_use]
-    pub fn hybrid(&self) -> crate::HybridQueryBuilder<'a> {
-        self.client.search().hybrid()
+    pub fn hybrid_seed(&self) -> crate::HybridSeedQueryBuilder<'a> {
+        self.client.search().hybrid_seed()
     }
 
-    pub fn hybrid_request(
+    pub fn hybrid_seed_request(
         &self,
-        request: quanta_index_contract::HybridQueryRequest,
-    ) -> Result<quanta_index_contract::HybridQueryResponse, SdkError> {
-        self.client.search().hybrid_request(request)
+        request: quanta_index_contract::HybridSeedQueryRequest,
+    ) -> Result<quanta_index_contract::HybridSeedQueryResponse, SdkError> {
+        self.client.search().hybrid_seed_request(request)
     }
 
     pub fn explain(

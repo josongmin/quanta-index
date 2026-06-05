@@ -22,6 +22,11 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
 };
+use quanta_index_contract::{
+    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry,
+    RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch,
+};
 use quanta_index_contract::{LqVisibility, SearchExplanation, TextQuerySyntax};
 use quanta_index_corpus_smoke::{
     CorpusRow, ExpectedShape, ExpectedStructuralBinding, Gate, RowClassification, RuntimeRoute,
@@ -95,6 +100,34 @@ struct FixtureHistorySpec {
     touched_text: String,
 }
 
+struct FixtureRepoCommitRecencySpec {
+    source_repo_id: String,
+    latest_committer_time_ms: u64,
+}
+
+struct FixtureRepoMetaSpec {
+    source_repo_id: String,
+    key: String,
+    value: String,
+}
+
+struct FixtureRepoTopicSpec {
+    source_repo_id: String,
+    topic: String,
+}
+
+struct FixtureFileOwnershipSpec {
+    source_repo_id: String,
+    repo_relative_path: String,
+    owners: Vec<String>,
+}
+
+struct FixtureFileContributorSpec {
+    source_repo_id: String,
+    repo_relative_path: String,
+    contributors: Vec<String>,
+}
+
 struct FixtureDirtySpec {
     path: String,
     applied_at_ms: u64,
@@ -105,6 +138,11 @@ struct LoadedFixture {
     repo_metadata: Option<FixtureRepoMetadata>,
     structural: Vec<FixtureStructuralSpec>,
     history: Vec<FixtureHistorySpec>,
+    repo_commit_recency: Vec<FixtureRepoCommitRecencySpec>,
+    repo_meta: Vec<FixtureRepoMetaSpec>,
+    repo_topic: Vec<FixtureRepoTopicSpec>,
+    file_ownership: Vec<FixtureFileOwnershipSpec>,
+    file_contributor: Vec<FixtureFileContributorSpec>,
     dirty: Vec<FixtureDirtySpec>,
     runtime_catalog: Option<E2eRuntimeCatalogSpec>,
 }
@@ -217,6 +255,12 @@ fn parse_loaded_fixture(root: &Value, path: &Path) -> AnyResult<LoadedFixture> {
         &path,
     )?;
     let history = parse_history_specs(table.get("history"), &path)?;
+    let repo_commit_recency =
+        parse_repo_commit_recency_specs(table.get("repo_commit_recency"), &path)?;
+    let repo_meta = parse_repo_meta_specs(table.get("repo_meta"), &path)?;
+    let repo_topic = parse_repo_topic_specs(table.get("repo_topic"), &path)?;
+    let file_ownership = parse_file_ownership_specs(table.get("file_ownership"), &path)?;
+    let file_contributor = parse_file_contributor_specs(table.get("file_contributor"), &path)?;
     let dirty = parse_dirty_specs(table.get("dirty"), &path)?;
     let runtime_catalog = parse_runtime_catalog_spec(table.get("runtime_catalog"), &path)?;
 
@@ -225,6 +269,11 @@ fn parse_loaded_fixture(root: &Value, path: &Path) -> AnyResult<LoadedFixture> {
         repo_metadata,
         structural,
         history,
+        repo_commit_recency,
+        repo_meta,
+        repo_topic,
+        file_ownership,
+        file_contributor,
         dirty,
         runtime_catalog,
     })
@@ -755,6 +804,202 @@ fn parse_history_specs(value: Option<&Value>, path: &Path) -> AnyResult<Vec<Fixt
     Ok(out)
 }
 
+fn parse_repo_commit_recency_specs(
+    value: Option<&Value>,
+    path: &Path,
+) -> AnyResult<Vec<FixtureRepoCommitRecencySpec>> {
+    let Some(Value::Array(rows)) = value else {
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[repo_commit_recency]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let table = row.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixture {} [[repo_commit_recency]] row must be a table",
+                path.display()
+            )
+        })?;
+        out.push(FixtureRepoCommitRecencySpec {
+            source_repo_id: require_string(table, "source_repo_id", path)?,
+            latest_committer_time_ms: require_u64(table, "latest_committer_time_ms", path)?,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_repo_meta_specs(
+    value: Option<&Value>,
+    path: &Path,
+) -> AnyResult<Vec<FixtureRepoMetaSpec>> {
+    let Some(Value::Array(rows)) = value else {
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[repo_meta]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let table = row.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixture {} [[repo_meta]] row must be a table",
+                path.display()
+            )
+        })?;
+        out.push(FixtureRepoMetaSpec {
+            source_repo_id: require_string(table, "source_repo_id", path)?,
+            key: require_string(table, "key", path)?,
+            value: require_string(table, "value", path)?,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_repo_topic_specs(
+    value: Option<&Value>,
+    path: &Path,
+) -> AnyResult<Vec<FixtureRepoTopicSpec>> {
+    let Some(Value::Array(rows)) = value else {
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[repo_topic]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let table = row.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixture {} [[repo_topic]] row must be a table",
+                path.display()
+            )
+        })?;
+        out.push(FixtureRepoTopicSpec {
+            source_repo_id: require_string(table, "source_repo_id", path)?,
+            topic: require_string(table, "topic", path)?,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_file_ownership_specs(
+    value: Option<&Value>,
+    path: &Path,
+) -> AnyResult<Vec<FixtureFileOwnershipSpec>> {
+    let Some(Value::Array(rows)) = value else {
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[file_ownership]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let table = row.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixture {} [[file_ownership]] row must be a table",
+                path.display()
+            )
+        })?;
+        let owners = match table.get("owners") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::String(value) => Ok(value.clone()),
+                    other => Err(anyhow::anyhow!(
+                        "fixture {} [[file_ownership]].owners entries must be strings, got {other:?}",
+                        path.display()
+                    )),
+                })
+                .collect::<AnyResult<Vec<_>>>()?,
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "fixture {} [[file_ownership]].owners must be an array of strings, got {other:?}",
+                    path.display()
+                ));
+            }
+            None => Vec::new(),
+        };
+        out.push(FixtureFileOwnershipSpec {
+            source_repo_id: require_string(table, "source_repo_id", path)?,
+            repo_relative_path: require_string(table, "repo_relative_path", path)?,
+            owners,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_file_contributor_specs(
+    value: Option<&Value>,
+    path: &Path,
+) -> AnyResult<Vec<FixtureFileContributorSpec>> {
+    let Some(Value::Array(rows)) = value else {
+        return value.map_or_else(
+            || Ok(Vec::new()),
+            |other| {
+                Err(anyhow::anyhow!(
+                    "fixture {} [[file_contributor]] must be an array of tables, got {other:?}",
+                    path.display()
+                ))
+            },
+        );
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let table = row.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixture {} [[file_contributor]] row must be a table",
+                path.display()
+            )
+        })?;
+        let contributors = match table.get("contributors") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::String(value) => Ok(value.clone()),
+                    other => Err(anyhow::anyhow!(
+                        "fixture {} [[file_contributor]].contributors entries must be strings, got {other:?}",
+                        path.display()
+                    )),
+                })
+                .collect::<AnyResult<Vec<_>>>()?,
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "fixture {} [[file_contributor]].contributors must be an array of strings, got {other:?}",
+                    path.display()
+                ));
+            }
+            None => Vec::new(),
+        };
+        out.push(FixtureFileContributorSpec {
+            source_repo_id: require_string(table, "source_repo_id", path)?,
+            repo_relative_path: require_string(table, "repo_relative_path", path)?,
+            contributors,
+        });
+    }
+    Ok(out)
+}
+
 fn parse_runtime_catalog_spec(
     value: Option<&Value>,
     path: &Path,
@@ -1026,6 +1271,94 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
             added_text: &history.added_text,
             removed_text: &history.removed_text,
             touched_text: &history.touched_text,
+        })?;
+    }
+
+    if !fixture.repo_commit_recency.is_empty() {
+        rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: rt.current_generation(),
+            batch_digest: "e2e-full-corpus:repo-commit-recency".to_string(),
+            entries: fixture
+                .repo_commit_recency
+                .iter()
+                .map(|entry| RepoCommitRecencyEntry {
+                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    latest_committer_time_ms: entry.latest_committer_time_ms,
+                })
+                .collect(),
+        })?;
+    }
+
+    if !fixture.repo_meta.is_empty() {
+        rt.publish_repo_meta_batch(RepoMetaIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: rt.current_generation(),
+            batch_digest: "e2e-full-corpus:repo-meta".to_string(),
+            entries: fixture
+                .repo_meta
+                .iter()
+                .map(|entry| RepoMetaEntry {
+                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    key: entry.key.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+        })?;
+    }
+
+    if !fixture.repo_topic.is_empty() {
+        rt.publish_repo_topic_batch(RepoTopicIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: rt.current_generation(),
+            batch_digest: "e2e-full-corpus:repo-topic".to_string(),
+            entries: fixture
+                .repo_topic
+                .iter()
+                .map(|entry| RepoTopicEntry {
+                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    topic: entry.topic.clone(),
+                })
+                .collect(),
+        })?;
+    }
+
+    if !fixture.file_ownership.is_empty() {
+        rt.publish_file_ownership_batch(FileOwnershipIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: rt.current_generation(),
+            batch_digest: "e2e-full-corpus:file-ownership".to_string(),
+            entries: fixture
+                .file_ownership
+                .iter()
+                .map(|entry| FileOwnershipEntry {
+                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    repo_relative_path: RepoRelativePath::new(&entry.repo_relative_path),
+                    owners: entry.owners.clone(),
+                })
+                .collect(),
+        })?;
+    }
+
+    if !fixture.file_contributor.is_empty() {
+        rt.publish_file_contributor_batch(FileContributorIngestBatch {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            generation: rt.current_generation(),
+            batch_digest: "e2e-full-corpus:file-contributor".to_string(),
+            entries: fixture
+                .file_contributor
+                .iter()
+                .map(|entry| FileContributorEntry {
+                    source_repo_id: RepoId::new(&entry.source_repo_id),
+                    repo_relative_path: RepoRelativePath::new(&entry.repo_relative_path),
+                    contributors: entry.contributors.clone(),
+                })
+                .collect(),
         })?;
     }
 

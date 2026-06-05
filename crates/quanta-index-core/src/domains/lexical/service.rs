@@ -3,6 +3,7 @@ use quanta_index_contract::{
 };
 
 use crate::error::CoreError;
+use crate::timeref::is_rev_at_time_spec;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LexicalPolicy;
@@ -169,7 +170,12 @@ fn leaf_contains_timeout_executable_surface(leaf: &LqLeaf, pattern_type: LqPatte
 fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
     for filter in &query.filters {
         match filter {
-            LqFilter::Rev { .. } => {
+            LqFilter::Rev { spec } => {
+                if is_rev_at_time_spec(spec) {
+                    return Err(CoreError::NotImplemented(
+                        "lexical: rev:at.time(...) requires revision-selection and pin rebinding before lexical execution".to_string(),
+                    ));
+                }
                 return Err(CoreError::NotImplemented(
                     "lexical: rev filter is not executable on the current adapter set".to_string(),
                 ));
@@ -185,6 +191,7 @@ fn validate_supported_filter_surface(query: &LqQuery) -> Result<(), CoreError> {
             },
             LqFilter::Select { dim } => match dim {
                 LqSelect::File
+                | LqSelect::FileOwners
                 | LqSelect::Path
                 | LqSelect::Symbol
                 | LqSelect::Content

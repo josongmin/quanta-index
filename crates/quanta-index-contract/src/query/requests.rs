@@ -289,6 +289,140 @@ macro_rules! impl_hybrid_query_request_serde {
 
 impl_hybrid_query_request_serde!(HYBRID_QUERY_REQUEST_FIELDS, HybridQueryRequestVisitor);
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct HybridSeedQueryRequest {
+    pub text_query: TextQueryRequest,
+    pub semantic_query_text: String,
+    pub generation: Option<GenerationPin>,
+    pub generation_selector: Option<GenerationSelector>,
+    pub top_k: u32,
+}
+
+const HYBRID_SEED_QUERY_REQUEST_FIELDS: &[&str] = &[
+    "text_query",
+    "semantic_query_text",
+    "generation",
+    "generation_selector",
+    "top_k",
+];
+
+macro_rules! impl_hybrid_seed_query_request_serde {
+    ($fields:ident, $visitor:ident) => {
+        impl Serialize for HybridSeedQueryRequest {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut field_count: usize = 3;
+                if self.generation.is_some() {
+                    field_count = field_count.saturating_add(1);
+                }
+                if self.generation_selector.is_some() {
+                    field_count = field_count.saturating_add(1);
+                }
+                let mut state =
+                    serializer.serialize_struct("HybridSeedQueryRequest", field_count)?;
+                state.serialize_field("text_query", &self.text_query)?;
+                state.serialize_field("semantic_query_text", &self.semantic_query_text)?;
+                if let Some(generation) = &self.generation {
+                    state.serialize_field("generation", generation)?;
+                }
+                if let Some(generation_selector) = &self.generation_selector {
+                    state.serialize_field("generation_selector", generation_selector)?;
+                }
+                state.serialize_field("top_k", &self.top_k)?;
+                state.end()
+            }
+        }
+
+        struct $visitor;
+
+        impl<'de> Visitor<'de> for $visitor {
+            type Value = HybridSeedQueryRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a HybridSeedQueryRequest map")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut text_query: Option<TextQueryRequest> = None;
+                let mut semantic_query_text: Option<String> = None;
+                let mut semantic_query_text_seen = false;
+                let mut generation: Option<GenerationPin> = None;
+                let mut generation_seen = false;
+                let mut generation_selector: Option<GenerationSelector> = None;
+                let mut generation_selector_seen = false;
+                let mut top_k: Option<u32> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "text_query" => {
+                            if text_query.is_some() {
+                                return Err(de::Error::duplicate_field("text_query"));
+                            }
+                            text_query = Some(map.next_value()?);
+                        }
+                        "semantic_query_text" => {
+                            if semantic_query_text_seen {
+                                return Err(de::Error::duplicate_field("semantic_query_text"));
+                            }
+                            semantic_query_text_seen = true;
+                            semantic_query_text = Some(map.next_value()?);
+                        }
+                        "generation" => {
+                            if generation_seen {
+                                return Err(de::Error::duplicate_field("generation"));
+                            }
+                            generation_seen = true;
+                            generation = Some(map.next_value()?);
+                        }
+                        "generation_selector" => {
+                            if generation_selector_seen {
+                                return Err(de::Error::duplicate_field("generation_selector"));
+                            }
+                            generation_selector_seen = true;
+                            generation_selector = Some(map.next_value()?);
+                        }
+                        "top_k" => {
+                            if top_k.is_some() {
+                                return Err(de::Error::duplicate_field("top_k"));
+                            }
+                            top_k = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, $fields));
+                        }
+                    }
+                }
+                Ok(HybridSeedQueryRequest {
+                    text_query: text_query.ok_or_else(|| de::Error::missing_field("text_query"))?,
+                    semantic_query_text: semantic_query_text
+                        .ok_or_else(|| de::Error::missing_field("semantic_query_text"))?,
+                    generation,
+                    generation_selector,
+                    top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
+                })
+            }
+        }
+
+        impl<'de> Deserialize<'de> for HybridSeedQueryRequest {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_struct("HybridSeedQueryRequest", $fields, $visitor)
+            }
+        }
+    };
+}
+
+impl_hybrid_seed_query_request_serde!(
+    HYBRID_SEED_QUERY_REQUEST_FIELDS,
+    HybridSeedQueryRequestVisitor
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolQueryRequest {
     pub syntax: TextQuerySyntax,

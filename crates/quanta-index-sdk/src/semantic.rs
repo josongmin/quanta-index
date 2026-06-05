@@ -196,6 +196,7 @@ fn dispatch_semantic_query_request_v1(
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(_)

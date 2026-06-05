@@ -2,7 +2,7 @@
 
 Parent RFC: [../rfc.md](../rfc.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
@@ -15,51 +15,59 @@ with explicit repo authority and exact SG proof.
 
 ## Current Source Truth
 
-- no executable registry family exists
 - current `meta.*` surface is runtime catalog document metadata, not repo metadata authority
   - it must not be reused as if it were `repo:has.meta(...)`
-- no repo metadata/topic authority is exposed through current lexical runtime
-- current analysis doc lists both as unsupported
+- `repo:has.meta(key:value)` is now executable on the current tree
+- current analysis doc distinguishes supported `repo:has.meta(key:value)` / `repo:has.topic(...)` from unsupported key-only cells
 - `has.meta` and `has.topic` must not be treated as the same authority without proof
-- this ticket is authority-blocked until a producer-side repo metadata/topic owner is chosen
+- `repo:has.topic(...)` now has a distinct repo-topic authority batch, runtime gate, and exact proof rail on the current tree
 
 ## Files To Touch
 
-- `crates/quanta-index-lq-bridge/src/translator.rs`
-- `crates/quanta-index-search-plane/src/query_dispatcher.rs` once repo authority exists
-- producer-side repo metadata/topic ingestion/materialization owner
+- `crates/quanta-index-contract/src/ipc/ingest.rs`
+- `crates/quanta-index-core/src/domains/lexical/outbound.rs`
+- `crates/quanta-index-lexical/src/predicate_registry.rs`
+- `crates/quanta-index-lexical/src/planner.rs`
+- `crates/quanta-index-lexical/src/lib.rs`
+- `crates/quanta-index-sdk/src/history.rs`
+- `crates/quanta-index-search-plane/src/ingest_dispatcher.rs`
+- `crates/quanta-index-searchd/src/app/runtime.rs`
+- `crates/quanta-index-searchd-runtime/src/lib.rs`
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
 - `crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs`
 - `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
+- `crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
 
 ## Concrete First Increment
 
-Start with `repo:has.meta(key:value)` only.
+Started with `repo:has.meta(key:value)` only, then added the distinct repo-topic authority and landed that cell too.
 
 Do not mix these shapes into the same first PR:
 
 - key-only `repo:has.meta(key)`
 - tag/null-value `repo:has.meta(tag:)`
-- `repo:has.topic(...)`
 
-## Implementation Steps
+## Implemented Verdict
 
-1. choose repo authority shape and persistence contract
-2. land `repo:has.meta(key:value)` exact green
-3. then widen to key-only and tag/null-value
-4. only after `has.meta` authority is stable, decide whether `has.topic` can reuse it or needs a separate owner surface
-5. then add `repo:has.topic(...)`
+1. `repo:has.meta(key:value)` is supported
+2. `repo:has.topic(...)` is supported
+3. key-only `repo:has.meta(key)` stays typed-fail
 
-## Red Rail First
+## Proof
 
-- exact runtime row plus parity row for `repo:has.meta(key:value)`
+- exact runtime row plus parity row for `repo:has.meta(key:value)` are green
+- exact runtime row plus parity row for `repo:has.topic(...)` are green
+- SDK/front-door exact row is green
+- corpus fixture ingests repo metadata and repo topic authorities and exact row is green
+- key-only `repo:has.meta(key)` has typed-fail parity and runtime coverage
 
 ## DoD
 
-- repo metadata/topic no-op behavior cannot pass the oracle
+- repo metadata no-op behavior cannot pass the oracle
+- repo topic is backed by a distinct authority batch and cannot pass by reusing generic metadata
 
-## Not Done If
+## Final Residue
 
-- topic support is claimed while only generic metadata exists
-- the ticket hides a new codehost-topic authority seam behind generic `meta` wording
-- runtime `meta.*` document catalog fields are reused as if they were repo metadata
+- runtime `meta.*` document catalog fields must still not be reused as repo metadata
+- key-only `repo:has.meta(key)` remains typed-fail

@@ -27,3 +27,73 @@ id = "corp_b_path_lang"
 path = "src/gate-b.py"
 content = "shared_oracle_needle corp-b python branch"
 source_repo_id = "corp-b"
+
+[[repo_commit_recency]]
+source_repo_id = "corp-a"
+latest_committer_time_ms = 1760000000000
+
+[[repo_commit_recency]]
+source_repo_id = "corp-b"
+latest_committer_time_ms = 1700000000000
+
+[[repo_meta]]
+source_repo_id = "corp-a"
+key = "license"
+value = "apache-2.0"
+
+[[repo_meta]]
+source_repo_id = "corp-b"
+key = "license"
+value = "gpl-3.0"
+
+[[repo_topic]]
+source_repo_id = "corp-a"
+topic = "security"
+
+[[repo_topic]]
+source_repo_id = "corp-a"
+topic = "platform"
+
+[[repo_topic]]
+source_repo_id = "corp-b"
+topic = "ml"
+
+[[file_ownership]]
+source_repo_id = "corp-a"
+repo_relative_path = "src/corp-a.rs"
+owners = ["@alice", "@acme/platform"]
+
+[[file_ownership]]
+source_repo_id = "corp-a"
+repo_relative_path = "src/gate-a.rs"
+owners = ["@alice"]
+
+[[file_ownership]]
+source_repo_id = "corp-b"
+repo_relative_path = "src/corp-b.rs"
+owners = ["@bob"]
+
+[[file_ownership]]
+source_repo_id = "corp-b"
+repo_relative_path = "src/gate-b.py"
+owners = []
+
+[[file_contributor]]
+source_repo_id = "corp-a"
+repo_relative_path = "src/corp-a.rs"
+contributors = ["alice", "carol"]
+
+[[file_contributor]]
+source_repo_id = "corp-a"
+repo_relative_path = "src/gate-a.rs"
+contributors = ["alice"]
+
+[[file_contributor]]
+source_repo_id = "corp-b"
+repo_relative_path = "src/corp-b.rs"
+contributors = ["bob"]
+
+[[file_contributor]]
+source_repo_id = "corp-b"
+repo_relative_path = "src/gate-b.py"
+contributors = []

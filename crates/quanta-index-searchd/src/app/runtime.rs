@@ -18,10 +18,11 @@ use quanta_index_core::domains::structural::{
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    LexicalBatchBuildPort, LexicalIndexOpenPort, LexicalIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
-    SemanticIngestPort, StructuralError, StructuralMatchBinding, StructuralMatchCandidate,
-    StructuralReadiness,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
+    LexicalIndexOpenPort, LexicalIngestPort, RepoCommitRecencyIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, StructuralError,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralReadiness,
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_lq_structural::{
@@ -53,6 +54,11 @@ use crate::app::server::{
 pub struct SearchdRuntimeParts {
     pub lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
+    pub repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
+    pub repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync>,
+    pub file_ownership_ingest_port: Arc<dyn FileOwnershipIngestPort + Send + Sync>,
+    pub file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync>,
+    pub repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync>,
     pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
@@ -456,6 +462,11 @@ impl SearchdRuntime {
         let SearchdRuntimeParts {
             lex_build_port,
             lex_open_port,
+            repo_commit_recency_ingest_port,
+            repo_topic_ingest_port,
+            file_ownership_ingest_port,
+            file_contributor_ingest_port,
+            repo_meta_ingest_port,
             sem_build_port,
             sem_open_port,
             repo_map_query_port,
@@ -535,6 +546,11 @@ impl SearchdRuntime {
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_lex_ingest_port,
             direct_history_ingest_port,
+            repo_commit_recency_ingest_port,
+            repo_topic_ingest_port,
+            file_ownership_ingest_port,
+            file_contributor_ingest_port,
+            repo_meta_ingest_port,
             direct_runtime_ingest_port,
             direct_structural_ingest_port,
             repo_map_bundle_ingest_port,

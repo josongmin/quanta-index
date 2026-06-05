@@ -266,12 +266,7 @@ fn publish_structural_batch<const SEALED: bool>(
     ))?;
     match response {
         SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),
-        other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-        | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+        other => Err(SdkError::unexpected_response(
             "structural receipt",
             QuantaIndex::ingest_response_kind(&other),
         )),
@@ -377,6 +372,7 @@ fn dispatch_structural_query_request_v1(
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)

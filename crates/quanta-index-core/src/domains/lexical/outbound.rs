@@ -1,7 +1,9 @@
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
-    BatchPublishReceipt, LexicalCandidate, LexicalIngestBatch, LqQuery, ManifestGeneration, RepoId,
-    RevisionId, SymbolCandidate,
+    BatchPublishReceipt, FileContributorIngestBatch, FileOwnerProjectionRow,
+    FileOwnershipIngestBatch, LexicalCandidate, LexicalIngestBatch, LqQuery, ManifestGeneration,
+    RepoCommitRecencyIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
+    SymbolCandidate,
 };
 
 use crate::error::CoreError;
@@ -59,6 +61,71 @@ pub trait LexicalIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }
 
+/// Ingest a source-repo keyed commit-recency authority snapshot for one lexical
+/// generation.
+///
+/// This authority powers repo-level history-backed gates on the lexical text
+/// route (for example `repo:has.commit.after(...)`) without reusing the outer
+/// `(repo_id, revision_id, generation)` history shard as if it were the
+/// federated `source_repo_id` truth.
+pub trait RepoCommitRecencyIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &RepoCommitRecencyIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
+}
+
+/// Ingest a source-repo keyed repo-metadata authority snapshot for one lexical
+/// generation.
+///
+/// This authority powers repo-level metadata gates on the lexical text route
+/// (for example `repo:has.meta(key:value)`). It is keyed by `source_repo_id`
+/// like the commit-recency authority and is distinct from the per-generation
+/// repo-metadata sidecar threaded into the searcher for presence checks.
+pub trait RepoMetaIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &RepoMetaIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+}
+
+/// Ingest a source-repo keyed repo-topic authority snapshot for one lexical
+/// generation.
+///
+/// This authority powers repo-level topic gates on the lexical text route
+/// (for example `repo:has.topic(security)`). It is distinct from generic
+/// repo metadata so topic support does not silently piggyback on unrelated
+/// key/value substrate.
+pub trait RepoTopicIngestPort: Send + Sync {
+    fn publish_batch(&self, batch: &RepoTopicIngestBatch)
+    -> Result<BatchPublishReceipt, CoreError>;
+}
+
+/// Ingest a source-repo and repo-relative-path keyed file-ownership authority
+/// snapshot for one lexical generation.
+///
+/// This authority powers file-level owner gates on the lexical text route
+/// (for example `file:has.owner(@alice)`). Entries are query-facing owner
+/// strings and the batch is treated as the complete ownership snapshot for the
+/// addressed lexical generation.
+pub trait FileOwnershipIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &FileOwnershipIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
+}
+
+/// Ingest a source-repo and repo-relative-path keyed file-contributor
+/// authority snapshot for one lexical generation.
+///
+/// This authority powers file-level contributor gates on the lexical text
+/// route (for example `file:has.contributor(alice)`). Entries are normalized
+/// contributor identity strings and the batch is treated as the complete
+/// contributor snapshot for the addressed lexical generation.
+pub trait FileContributorIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &FileContributorIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
+}
+
 /// Searcher handle returned by [`LexicalIndexOpenPort::open`].
 ///
 /// One per opened generation. Searcher is non-Send for performance (some
@@ -66,6 +133,15 @@ pub trait LexicalIngestPort: Send + Sync {
 /// cache management.
 pub trait LexicalSearcher: Send + Sync {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Project owner rows for the supplied lexical candidates.
+    ///
+    /// The input candidates already encode the lexical match set. Implementations
+    /// must not widen it; they only attach source-repo/path keyed ownership rows.
+    fn project_file_owners(
+        &self,
+        candidates: &[LexicalCandidate],
+    ) -> Result<Vec<FileOwnerProjectionRow>, CoreError>;
 
     /// Return symbol-domain matches only for the query within the opened
     /// generation. Implementations must not leak chunk docs through this

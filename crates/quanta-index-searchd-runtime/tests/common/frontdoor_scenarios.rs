@@ -16,6 +16,7 @@ pub(super) struct TypedErrorExpectation {
 pub(super) enum SdkFrontdoorSurface {
     Lexical,
     Symbol,
+    Structural,
     History,
     RuntimeMetadata,
 }
@@ -64,6 +65,187 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "symbol:has.name(MySdkSymbol)",
         expected: SdkFrontdoorExpectation::CandidateIds(&["sym-sdk"]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_commit_after_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"repo:has.commit.after("2025-01-01") shared_oracle_needle"#,
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_contains_commit_after_human_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"repo:contains.commit.after("1 year ago") shared_oracle_needle"#,
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_commit_after_invalid_timeref_typed_fail",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.commit.after(definitely-not-a-timeref) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "HISTORY_INVALID_TIMEREF",
+            message_contains: "timeref",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_meta_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.meta(license:apache-2.0) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_meta_key_only_typed_fail",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.meta(license) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "LEX_PREDICATE_UNIMPLEMENTED",
+            message_contains: "key:value",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_topic_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.topic(security) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_file_has_owner_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "file:has.owner(@alice) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_file_has_contributor_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "file:has.contributor(alice) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_select_file_owners_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "select:file.owners shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-b",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_contains_path_and_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural file:contains(path:src/lib.rs, "MySdkSymbol") AND "function_item { { identifier :[name] } }""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.contains` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_contains_path_or_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural file:contains(path:src/lib.rs, "MySdkSymbol") OR "trait_item""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.contains` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_contains_path_and_not_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural "identifier :[name]" AND NOT file:contains(path:src/lib.rs, "MySdkSymbol")"#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.contains` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_has_content_path_and_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural file:has.content(path:src/lib.rs, "MySdkSymbol") AND "function_item { { identifier :[name] } }""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.has.content` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_has_content_path_or_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural file:has.content(path:src/lib.rs, "MySdkSymbol") OR "trait_item""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.has.content` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_file_has_content_path_and_not_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural "identifier :[name]" AND NOT file:has.content(path:src/lib.rs, "MySdkSymbol")"#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`file.has.content` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_symbol_and_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural symbol:has.name(MySdkSymbol) AND "function_item { { identifier :[name] } }""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`symbol.has.name` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_symbol_or_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural symbol:has.name(MySdkSymbol) OR "trait_item""#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`symbol.has.name` is unsupported",
+        }),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_symbol_and_not_typed_fail",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural "identifier :[name]" AND NOT symbol:has.name(MySdkSymbol)"#,
+        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
+            code: "BRIDGE_TRANSLATE_FAIL",
+            message_contains: "`symbol.has.name` is unsupported",
+        }),
     },
     SdkFrontdoorScenario {
         name: "native_since_time_success",

@@ -62,6 +62,29 @@ pub(crate) enum PredicateKind {
     /// projects the matching *paths*) this gates the *repo* surface. Argument
     /// parsing is registry-owned via [`parse_content_scalar_arg`].
     RepoContentGate,
+    /// `repo.has.commit.after` — exactly one timeref scalar, lowered to a
+    /// repo-existence gate evaluated against source-repo keyed commit-recency
+    /// authority materialized alongside the lexical generation.
+    RepoCommitRecencyGate,
+    /// `repo.has.meta` — exactly one `key:value` filter argument, lowered to a
+    /// repo-existence gate evaluated against source-repo keyed repo-metadata
+    /// authority materialized alongside the lexical generation. Argument parsing
+    /// is registry-owned via [`parse_repo_meta_arg`].
+    RepoMetaGate,
+    /// `repo.has.topic` — exactly one textual topic scalar, lowered to a
+    /// repo-existence gate evaluated against source-repo keyed repo-topic
+    /// authority materialized alongside the lexical generation.
+    RepoTopicGate,
+    /// `file.has.owner` — zero args (`any owner`) or exactly one textual owner
+    /// identity, lowered to a file-level candidate restriction evaluated
+    /// against source-repo/path keyed ownership authority materialized
+    /// alongside the lexical generation.
+    FileOwnerGate,
+    /// `file.has.contributor` — exactly one textual contributor identity,
+    /// lowered to a file-level candidate restriction evaluated against
+    /// source-repo/path keyed contributor authority materialized alongside the
+    /// lexical generation.
+    FileContributorGate,
 }
 
 /// One predicate capability row.
@@ -104,11 +127,48 @@ pub(crate) const PREDICATE_REGISTRY: &[PredicateSpec] = &[
         name: "repo.has.content",
         kind: PredicateKind::RepoContentGate,
     },
+    PredicateSpec {
+        name: "repo.has.commit.after",
+        kind: PredicateKind::RepoCommitRecencyGate,
+    },
+    PredicateSpec {
+        name: "repo.has.meta",
+        kind: PredicateKind::RepoMetaGate,
+    },
+    PredicateSpec {
+        name: "repo.has.topic",
+        kind: PredicateKind::RepoTopicGate,
+    },
+    PredicateSpec {
+        name: "file.has.owner",
+        kind: PredicateKind::FileOwnerGate,
+    },
+    PredicateSpec {
+        name: "file.has.contributor",
+        kind: PredicateKind::FileContributorGate,
+    },
 ];
 
 pub(crate) const PREDICATE_ALIASES: &[PredicateAliasSpec] = &[
     PredicateAliasSpec {
         alias: "repo.has.path",
+        canonical: "repo.has.file",
+        rewrite: PredicateAliasRewrite::RepoHasPathScalarToPathFilter,
+    },
+    // Sourcegraph documents `repo:contains.file(...)` as a pure alias of
+    // `repo:has.file(...)`, so it forwards the full matcher surface (scalar path
+    // shorthand and `path:` / `name:` / `lang:` filters) unchanged.
+    PredicateAliasSpec {
+        alias: "repo.contains.file",
+        canonical: "repo.has.file",
+        rewrite: PredicateAliasRewrite::IdentityArgs,
+    },
+    // `repo:contains.path(...)` is Sourcegraph's alias of `repo:has.path(...)`,
+    // itself an alias of `repo:has.file(path:...)`. Single-level canonicalization
+    // collapses it directly onto `repo.has.file`, mirroring the `repo.has.path`
+    // scalar→`path:` rewrite so `kind_of` resolves a registry kind.
+    PredicateAliasSpec {
+        alias: "repo.contains.path",
         canonical: "repo.has.file",
         rewrite: PredicateAliasRewrite::RepoHasPathScalarToPathFilter,
     },
@@ -120,6 +180,11 @@ pub(crate) const PREDICATE_ALIASES: &[PredicateAliasSpec] = &[
     PredicateAliasSpec {
         alias: "repo.contains.content",
         canonical: "repo.has.content",
+        rewrite: PredicateAliasRewrite::IdentityArgs,
+    },
+    PredicateAliasSpec {
+        alias: "repo.contains.commit.after",
+        canonical: "repo.has.commit.after",
         rewrite: PredicateAliasRewrite::IdentityArgs,
     },
 ];
@@ -316,6 +381,249 @@ pub(crate) enum ContentScalarArgError {
     UnsupportedArg,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TimerefScalarArg {
+    pub value: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TimerefScalarArgError {
+    WrongArity,
+    UnsupportedArg,
+}
+
+pub(crate) fn parse_timeref_scalar_arg(
+    args: &[LqPredicateArg],
+) -> Result<TimerefScalarArg, TimerefScalarArgError> {
+    let [arg] = args else {
+        return Err(TimerefScalarArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Keyword(value)
+        | LqPredicateArg::Phrase(value)
+        | LqPredicateArg::RawString(value) => Ok(TimerefScalarArg {
+            value: value.clone(),
+        }),
+        LqPredicateArg::Number(value) => Ok(TimerefScalarArg {
+            value: value.to_string(),
+        }),
+        LqPredicateArg::Filter { .. } => Err(TimerefScalarArgError::UnsupportedArg),
+    }
+}
+
+/// A validated `repo.has.meta(key:value)` argument.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RepoMetaArg {
+    pub key: String,
+    pub value: String,
+}
+
+/// A validated `repo.has.topic(topic)` argument.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RepoTopicArg {
+    pub topic: String,
+}
+
+/// A validated `file.has.owner` argument.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FileOwnerArg {
+    pub owner: Option<String>,
+}
+
+/// A validated `file.has.contributor` argument.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FileContributorArg {
+    pub contributor: String,
+}
+
+/// Why a `file.has.owner` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FileOwnerArgError {
+    WrongArity,
+    UnsupportedArg,
+    EmptyOwner,
+}
+
+/// Why a `file.has.contributor` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FileContributorArgError {
+    WrongArity,
+    UnsupportedArg,
+    EmptyContributor,
+    /// The contributor identity was wrapped in `/.../ ` regex delimiters
+    /// (`file:has.contributor(/name/)`). The contributor authority is an
+    /// exact-string set with no name/email split and no regex engine, so regex
+    /// contributor matching is unsupported.
+    RegexUnsupported,
+}
+
+/// Why a `repo.has.topic` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoTopicArgError {
+    WrongArity,
+    UnsupportedArg,
+    EmptyTopic,
+}
+
+/// Why a `repo.has.meta` argument set is not admissible.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoMetaArgError {
+    /// Not exactly one positional argument.
+    WrongArity,
+    /// The single argument was not a `key:value` filter (e.g. key-only or a
+    /// bare scalar). Key-only shapes stay typed-fail: the exact-string metadata
+    /// substrate exposes only `key == value` equality, not key existence.
+    UnsupportedArg,
+    /// The `key:value` filter carried an empty/whitespace-only key.
+    EmptyKey,
+    /// The `key:value` filter carried an empty/whitespace-only value
+    /// (`repo:has.meta(tag:)`). The exact-string substrate has no tag/null-value
+    /// concept, so an empty value is not an admitted shape.
+    EmptyValue,
+    /// The key or value was wrapped in `/.../ ` regex delimiters
+    /// (`repo:has.meta(/key/:/value/)`). The metadata authority is exact-string
+    /// only and carries no regex engine, so regex key/value is unsupported.
+    RegexUnsupported,
+}
+
+/// Whether a token is wrapped in `/.../ ` regex delimiters (a leading AND
+/// trailing slash). A token that merely contains a slash (e.g. a path-like
+/// `/usr/bin`, or a single leading `/x`) is not delimited and keeps exact-string
+/// semantics.
+///
+/// Trade-off: a slash-terminated value such as `/usr/` is treated as regex
+/// syntax and fails closed, even though it could be an exact path. This is the
+/// deliberate fail-closed choice — on an exact-string substrate we refuse
+/// ambiguous regex-shaped input rather than silently matching the literal
+/// slashes, which would misrepresent regex support. Metadata keys/values and
+/// contributor identities are not slash-wrapped in practice.
+fn is_regex_delimited(token: &str) -> bool {
+    let token = token.trim();
+    token.len() >= 2 && token.starts_with('/') && token.ends_with('/')
+}
+
+/// Parse a `repo.has.meta(key:value)` argument.
+///
+/// Single owner of the `repo.has.meta` argument contract: exactly one
+/// `key:value` filter is admitted, surfaced by the parser as
+/// [`LqPredicateArg::Filter`]. Both lexical lowering and planner validation
+/// route through here so the contract cannot diverge.
+pub(crate) fn parse_repo_meta_arg(
+    args: &[LqPredicateArg],
+) -> Result<RepoMetaArg, RepoMetaArgError> {
+    let [arg] = args else {
+        return Err(RepoMetaArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Filter { name, value } => {
+            if name.trim().is_empty() {
+                return Err(RepoMetaArgError::EmptyKey);
+            }
+            // `/key/:/value/` regex syntax has no regex-capable authority on the
+            // exact-string substrate; fail closed rather than literal-matching
+            // the slashes. Checked before the empty-value guard so a regex key
+            // with an empty value still reports the regex reason.
+            if is_regex_delimited(name) || is_regex_delimited(value) {
+                return Err(RepoMetaArgError::RegexUnsupported);
+            }
+            if value.trim().is_empty() {
+                return Err(RepoMetaArgError::EmptyValue);
+            }
+            Ok(RepoMetaArg {
+                key: name.clone(),
+                value: value.clone(),
+            })
+        }
+        LqPredicateArg::Keyword(_)
+        | LqPredicateArg::Phrase(_)
+        | LqPredicateArg::RawString(_)
+        | LqPredicateArg::Number(_) => Err(RepoMetaArgError::UnsupportedArg),
+    }
+}
+
+/// Parse a `repo.has.topic(topic)` argument.
+pub(crate) fn parse_repo_topic_arg(
+    args: &[LqPredicateArg],
+) -> Result<RepoTopicArg, RepoTopicArgError> {
+    let [arg] = args else {
+        return Err(RepoTopicArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Keyword(value)
+        | LqPredicateArg::Phrase(value)
+        | LqPredicateArg::RawString(value) => {
+            if value.trim().is_empty() {
+                return Err(RepoTopicArgError::EmptyTopic);
+            }
+            Ok(RepoTopicArg {
+                topic: value.clone(),
+            })
+        }
+        LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
+            Err(RepoTopicArgError::UnsupportedArg)
+        }
+    }
+}
+
+/// Parse a `file.has.owner` argument.
+///
+/// Admitted shapes:
+/// - `file.has.owner()` => any owner
+/// - `file.has.owner(<keyword|phrase|raw>)` => exact owner identity
+pub(crate) fn parse_file_owner_arg(
+    args: &[LqPredicateArg],
+) -> Result<FileOwnerArg, FileOwnerArgError> {
+    match args {
+        [] => Ok(FileOwnerArg { owner: None }),
+        [LqPredicateArg::Keyword(value)]
+        | [LqPredicateArg::Phrase(value)]
+        | [LqPredicateArg::RawString(value)] => {
+            if value.trim().is_empty() {
+                return Err(FileOwnerArgError::EmptyOwner);
+            }
+            Ok(FileOwnerArg {
+                owner: Some(value.clone()),
+            })
+        }
+        [LqPredicateArg::Number(_)] | [LqPredicateArg::Filter { .. }] => {
+            Err(FileOwnerArgError::UnsupportedArg)
+        }
+        [_, _, ..] => Err(FileOwnerArgError::WrongArity),
+    }
+}
+
+/// Parse a `file.has.contributor` argument.
+///
+/// Admitted shapes:
+/// - `file.has.contributor(<keyword|phrase|raw>)` => exact contributor identity
+pub(crate) fn parse_file_contributor_arg(
+    args: &[LqPredicateArg],
+) -> Result<FileContributorArg, FileContributorArgError> {
+    let [arg] = args else {
+        return Err(FileContributorArgError::WrongArity);
+    };
+    match arg {
+        LqPredicateArg::Keyword(value)
+        | LqPredicateArg::Phrase(value)
+        | LqPredicateArg::RawString(value) => {
+            if value.trim().is_empty() {
+                return Err(FileContributorArgError::EmptyContributor);
+            }
+            // `/name/` regex syntax has no regex-capable contributor authority;
+            // fail closed rather than literal-matching the slashes.
+            if is_regex_delimited(value) {
+                return Err(FileContributorArgError::RegexUnsupported);
+            }
+            Ok(FileContributorArg {
+                contributor: value.clone(),
+            })
+        }
+        LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
+            Err(FileContributorArgError::UnsupportedArg)
+        }
+    }
+}
+
 /// Parse a one-scalar content predicate argument.
 ///
 /// Single owner of the shared content scalar contract. Both lexical lowering
@@ -454,6 +762,160 @@ mod tests {
             Some(PredicateKind::ContentLeaf)
         );
         assert_eq!(kind_of("repo.has.file"), Some(PredicateKind::RepoFileGate));
+        assert_eq!(
+            kind_of("repo.has.commit.after"),
+            Some(PredicateKind::RepoCommitRecencyGate)
+        );
+        assert_eq!(kind_of("repo.has.meta"), Some(PredicateKind::RepoMetaGate));
+        assert_eq!(
+            kind_of("repo.has.topic"),
+            Some(PredicateKind::RepoTopicGate)
+        );
+        assert_eq!(
+            kind_of("file.has.owner"),
+            Some(PredicateKind::FileOwnerGate)
+        );
+        assert_eq!(
+            kind_of("file.has.contributor"),
+            Some(PredicateKind::FileContributorGate)
+        );
+    }
+
+    #[test]
+    fn repo_meta_arg_admits_key_value_and_rejects_other_shapes() {
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "license".to_string(),
+                value: "MIT".to_string(),
+            }]),
+            Ok(RepoMetaArg {
+                key: "license".to_string(),
+                value: "MIT".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Keyword("license".to_string())]),
+            Err(RepoMetaArgError::UnsupportedArg)
+        );
+        assert_eq!(parse_repo_meta_arg(&[]), Err(RepoMetaArgError::WrongArity));
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "  ".to_string(),
+                value: "MIT".to_string(),
+            }]),
+            Err(RepoMetaArgError::EmptyKey)
+        );
+    }
+
+    #[test]
+    fn repo_meta_arg_rejects_empty_value_tag_shape() {
+        // SGT-03: `repo:has.meta(tag:)` parses to a `tag` key with an empty
+        // value. The exact-string substrate has no tag/null-value concept, so
+        // an empty value must fail closed instead of silently exact-matching the
+        // empty string — that would overstate tag-null support.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "tag".to_string(),
+                value: "".to_string(),
+            }]),
+            Err(RepoMetaArgError::EmptyValue)
+        );
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "license".to_string(),
+                value: "   ".to_string(),
+            }]),
+            Err(RepoMetaArgError::EmptyValue)
+        );
+    }
+
+    #[test]
+    fn repo_meta_arg_rejects_slash_delimited_regex_shape() {
+        // SGT-03: `repo:has.meta(/key/:/value/)` is Sourcegraph regex key/value
+        // syntax. The metadata authority is an exact-string `BTreeMap` with no
+        // regex engine, so a `/.../`-delimited key or value must fail closed
+        // rather than silently exact-match the literal slashes.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "/key/".to_string(),
+                value: "/value/".to_string(),
+            }]),
+            Err(RepoMetaArgError::RegexUnsupported)
+        );
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "license".to_string(),
+                value: "/apache.*/".to_string(),
+            }]),
+            Err(RepoMetaArgError::RegexUnsupported)
+        );
+        // A regex KEY with a plain value is rejected too — the guard checks both
+        // operands, not just the value.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "/key/".to_string(),
+                value: "plain".to_string(),
+            }]),
+            Err(RepoMetaArgError::RegexUnsupported)
+        );
+        // A value that merely contains a slash (path-like) is NOT regex syntax
+        // and must keep exact-string semantics.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "/usr/bin".to_string(),
+            }]),
+            Ok(RepoMetaArg {
+                key: "path".to_string(),
+                value: "/usr/bin".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn repo_topic_arg_accepts_one_textual_topic() {
+        assert_eq!(
+            parse_repo_topic_arg(&[LqPredicateArg::Keyword("security".to_string())]),
+            Ok(RepoTopicArg {
+                topic: "security".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_repo_topic_arg(&[LqPredicateArg::Phrase("ml-platform".to_string())]),
+            Ok(RepoTopicArg {
+                topic: "ml-platform".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn repo_topic_arg_rejects_bad_arity_and_non_textual_shapes() {
+        assert_eq!(
+            parse_repo_topic_arg(&[]),
+            Err(RepoTopicArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_repo_topic_arg(&[
+                LqPredicateArg::Keyword("security".to_string()),
+                LqPredicateArg::Keyword("ml".to_string()),
+            ]),
+            Err(RepoTopicArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_repo_topic_arg(&[LqPredicateArg::Number(7)]),
+            Err(RepoTopicArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_repo_topic_arg(&[LqPredicateArg::Filter {
+                name: "topic".to_string(),
+                value: "security".to_string(),
+            }]),
+            Err(RepoTopicArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_repo_topic_arg(&[LqPredicateArg::Keyword(" ".to_string())]),
+            Err(RepoTopicArgError::EmptyTopic)
+        );
     }
 
     #[test]
@@ -474,6 +936,10 @@ mod tests {
         assert_eq!(
             kind_of("repo.contains.content"),
             Some(PredicateKind::RepoContentGate)
+        );
+        assert_eq!(
+            kind_of("repo.contains.commit.after"),
+            Some(PredicateKind::RepoCommitRecencyGate)
         );
     }
 
@@ -510,10 +976,252 @@ mod tests {
     }
 
     #[test]
+    fn registry_resolves_repo_contains_file_and_path_aliases() {
+        // Sourcegraph documents `repo:contains.file(...)` as an alias of
+        // `repo:has.file(...)` and `repo:contains.path(...)` as an alias of
+        // `repo:has.path(...)`. Both canonicalize onto the executable
+        // `RepoFileGate` row.
+        assert_eq!(
+            kind_of("repo.contains.file"),
+            Some(PredicateKind::RepoFileGate)
+        );
+        assert_eq!(
+            kind_of("repo.contains.path"),
+            Some(PredicateKind::RepoFileGate)
+        );
+    }
+
+    #[test]
+    fn canonicalize_repo_contains_file_alias_forwards_matcher_args_identity() {
+        // `repo.contains.file` mirrors the full `repo.has.file` matcher surface
+        // (scalar path shorthand AND path:/name:/lang: filters), so it forwards
+        // args identically — unlike `repo.has.path`, it does NOT collapse to a
+        // path filter.
+        let call = canonicalize_predicate_call(
+            "repo.contains.file",
+            &[LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: "lib.rs".to_string(),
+            }],
+        )
+        .expect("alias canonicalization must succeed")
+        .expect("alias must resolve");
+        assert_eq!(call.name, "repo.has.file");
+        assert_eq!(
+            call.args,
+            vec![LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: "lib.rs".to_string(),
+            }]
+        );
+
+        // Scalar shorthand forwards as-is; the RepoFileGate executor treats a
+        // bare scalar as a path shorthand.
+        let scalar = canonicalize_predicate_call(
+            "repo.contains.file",
+            &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
+        )
+        .expect("alias canonicalization must succeed")
+        .expect("alias must resolve");
+        assert_eq!(scalar.name, "repo.has.file");
+        assert_eq!(
+            scalar.args,
+            vec![LqPredicateArg::Keyword("src/lib.rs".to_string())]
+        );
+    }
+
+    #[test]
+    fn canonicalize_repo_contains_path_alias_rewrites_to_path_filter() {
+        // `repo.contains.path` is the alias-of-alias of `repo.has.path`; it
+        // collapses directly to `repo.has.file(path:...)` so single-level
+        // canonicalization resolves a registry kind.
+        let call = canonicalize_predicate_call(
+            "repo.contains.path",
+            &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
+        )
+        .expect("alias canonicalization must succeed")
+        .expect("alias must resolve");
+        assert_eq!(call.name, "repo.has.file");
+        assert_eq!(
+            call.args,
+            vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn canonicalize_repo_contains_path_alias_rejects_non_scalar_shape() {
+        // The scalar→path rewrite rejects every non-scalar shape, not just a
+        // `path:` filter: number, empty, and multi-arg all fail closed.
+        for args in [
+            vec![LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            }],
+            vec![LqPredicateArg::Number(7)],
+            vec![],
+            vec![
+                LqPredicateArg::Keyword("a".to_string()),
+                LqPredicateArg::Keyword("b".to_string()),
+            ],
+        ] {
+            assert_eq!(
+                canonicalize_predicate_call("repo.contains.path", &args),
+                Err(PredicateCanonicalizeError::InvalidAliasShape),
+                "repo.contains.path must reject non-scalar shape {args:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn repo_file_matchers_reject_content_filter() {
+        // SGT-01 Cell 3: `repo:has.file(path:... content:...)` has no executable
+        // owner seam on the repo-file gate (no Content matcher variant). The
+        // nested `content:` filter must fail closed, not be silently widened.
+        assert!(matches!(
+            parse_repo_file_matchers(&[
+                LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/lib.rs".to_string(),
+                },
+                LqPredicateArg::Filter {
+                    name: "content".to_string(),
+                    value: "needle".to_string(),
+                },
+            ]),
+            Err(RepoFileArgError::UnsupportedArg)
+        ));
+    }
+
+    #[test]
     fn registry_resolves_repo_has_content_kind() {
         assert_eq!(
             kind_of("repo.has.content"),
             Some(PredicateKind::RepoContentGate)
+        );
+    }
+
+    #[test]
+    fn file_owner_arg_accepts_zero_or_one_textual_owner() {
+        assert_eq!(parse_file_owner_arg(&[]), Ok(FileOwnerArg { owner: None }));
+        assert_eq!(
+            parse_file_owner_arg(&[LqPredicateArg::Keyword("@alice".to_string())]),
+            Ok(FileOwnerArg {
+                owner: Some("@alice".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_file_owner_arg(&[LqPredicateArg::Phrase("@acme/platform".to_string())]),
+            Ok(FileOwnerArg {
+                owner: Some("@acme/platform".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn file_owner_arg_rejects_bad_arity_and_non_textual_shapes() {
+        assert_eq!(
+            parse_file_owner_arg(&[
+                LqPredicateArg::Keyword("@alice".to_string()),
+                LqPredicateArg::Keyword("@bob".to_string()),
+            ]),
+            Err(FileOwnerArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_file_owner_arg(&[LqPredicateArg::Number(7)]),
+            Err(FileOwnerArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_file_owner_arg(&[LqPredicateArg::Filter {
+                name: "owner".to_string(),
+                value: "@alice".to_string(),
+            }]),
+            Err(FileOwnerArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_file_owner_arg(&[LqPredicateArg::Keyword(" ".to_string())]),
+            Err(FileOwnerArgError::EmptyOwner)
+        );
+    }
+
+    #[test]
+    fn file_contributor_arg_accepts_one_textual_contributor() {
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Keyword("alice".to_string())]),
+            Ok(FileContributorArg {
+                contributor: "alice".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Phrase("carol@example.com".to_string())]),
+            Ok(FileContributorArg {
+                contributor: "carol@example.com".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn file_contributor_arg_rejects_bad_arity_and_non_textual_shapes() {
+        assert_eq!(
+            parse_file_contributor_arg(&[]),
+            Err(FileContributorArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[
+                LqPredicateArg::Keyword("alice".to_string()),
+                LqPredicateArg::Keyword("bob".to_string()),
+            ]),
+            Err(FileContributorArgError::WrongArity)
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Number(7)]),
+            Err(FileContributorArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Filter {
+                name: "contributor".to_string(),
+                value: "alice".to_string(),
+            }]),
+            Err(FileContributorArgError::UnsupportedArg)
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Keyword(" ".to_string())]),
+            Err(FileContributorArgError::EmptyContributor)
+        );
+    }
+
+    #[test]
+    fn file_contributor_arg_rejects_slash_delimited_regex_shape() {
+        // SGT-04: Sourcegraph documents `file:has.contributor(<regex>)` as a
+        // name-or-email regex. This stack stores a flat, case-folded exact-string
+        // contributor set with no name/email split and no regex engine, so a
+        // `/.../ `-delimited arg must fail closed rather than silently exact-match
+        // the literal slashes to nothing (regex theater over exact strings).
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Keyword("/ali.*/".to_string())]),
+            Err(FileContributorArgError::RegexUnsupported)
+        );
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Phrase("/carol@.*/".to_string())]),
+            Err(FileContributorArgError::RegexUnsupported)
+        );
+        // An exact identity that merely contains a slash is not regex syntax and
+        // keeps exact-string semantics.
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Keyword("a/b".to_string())]),
+            Ok(FileContributorArg {
+                contributor: "a/b".to_string(),
+            })
+        );
+        // Boundary: a single leading slash is NOT a `/.../ ` delimiter pair, so
+        // it stays an exact identity rather than being misread as regex.
+        assert_eq!(
+            parse_file_contributor_arg(&[LqPredicateArg::Keyword("/x".to_string())]),
+            Ok(FileContributorArg {
+                contributor: "/x".to_string(),
+            })
         );
     }
 

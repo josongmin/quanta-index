@@ -2,7 +2,7 @@
 
 Parent RFC: [../rfc.md](../rfc.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
@@ -14,14 +14,17 @@ as a real revision-time filter surface.
 
 ## Current Source Truth
 
-- current bridge/runtime inventory has plain `rev:` but not revision-at-time resolution
+- current bridge/runtime inventory has plain `rev:` plus revision-at-time resolution on the text route
 - existing history substrate is richer than the old framing implied:
   - `validate_history_timeref_filters(...)`
   - `parse_history_timeref_ms(...)`
   - `resolve_history_since_timeref_ms(...)`
   - refs/tags and `CommitRecord::committer_time_ms` are already materialized
-- but lexical text dispatch still rejects `rev:` outright before execution
-  - current text route has no revision-selection / pin rebinding surface
+- lexical text dispatch now resolves `rev:at.time(...)` before lexical execution:
+  - explicit `rev:<ref|tag|sha>` remains the anchor when present
+  - otherwise the selected pin revision or materialized `HEAD` ref anchors the history walk
+  - the dispatcher selects the latest reachable commit whose `committer_time_ms <= boundary`
+  - lexical execution then rebinds to the activated lexical generation for that revision
 - Sourcegraph docs expose `rev:at.time(...)` as a distinct surface
 - this is a revision-selection/history owner problem, not a lexical predicate problem
 
@@ -35,27 +38,35 @@ as a real revision-time filter surface.
 - `crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs`
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
 
-## Concrete First Increment
+## Current Increment
 
-Support one RFC3339 timestamp form first, mapped onto the existing history timeref substrate **after** text dispatch gains revision-selection semantics for `rev:`.
+Current tree has landed the executable increment:
 
-Do not start with natural-language timeref parsing.
+1. detect `rev:at.time(...)` shape on lexical/text route
+2. resolve the boundary with the shared timeref parser
+3. walk the materialized history DAG from the anchor commit
+4. rebind lexical execution to the selected revision pin
+5. pin this with owner-local, targeted runtime, and SDK/front-door rails
 
 ## Implementation Steps
 
 1. define how text dispatch resolves `rev:at.time(...)` onto an anchor revision and generation pin
 2. reuse existing history timeref parsing for the boundary itself
-3. land one exact timestamp positive row
-4. land one miss row and one invalid-time typed-fail row
+3. land exact timestamp, named-date, and human-relative runtime rows
+4. preserve typed-fail on invalid timeref and fail-closed activation gaps
 
 ## Red Rail First
 
-- exact runtime rows for positive / miss / invalid
+- owner-local dispatcher red rail is closed
+- targeted runtime/front-door red rails are closed
+- shared inventory followthrough moves to `SGP-08`
 
 ## DoD
 
 - `rev:at.time(...)` is not merely accepted syntax
-- `rev:` no longer remains fail-closed on the exact text route cell this ticket claims
+- `rev:` no longer remains generic/opaque fail-closed on the exact text route cell this ticket claims
+- human timeref support (`yesterday`, `june 25 2017`, `1 year ago`) is executable on the Sourcegraph text route
+- invalid timeref still fails closed with `HISTORY_INVALID_TIMEREF`
 
 ## Not Done If
 

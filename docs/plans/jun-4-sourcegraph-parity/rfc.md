@@ -1,6 +1,6 @@
 # Jun 4 Sourcegraph Parity RFC
 
-Status: `active`
+Status: `landed`
 Date: `2026-06-04`
 Scope: close the highest-signal Sourcegraph parity gaps that remain after `jun-4-dsl-extension`
 
@@ -27,21 +27,27 @@ This RFC is a **new-scope parity program**. It does not reopen:
 
 ---
 
-## 1. Current Gap Set
+## 1. Final Verdict Set
 
-Highest-signal Sourcegraph comparison gaps still open:
+Supported in this packet:
 
-1. `repo:has.commit.after(...)`
-2. `repo:contains.commit.after(...)`
-3. `repo:has.meta(...)`
-4. `repo:has.topic(...)`
-5. `file:has.owner(...)`
-6. `select:file.owners`
-7. `file:has.contributor(...)`
-8. `rev:at.time(...)`
-9. SG structural direct lexical `Phrase` sibling
-10. SG structural direct lexical `Regex` sibling
-11. SG structural mixed non-repo predicate sibling
+- `repo:has.commit.after(...)`
+- `repo:contains.commit.after(...)`
+- `rev:at.time(...)`
+- `repo:has.meta(key:value)`
+- `repo:has.topic(...)`
+- `file:has.owner(...)`
+- `file:has.contributor(...)`
+- `select:file.owners`
+
+Closed in this packet as explicit unsupported:
+
+- SG structural direct lexical `Phrase` sibling
+- SG structural direct lexical `Regex` sibling
+- SG structural mixed non-repo predicate siblings
+  - `file.contains(path|file:...)`
+  - `file.has.content(path|file:...)`
+  - `symbol.has.name(...)`
 
 ## 2. Promotion Bar
 
@@ -64,34 +70,47 @@ Critical review corrections:
   - 따라서 structural gap은 text/history/ownership gap보다 뒤에 둔다.
 - `repo:has.commit.after(...)`와 `rev:at.time(...)`는 raw history substrate가 일부 이미 있지만, 기존 RFC가 가정한 것처럼 바로 executable lane은 아니다.
   - `committer_time_ms`, refs/tags, RFC3339/duration timeref parsing은 이미 materialized 되어 있다.
-  - 하지만 `repo:has.commit.after(...)`는 현재 history authority에 logical external repo 축(`source_repo_id`)이 없어 Sourcegraph-style repo gate를 바로 계산할 수 없다.
-  - `rev:at.time(...)`는 기존 lexical text route에서 `rev:` 자체가 fail-closed이고, text dispatch 단계에 revision-selection / pin rebinding surface가 없다.
-  - 따라서 둘 다 "existing history substrate reuse 가능"이 아니라 **history substrate extension required** ticket으로 취급해야 한다.
+  - `repo:has.commit.after(...)`는 quanta-index 내부 contract/sdk/runtime/front-door/parity substrate가 landed 상태고, Semantica ingress owner의 repo commit recency auto-emission도 live ingress roundtrip proof까지 green이다.
+  - `rev:at.time(...)`도 이제 text dispatch 단계의 revision-selection / pin rebinding surface까지 landed다.
+  - 따라서 `SGP-01`과 `SGP-05`는 모두 landed이고, 남은 history-side residue는 capability gap이 아니라 shared inventory/guard followthrough다.
 - `file:has.owner(...)`와 `select:file.owners`는 같은 ownership authority를 쓰더라도 owner seam이 다를 수 있다.
   - query-side filter를 먼저 닫고 projection은 second increment로 둔다.
 - `repo:has.meta(...)`와 `repo:has.topic(...)`는 같은 티켓 안에 있어도 같은 authority라고 가정하지 않는다.
-  - `has.meta` 먼저, `has.topic`은 별도 second increment다.
+  - 현재 tree는 `has.meta`와 `has.topic`을 distinct authority batch로 분리해 landed 했다.
 - `rev:at.time(...)`는 predicate widening이 아니라 revision-selection / history route 문제다.
   - lexical-only patch로 취급하면 안 되고, text dispatch의 pin-resolution seam까지 같이 다뤄야 한다.
-- `repo:has.meta(...)`, `repo:has.topic(...)`, `file:has.owner(...)`, `file:has.contributor(...)`는 현재 search-plane 안에 executable authority가 없다.
-  - 이 셋은 producer-side ingestion/materialization owner가 확정되기 전까지 authority-blocked로 유지한다.
+- `repo:has.meta(key:value)`와 `repo:has.topic(...)`는 현재 tree에서 executable authority가 있다.
+  - 둘 다 owner-local/runtime/front-door/parity/corpus rail이 닫혔다.
+- `file:has.owner(...)`는 현재 tree에서 executable authority가 있다.
+- `file:has.contributor(...)`는 현재 tree에서 executable authority가 있다.
+  - source-repo keyed file-contributor authority batch, runtime/front-door/parity/corpus proof까지 landed다.
 
 Execution queue:
 
 1. [SGP-00](tickets/SGP-00-scope-lock-and-comparison-baseline.md)
-2. [SGP-06](tickets/SGP-06-sg-structural-direct-phrase-regex.md)
-3. [SGP-07](tickets/SGP-07-sg-structural-non-repo-predicate-siblings.md)
-4. [SGP-08](tickets/SGP-08-shared-inventory-and-parity-guard-followthrough.md)
+2. [SGP-06](tickets/SGP-06-sg-structural-direct-phrase-regex.md) — landed
+3. [SGP-07](tickets/SGP-07-sg-structural-non-repo-predicate-siblings.md) — landed
+4. [SGP-01](tickets/SGP-01-repo-commit-recency-predicates.md) — landed
+5. [SGP-05](tickets/SGP-05-revision-at-time-filter.md) — landed
+6. [SGP-02](tickets/SGP-02-repo-meta-and-topic-predicates.md) — landed for `repo:has.meta(key:value)` + `repo:has.topic(...)` promotion
+7. [SGP-08](tickets/SGP-08-shared-inventory-and-parity-guard-followthrough.md) — landed
 
 Execution note:
 
 - `SGP-00`는 scope-lock correction이다.
-- `SGP-01` / `SGP-05`는 history substrate extension required ticket이다.
-  - `SGP-01`: logical external repo keyed commit-recency authority 필요
-  - `SGP-05`: text dispatch revision-selection / pin rebinding seam 필요
-- `SGP-02` / `SGP-03` / `SGP-04`는 external producer authority-blocked ticket이다.
-  - producer-side owner가 정해지기 전에는 parser/bridge-only progress를 landed로 취급하지 않는다.
-- 현재 repo 안에서 바로 executable surface를 닫을 수 있는 lane은 `SGP-06` / `SGP-07`뿐이다.
+- `SGP-01` / `SGP-05`는 같은 bucket이 아니다.
+  - `SGP-01`: quanta-index contract/sdk/runtime/front-door/parity support와 Semantica ingress live proof까지 landed다.
+  - `SGP-05`: text dispatch revision-selection / pin rebinding seam이 landed다. 남은 followthrough는 `SGP-08` inventory/guard sync다.
+- `SGP-02`는 두 surface 모두 landed로 닫혔다.
+  - `repo:has.meta(key:value)`: landed
+  - `repo:has.topic(...)`: landed
+- `SGP-03`는 split verdict로 닫혔다.
+  - `file:has.owner(...)` / `file:has.owner()` query-side filter는 landed
+  - `select:file.owners` explicit result contract도 landed
+- `SGP-04`는 contributor authority batch와 query-side execution seam까지 landed다.
+  - external producer auto-emission은 packet closeout의 필수 조건이 아니라 separate integration seam이다.
+- 현재 repo 안에서 바로 executable closeout이 가능한 structural demotion lane은 `SGP-06` / `SGP-07`에서 이미 닫혔다.
+- `SGP-08`까지 닫힌 현재 상태에서 이 packet의 mandatory residue는 없다.
 
 ## 4. Non-Goals
 
@@ -112,6 +131,13 @@ Before this RFC lands:
 If a ticket lands with a demotion instead of a promotion, the analysis doc must
 say that directly.
 
-## 6. Ticket Index
+## 6. Remaining Work
+
+- mandatory residue:
+  - 없음
+- optional new-scope only:
+  - follow-on backlog lives in [../jun-5-sourcegraph-tail-gaps/rfc.md](../jun-5-sourcegraph-tail-gaps/rfc.md)
+
+## 7. Ticket Index
 
 - [tickets/INDEX.md](tickets/INDEX.md)

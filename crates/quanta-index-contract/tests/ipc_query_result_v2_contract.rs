@@ -684,6 +684,7 @@ fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> Test
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        file_owner_rows: None,
     });
 
     roundtrip_eq(&response)?;
@@ -764,6 +765,7 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
         results: vec![lexical_candidate()],
+        file_owner_rows: None,
     });
     let bytes = mutate_ipc_response_wire(&response, |wire| {
         let response_fields = map_fields_mut(wire)?;
@@ -774,6 +776,43 @@ fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     })?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "results")
+}
+
+#[test]
+fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestRes {
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        generation: generation_pin(),
+        results: vec![lexical_candidate()],
+        file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
+            candidate_id: "lex-1".to_string(),
+            repo_id: RepoId::new("repo-a"),
+            revision_id: RevisionId::new("rev-a"),
+            manifest_generation: ManifestGeneration::new(7),
+            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            owners: vec!["@alice".to_string(), "@acme/platform".to_string()],
+        }]),
+    });
+
+    roundtrip_eq(&response)?;
+
+    let decoded: SearchPlaneQueryIpcResponse = decode(&encode(&response)?)?;
+    let SearchPlaneQueryIpcResponse::Text(inner) = decoded else {
+        return Err("expected Text response".into());
+    };
+    let Some(file_owner_rows) = inner.file_owner_rows else {
+        return Err("missing file_owner_rows".into());
+    };
+    if file_owner_rows.len() != 1 {
+        return Err(format!(
+            "expected one file owner projection row, got {}",
+            file_owner_rows.len()
+        )
+        .into());
+    }
+    if file_owner_rows[0].owners != vec!["@alice".to_string(), "@acme/platform".to_string()] {
+        return Err(format!("unexpected owners: {:?}", file_owner_rows[0].owners).into());
+    }
+    Ok(())
 }
 
 #[test]

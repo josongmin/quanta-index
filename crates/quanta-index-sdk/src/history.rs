@@ -1,10 +1,13 @@
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
+    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
     GenerationPin, GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch,
     HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
-    HistoryTagMutation, ManifestGeneration, RepoId, RevisionId, SearchPlaneHistoryQueryResponse,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, TextQuerySyntax,
+    HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
+    RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry,
+    RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -34,6 +37,84 @@ pub struct HistoryBatch {
     pub refs: Vec<RefMutation>,
     pub tags: Vec<RefMutation>,
     pub diff_hunks: Vec<DiffHunkMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoCommitRecencyBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoCommitRecencyMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoCommitRecencyMutation {
+    pub source_repo_id: RepoId,
+    pub latest_committer_time_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMetaBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoMetaMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoMetaMutation {
+    pub source_repo_id: RepoId,
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoTopicBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<RepoTopicMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoTopicMutation {
+    pub source_repo_id: RepoId,
+    pub topic: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileOwnershipBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<FileOwnershipMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileOwnershipMutation {
+    pub source_repo_id: RepoId,
+    pub repo_relative_path: RepoRelativePath,
+    pub owners: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileContributorBatch {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub batch_digest: String,
+    pub entries: Vec<FileContributorMutation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileContributorMutation {
+    pub source_repo_id: RepoId,
+    pub repo_relative_path: RepoRelativePath,
+    pub contributors: Vec<String>,
 }
 
 impl HistoryBatch {
@@ -115,6 +196,159 @@ impl HistoryBatch {
     }
 }
 
+impl RepoCommitRecencyBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(mut self, source_repo_id: RepoId, latest_committer_time_ms: u64) -> Self {
+        self.entries.push(RepoCommitRecencyMutation {
+            source_repo_id,
+            latest_committer_time_ms,
+        });
+        self
+    }
+}
+
+impl RepoMetaBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(
+        mut self,
+        source_repo_id: RepoId,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.entries.push(RepoMetaMutation {
+            source_repo_id,
+            key: key.into(),
+            value: value.into(),
+        });
+        self
+    }
+}
+
+impl RepoTopicBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(mut self, source_repo_id: RepoId, topic: impl Into<String>) -> Self {
+        self.entries.push(RepoTopicMutation {
+            source_repo_id,
+            topic: topic.into(),
+        });
+        self
+    }
+}
+
+impl FileOwnershipBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(
+        mut self,
+        source_repo_id: RepoId,
+        repo_relative_path: RepoRelativePath,
+        owners: Vec<String>,
+    ) -> Self {
+        self.entries.push(FileOwnershipMutation {
+            source_repo_id,
+            repo_relative_path,
+            owners,
+        });
+        self
+    }
+}
+
+impl FileContributorBatch {
+    #[must_use]
+    pub fn new(
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        generation: ManifestGeneration,
+        batch_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_id,
+            revision_id,
+            generation,
+            batch_digest: batch_digest.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn entry(
+        mut self,
+        source_repo_id: RepoId,
+        repo_relative_path: RepoRelativePath,
+        contributors: Vec<String>,
+    ) -> Self {
+        self.entries.push(FileContributorMutation {
+            source_repo_id,
+            repo_relative_path,
+            contributors,
+        });
+        self
+    }
+}
+
 pub struct HistoryNamespace<'a> {
     client: &'a QuantaIndex,
 }
@@ -131,6 +365,203 @@ impl<'a> HistoryNamespace<'a> {
 
     pub fn publish(&self, batch: &HistoryBatch) -> Result<BatchReceipt, SdkError> {
         <HistoryNs as crate::NamespaceIngest>::publish(self.client, batch)
+    }
+
+    pub fn publish_repo_commit_recency(
+        &self,
+        batch: &RepoCommitRecencyBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        let wire = RepoCommitRecencyIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| RepoCommitRecencyEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    latest_committer_time_ms: entry.latest_committer_time_ms,
+                })
+                .collect(),
+        };
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(wire),
+        )?;
+        match response {
+            SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "repo commit recency receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
+    pub fn publish_repo_meta(&self, batch: &RepoMetaBatch) -> Result<BatchReceipt, SdkError> {
+        let wire = RepoMetaIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| RepoMetaEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    key: entry.key.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+        };
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(wire))?;
+        match response {
+            SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "repo meta receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
+    pub fn publish_repo_topic(&self, batch: &RepoTopicBatch) -> Result<BatchReceipt, SdkError> {
+        let wire = RepoTopicIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| RepoTopicEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    topic: entry.topic.clone(),
+                })
+                .collect(),
+        };
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(wire))?;
+        match response {
+            SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "repo topic receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
+    pub fn publish_file_ownership(
+        &self,
+        batch: &FileOwnershipBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        let wire = FileOwnershipIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| FileOwnershipEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    repo_relative_path: entry.repo_relative_path.clone(),
+                    owners: entry.owners.clone(),
+                })
+                .collect(),
+        };
+        let response = self
+            .client
+            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(wire))?;
+        match response {
+            SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "file ownership receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
+    }
+
+    pub fn publish_file_contributor(
+        &self,
+        batch: &FileContributorBatch,
+    ) -> Result<BatchReceipt, SdkError> {
+        let wire = FileContributorIngestBatch {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            entries: batch
+                .entries
+                .iter()
+                .map(|entry| FileContributorEntry {
+                    source_repo_id: entry.source_repo_id.clone(),
+                    repo_relative_path: entry.repo_relative_path.clone(),
+                    contributors: entry.contributors.clone(),
+                })
+                .collect(),
+        };
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(wire),
+        )?;
+        match response {
+            SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt) => Ok(receipt),
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
+                "file contributor receipt",
+                QuantaIndex::ingest_response_kind(&other),
+            )),
+        }
     }
 
     /// Contract-exact query replay surface. Accepts the shared wire DTO
@@ -174,6 +605,11 @@ impl crate::NamespaceIngest for HistoryNs {
         match response {
             SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
@@ -312,6 +748,7 @@ fn dispatch_history_query_request_v1(
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
         | SearchPlaneQueryIpcResponse::RepoMapQuery(_)

@@ -2,7 +2,7 @@
 
 Parent RFC: [../rfc.md](../rfc.md)
 
-Status: `planned`
+Status: `landed`
 
 ## Objective
 
@@ -19,50 +19,62 @@ as executable Sourcegraph predicate surfaces.
   - `crates/quanta-index-lq-norm/src/parser/implementation.rs`
 - Sourcegraph bridge can already lower unknown `repo:` predicate names into canonical predicate leaves:
   - `crates/quanta-index-lq-bridge/src/translator.rs`
-- this is not a Tantivy lexical-predicate owner seam:
-  - the predicate needs repo-level history/recency authority, not per-file text matching
-- history shard substrate already exists:
-  - `crates/quanta-index-search-plane/src/query_dispatcher.rs`
-  - `validate_history_timeref_filters(...)`
-  - `parse_history_timeref_ms(...)`
-  - `resolve_history_since_timeref_ms(...)`
-  - `CommitRecord::committer_time_ms`
-- but the current history authority is keyed only by `(repo_id, revision_id, generation)` and stores commits/refs/tags/diff hunks without a logical external repo dimension
-  - `HistoryAuthorityState` has no `source_repo_id`-keyed repo-recency index
-  - current executable repo-gate predicates (`repo.has.file`, `repo.has.content`) narrow by lexical `source_repo_id`/`repo_id`, which history state cannot currently reproduce
-- therefore the primary missing seam is **logical external repo keyed history authority**, not predicate admission
-- no bridge/runtime/front-door/shared proof exists
+- quanta-index now owns an explicit repo-recency authority seam:
+  - `crates/quanta-index-contract/src/ipc/ingest.rs`
+  - `RepoCommitRecencyIngestBatch`
+  - `crates/quanta-index-sdk/src/history.rs`
+  - `RepoCommitRecencyBatch`
+  - `crates/quanta-index-lexical/src/lib.rs`
+  - lexical repo-gate execution against source-repo keyed recency sidecar
+- current front-door proof exists:
+  - `crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs`
+  - `crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs`
+  - `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
+- shared dual-syntax parity row now exists:
+  - `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- external producer ingress now auto-emits repo commit recency alongside history publish:
+  - `semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/index_sdk_ingress/publish.rs`
+  - `semantica-codegraph-v2/.../tests/index_sdk_ingress_publish_contract_test.rs`
+- canonical producer proof is now green on the live ingress rail:
+  - `index_sdk_ingress_live_repo_commit_recency_publish_and_query_roundtrip_v1`
+  - producer history publish emits repo commit recency and the downstream Sourcegraph text query executes against it
 
 ## Files To Touch
 
+- `crates/quanta-index-contract/src/ipc/ingest.rs`
+- `crates/quanta-index-core/src/domains/lexical/outbound.rs`
+- `crates/quanta-index-core/src/timeref.rs`
+- `crates/quanta-index-lexical/src/lib.rs`
+- `crates/quanta-index-lexical/src/predicate_registry.rs`
 - `crates/quanta-index-lq-bridge/src/translator.rs`
-- `crates/quanta-index-search-plane/src/readiness.rs`
-- `crates/quanta-index-search-plane/src/query_dispatcher.rs`
-- `crates/quanta-index-contract/src/lex/history.rs`
 - `crates/quanta-index-sdk/src/history.rs`
-- producer-side history ingest/materialization owner if new logical repo keyed history state is required
-- `crates/quanta-index-lexical/src/planner.rs` only if native predicate admission still needs planner-level allowlisting
+- `crates/quanta-index-lexical/src/planner.rs`
+- producer-side history ingest/materialization owner in `semantica-codegraph-v2`
 - `crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs`
-- `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`
+- `crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs`
+- `crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs`
 - `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
 
 ## Concrete First Increment
 
-Support exactly one canonical scalar time shape first, backed by the existing history timeref substrate **after** logical external repo keyed history authority exists:
+Current implemented increment:
 
-1. `repo:has.commit.after(2024-01-01T00:00:00Z)`
-2. alias parity: `repo:contains.commit.after(2024-01-01T00:00:00Z)`
-
-Do not start with natural-language timeref.
+1. canonical `repo:has.commit.after(...)`
+2. alias `repo:contains.commit.after(...)`
+3. source-repo keyed repo-recency authority batch
+4. SG/native parity row
+5. producer ingress auto-emission from history publish
+6. canonical producer live ingress roundtrip proof
 
 ## Implementation Steps
 
-1. add or expose logical external repo keyed commit-recency authority
+1. land contract/sdk/runtime repo-recency authority seam
 2. define repo-gate semantics over that authority
-3. wire one canonical timestamp shape onto existing `committer_time_ms` / timeref parsing
-4. add positive and miss oracle rows across multiple repos
-5. add SG/native parity
-6. add alias parity
+3. wire canonical + alias Sourcegraph surfaces onto timeref parsing
+4. add positive/miss/invalid oracle rows across multiple repos
+5. add shared SDK/front-door inventory
+6. hook producer emission in `semantica-codegraph-v2`
+7. prove the producer owner seam on canonical ingress rail
 
 ## Red Rail First
 
@@ -74,6 +86,9 @@ Do not start with natural-language timeref.
 - canonical and alias shape both execute
 - miss oracle fails if repo-recency gating is ignored
 - logical external repo mapping is explicit in the execution owner
+- producer emits the authority batch in the real cross-repo path
+- shared dual-syntax parity row exists
+- canonical producer ingress proof is green on the real live roundtrip rail
 
 ## Not Done If
 

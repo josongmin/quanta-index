@@ -10,13 +10,16 @@
 
 pub mod domains;
 pub mod error;
+pub mod timeref;
 
 pub use error::CoreError;
 
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
-    LexicalBatchBuildPort, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort,
-    LexicalPolicy, LexicalQueryPort, LexicalReadiness, LexicalSearcher,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalPolicy,
+    LexicalQueryPort, LexicalReadiness, LexicalSearcher, RepoCommitRecencyIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort,
 };
 pub use domains::repomap::{
     RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapPolicy, RepoMapQueryPort,
