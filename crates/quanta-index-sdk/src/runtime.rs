@@ -113,7 +113,17 @@ impl crate::NamespaceIngest for RuntimeNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
-            other => Err(SdkError::unexpected_response(
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "dirty receipt",
                 QuantaIndex::ingest_response_kind(&other),
             )),

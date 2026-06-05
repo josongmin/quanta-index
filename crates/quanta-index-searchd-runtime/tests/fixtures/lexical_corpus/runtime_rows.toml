@@ -268,6 +268,23 @@ top_k = 10
 kind = "empty"
 
 [[row]]
+id = "runtime_sourcegraph_repo_has_file_path_content_typed_fail"
+query = "repo:has.file(path:src/gate-a.rs, content:shared_oracle_needle) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.file"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+runtime_error_message_contains = "path:/name:/lang:"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
 id = "runtime_native_repo_has_file_name_true_gate_multi_repo"
 query = "repo:has.file(name:gate-a.rs) shared_oracle_needle"
 gate = "active"
@@ -918,6 +935,57 @@ top_k = 10
 kind = "empty"
 
 [[row]]
+id = "runtime_sourcegraph_repo_has_meta_tag_null_typed_fail"
+query = "repo:has.meta(tag:) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+runtime_error_message_contains = "tag/null-value"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_meta_regex_typed_fail"
+query = "repo:has.meta(/license/:/apache.*/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+runtime_error_message_contains = "regex"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_description_typed_fail"
+query = "repo:has.description(enginecorp) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.description"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+runtime_error_message_contains = "repo.has.description"
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
 id = "runtime_sourcegraph_repo_has_topic_true_gate_multi_repo"
 query = "repo:has.topic(security) shared_oracle_needle"
 gate = "active"
@@ -1027,6 +1095,23 @@ expected_engines_touched = ["lexical"]
 
 [row.expected]
 kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_contributor_regex_typed_fail"
+query = "file:has.contributor(/ali.*/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["file.has.contributor"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+runtime_error_message_contains = "regex"
+top_k = 10
+
+[row.expected]
+kind = "empty"
 
 [[row]]
 id = "runtime_native_case_sensitive_miss"

@@ -410,8 +410,10 @@ fn predicate_arity_label(name: &str) -> &'static str {
 
 /// Validate `repo.has.file(...)` arguments by delegating to the registry-owned
 /// matcher parser, so the planner and lexical lowering share one argument
-/// contract. The parsed matchers are discarded here; the planner only needs to
-/// confirm the shape is admissible before emitting `PlanLeaf::Predicate`.
+/// contract.
+///
+/// The parsed matchers are discarded here; the planner only needs to confirm
+/// the shape is admissible before emitting `PlanLeaf::Predicate`.
 fn validate_repo_has_file_args(
     name: &str,
     args: &[LqPredicateArg],

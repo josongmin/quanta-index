@@ -244,19 +244,18 @@ fn seed_multi_repo_chunks(rt: &mut E2eRuntime) -> AnyResult<()> {
     Ok(())
 }
 
-fn now_epoch_ms() -> u64 {
-    SystemTime::now()
+fn now_epoch_ms() -> AnyResult<u64> {
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_millis()
-        .try_into()
-        .expect("epoch millis overflow u64")
+        .map_err(|err| anyhow::anyhow!("system time before unix epoch: {err}"))?
+        .as_millis();
+    u64::try_from(millis).map_err(|err| anyhow::anyhow!("epoch millis overflow u64: {err}"))
 }
 
 fn boot_with_multi_repo_and_commit_recency() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     seed_multi_repo_chunks(&mut rt)?;
-    let now_ms = now_epoch_ms();
+    let now_ms = now_epoch_ms()?;
     rt.publish_repo_commit_recency_batch(RepoCommitRecencyIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
@@ -476,7 +475,7 @@ fn publish_revision_text_generation(
 
 fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)> {
     let mut rt = E2eRuntime::boot()?;
-    let now_ms = now_epoch_ms();
+    let now_ms = now_epoch_ms()?;
     let _ancestor_pin = publish_revision_text_generation(
         &mut rt,
         rev_at_time_ancestor_revision(),

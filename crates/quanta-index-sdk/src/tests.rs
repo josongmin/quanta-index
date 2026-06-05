@@ -1132,11 +1132,18 @@ fn history_publish_repo_commit_recency_routes_through_ingest_transport() {
         return;
     };
     assert_eq!(wire.batch_digest, "batch:repo-commit-recency-3");
-    assert_eq!(wire.entries.len(), 2);
-    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[0].latest_committer_time_ms, 1_717_171_717_000);
-    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
-    assert_eq!(wire.entries[1].latest_committer_time_ms, 1_617_171_717_000);
+    let [entry_a, entry_b] = wire.entries.as_slice() else {
+        assert!(
+            false,
+            "expected two repo-commit-recency entries, got {}",
+            wire.entries.len()
+        );
+        return;
+    };
+    assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_a.latest_committer_time_ms, 1_717_171_717_000);
+    assert_eq!(entry_b.source_repo_id.as_str(), "corp-b");
+    assert_eq!(entry_b.latest_committer_time_ms, 1_617_171_717_000);
 }
 
 #[test]
@@ -1175,13 +1182,20 @@ fn history_publish_repo_meta_routes_through_ingest_transport() {
         return;
     };
     assert_eq!(wire.batch_digest, "batch:repo-meta-4");
-    assert_eq!(wire.entries.len(), 2);
-    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[0].key, "license");
-    assert_eq!(wire.entries[0].value, "apache-2.0");
-    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
-    assert_eq!(wire.entries[1].key, "license");
-    assert_eq!(wire.entries[1].value, "gpl-3.0");
+    let [entry_a, entry_b] = wire.entries.as_slice() else {
+        assert!(
+            false,
+            "expected two repo-meta entries, got {}",
+            wire.entries.len()
+        );
+        return;
+    };
+    assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_a.key, "license");
+    assert_eq!(entry_a.value, "apache-2.0");
+    assert_eq!(entry_b.source_repo_id.as_str(), "corp-b");
+    assert_eq!(entry_b.key, "license");
+    assert_eq!(entry_b.value, "gpl-3.0");
 }
 
 #[test]
@@ -1221,13 +1235,20 @@ fn history_publish_repo_topic_routes_through_ingest_transport() {
         return;
     };
     assert_eq!(wire.batch_digest, "batch:repo-topic-5");
-    assert_eq!(wire.entries.len(), 3);
-    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[0].topic, "security");
-    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[1].topic, "platform");
-    assert_eq!(wire.entries[2].source_repo_id.as_str(), "corp-b");
-    assert_eq!(wire.entries[2].topic, "ml");
+    let [entry_a, entry_b, entry_c] = wire.entries.as_slice() else {
+        assert!(
+            false,
+            "expected three repo-topic entries, got {}",
+            wire.entries.len()
+        );
+        return;
+    };
+    assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_a.topic, "security");
+    assert_eq!(entry_b.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_b.topic, "platform");
+    assert_eq!(entry_c.source_repo_id.as_str(), "corp-b");
+    assert_eq!(entry_c.topic, "ml");
 }
 
 #[test]
@@ -1274,13 +1295,20 @@ fn history_publish_file_ownership_routes_through_ingest_transport() {
         return;
     };
     assert_eq!(wire.batch_digest, "batch:file-ownership-5");
-    assert_eq!(wire.entries.len(), 2);
-    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[0].repo_relative_path.as_str(), "src/gate-a.rs");
-    assert_eq!(wire.entries[0].owners, vec!["@alice", "@acme/platform"]);
-    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
-    assert_eq!(wire.entries[1].repo_relative_path.as_str(), "src/gate-b.rs");
-    assert!(wire.entries[1].owners.is_empty());
+    let [entry_a, entry_b] = wire.entries.as_slice() else {
+        assert!(
+            false,
+            "expected two file-ownership entries, got {}",
+            wire.entries.len()
+        );
+        return;
+    };
+    assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_a.repo_relative_path.as_str(), "src/gate-a.rs");
+    assert_eq!(entry_a.owners, vec!["@alice", "@acme/platform"]);
+    assert_eq!(entry_b.source_repo_id.as_str(), "corp-b");
+    assert_eq!(entry_b.repo_relative_path.as_str(), "src/gate-b.rs");
+    assert!(entry_b.owners.is_empty());
 }
 
 #[test]
@@ -1327,13 +1355,20 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
         return;
     };
     assert_eq!(wire.batch_digest, "batch:file-contributor-6");
-    assert_eq!(wire.entries.len(), 2);
-    assert_eq!(wire.entries[0].source_repo_id.as_str(), "corp-a");
-    assert_eq!(wire.entries[0].repo_relative_path.as_str(), "src/gate-a.rs");
-    assert_eq!(wire.entries[0].contributors, vec!["alice", "carol"]);
-    assert_eq!(wire.entries[1].source_repo_id.as_str(), "corp-b");
-    assert_eq!(wire.entries[1].repo_relative_path.as_str(), "src/gate-b.rs");
-    assert_eq!(wire.entries[1].contributors, vec!["bob"]);
+    let [entry_a, entry_b] = wire.entries.as_slice() else {
+        assert!(
+            false,
+            "expected two file-contributor entries, got {}",
+            wire.entries.len()
+        );
+        return;
+    };
+    assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
+    assert_eq!(entry_a.repo_relative_path.as_str(), "src/gate-a.rs");
+    assert_eq!(entry_a.contributors, vec!["alice", "carol"]);
+    assert_eq!(entry_b.source_repo_id.as_str(), "corp-b");
+    assert_eq!(entry_b.repo_relative_path.as_str(), "src/gate-b.rs");
+    assert_eq!(entry_b.contributors, vec!["bob"]);
 }
 
 #[test]

@@ -802,8 +802,7 @@ impl<'a> Parser<'a> {
         let mut paren_depth = 0usize;
         while let Some(b) = self.peek() {
             match b {
-                b' ' | b'\t' if paren_depth == 0 => break,
-                b')' if paren_depth == 0 => break,
+                b' ' | b'\t' | b')' if paren_depth == 0 => break,
                 b'(' => paren_depth = paren_depth.saturating_add(1),
                 b')' => paren_depth = paren_depth.saturating_sub(1),
                 _ => {}
@@ -1498,7 +1497,7 @@ mod tests {
 
     #[test]
     fn parses_symbol_predicate() {
-        let q = unwrap_ok(parse_sourcegraph(r#"symbol:has.name(MyTypeSymbol)"#));
+        let q = unwrap_ok(parse_sourcegraph(r"symbol:has.name(MyTypeSymbol)"));
         let SgQuery::Predicate {
             scope,
             name,

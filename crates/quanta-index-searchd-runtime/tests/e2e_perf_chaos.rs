@@ -1174,7 +1174,7 @@ fn structural_mixed_lexical_or_executes_and_does_not_poison_next_query() -> AnyR
     )?;
     let mut observed = mixed_or.candidate_ids;
     observed.sort();
-    let mut expected = vec![fn_id.clone(), trait_id.clone()];
+    let mut expected = vec![fn_id.clone(), trait_id];
     expected.sort();
     if observed != expected {
         return Err(anyhow::anyhow!(
@@ -1662,7 +1662,7 @@ fn predicate_file_contains_executes_and_miss_does_not_poison_next_query() -> Any
     let expected_id = rt.candidate_id_for_path("src/file_contains.rs")?;
     let hit = rt.query_text(TextQuerySyntax::Native, "file.contains('oo_ba')", 10);
     require_no_typed_error(hit.typed_error, "file.contains hit query")?;
-    if hit.candidate_ids != vec![expected_id.clone()] {
+    if hit.candidate_ids != vec![expected_id] {
         return Err(anyhow::anyhow!(
             "file.contains hit query diverged: {:?}",
             hit.candidate_ids

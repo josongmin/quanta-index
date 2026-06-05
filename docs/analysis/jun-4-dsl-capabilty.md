@@ -154,6 +154,17 @@
 
 - lexical / history / runtime-catalog / core structural DSL은 현재 tree에서 executable이다.
 - Sourcegraph text route는 shipped predicate/alias/select surface, repo commit recency gate, repo metadata gate, repo topic gate, owner/contributor authority gate, shared symbol route까지 포함해 현재 inventory 기준으로 커버된다.
+- `jun-5-sourcegraph-tail-gaps` 결과까지 합치면 docs baseline tail gap은 더 이상 ambiguous하지 않다.
+  - 지원됨으로 종결:
+    - `repo:contains.file(...)`
+    - `repo:contains.path(...)`
+  - 명시적 미지원으로 종결:
+    - `repo:has.file(path:... content:...)`
+    - `repo:has.description(...)`
+    - `repo:has.meta(key)`
+    - `repo:has.meta(tag:)`
+    - `repo:has.meta(/key/:/value/)`
+    - `file:has.contributor(<name-or-email regex>)`
 - 중간 상태 셀은 없다. 현재 inventory는 `지원됨`, `미지원`, `비실행 / 별도 carrier` 세 상태만 쓴다.
 - 남은 경계는 intentional unsupported뿐이다.
   - SG structural direct lexical `Phrase` / `Regex` sibling 없음

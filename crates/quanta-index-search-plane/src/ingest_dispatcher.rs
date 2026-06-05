@@ -686,6 +686,10 @@ pub struct SearchPlaneIngestDispatcher {
 
 impl SearchPlaneIngestDispatcher {
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "composition-root wiring of one Arc<dyn ...Port> per ingest authority; bundling into a struct is a separate refactor"
+    )]
     pub fn new(
         lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
         history: Arc<dyn HistoryIngestPort + Send + Sync>,

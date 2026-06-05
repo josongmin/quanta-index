@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-#[allow(dead_code, unreachable_pub)]
+#[expect(
+    dead_code,
+    reason = "dev tool includes the full predicate_registry source via #[path] but reads only the capability tables"
+)]
 #[path = "../predicate_registry.rs"]
 mod predicate_registry_dump;
 
@@ -12,7 +15,11 @@ struct PredicateCapabilitiesDump<'a> {
     aliases: BTreeMap<&'a str, &'a str>,
 }
 
-fn main() {
+#[expect(
+    clippy::print_stdout,
+    reason = "capability-dump CLI writes the JSON capability table to stdout by design"
+)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dump = PredicateCapabilitiesDump {
         canonical_predicates: predicate_registry_dump::PREDICATE_REGISTRY
             .iter()
@@ -23,8 +30,7 @@ fn main() {
             .map(|spec| (spec.alias, spec.canonical))
             .collect(),
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&dump).expect("predicate capability dump must serialize")
-    );
+    let json = serde_json::to_string_pretty(&dump)?;
+    println!("{json}");
+    Ok(())
 }

@@ -802,15 +802,15 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
     let Some(file_owner_rows) = inner.file_owner_rows else {
         return Err("missing file_owner_rows".into());
     };
-    if file_owner_rows.len() != 1 {
+    let [file_owner_row] = file_owner_rows.as_slice() else {
         return Err(format!(
             "expected one file owner projection row, got {}",
             file_owner_rows.len()
         )
         .into());
-    }
-    if file_owner_rows[0].owners != vec!["@alice".to_string(), "@acme/platform".to_string()] {
-        return Err(format!("unexpected owners: {:?}", file_owner_rows[0].owners).into());
+    };
+    if file_owner_row.owners != vec!["@alice".to_string(), "@acme/platform".to_string()] {
+        return Err(format!("unexpected owners: {:?}", file_owner_row.owners).into());
     }
     Ok(())
 }

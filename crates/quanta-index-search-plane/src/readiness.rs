@@ -2645,7 +2645,12 @@ mod tests {
             .ok_or("expected stale runtime catalog replay to fail")?;
         match err {
             CoreError::Typed { code, .. } if code == super::ERR_RUNTIME_CATALOG_STALE_BATCH => {}
-            other => {
+            other @ (CoreError::Typed { .. }
+            | CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => {
                 return Err(format!("expected stale batch typed error, got {other:?}").into());
             }
         }
@@ -2700,7 +2705,12 @@ mod tests {
         match err {
             CoreError::Typed { code, .. }
                 if code == super::ERR_RUNTIME_CATALOG_CONFLICTING_BATCH => {}
-            other => {
+            other @ (CoreError::Typed { .. }
+            | CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => {
                 return Err(
                     format!("expected conflicting batch typed error, got {other:?}").into(),
                 );
@@ -2736,7 +2746,12 @@ mod tests {
             .ok_or("expected unknown runtime catalog doc id to fail")?;
         match err {
             CoreError::Typed { code, .. } if code == super::ERR_RUNTIME_CATALOG_UNKNOWN_DOC_ID => {}
-            other => {
+            other @ (CoreError::Typed { .. }
+            | CoreError::InvalidContract(_)
+            | CoreError::NotReady(_)
+            | CoreError::NotImplemented(_)
+            | CoreError::NotFound(_)
+            | CoreError::Storage(_)) => {
                 return Err(format!("expected unknown doc typed error, got {other:?}").into());
             }
         }

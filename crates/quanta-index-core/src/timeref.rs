@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[must_use]
 pub fn parse_search_timeref_ms(value: &str) -> Option<u64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -17,6 +18,7 @@ pub fn parse_search_timeref_ms(value: &str) -> Option<u64> {
     parse_duration_timeref_ms(trimmed)
 }
 
+#[must_use]
 pub fn parse_rev_at_time_spec(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     let payload = trimmed.strip_prefix("at.time(")?.strip_suffix(')')?;
@@ -24,6 +26,7 @@ pub fn parse_rev_at_time_spec(value: &str) -> Option<&str> {
     (!payload.is_empty()).then_some(payload)
 }
 
+#[must_use]
 pub fn is_rev_at_time_spec(value: &str) -> bool {
     parse_rev_at_time_spec(value).is_some()
 }
@@ -47,10 +50,7 @@ fn parse_rfc3339_date_only_ms(value: &str) -> Option<u64> {
 fn parse_rfc3339_datetime_ms(value: &str) -> Option<u64> {
     let (year, rest) = parse_year_prefix(value)?;
     let (month, day, rest) = parse_month_day(rest)?;
-    if !rest.starts_with('T') {
-        return None;
-    }
-    let rest = &rest[1..];
+    let rest = rest.strip_prefix('T')?;
     let (hour, minute, second, fraction_ms, rest) = parse_time_of_day(rest)?;
     if rest != "Z" {
         return None;
@@ -59,58 +59,72 @@ fn parse_rfc3339_datetime_ms(value: &str) -> Option<u64> {
 }
 
 fn parse_year_prefix(value: &str) -> Option<(u32, &str)> {
-    if value.len() < 5 || !value.as_bytes().get(4).is_some_and(|b| *b == b'-') {
+    if value.as_bytes().get(4) != Some(&b'-') {
         return None;
     }
-    let year = value.get(..4)?.parse().ok()?;
-    Some((year, &value[5..]))
+    let Ok(year) = value.get(..4)?.parse::<u32>() else {
+        return None;
+    };
+    Some((year, value.get(5..)?))
 }
 
 fn parse_month_day(rest: &str) -> Option<(u32, u32, &str)> {
-    if rest.len() < 5 || !rest.as_bytes().get(2).is_some_and(|b| *b == b'-') {
+    if rest.as_bytes().get(2) != Some(&b'-') {
         return None;
     }
-    let month = rest.get(..2)?.parse().ok()?;
-    let day = rest.get(3..5)?.parse().ok()?;
-    Some((month, day, &rest[5..]))
+    let Ok(month) = rest.get(..2)?.parse::<u32>() else {
+        return None;
+    };
+    let Ok(day) = rest.get(3..5)?.parse::<u32>() else {
+        return None;
+    };
+    Some((month, day, rest.get(5..)?))
 }
 
 fn parse_time_of_day(rest: &str) -> Option<(u32, u32, u32, u32, &str)> {
-    if rest.len() < 8 || rest.as_bytes().get(2) != Some(&b':') {
+    if rest.as_bytes().get(2) != Some(&b':') {
         return None;
     }
-    let hour = rest.get(..2)?.parse().ok()?;
+    let Ok(hour) = rest.get(..2)?.parse::<u32>() else {
+        return None;
+    };
     if rest.as_bytes().get(5) != Some(&b':') {
         return None;
     }
-    let minute = rest.get(3..5)?.parse().ok()?;
+    let Ok(minute) = rest.get(3..5)?.parse::<u32>() else {
+        return None;
+    };
     let mut second_end = 6;
-    while second_end < rest.len() && rest.as_bytes()[second_end].is_ascii_digit() {
-        second_end += 1;
+    while rest
+        .as_bytes()
+        .get(second_end)
+        .is_some_and(u8::is_ascii_digit)
+    {
+        second_end = second_end.saturating_add(1);
     }
-    let second = rest.get(6..second_end)?.parse().ok()?;
+    let Ok(second) = rest.get(6..second_end)?.parse::<u32>() else {
+        return None;
+    };
     let mut fraction_ms = 0u32;
-    let mut tail = &rest[second_end..];
-    if tail.starts_with('.') {
-        tail = &tail[1..];
+    let mut tail = rest.get(second_end..)?;
+    if let Some(after_dot) = tail.strip_prefix('.') {
+        tail = after_dot;
         let mut digits = 0u32;
         let mut places = 0u32;
         for ch in tail.chars() {
-            if !ch.is_ascii_digit() {
+            let Some(digit) = ch.to_digit(10) else {
                 break;
-            }
-            digits = digits
-                .saturating_mul(10)
-                .saturating_add(u32::from(ch as u8 - b'0'));
-            places += 1;
-            tail = &tail[ch.len_utf8()..];
+            };
+            digits = digits.saturating_mul(10).saturating_add(digit);
+            places = places.saturating_add(1);
+            tail = tail.get(ch.len_utf8()..)?;
         }
         if places == 0 {
             return None;
         }
         while places < 3 {
             digits = digits.saturating_mul(10);
-            places += 1;
+            places = places.saturating_add(1);
         }
         fraction_ms = digits;
     }
@@ -128,8 +142,9 @@ fn parse_named_month_date_ms(value: &str) -> Option<u64> {
         return None;
     };
     let month = month_name_to_number(month_name)?;
-    let day: u32 = day_token.parse().ok()?;
-    let year: u32 = year_token.parse().ok()?;
+    let (Ok(day), Ok(year)) = (day_token.parse::<u32>(), year_token.parse::<u32>()) else {
+        return None;
+    };
     unix_ms_from_utc_parts(year, month, day, 0, 0, 0, 0)
 }
 
@@ -154,7 +169,7 @@ fn month_name_to_number(value: &str) -> Option<u32> {
 fn parse_human_relative_timeref_ms(value: &str) -> Option<u64> {
     let normalized = value
         .split_whitespace()
-        .map(|token| token.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
     if normalized.as_slice() == ["yesterday"] {
         return now_ms()?.checked_sub(86_400_000);
@@ -165,7 +180,9 @@ fn parse_human_relative_timeref_ms(value: &str) -> Option<u64> {
     if ago_token != "ago" {
         return None;
     }
-    let amount: u64 = amount_token.parse().ok()?;
+    let Ok(amount) = amount_token.parse::<u64>() else {
+        return None;
+    };
     let unit_ms = match unit_token.as_str() {
         "second" | "seconds" => 1_000,
         "minute" | "minutes" => 60_000,
@@ -185,7 +202,9 @@ fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
     if digits.is_empty() {
         return None;
     }
-    let amount: u64 = digits.parse().ok()?;
+    let Ok(amount) = digits.parse::<u64>() else {
+        return None;
+    };
     let unit_ms = match unit {
         "s" => 1_000,
         "m" => 60_000,
@@ -201,11 +220,13 @@ fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
 }
 
 fn now_ms() -> Option<u64> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    u64::try_from(now_ms).ok()
+    let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return None;
+    };
+    let Ok(ms) = u64::try_from(elapsed.as_millis()) else {
+        return None;
+    };
+    Some(ms)
 }
 
 fn unix_ms_from_utc_parts(
@@ -228,8 +249,8 @@ fn unix_ms_from_utc_parts(
     let days = days_from_civil(year, month, day)?;
     let seconds = u64::from(days)
         .saturating_mul(86_400)
-        .saturating_add(u64::from(hour) * 3_600)
-        .saturating_add(u64::from(minute) * 60)
+        .saturating_add(u64::from(hour).saturating_mul(3_600))
+        .saturating_add(u64::from(minute).saturating_mul(60))
         .saturating_add(u64::from(second));
     seconds
         .checked_mul(1_000)?
@@ -237,14 +258,36 @@ fn unix_ms_from_utc_parts(
 }
 
 fn days_from_civil(year: u32, month: u32, day: u32) -> Option<u32> {
-    let mut y = i64::from(year);
     let m = i64::from(month);
-    y -= i64::from(m <= 2);
+    let y = i64::from(year).checked_sub(i64::from(m <= 2))?;
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2).div_euclid(5) + i64::from(day) - 1;
-    let doe = yoe * 365 + yoe.div_euclid(4) - yoe.div_euclid(100) + doy;
-    u32::try_from(era * 146_097 + doe - 719_468).ok()
+    // Howard Hinnant's days_from_civil, with every step checked so an
+    // out-of-range date yields `None` rather than overflowing.
+    let month_offset = if m > 2 {
+        m.checked_sub(3)?
+    } else {
+        m.checked_add(9)?
+    };
+    let doy = 153i64
+        .checked_mul(month_offset)?
+        .checked_add(2)?
+        .div_euclid(5)
+        .checked_add(i64::from(day))?
+        .checked_sub(1)?;
+    let doe = yoe
+        .checked_mul(365)?
+        .checked_add(yoe.div_euclid(4))?
+        .checked_sub(yoe.div_euclid(100))?
+        .checked_add(doy)?;
+    let days = era
+        .checked_mul(146_097)?
+        .checked_add(doe)?
+        .checked_sub(719_468)?;
+    let Ok(days) = u32::try_from(days) else {
+        return None;
+    };
+    Some(days)
 }
 
 #[cfg(test)]

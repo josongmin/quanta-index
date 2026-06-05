@@ -10,8 +10,15 @@ Keep guard, capability inventory, and backlog packet aligned with the final tail
 
 ## Current Code Fact
 
-- `tools/benchmark/sourcegraph_parity.py --check` already tracks supported canonical surfaces and explicit unsupported structural inventory
-- current analysis doc still needs a follow-on packet link for exact tail gaps
+- `tools/benchmark/sourcegraph_parity.py --check` tracks supported canonical surfaces and explicit unsupported structural inventory
+- this ticket also owns alias and authority-backed tail-cell classification:
+  - `repo:contains.file(...)`
+  - `repo:contains.path(...)`
+  - `repo:has.description(...)`
+  - `repo:has.meta(key)`
+  - `repo:has.meta(tag:)`
+  - `repo:has.meta(/key/:/value/)`
+  - `file:has.contributor(<name-or-email regex>)`
 
 ## Official Sourcegraph Baseline
 
@@ -56,6 +63,7 @@ rg -n "jun-5-sourcegraph-tail-gaps|repo:contains.file|repo:has.description|repo:
 - supported cells stay in required-surface inventory only with proof
 - explicit unsupported cells stay machine-checked
 - analysis doc and packet docs list the same tail-gap set
+- bridge aliases and authority-backed explicit unsupported cells are both classified by `--check`
 
 ## Not Done If
 

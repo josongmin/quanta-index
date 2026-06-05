@@ -98,12 +98,15 @@ VARIANT_KEYWORD = {
 # verified from this repo). Used only for the predicate-gap section.
 SG_PREDICATES = [
     "repo:has.file(...)",
+    "repo:contains.file(...)",
     "repo:has.path(...)",
+    "repo:contains.path(...)",
     "repo:has.content(...)",
     "repo:has.commit.after(...)",
     "repo:contains.commit.after(...)",
     "repo:has.meta(...)",
     "repo:has.topic(...)",
+    "repo:has.description(...)",
     "file:has.content(...)",
     "file:has.owner(...)",
     "file:has.contributor(...)",
@@ -114,7 +117,38 @@ SG_SELECT_SURFACES = [
     "select:file.owners",
 ]
 
-EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = ()
+EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = (
+    (
+        "repo.has.file.path_content",
+        "repo:has.file(path:... content:...)",
+        "repo-file gate has no content matcher seam",
+    ),
+    (
+        "repo.has.description",
+        "repo:has.description(...)",
+        "no producer-published repo-description authority exists on the current tree",
+    ),
+    (
+        "repo.has.meta.key_only",
+        "repo:has.meta(key)",
+        "key existence is not exposed by the exact-string metadata substrate",
+    ),
+    (
+        "repo.has.meta.tag_null",
+        "repo:has.meta(tag:)",
+        "exact-string metadata substrate has no null-value or tag-only concept",
+    ),
+    (
+        "repo.has.meta.regex",
+        "repo:has.meta(/key/:/value/)",
+        "metadata authority is exact-string only and has no regex engine",
+    ),
+    (
+        "file.has.contributor.regex",
+        "file:has.contributor(<name-or-email regex>)",
+        "contributor authority is an exact identity set, not a name-or-email regex substrate",
+    ),
+)
 
 OUTCOME_LABEL = {
     "Candidates": "candidates",
@@ -158,6 +192,8 @@ SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = [
     ("repo.has.topic", ("repo:has.topic(", "repo.has.topic(")),
     ("repo.contains.content", ("repo:contains.content(", "repo.contains.content(")),
     ("repo.has.content", ("repo:has.content(", "repo.has.content(")),
+    ("repo.contains.path", ("repo:contains.path(", "repo.contains.path(")),
+    ("repo.contains.file", ("repo:contains.file(", "repo.contains.file(")),
     ("repo.has.path", ("repo:has.path(", "repo.has.path(")),
     ("repo.has.file", ("repo:has.file(", "repo.has.file(")),
     ("file.contains.content", ("file:contains.content(", "file.contains.content(")),
@@ -175,6 +211,8 @@ REQUIRED_SURFACES: tuple[str, ...] = (
     "repo.contains.commit.after",
     "repo.has.meta",
     "repo.has.topic",
+    "repo.contains.file",
+    "repo.contains.path",
     "repo.has.file",
     "repo.has.path",
     "repo.has.content",
@@ -291,6 +329,24 @@ def unsupported_surface_ids_in(query: str) -> set[str]:
     for surface, tokens in UNSUPPORTED_SURFACE_TOKENS:
         if any(token in query for token in tokens):
             found.add(surface)
+    if "repo:has.description(" in query or "repo.has.description(" in query:
+        found.add("repo.has.description")
+    if (
+        ("repo:has.file(" in query or "repo.has.file(" in query)
+        and "content:" in query
+    ) or (
+        ("repo:contains.file(" in query or "repo.contains.file(" in query)
+        and "content:" in query
+    ):
+        found.add("repo.has.file.path_content")
+    if "repo:has.meta(tag:)" in query or "repo.has.meta(tag:)" in query:
+        found.add("repo.has.meta.tag_null")
+    if re.search(r"repo[:.]has\.meta\([^):]+\)", query):
+        found.add("repo.has.meta.key_only")
+    if re.search(r"repo[:.]has\.meta\([^)]*/", query):
+        found.add("repo.has.meta.regex")
+    if re.search(r"file[:.]has\.contributor\(/", query):
+        found.add("file.has.contributor.regex")
     return found
 
 
@@ -400,6 +456,14 @@ def scan_filter_exec(
     queries += re.findall(
         r'query_text_with_pin\(\s*TextQuerySyntax::\w+,\s*"(.*?)"', body
     )
+    # Some negative rails batch Sourcegraph literals through `for query in [...]`
+    # loops before calling `query_text(...)`; scan only those loop-local literal
+    # blocks instead of every string in the file to keep evidence fail-closed.
+    for block in re.findall(r"for\s+\w+\s+in\s+\[(.*?)\]\s*\{", body, re.DOTALL):
+        queries += re.findall(
+            r'"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"',
+            block,
+        )
     queries += re.findall(r'"(type:(?:commit|diff)[^"]*)"', body)
     for query in queries:
         decoded = decode_literal_query(query)
@@ -448,19 +512,28 @@ def scan_runtime_rows(
     if not RUNTIME_ROWS_TOML.exists():
         return 0
     body = read(RUNTIME_ROWS_TOML)
-    queries = re.findall(r'^query = "(.*)"$', body, re.MULTILINE)
-    for query in queries:
-        decoded = decode_literal_query(query)
+    rows = 0
+    for block in body.split("[[row]]")[1:]:
+        query = re.search(r'^query = "(.*)"$', block, re.MULTILINE)
+        if query is None:
+            continue
+        rows += 1
+        outcome = (
+            "typed_error"
+            if re.search(r'^runtime_error_code = ".+"$', block, re.MULTILINE)
+            else "runtime_row"
+        )
+        decoded = decode_literal_query(query.group(1))
         record_query(
             decoded,
-            "runtime_row",
+            outcome,
             "runtime_rows",
             keyword_evidence,
             surface_evidence,
             demoted_evidence,
             unsupported_evidence,
         )
-    return len(queries)
+    return rows
 
 
 def scan_lowering_owner_local_demotions(
@@ -655,7 +728,7 @@ def build_report(
         lines.append("| --- | --- | --- | --- |")
         for surface_id, display, reason in EXPLICIT_UNSUPPORTED_COMPARISON_GAPS:
             ev = unsupported_evidence.get(surface_id)
-            if ev and ev.outcomes:
+            if ev and "typed_error" in ev.outcomes:
                 tests = ",".join(sorted(ev.tests))
                 outs = ",".join(sorted(ev.outcomes))
                 evid = f"✅ {tests} → {outs} ({ev.samples})"

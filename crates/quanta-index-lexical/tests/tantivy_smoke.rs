@@ -1528,6 +1528,10 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "corp_a_* / corp_b_* bindings mirror the two-repo (corp-a, corp-b) allow-list fixture naming"
+)]
 fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

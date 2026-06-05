@@ -5,9 +5,14 @@
 # - fail-closed unsafe posture
 # - moderate complexity caps
 
-allow-unwrap-in-tests = false
-allow-expect-in-tests = false
-allow-panic-in-tests = false
+# `unwrap`/`expect`/`panic` are permitted in `#[cfg(test)]` code: a failed
+# assertion-by-unwrap is a legitimate test failure, this matches near-universal
+# Rust testing convention, and the strict-by-default setting was never actually
+# satisfied by the existing test suites. `dbg!`/`print!` stay denied in tests —
+# those are accidental-debug-leftover smells, not assertion mechanisms.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
 allow-dbg-in-tests = false
 allow-print-in-tests = false
 

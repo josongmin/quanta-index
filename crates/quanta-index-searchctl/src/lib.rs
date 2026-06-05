@@ -1500,10 +1500,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_semantic_query_text() {
         let parsed = ParsedCommand::parse([
             "semantic",
@@ -1529,10 +1525,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_hybrid_semantic_query_text() {
         let parsed = ParsedCommand::parse([
             "hybrid-seed",
@@ -1662,10 +1654,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_lexical_sourcegraph_query_request() {
         let parsed = ParsedCommand::parse([
             "lexical",
@@ -1731,10 +1719,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_symbol_query_request() {
         let parsed = ParsedCommand::parse([
             "symbol",
@@ -1791,10 +1775,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_runtime_metadata_query_request() {
         let parsed = ParsedCommand::parse([
             "runtime-metadata",
@@ -1968,10 +1948,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_history_query_request() {
         let parsed = ParsedCommand::parse([
             "history",
@@ -2008,10 +1984,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic,
-        reason = "test asserts payload variant shape; panic isolates failure to this single test"
-    )]
     fn parses_structural_query_request() {
         let parsed = ParsedCommand::parse([
             "structural",

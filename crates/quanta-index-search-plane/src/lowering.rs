@@ -232,7 +232,9 @@ pub(crate) enum StructuralLeafVerdict<'a> {
     TypedFail,
 }
 
-/// Leaf-kind legality matrix for the SG structural route. This is the single
+/// Leaf-kind legality matrix for the SG structural route.
+///
+/// This is the single
 /// authority for which leaf kinds the route preserves, lowers, or rejects.
 /// Flipping a cell here widens or narrows the mixed-domain subset and must
 /// travel with parity proof per the ADV-02 admission bar (enforced by
@@ -294,7 +296,9 @@ fn structural_route_typed_fail() -> CoreError {
 }
 
 /// Rewrite a Sourcegraph structural expression against the leaf-kind legality
-/// matrix ([`structural_leaf_verdict`]). Mixed-domain lexical siblings that the
+/// matrix ([`structural_leaf_verdict`]).
+///
+/// Mixed-domain lexical siblings that the
 /// active LQ wire can represent (`Keyword`, `RawString`, supported repo
 /// `Predicate` families) are preserved unchanged to mirror native execution;
 /// `Phrase` / `Regex` bodies become structural blocks; `StructuralBlock`
@@ -491,15 +495,22 @@ mod tests {
             Err(err) => err,
         };
         let (code, message) = typed_error(err)?;
-        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
-        assert!(
-            message.contains(&format!("`{predicate_name}` is unsupported")),
-            "expected unsupported predicate message for {predicate_name}, got {message}"
-        );
-        assert!(
-            message.contains(guidance_fragment),
-            "expected guidance fragment {guidance_fragment:?} for {predicate_name}, got {message}"
-        );
+        let expected_code = BridgeErrorCode::BridgeTranslateFail.as_code_str();
+        if code != expected_code {
+            return Err(format!("expected code {expected_code}, got {code}").into());
+        }
+        if !message.contains(&format!("`{predicate_name}` is unsupported")) {
+            return Err(format!(
+                "expected unsupported predicate message for {predicate_name}, got {message}"
+            )
+            .into());
+        }
+        if !message.contains(guidance_fragment) {
+            return Err(format!(
+                "expected guidance fragment {guidance_fragment:?} for {predicate_name}, got {message}"
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -956,11 +967,15 @@ mod tests {
             Err(err) => err,
         };
         let (code, message) = typed_error(err)?;
-        assert_eq!(code, BridgeErrorCode::BridgeTranslateFail.as_code_str());
-        assert_eq!(
-            message,
-            "bridge: scoped filters under OR/NOT are not representable on the active LQ wire"
-        );
+        let expected_code = BridgeErrorCode::BridgeTranslateFail.as_code_str();
+        if code != expected_code {
+            return Err(format!("expected code {expected_code}, got {code}").into());
+        }
+        let expected_message =
+            "bridge: scoped filters under OR/NOT are not representable on the active LQ wire";
+        if message != expected_message {
+            return Err(format!("expected message {expected_message:?}, got {message:?}").into());
+        }
         Ok(())
     }
 
@@ -1041,10 +1056,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
-    )]
     fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling() -> TestResult {
         assert_structural_predicate_sibling_rejects(
             r#"patterntype:structural file:contains(path:src, "main") AND "function_item { { identifier :[name] } }""#,
@@ -1103,10 +1114,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test asserts typed error code+message via assert!/assert_eq! macros"
-    )]
     fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling() -> TestResult {
         assert_structural_predicate_sibling_rejects(
             r#"patterntype:structural symbol:has.name(MyTypeSymbol) AND "function_item { { identifier :[name] } }""#,
@@ -1302,10 +1309,10 @@ mod tests {
         reason = "test asserts active predicate leaf lowering via assert!/assert_eq! macros"
     )]
     fn repo_predicate_name_lang_lowering_preserves_both_matchers() -> TestResult {
-        let lowered = lower_sourcegraph_query_text(r#"repo:has.file(name:gate-a.rs, lang:rust)"#)
+        let lowered = lower_sourcegraph_query_text(r"repo:has.file(name:gate-a.rs, lang:rust)")
             .map_err(|err| -> Box<dyn std::error::Error> {
-            format!("repo predicate lowering must succeed: {err:?}").into()
-        })?;
+                format!("repo predicate lowering must succeed: {err:?}").into()
+            })?;
 
         assert_eq!(
             lowered.expr,
@@ -1332,7 +1339,7 @@ mod tests {
         reason = "test asserts active predicate leaf lowering via assert!/assert_eq! macros"
     )]
     fn symbol_predicate_lowers_to_active_predicate_leaf() -> TestResult {
-        let lowered = lower_sourcegraph_query_text(r#"symbol:has.name(MyTypeSymbol)"#).map_err(
+        let lowered = lower_sourcegraph_query_text(r"symbol:has.name(MyTypeSymbol)").map_err(
             |err| -> Box<dyn std::error::Error> {
                 format!("symbol predicate lowering must succeed: {err:?}").into()
             },
@@ -1513,6 +1520,10 @@ mod tests {
     #[expect(
         clippy::panic_in_result_fn,
         reason = "test asserts the frozen leaf-kind verdict matrix via assert_eq! macros"
+    )]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "test keeps the TestResult signature for harness uniformity though it never returns Err"
     )]
     fn sourcegraph_structural_leaf_verdict_matrix_is_frozen() -> TestResult {
         // The leaf-kind legality matrix for the SG structural route. Flipping a

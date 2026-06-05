@@ -32,23 +32,23 @@ fn git_rev() -> String {
 }
 
 fn parse_usize_env(name: &str, default: usize) -> usize {
-    match std::env::var(name) {
-        Ok(raw) => match raw.parse::<usize>() {
-            Ok(n) if n > 0 => n,
-            _ => default,
-        },
-        Err(_) => default,
+    let Ok(raw) = std::env::var(name) else {
+        return default;
+    };
+    match raw.parse::<usize>() {
+        Ok(n) if n > 0 => n,
+        _ => default,
     }
 }
 
 fn parse_u64_env(name: &str, default: u64) -> u64 {
-    match std::env::var(name) {
-        Ok(raw) => match raw.parse::<u64>() {
-            Ok(n) => n,
-            Err(_) => default,
-        },
-        Err(_) => default,
-    }
+    let Ok(raw) = std::env::var(name) else {
+        return default;
+    };
+    let Ok(n) = raw.parse::<u64>() else {
+        return default;
+    };
+    n
 }
 
 fn warm_samples() -> usize {
@@ -123,6 +123,11 @@ fn measure_pass(
     Ok((samples, last))
 }
 
+#[expect(
+    clippy::print_stderr,
+    clippy::indexing_slicing,
+    reason = "warm-matrix probe reports failures on stderr by design; pass_samples/last_outcomes are sized to SCENARIOS.len() and indexed by the SCENARIOS enumerate index"
+)]
 fn main() -> ExitCode {
     let out = parse_out_path();
     let rev = git_rev();

@@ -1784,7 +1784,7 @@ impl serde::Serialize for LqFilter {
             Self::Select { dim } => outer.serialize_entry("v", dim)?,
             Self::Dirty { mode } => outer.serialize_entry("v", mode)?,
             Self::Changed { scope } | Self::Stale { scope } | Self::Affected { scope } => {
-                outer.serialize_entry("v", scope)?
+                outer.serialize_entry("v", scope)?;
             }
             Self::Snapshot { name } => outer.serialize_entry("v", name)?,
             Self::MetaOwner { id }

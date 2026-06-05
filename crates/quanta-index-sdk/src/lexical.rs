@@ -262,7 +262,17 @@ fn publish_lexical_batch<const SEALED: bool>(
     ))?;
     match response {
         SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
-        other => Err(SdkError::unexpected_response(
+        other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+        | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "lexical receipt",
             QuantaIndex::ingest_response_kind(&other),
         )),

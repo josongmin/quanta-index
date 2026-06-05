@@ -1804,10 +1804,12 @@ fn corpus_tables() -> [&'static [CorpusRow]; 2] {
 }
 
 fn now_epoch_ms() -> AnyResult<u64> {
-    Ok(SystemTime::now()
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| anyhow::anyhow!("system clock before unix epoch: {err}"))?
-        .as_millis() as u64)
+        .as_millis();
+    u64::try_from(millis)
+        .map_err(|err| anyhow::anyhow!("epoch milliseconds exceed u64 range: {err}"))
 }
 
 fn corpus_id_for_candidate_id(candidate_id: &str) -> Option<&'static str> {
@@ -1974,7 +1976,7 @@ fn assess_text(
         };
     }
 
-    assess_expected(scenario, sg.corpus_ids, sg.typed_error_code.as_deref())
+    assess_expected(scenario, &sg.corpus_ids, sg.typed_error_code.as_deref())
 }
 
 fn assess_history(
@@ -2050,7 +2052,9 @@ fn assess_history(
                 }
             }
         }
-        other => RowReport {
+        other @ (ExpectedOutcome::Candidates { .. }
+        | ExpectedOutcome::TypedError { .. }
+        | ExpectedOutcome::ExpectedFailing { .. }) => RowReport {
             id: scenario.id,
             failure: Some(format!(
                 "history route row has unexpected expected outcome: {other:?}"
@@ -2061,32 +2065,33 @@ fn assess_history(
 
 fn assess_expected(
     scenario: &ParityScenario,
-    corpus_ids: Vec<&str>,
+    corpus_ids: &[&str],
     typed_error_code: Option<&str>,
 ) -> RowReport {
     match &scenario.expected {
-        ExpectedOutcome::Candidates { ids } => {
-            if let Some(observed) = typed_error_code {
-                RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected Candidates ids={ids:?}, got typed error code={observed}"
-                    )),
+        ExpectedOutcome::Candidates { ids } => typed_error_code.map_or_else(
+            || {
+                if corpus_ids == *ids {
+                    RowReport {
+                        id: scenario.id,
+                        failure: None,
+                    }
+                } else {
+                    RowReport {
+                        id: scenario.id,
+                        failure: Some(format!(
+                            "expected Candidates ids={ids:?}, got ids={corpus_ids:?}"
+                        )),
+                    }
                 }
-            } else if corpus_ids == *ids {
-                RowReport {
-                    id: scenario.id,
-                    failure: None,
-                }
-            } else {
-                RowReport {
-                    id: scenario.id,
-                    failure: Some(format!(
-                        "expected Candidates ids={ids:?}, got ids={corpus_ids:?}"
-                    )),
-                }
-            }
-        }
+            },
+            |observed| RowReport {
+                id: scenario.id,
+                failure: Some(format!(
+                    "expected Candidates ids={ids:?}, got typed error code={observed}"
+                )),
+            },
+        ),
         ExpectedOutcome::TypedError { code } => match typed_error_code {
             Some(observed) if observed == *code => RowReport {
                 id: scenario.id,

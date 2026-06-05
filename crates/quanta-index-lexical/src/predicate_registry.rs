@@ -1,6 +1,8 @@
 //! Predicate capability registry — the single source of truth for which
-//! lexical predicate leaves are executable on the Tantivy adapter, what
-//! argument shapes they admit, and which lowering target they resolve to.
+//! lexical predicate leaves are executable on the Tantivy adapter.
+//!
+//! It records what argument shapes each predicate admits and which lowering
+//! target it resolves to.
 //!
 //! Before this module, predicate support was a set of hardcoded `match name`
 //! arms duplicated across lexical lowering ([`crate`] `lib.rs`) and the
@@ -231,9 +233,11 @@ pub(crate) fn canonicalize_predicate_call(
         PredicateAliasRewrite::IdentityArgs => args.to_vec(),
         PredicateAliasRewrite::RepoHasPathScalarToPathFilter => {
             let pattern = match args {
-                [LqPredicateArg::Keyword(value)]
-                | [LqPredicateArg::Phrase(value)]
-                | [LqPredicateArg::RawString(value)] => value.clone(),
+                [
+                    LqPredicateArg::Keyword(value)
+                    | LqPredicateArg::Phrase(value)
+                    | LqPredicateArg::RawString(value),
+                ] => value.clone(),
                 _ => return Err(PredicateCanonicalizeError::InvalidAliasShape),
             };
             vec![LqPredicateArg::Filter {
@@ -315,9 +319,11 @@ pub(crate) fn parse_repo_file_matchers(
     args: &[LqPredicateArg],
 ) -> Result<RepoFileConstraint, RepoFileArgError> {
     match args {
-        [LqPredicateArg::Keyword(value)]
-        | [LqPredicateArg::Phrase(value)]
-        | [LqPredicateArg::RawString(value)] => {
+        [
+            LqPredicateArg::Keyword(value)
+            | LqPredicateArg::Phrase(value)
+            | LqPredicateArg::RawString(value),
+        ] => {
             return Ok(RepoFileConstraint {
                 matchers: vec![RepoFileMatcher::Path(value.clone())],
             });
@@ -487,9 +493,10 @@ pub(crate) enum RepoMetaArgError {
 }
 
 /// Whether a token is wrapped in `/.../ ` regex delimiters (a leading AND
-/// trailing slash). A token that merely contains a slash (e.g. a path-like
-/// `/usr/bin`, or a single leading `/x`) is not delimited and keeps exact-string
-/// semantics.
+/// trailing slash).
+///
+/// A token that merely contains a slash (e.g. a path-like `/usr/bin`, or a
+/// single leading `/x`) is not delimited and keeps exact-string semantics.
 ///
 /// Trade-off: a slash-terminated value such as `/usr/` is treated as regex
 /// syntax and fails closed, even though it could be an exact path. This is the
@@ -575,9 +582,11 @@ pub(crate) fn parse_file_owner_arg(
 ) -> Result<FileOwnerArg, FileOwnerArgError> {
     match args {
         [] => Ok(FileOwnerArg { owner: None }),
-        [LqPredicateArg::Keyword(value)]
-        | [LqPredicateArg::Phrase(value)]
-        | [LqPredicateArg::RawString(value)] => {
+        [
+            LqPredicateArg::Keyword(value)
+            | LqPredicateArg::Phrase(value)
+            | LqPredicateArg::RawString(value),
+        ] => {
             if value.trim().is_empty() {
                 return Err(FileOwnerArgError::EmptyOwner);
             }
@@ -585,7 +594,7 @@ pub(crate) fn parse_file_owner_arg(
                 owner: Some(value.clone()),
             })
         }
-        [LqPredicateArg::Number(_)] | [LqPredicateArg::Filter { .. }] => {
+        [LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. }] => {
             Err(FileOwnerArgError::UnsupportedArg)
         }
         [_, _, ..] => Err(FileOwnerArgError::WrongArity),
@@ -816,7 +825,7 @@ mod tests {
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "tag".to_string(),
-                value: "".to_string(),
+                value: String::new(),
             }]),
             Err(RepoMetaArgError::EmptyValue)
         );
@@ -945,19 +954,18 @@ mod tests {
 
     #[test]
     fn canonicalize_repo_has_path_alias_rewrites_to_path_filter() {
-        let call = canonicalize_predicate_call(
-            "repo.has.path",
-            &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
-        )
-        .expect("alias canonicalization must succeed")
-        .expect("alias must resolve");
-        assert_eq!(call.name, "repo.has.file");
         assert_eq!(
-            call.args,
-            vec![LqPredicateArg::Filter {
-                name: "path".to_string(),
-                value: "src/lib.rs".to_string(),
-            }]
+            canonicalize_predicate_call(
+                "repo.has.path",
+                &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
+            ),
+            Ok(Some(CanonicalPredicateCall {
+                name: "repo.has.file",
+                args: vec![LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/lib.rs".to_string(),
+                }],
+            }))
         );
     }
 
@@ -997,36 +1005,34 @@ mod tests {
         // (scalar path shorthand AND path:/name:/lang: filters), so it forwards
         // args identically — unlike `repo.has.path`, it does NOT collapse to a
         // path filter.
-        let call = canonicalize_predicate_call(
-            "repo.contains.file",
-            &[LqPredicateArg::Filter {
-                name: "name".to_string(),
-                value: "lib.rs".to_string(),
-            }],
-        )
-        .expect("alias canonicalization must succeed")
-        .expect("alias must resolve");
-        assert_eq!(call.name, "repo.has.file");
         assert_eq!(
-            call.args,
-            vec![LqPredicateArg::Filter {
-                name: "name".to_string(),
-                value: "lib.rs".to_string(),
-            }]
+            canonicalize_predicate_call(
+                "repo.contains.file",
+                &[LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "lib.rs".to_string(),
+                }],
+            ),
+            Ok(Some(CanonicalPredicateCall {
+                name: "repo.has.file",
+                args: vec![LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: "lib.rs".to_string(),
+                }],
+            }))
         );
 
         // Scalar shorthand forwards as-is; the RepoFileGate executor treats a
         // bare scalar as a path shorthand.
-        let scalar = canonicalize_predicate_call(
-            "repo.contains.file",
-            &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
-        )
-        .expect("alias canonicalization must succeed")
-        .expect("alias must resolve");
-        assert_eq!(scalar.name, "repo.has.file");
         assert_eq!(
-            scalar.args,
-            vec![LqPredicateArg::Keyword("src/lib.rs".to_string())]
+            canonicalize_predicate_call(
+                "repo.contains.file",
+                &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
+            ),
+            Ok(Some(CanonicalPredicateCall {
+                name: "repo.has.file",
+                args: vec![LqPredicateArg::Keyword("src/lib.rs".to_string())],
+            }))
         );
     }
 
@@ -1035,19 +1041,18 @@ mod tests {
         // `repo.contains.path` is the alias-of-alias of `repo.has.path`; it
         // collapses directly to `repo.has.file(path:...)` so single-level
         // canonicalization resolves a registry kind.
-        let call = canonicalize_predicate_call(
-            "repo.contains.path",
-            &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
-        )
-        .expect("alias canonicalization must succeed")
-        .expect("alias must resolve");
-        assert_eq!(call.name, "repo.has.file");
         assert_eq!(
-            call.args,
-            vec![LqPredicateArg::Filter {
-                name: "path".to_string(),
-                value: "src/lib.rs".to_string(),
-            }]
+            canonicalize_predicate_call(
+                "repo.contains.path",
+                &[LqPredicateArg::Keyword("src/lib.rs".to_string())],
+            ),
+            Ok(Some(CanonicalPredicateCall {
+                name: "repo.has.file",
+                args: vec![LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/lib.rs".to_string(),
+                }],
+            }))
         );
     }
 
@@ -1261,7 +1266,7 @@ mod tests {
 
     #[test]
     fn content_predicate_constraint_accepts_scope_filters_and_number_scalar() {
-        let constraint = parse_content_predicate_constraint(&[
+        let Ok(constraint) = parse_content_predicate_constraint(&[
             LqPredicateArg::Filter {
                 name: "path".to_string(),
                 value: "src".to_string(),
@@ -1271,8 +1276,10 @@ mod tests {
                 value: "rust".to_string(),
             },
             LqPredicateArg::Number(123),
-        ])
-        .expect("scoped number content predicate accepted");
+        ]) else {
+            assert!(false, "scoped number content predicate accepted");
+            return;
+        };
         assert_eq!(constraint.content, ContentScalarArg::Number(123));
         assert_eq!(
             constraint.path_scope,
@@ -1345,10 +1352,14 @@ mod tests {
                 value: "lib.rs".to_string(),
             },
         ];
-        let constraint = parse_repo_file_matchers(&args).expect("path/name accepted");
-        assert_eq!(constraint.matchers.len(), 2);
-        assert!(matches!(constraint.matchers[0], RepoFileMatcher::Path(_)));
-        assert!(matches!(constraint.matchers[1], RepoFileMatcher::Name(_)));
+        let Ok(constraint) = parse_repo_file_matchers(&args) else {
+            assert!(false, "path/name accepted");
+            return;
+        };
+        assert!(matches!(
+            constraint.matchers.as_slice(),
+            [RepoFileMatcher::Path(_), RepoFileMatcher::Name(_)]
+        ));
     }
 
     #[test]
@@ -1358,11 +1369,13 @@ mod tests {
             LqPredicateArg::Phrase("src/lib.rs".to_string()),
             LqPredicateArg::RawString("src/lib.rs".to_string()),
         ] {
-            let constraint = parse_repo_file_matchers(&[arg]).expect("scalar path accepted");
-            assert_eq!(constraint.matchers.len(), 1);
+            let Ok(constraint) = parse_repo_file_matchers(&[arg]) else {
+                assert!(false, "scalar path accepted");
+                return;
+            };
             assert!(matches!(
-                constraint.matchers[0],
-                RepoFileMatcher::Path(ref v) if v == "src/lib.rs"
+                constraint.matchers.as_slice(),
+                [RepoFileMatcher::Path(v)] if v == "src/lib.rs"
             ));
         }
     }
@@ -1374,11 +1387,13 @@ mod tests {
             name: "lang".to_string(),
             value: "rust".to_string(),
         }];
-        let constraint = parse_repo_file_matchers(&args).expect("lang accepted");
-        assert_eq!(constraint.matchers.len(), 1);
+        let Ok(constraint) = parse_repo_file_matchers(&args) else {
+            assert!(false, "lang accepted");
+            return;
+        };
         assert!(matches!(
-            constraint.matchers[0],
-            RepoFileMatcher::Language(ref v) if v == "rust"
+            constraint.matchers.as_slice(),
+            [RepoFileMatcher::Language(v)] if v == "rust"
         ));
     }
 

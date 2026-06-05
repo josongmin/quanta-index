@@ -785,11 +785,10 @@ fn decode_repo_commit_recency_snapshot(bytes: &[u8]) -> Result<RepoCommitRecency
                                 .to_string(),
                         ));
                     };
-                    latest_committer_time_ms = Some(text.parse().map_err(|_| {
-                        CoreError::InvalidContract(
-                            "lexical: repo commit recency decode: `latest_committer_time_ms` must be a u64 decimal string"
-                                .to_string(),
-                        )
+                    latest_committer_time_ms = Some(text.parse().map_err(|err| {
+                        CoreError::InvalidContract(format!(
+                            "lexical: repo commit recency decode: `latest_committer_time_ms` must be a u64 decimal string: {err}"
+                        ))
                     })?);
                 }
                 other => {
@@ -3092,7 +3091,7 @@ fn symbol_name_predicate_leaf(args: &[LqPredicateArg]) -> Result<LqLeaf, CoreErr
         [LqPredicateArg::Keyword(value)] => Ok(LqLeaf::Keyword(value.clone())),
         [LqPredicateArg::Phrase(value)] => Ok(LqLeaf::Phrase(value.clone())),
         [LqPredicateArg::RawString(value)] => Ok(LqLeaf::RawString(value.clone())),
-        [LqPredicateArg::Number(_)] | [LqPredicateArg::Filter { .. }] | [] | [_, _, ..] => {
+        [LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. }] | [] | [_, _, ..] => {
             Err(unimplemented_predicate(format!(
                 "lexical: predicate leaf `symbol.has.name` only supports exactly one keyword/phrase/raw-string argument (owner: {PREDICATE_OWNER})"
             )))
@@ -3856,9 +3855,8 @@ impl TantivySearcher {
         Ok(authority
             .latest_committer_time_ms_by_repo_id
             .iter()
-            .filter_map(|(repo_id, latest_committer_time_ms)| {
-                (*latest_committer_time_ms > boundary_ms).then(|| repo_id.clone())
-            })
+            .filter(|&(_, latest_committer_time_ms)| *latest_committer_time_ms > boundary_ms)
+            .map(|(repo_id, _)| repo_id.clone())
             .collect())
     }
 
@@ -3904,9 +3902,8 @@ impl TantivySearcher {
         Ok(authority
             .meta_by_repo_id
             .iter()
-            .filter_map(|(repo_id, by_key)| {
-                (by_key.get(&arg.key) == Some(&arg.value)).then(|| repo_id.clone())
-            })
+            .filter(|(_, by_key)| by_key.get(&arg.key) == Some(&arg.value))
+            .map(|(repo_id, _)| repo_id.clone())
             .collect())
     }
 
@@ -3943,7 +3940,8 @@ impl TantivySearcher {
         Ok(authority
             .topics_by_repo_id
             .iter()
-            .filter_map(|(repo_id, topics)| topics.contains(&arg.topic).then(|| repo_id.clone()))
+            .filter(|(_, topics)| topics.contains(&arg.topic))
+            .map(|(repo_id, _)| repo_id.clone())
             .collect())
     }
 
@@ -4018,10 +4016,10 @@ impl TantivySearcher {
             else {
                 continue;
             };
-            let matches = match &arg.owner {
-                Some(owner) => owners.contains(owner),
-                None => !owners.is_empty(),
-            };
+            let matches = arg
+                .owner
+                .as_ref()
+                .map_or(!owners.is_empty(), |owner| owners.contains(owner));
             if matches {
                 let _inserted = out.insert(candidate_id);
             }
@@ -4631,7 +4629,7 @@ impl TantivySearcher {
 
     fn doc_kind_for_type(kind: LqType) -> Result<QueryDocKind, CoreError> {
         match kind {
-            LqType::File | LqType::Path => Ok(QueryDocKind::Text),
+            LqType::File | LqType::Path | LqType::Repo => Ok(QueryDocKind::Text),
             LqType::Symbol => Ok(QueryDocKind::Symbol),
             // The planner pre-flight surfaces this as typed
             // `HISTORY_PRODUCER_UNAVAILABLE` before `search()` reaches the
@@ -4645,23 +4643,22 @@ impl TantivySearcher {
                     kind.as_str()
                 ),
             }),
-            LqType::Repo => Ok(QueryDocKind::Text),
         }
     }
 
     fn doc_kind_for_select(dim: LqSelect) -> QueryDocKind {
         match dim {
-            LqSelect::File
-            | LqSelect::FileOwners
-            | LqSelect::Path
-            | LqSelect::Content
-            | LqSelect::ContentMatch => QueryDocKind::Text,
-            LqSelect::Symbol => QueryDocKind::Symbol,
             // `select:repo` collapses text hits to one representative row per
             // repo. The current lexical rail opens exactly one repo/revision
             // generation at a time, so execution still runs against text docs
             // and the projection collapse happens after recall.
-            LqSelect::Repo => QueryDocKind::Text,
+            LqSelect::File
+            | LqSelect::FileOwners
+            | LqSelect::Path
+            | LqSelect::Content
+            | LqSelect::ContentMatch
+            | LqSelect::Repo => QueryDocKind::Text,
+            LqSelect::Symbol => QueryDocKind::Symbol,
         }
     }
 
@@ -4819,13 +4816,19 @@ impl TantivySearcher {
                         .filters
                         .iter()
                         .cloned()
-                        .map(|filter| match filter {
-                            LqFilter::Select {
-                                dim: LqSelect::FileOwners,
-                            } => LqFilter::Select {
-                                dim: LqSelect::File,
-                            },
-                            other => other,
+                        .map(|filter| {
+                            if matches!(
+                                &filter,
+                                LqFilter::Select {
+                                    dim: LqSelect::FileOwners
+                                }
+                            ) {
+                                LqFilter::Select {
+                                    dim: LqSelect::File,
+                                }
+                            } else {
+                                filter
+                            }
                         })
                         .collect(),
                     ..query.clone()
@@ -5680,7 +5683,7 @@ impl LexicalSearcher for TantivySearcher {
         let searcher = self.reader.searcher();
         let mut rows: Vec<FileOwnerProjectionRow> = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let source_repo_id = searcher
+            let source_repo_hit = searcher
                 .search(
                     &TermQuery::new(
                         Term::from_field_text(
@@ -5698,10 +5701,25 @@ impl LexicalSearcher for TantivySearcher {
                     ))
                 })?
                 .into_iter()
-                .next()
-                .and_then(|(_score, doc_address)| searcher.doc::<TantivyDocument>(doc_address).ok())
-                .and_then(|doc| stored_text(&doc, self.fields.repo_id))
-                .unwrap_or_else(|| candidate.repo_id.as_str().to_string());
+                .next();
+            // A storage error fetching the matched doc propagates (fail-closed);
+            // a missing repo_id field falls back to the candidate's own repo_id,
+            // which is the authoritative value the candidate already carries.
+            let source_repo_id = match source_repo_hit {
+                Some((_score, doc_address)) => {
+                    let doc = searcher
+                        .doc::<TantivyDocument>(doc_address)
+                        .map_err(|err| {
+                            CoreError::Storage(format!(
+                                "lexical: file owner projection doc fetch `{}`: {err}",
+                                candidate.candidate_id
+                            ))
+                        })?;
+                    stored_text(&doc, self.fields.repo_id)
+                        .unwrap_or_else(|| candidate.repo_id.as_str().to_string())
+                }
+                None => candidate.repo_id.as_str().to_string(),
+            };
             let owners = authority
                 .owners_by_repo_id
                 .get(&source_repo_id)

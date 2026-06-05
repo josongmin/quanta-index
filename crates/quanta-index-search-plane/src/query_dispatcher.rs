@@ -768,7 +768,7 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req),
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req),
-            SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(req),
+            SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req),
             SearchPlaneQueryIpcRequest::Structural(req) => self.dispatch_structural(&req),
             SearchPlaneQueryIpcRequest::RepoMapQuery(req) => self.dispatch_repo_map(req),
@@ -858,10 +858,13 @@ impl SearchPlaneDispatcher {
         }
     }
 
-    fn dispatch_hybrid_seed(&self, request: HybridSeedQueryRequest) -> SearchPlaneQueryIpcResponse {
-        let requested_pin = request.text_query.generation.clone();
-        self.emit_intake_metric(requested_pin.as_ref());
-        match self.hybrid_seed(&request) {
+    fn dispatch_hybrid_seed(
+        &self,
+        request: &HybridSeedQueryRequest,
+    ) -> SearchPlaneQueryIpcResponse {
+        let requested_pin = request.text_query.generation.as_ref();
+        self.emit_intake_metric(requested_pin);
+        match self.hybrid_seed(request) {
             Ok(response) => {
                 self.emit_planner_metric(&response.generation);
                 self.emit_engine_fanout_metric(
@@ -876,7 +879,7 @@ impl SearchPlaneDispatcher {
                 SearchPlaneQueryIpcResponse::HybridSeed(response)
             }
             Err(err) => {
-                self.emit_error_metric(requested_pin.as_ref(), &err);
+                self.emit_error_metric(requested_pin, &err);
                 SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
             }
         }
@@ -1252,23 +1255,21 @@ impl ExecutableTextPlanePolicy {
                 }
                 LqFilter::Changed { scope } => {
                     state.saw_runtime_authority_filter = true;
-                    let _ = parse_runtime_changed_scope_ms(scope)?;
+                    let _: u64 = parse_runtime_changed_scope_ms(scope)?;
                     Ok(())
                 }
                 LqFilter::Stale { scope } => {
                     state.saw_runtime_authority_filter = true;
-                    let _ = parse_runtime_stale_scope_ms(scope)?;
+                    let _: u64 = parse_runtime_stale_scope_ms(scope)?;
                     Ok(())
                 }
                 LqFilter::Snapshot { .. }
                 | LqFilter::MetaOwner { .. }
                 | LqFilter::MetaService { .. }
                 | LqFilter::MetaLayer { .. }
-                | LqFilter::MetaSurface { .. } => {
-                    state.saw_runtime_authority_filter = true;
-                    Ok(())
-                }
-                LqFilter::Affected { .. } | LqFilter::InvalidatedBy { .. } => {
+                | LqFilter::MetaSurface { .. }
+                | LqFilter::Affected { .. }
+                | LqFilter::InvalidatedBy { .. } => {
                     state.saw_runtime_authority_filter = true;
                     Ok(())
                 }
@@ -1343,17 +1344,19 @@ fn validate_executable_text_query(
 fn validate_history_query(query: &LqQuery) -> Result<(), CoreError> {
     validate_executable_text_query(query, ExecutableTextPlanePolicy::History)?;
     validate_history_timeref_filters(query)?;
-    let _ = resolve_history_query_kind(query)?;
+    let _: HistoryQueryKind = resolve_history_query_kind(query)?;
     Ok(())
 }
 
 fn validate_history_timeref_filters(query: &LqQuery) -> Result<(), CoreError> {
     for filter in &query.filters {
-        let timeref = match filter {
+        match filter {
+            LqFilter::Since { timeref } => validate_history_since_timeref(timeref)?,
             LqFilter::Before { timeref }
             | LqFilter::After { timeref }
-            | LqFilter::Since { timeref }
-            | LqFilter::Until { timeref } => timeref.as_str(),
+            | LqFilter::Until { timeref } => {
+                let _: u64 = parse_history_timeref_ms(timeref)?;
+            }
             LqFilter::Repo { .. }
             | LqFilter::File { .. }
             | LqFilter::Lang { .. }
@@ -1380,14 +1383,7 @@ fn validate_history_timeref_filters(query: &LqQuery) -> Result<(), CoreError> {
             | LqFilter::Content { .. }
             | LqFilter::DiffAdded { .. }
             | LqFilter::DiffRemoved { .. }
-            | LqFilter::DiffTouched { .. } => continue,
-        };
-        match filter {
-            LqFilter::Since { timeref } => validate_history_since_timeref(timeref)?,
-            LqFilter::Before { .. } | LqFilter::After { .. } | LqFilter::Until { .. } => {
-                let _ = parse_history_timeref_ms(timeref)?;
-            }
-            _ => {}
+            | LqFilter::DiffTouched { .. } => {}
         }
     }
     Ok(())
@@ -1598,9 +1594,9 @@ fn parse_runtime_changed_scope_ms(scope: &str) -> Result<u64, CoreError> {
             "runtime metadata: changed scope `{scope}` must use since=<timeref>"
         )));
     };
-    parse_history_timeref_ms(timeref).map_err(|_| {
+    parse_history_timeref_ms(timeref).map_err(|err| {
         runtime_invalid_scope(format!(
-            "runtime metadata: changed scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration"
+            "runtime metadata: changed scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration: {err}"
         ))
     })
 }
@@ -1611,9 +1607,9 @@ fn parse_runtime_stale_scope_ms(scope: &str) -> Result<u64, CoreError> {
             "runtime metadata: stale scope `{scope}` must use before=<timeref>"
         )));
     };
-    parse_history_timeref_ms(timeref).map_err(|_| {
+    parse_history_timeref_ms(timeref).map_err(|err| {
         runtime_invalid_scope(format!(
-            "runtime metadata: stale scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration"
+            "runtime metadata: stale scope timeref `{timeref}` is not a valid RFC3339 timestamp or duration: {err}"
         ))
     })
 }
@@ -1904,16 +1900,15 @@ fn build_pinned_structural_universe(
             continue;
         }
         let candidate_id = chunk_id.as_str().to_string();
-        let _prior =
-            buckets
-                .entry(candidate_id.clone())
-                .or_default()
-                .push(StructuralMatchCandidate {
-                    candidate_id,
-                    pattern_start_byte: chunk.start_byte,
-                    pattern_end_byte: chunk.end_byte,
-                    bindings: Vec::new(),
-                });
+        buckets
+            .entry(candidate_id.clone())
+            .or_default()
+            .push(StructuralMatchCandidate {
+                candidate_id,
+                pattern_start_byte: chunk.start_byte,
+                pattern_end_byte: chunk.end_byte,
+                bindings: Vec::new(),
+            });
     }
     for bucket in buckets.values_mut() {
         normalize_structural_match_bucket(bucket);
@@ -1944,9 +1939,8 @@ struct StructuralEvalContext {
 
 fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
     match expr {
-        LqExpr::Empty => false,
         LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => true,
-        LqExpr::Leaf(_) => false,
+        LqExpr::Empty | LqExpr::Leaf(_) => false,
         LqExpr::Not(inner) => structural_expr_has_structural_leaf(inner),
         LqExpr::All(children) | LqExpr::Any(children) => {
             children.iter().any(structural_expr_has_structural_leaf)
@@ -1956,8 +1950,7 @@ fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
 
 fn structural_expr_has_non_structural_leaf(expr: &LqExpr) -> bool {
     match expr {
-        LqExpr::Empty => false,
-        LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => false,
+        LqExpr::Empty | LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => false,
         LqExpr::Leaf(_) => true,
         LqExpr::Not(inner) => structural_expr_has_non_structural_leaf(inner),
         LqExpr::All(children) | LqExpr::Any(children) => {
@@ -2038,6 +2031,10 @@ fn merge_structural_requested_lang(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "structural dispatch context; bundling is a separate refactor"
+)]
 fn evaluate_structural_expr(
     ctx: &mut StructuralEvalContext,
     service: &StructuralService,
@@ -3002,7 +2999,7 @@ fn runtime_chunk_matches(
             LqFilter::MetaOwner { id } => {
                 if !runtime_doc_facet_matches(
                     runtime_state.doc_facets().get(chunk_id),
-                    |facet| facet.owner(),
+                    DocFacetState::owner,
                     id,
                 ) {
                     return Ok(false);
@@ -3011,7 +3008,7 @@ fn runtime_chunk_matches(
             LqFilter::MetaService { id } => {
                 if !runtime_doc_facet_matches(
                     runtime_state.doc_facets().get(chunk_id),
-                    |facet| facet.service(),
+                    DocFacetState::service,
                     id,
                 ) {
                     return Ok(false);
@@ -3020,7 +3017,7 @@ fn runtime_chunk_matches(
             LqFilter::MetaLayer { id } => {
                 if !runtime_doc_facet_matches(
                     runtime_state.doc_facets().get(chunk_id),
-                    |facet| facet.layer(),
+                    DocFacetState::layer,
                     id,
                 ) {
                     return Ok(false);
@@ -3029,7 +3026,7 @@ fn runtime_chunk_matches(
             LqFilter::MetaSurface { id } => {
                 if !runtime_doc_facet_matches(
                     runtime_state.doc_facets().get(chunk_id),
-                    |facet| facet.surface(),
+                    DocFacetState::surface,
                     id,
                 ) {
                     return Ok(false);
@@ -3165,22 +3162,22 @@ fn runtime_seed_ids(
             ),
             LqFilter::MetaOwner { id } => Some(runtime_matching_facet_doc_ids(
                 runtime_state,
-                |facet| facet.owner(),
+                DocFacetState::owner,
                 id,
             )),
             LqFilter::MetaService { id } => Some(runtime_matching_facet_doc_ids(
                 runtime_state,
-                |facet| facet.service(),
+                DocFacetState::service,
                 id,
             )),
             LqFilter::MetaLayer { id } => Some(runtime_matching_facet_doc_ids(
                 runtime_state,
-                |facet| facet.layer(),
+                DocFacetState::layer,
                 id,
             )),
             LqFilter::MetaSurface { id } => Some(runtime_matching_facet_doc_ids(
                 runtime_state,
-                |facet| facet.surface(),
+                DocFacetState::surface,
                 id,
             )),
             LqFilter::Affected { scope } => Some(
@@ -3237,7 +3234,8 @@ fn runtime_matching_facet_doc_ids(
     runtime_state
         .doc_facets()
         .iter()
-        .filter_map(|(chunk_id, facet)| (field(facet) == Some(expected)).then(|| chunk_id.clone()))
+        .filter(|(_, facet)| field(facet) == Some(expected))
+        .map(|(chunk_id, _)| chunk_id.clone())
         .collect()
 }
 
@@ -3469,7 +3467,7 @@ fn validate_history_since_timeref(timeref: &str) -> Result<(), CoreError> {
         return Ok(());
     }
     let timeref = timeref.strip_prefix("time:").unwrap_or(timeref);
-    let _ = parse_history_timeref_ms(timeref)?;
+    let _: u64 = parse_history_timeref_ms(timeref)?;
     Ok(())
 }
 
@@ -3527,10 +3525,7 @@ fn parse_rfc3339_date_only_ms(value: &str) -> Option<u64> {
 fn parse_rfc3339_datetime_ms(value: &str) -> Option<u64> {
     let (year, rest) = parse_year_prefix(value)?;
     let (month, day, rest) = parse_month_day(rest)?;
-    if !rest.starts_with('T') {
-        return None;
-    }
-    let rest = &rest[1..];
+    let rest = rest.strip_prefix('T')?;
     let (hour, minute, second, fraction_ms, rest) = parse_time_of_day(rest)?;
     if rest != "Z" {
         return None;
@@ -3539,58 +3534,72 @@ fn parse_rfc3339_datetime_ms(value: &str) -> Option<u64> {
 }
 
 fn parse_year_prefix(value: &str) -> Option<(u32, &str)> {
-    if value.len() < 5 || !value.as_bytes().get(4).is_some_and(|b| *b == b'-') {
+    if value.len() < 5 || value.as_bytes().get(4) != Some(&b'-') {
         return None;
     }
-    let year = value.get(..4)?.parse().ok()?;
-    Some((year, &value[5..]))
+    let Ok(year) = value.get(..4)?.parse::<u32>() else {
+        return None;
+    };
+    Some((year, value.get(5..)?))
 }
 
 fn parse_month_day(rest: &str) -> Option<(u32, u32, &str)> {
-    if rest.len() < 5 || !rest.as_bytes().get(2).is_some_and(|b| *b == b'-') {
+    if rest.len() < 5 || rest.as_bytes().get(2) != Some(&b'-') {
         return None;
     }
-    let month = rest.get(..2)?.parse().ok()?;
-    let day = rest.get(3..5)?.parse().ok()?;
-    Some((month, day, &rest[5..]))
+    let Ok(month) = rest.get(..2)?.parse::<u32>() else {
+        return None;
+    };
+    let Ok(day) = rest.get(3..5)?.parse::<u32>() else {
+        return None;
+    };
+    Some((month, day, rest.get(5..)?))
 }
 
 fn parse_time_of_day(rest: &str) -> Option<(u32, u32, u32, u32, &str)> {
     if rest.len() < 8 || rest.as_bytes().get(2) != Some(&b':') {
         return None;
     }
-    let hour = rest.get(..2)?.parse().ok()?;
+    let Ok(hour) = rest.get(..2)?.parse::<u32>() else {
+        return None;
+    };
     if rest.as_bytes().get(5) != Some(&b':') {
         return None;
     }
-    let minute = rest.get(3..5)?.parse().ok()?;
-    let mut second_end = 6;
-    while second_end < rest.len() && rest.as_bytes()[second_end].is_ascii_digit() {
-        second_end += 1;
+    let Ok(minute) = rest.get(3..5)?.parse::<u32>() else {
+        return None;
+    };
+    let mut second_end = 6usize;
+    while rest
+        .as_bytes()
+        .get(second_end)
+        .is_some_and(u8::is_ascii_digit)
+    {
+        second_end = second_end.checked_add(1)?;
     }
-    let second = rest.get(6..second_end)?.parse().ok()?;
+    let Ok(second) = rest.get(6..second_end)?.parse::<u32>() else {
+        return None;
+    };
     let mut fraction_ms = 0u32;
-    let mut tail = &rest[second_end..];
-    if tail.starts_with('.') {
-        tail = &tail[1..];
+    let mut tail = rest.get(second_end..)?;
+    if let Some(after_dot) = tail.strip_prefix('.') {
+        tail = after_dot;
         let mut digits = 0u32;
         let mut places = 0u32;
         for ch in tail.chars() {
-            if !ch.is_ascii_digit() {
+            let Some(digit) = ch.to_digit(10) else {
                 break;
-            }
-            digits = digits
-                .saturating_mul(10)
-                .saturating_add(u32::from(ch as u8 - b'0'));
-            places += 1;
-            tail = &tail[ch.len_utf8()..];
+            };
+            digits = digits.saturating_mul(10).saturating_add(digit);
+            places = places.checked_add(1)?;
+            tail = tail.get(ch.len_utf8()..)?;
         }
         if places == 0 {
             return None;
         }
         while places < 3 {
             digits = digits.saturating_mul(10);
-            places += 1;
+            places = places.checked_add(1)?;
         }
         fraction_ms = digits;
     }
@@ -3617,8 +3626,8 @@ fn unix_ms_from_utc_parts(
     let days = days_from_civil(year, month, day)?;
     let seconds = u64::from(days)
         .saturating_mul(86_400)
-        .saturating_add(u64::from(hour) * 3_600)
-        .saturating_add(u64::from(minute) * 60)
+        .saturating_add(u64::from(hour).saturating_mul(3_600))
+        .saturating_add(u64::from(minute).saturating_mul(60))
         .saturating_add(u64::from(second));
     seconds
         .checked_mul(1_000)?
@@ -3628,12 +3637,30 @@ fn unix_ms_from_utc_parts(
 fn days_from_civil(year: u32, month: u32, day: u32) -> Option<u32> {
     let mut y = i64::from(year);
     let m = i64::from(month);
-    y -= i64::from(m <= 2);
+    y = y.checked_sub(i64::from(m <= 2))?;
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2).div_euclid(5) + i64::from(day) - 1;
-    let doe = yoe * 365 + yoe.div_euclid(4) - yoe.div_euclid(100) + doy;
-    u32::try_from(era * 146_097 + doe - 719_468).ok()
+    let month_shift = if m > 2 { -3 } else { 9 };
+    let doy = m
+        .checked_add(month_shift)?
+        .checked_mul(153)?
+        .checked_add(2)?
+        .div_euclid(5)
+        .checked_add(i64::from(day))?
+        .checked_sub(1)?;
+    let doe = yoe
+        .checked_mul(365)?
+        .checked_add(yoe.div_euclid(4))?
+        .checked_sub(yoe.div_euclid(100))?
+        .checked_add(doy)?;
+    let days = era
+        .checked_mul(146_097)?
+        .checked_add(doe)?
+        .checked_sub(719_468)?;
+    let Ok(value) = u32::try_from(days) else {
+        return None;
+    };
+    Some(value)
 }
 
 fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
@@ -3642,8 +3669,10 @@ fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
     if digits.is_empty() {
         return None;
     }
-    let amount: u64 = digits.parse().ok()?;
-    let unit_ms = match unit {
+    let Ok(amount) = digits.parse::<u64>() else {
+        return None;
+    };
+    let unit_ms: u64 = match unit {
         "s" => 1_000,
         "m" => 60_000,
         "h" => 3_600_000,
@@ -3654,11 +3683,12 @@ fn parse_duration_timeref_ms(value: &str) -> Option<u64> {
         _ => return None,
     };
     let duration_ms = amount.checked_mul(unit_ms)?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    let now_ms = u64::try_from(now_ms).ok()?;
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return None;
+    };
+    let Ok(now_ms) = u64::try_from(elapsed.as_millis()) else {
+        return None;
+    };
     now_ms.checked_sub(duration_ms)
 }
 
@@ -3855,6 +3885,7 @@ fn prepare_lexical_text_query_for_execution(
             force_empty: true,
         });
     };
+    drop(guard);
     let rebound_revision = RevisionId::new(selected_commit_sha.to_hex());
     let rebound_pin = activation_catalog.resolve(
         &base_pin.repo_id,
@@ -4116,7 +4147,8 @@ fn checked_rank_u32_v1(index: usize, label: &'static str) -> Result<u32, CoreErr
     let ordinal = index
         .checked_add(1)
         .ok_or_else(|| CoreError::Storage(format!("{label}: rank index overflow")))?;
-    u32::try_from(ordinal).map_err(|_| CoreError::Storage(format!("{label}: rank exceeds u32")))
+    u32::try_from(ordinal)
+        .map_err(|err| CoreError::Storage(format!("{label}: rank exceeds u32: {err}")))
 }
 
 fn build_hybrid_seed_candidates_v1(
@@ -4525,12 +4557,12 @@ mod tests {
 
     fn rev_at_time_ancestor_sha() -> CommitSha {
         CommitSha::from_hex("1111111111111111111111111111111111111111")
-            .unwrap_or_else(|_| std::process::abort())
+            .expect("valid ancestor commit sha hex")
     }
 
     fn rev_at_time_head_sha() -> CommitSha {
         CommitSha::from_hex("2222222222222222222222222222222222222222")
-            .unwrap_or_else(|_| std::process::abort())
+            .expect("valid head commit sha hex")
     }
 
     fn history_commit_record() -> CommitRecord {
@@ -4665,8 +4697,8 @@ mod tests {
                 ManifestGeneration::new(7),
             );
             guard.apply_history_batch(&quanta_index_contract::HistoryIngestBatch {
-                repo_id: repo_id.clone(),
-                revision_id: base_revision_id.clone(),
+                repo_id,
+                revision_id: base_revision_id,
                 generation: ManifestGeneration::new(9),
                 manifest_digest: Some("history-rev-at-time".to_string()),
                 batch_digest: "history-rev-at-time-batch".to_string(),
@@ -4891,6 +4923,7 @@ mod tests {
                 .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?;
             guard.search_top_ks.push(top_k);
             guard.searched_queries.push(query.clone());
+            drop(guard);
             Ok(self.results.clone())
         }
 
@@ -5892,12 +5925,21 @@ mod tests {
     }
 
     fn structural_test_chunk_record(path: &str, text: &str) -> ChunkRecord {
+        #[expect(
+            clippy::manual_unwrap_or,
+            clippy::option_if_let_else,
+            reason = "Result::unwrap_or is disallowed by clippy.toml; saturate the test text length to u32::MAX"
+        )]
+        let end_byte = match u32::try_from(text.len()) {
+            Ok(len) => len,
+            Err(_) => u32::MAX,
+        };
         ChunkRecord {
             chunk_id: ChunkId::new("chunk-1"),
             repo_relative_path: RepoRelativePath::new(path),
             language: LanguageCode::from_code_str("rust").expect("rust language code"),
             start_byte: 0,
-            end_byte: u32::try_from(text.len()).unwrap_or(u32::MAX),
+            end_byte,
             start_line: 1,
             end_line: 1,
             text: text.to_string().into_boxed_str(),
@@ -6312,7 +6354,9 @@ mod tests {
                 ManifestGeneration::new(9),
             )
             .ok_or("missing runtime metadata state")?;
-        if runtime_generation_is_stale(runtime, 30)? {
+        let is_stale = runtime_generation_is_stale(runtime, 30)?;
+        drop(guard);
+        if is_stale {
             return Err(
                 "stale relation unexpectedly matched when producer head did not advance".into(),
             );
@@ -6321,6 +6365,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "guard borrows runtime and structural state used across the whole test"
+    )]
     fn runtime_seed_ids_use_direct_catalog_sets() -> TestResult {
         let ledger = ready_runtime_metadata_ledger(100, 20);
         let guard = ledger
@@ -6878,7 +6926,18 @@ mod tests {
                     );
                 }
             }
-            other => return Err(format!("expected Text response, got {other:?}").into()),
+            other @ (SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => {
+                return Err(format!("expected Text response, got {other:?}").into());
+            }
         }
 
         let guard = state
@@ -6906,6 +6965,7 @@ mod tests {
             )
             .into());
         }
+        drop(guard);
         Ok(())
     }
 

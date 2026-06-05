@@ -1716,7 +1716,17 @@ impl E2eRuntime {
                 err.code,
                 err.message
             )),
-            _ => Ok(()),
+            SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => Ok(()),
         }
     }
 }

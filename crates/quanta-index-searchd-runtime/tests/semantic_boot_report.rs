@@ -158,7 +158,7 @@ fn runtime_boot_rejects_corrupted_sealed_semantic_generation() -> TestResult {
     let semantic_root = state_root.join("indexes").join("semantic");
     let adapter = SemanticAdapter::with_state_root(semantic_root.clone())?;
     let generation = ManifestGeneration::new(9);
-    adapter.build_batch(&fixture_batch(generation).map_err(|err| err.to_string())?)?;
+    adapter.build_batch(&fixture_batch(generation)?)?;
 
     let manifest_path = semantic_root
         .join("repo-bootrep")

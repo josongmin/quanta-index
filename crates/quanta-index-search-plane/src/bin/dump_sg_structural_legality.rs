@@ -3,7 +3,11 @@ use std::collections::BTreeMap;
 use quanta_index_contract::{LqLeaf, LqStructuralBlock};
 use serde::Serialize;
 
-#[allow(dead_code, unreachable_pub)]
+#[expect(
+    dead_code,
+    unreachable_pub,
+    reason = "dev tool includes the full lowering source via #[path] but reads only the structural-leaf-verdict matrix; the included module exposes pub items that are unreachable in this bin"
+)]
 #[path = "../lowering.rs"]
 mod lowering_dump;
 
@@ -12,7 +16,7 @@ struct StructuralLegalityDump<'a> {
     verdicts: BTreeMap<&'a str, &'a str>,
 }
 
-fn verdict_name(verdict: lowering_dump::StructuralLeafVerdict<'_>) -> &'static str {
+fn verdict_name(verdict: &lowering_dump::StructuralLeafVerdict<'_>) -> &'static str {
     match verdict {
         lowering_dump::StructuralLeafVerdict::PreserveLexical => "PreserveLexical",
         lowering_dump::StructuralLeafVerdict::LowerPhraseBody(_) => "LowerPhraseBody",
@@ -21,7 +25,11 @@ fn verdict_name(verdict: lowering_dump::StructuralLeafVerdict<'_>) -> &'static s
     }
 }
 
-fn main() {
+#[expect(
+    clippy::print_stdout,
+    reason = "structural-legality dump CLI writes the JSON verdict matrix to stdout by design"
+)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let leaves = [
         ("Keyword", LqLeaf::Keyword("keyword".to_string())),
         ("RawString", LqLeaf::RawString("raw".to_string())),
@@ -49,13 +57,12 @@ fn main() {
             .map(|(name, leaf)| {
                 (
                     name,
-                    verdict_name(lowering_dump::structural_leaf_verdict(&leaf)),
+                    verdict_name(&lowering_dump::structural_leaf_verdict(&leaf)),
                 )
             })
             .collect(),
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&dump).expect("structural legality dump must serialize")
-    );
+    let json = serde_json::to_string_pretty(&dump)?;
+    println!("{json}");
+    Ok(())
 }

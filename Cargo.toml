@@ -82,6 +82,14 @@ multiple_crate_versions = "allow"
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# `clippy::redundant_pub_crate` (nursery) directly conflicts with the workspace
+# rustc `unreachable_pub = "deny"` policy. This codebase's convention is
+# `pub(crate)` items inside private modules: `unreachable_pub` requires exactly
+# that form (a bare `pub` item unreachable outside the crate is denied), while
+# `redundant_pub_crate` demands the opposite (`pub` instead of `pub(crate)`).
+# The two cannot both be satisfied, so the nursery lint yields to the
+# established `pub(crate)` + `unreachable_pub` convention.
+redundant_pub_crate = "allow"
 panic = "deny"
 panic_in_result_fn = "deny"
 print_stderr = "deny"

@@ -34,9 +34,8 @@ where
 {
     let filters = filters_for(raw);
     assert!(
-        filters.iter().any(|filter| predicate(filter)),
-        "expected {label} on `{raw}`, got {:?}",
-        filters
+        filters.iter().any(predicate),
+        "expected {label} on `{raw}`, got {filters:?}"
     );
 }
 

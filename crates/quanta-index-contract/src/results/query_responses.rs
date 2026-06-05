@@ -821,7 +821,7 @@ impl<'de> Deserialize<'de> for HybridSeedLane {
     {
         struct HybridSeedLaneVisitor;
 
-        impl<'de> Visitor<'de> for HybridSeedLaneVisitor {
+        impl Visitor<'_> for HybridSeedLaneVisitor {
             type Value = HybridSeedLane;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

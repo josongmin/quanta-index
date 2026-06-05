@@ -210,7 +210,7 @@ fn load_fixture(name: &str) -> AnyResult<LoadedFixture> {
 }
 
 fn load_fixture_from_path(path: &Path) -> AnyResult<LoadedFixture> {
-    let raw = std::fs::read_to_string(&path)?;
+    let raw = std::fs::read_to_string(path)?;
     let root: Value = raw.parse::<Value>()?;
     parse_loaded_fixture(&root, path)
 }
@@ -229,40 +229,40 @@ fn parse_loaded_fixture(root: &Value, path: &Path) -> AnyResult<LoadedFixture> {
         let table = doc
             .as_table()
             .ok_or_else(|| anyhow::anyhow!("fixture {} doc row must be a table", path.display()))?;
-        let id = require_string(table, "id", &path)?;
-        let doc_path = require_string(table, "path", &path)?;
-        let content = require_string(table, "content", &path)?;
-        let symbol_name = optional_string(table, "symbol_name", &path)?;
+        let id = require_string(table, "id", path)?;
+        let doc_path = require_string(table, "path", path)?;
+        let content = require_string(table, "content", path)?;
+        let symbol_name = optional_string(table, "symbol_name", path)?;
         out.push(FixtureDoc {
             id,
             path: doc_path,
             content,
             symbol_name,
-            start_line: optional_u32(table, "start_line", &path)?.unwrap_or(1),
-            end_line: optional_u32(table, "end_line", &path)?.unwrap_or(2),
-            source_repo_id: optional_string(table, "source_repo_id", &path)?,
+            start_line: optional_u32(table, "start_line", path)?.unwrap_or(1),
+            end_line: optional_u32(table, "end_line", path)?.unwrap_or(2),
+            source_repo_id: optional_string(table, "source_repo_id", path)?,
         });
     }
 
     let repo_metadata = table
         .get("repo_metadata")
-        .map(|value| parse_repo_metadata(value, &path))
+        .map(|value| parse_repo_metadata(value, path))
         .transpose()?;
     let structural = parse_structural_specs(
         table.get("structural"),
         table.get("structural_tree"),
         &out,
-        &path,
+        path,
     )?;
-    let history = parse_history_specs(table.get("history"), &path)?;
+    let history = parse_history_specs(table.get("history"), path)?;
     let repo_commit_recency =
-        parse_repo_commit_recency_specs(table.get("repo_commit_recency"), &path)?;
-    let repo_meta = parse_repo_meta_specs(table.get("repo_meta"), &path)?;
-    let repo_topic = parse_repo_topic_specs(table.get("repo_topic"), &path)?;
-    let file_ownership = parse_file_ownership_specs(table.get("file_ownership"), &path)?;
-    let file_contributor = parse_file_contributor_specs(table.get("file_contributor"), &path)?;
-    let dirty = parse_dirty_specs(table.get("dirty"), &path)?;
-    let runtime_catalog = parse_runtime_catalog_spec(table.get("runtime_catalog"), &path)?;
+        parse_repo_commit_recency_specs(table.get("repo_commit_recency"), path)?;
+    let repo_meta = parse_repo_meta_specs(table.get("repo_meta"), path)?;
+    let repo_topic = parse_repo_topic_specs(table.get("repo_topic"), path)?;
+    let file_ownership = parse_file_ownership_specs(table.get("file_ownership"), path)?;
+    let file_contributor = parse_file_contributor_specs(table.get("file_contributor"), path)?;
+    let dirty = parse_dirty_specs(table.get("dirty"), path)?;
+    let runtime_catalog = parse_runtime_catalog_spec(table.get("runtime_catalog"), path)?;
 
     Ok(LoadedFixture {
         docs: out,
@@ -926,7 +926,12 @@ fn parse_file_ownership_specs(
                 .iter()
                 .map(|item| match item {
                     Value::String(value) => Ok(value.clone()),
-                    other => Err(anyhow::anyhow!(
+                    other @ (Value::Integer(_)
+                    | Value::Float(_)
+                    | Value::Boolean(_)
+                    | Value::Datetime(_)
+                    | Value::Array(_)
+                    | Value::Table(_)) => Err(anyhow::anyhow!(
                         "fixture {} [[file_ownership]].owners entries must be strings, got {other:?}",
                         path.display()
                     )),
@@ -977,7 +982,12 @@ fn parse_file_contributor_specs(
                 .iter()
                 .map(|item| match item {
                     Value::String(value) => Ok(value.clone()),
-                    other => Err(anyhow::anyhow!(
+                    other @ (Value::Integer(_)
+                    | Value::Float(_)
+                    | Value::Boolean(_)
+                    | Value::Datetime(_)
+                    | Value::Array(_)
+                    | Value::Table(_)) => Err(anyhow::anyhow!(
                         "fixture {} [[file_contributor]].contributors entries must be strings, got {other:?}",
                         path.display()
                     )),
@@ -1749,13 +1759,17 @@ fn assess_runtime_row(
             let result = rt.query_text(syntax, &row.query, top_k);
             if let Some(expected_code) = row.runtime_error_code.as_deref() {
                 let Some(err) = result.typed_error.as_ref() else {
+                    let observed_ids =
+                        match observed_text_fixture_ids(&result, &fixture_state.candidate_id_to_id)
+                        {
+                            Ok(ids) => format!("{ids:?}"),
+                            Err(mapping_err) => format!("<unmapped: {mapping_err}>"),
+                        };
                     return RowReport {
                         id: row.id.clone(),
                         failure: Some(format!(
-                            "row {} expected typed_error(code={expected_code}) but observed ids={:?}; query=`{}` syntax={:?} fixture={} explanation={}",
+                            "row {} expected typed_error(code={expected_code}) but observed ids={observed_ids}; query=`{}` syntax={:?} fixture={} explanation={}",
                             row.id,
-                            observed_text_fixture_ids(&result, &fixture_state.candidate_id_to_id,)
-                                .unwrap_or_else(|_| Vec::new()),
                             row.query,
                             row.syntax,
                             row.fixture.as_deref().unwrap_or("<missing>"),
@@ -2304,10 +2318,15 @@ root = { kind = "function_item", start_byte = 0, end_byte = 10, start_line = 1, 
 "#;
     let root = raw.parse::<Value>()?;
     let fixture = parse_loaded_fixture(&root, Path::new("inline-structural.toml"))?;
-    assert!(matches!(
+    if !matches!(
         fixture.structural.as_slice(),
         [FixtureStructuralSpec::Tree(_)]
-    ));
+    ) {
+        return Err(anyhow::anyhow!(
+            "expected a single structural Tree spec, got {} spec(s)",
+            fixture.structural.len()
+        ));
+    }
     Ok(())
 }
 
@@ -2327,11 +2346,14 @@ root = { kind = "function_item", start_byte = 0, end_byte = 10, start_line = 1, 
 ] }
 "#;
     let root = raw.parse::<Value>()?;
-    let err = match parse_loaded_fixture(&root, Path::new("inline-structural-missing.toml")) {
-        Ok(_) => return Err(anyhow::anyhow!("missing child kind must fail closed")),
-        Err(err) => err,
+    let Err(err) = parse_loaded_fixture(&root, Path::new("inline-structural-missing.toml")) else {
+        return Err(anyhow::anyhow!("missing child kind must fail closed"));
     };
-    assert!(err.to_string().contains("missing `kind`"));
+    if !err.to_string().contains("missing `kind`") {
+        return Err(anyhow::anyhow!(
+            "expected `missing `kind`` error, got: {err}"
+        ));
+    }
     Ok(())
 }
 
@@ -2351,14 +2373,15 @@ root = { kind = "function_item", start_byte = 0, end_byte = 9, start_line = 1, e
 ] }
 "#;
     let root = raw.parse::<Value>()?;
-    let err = match parse_loaded_fixture(&root, Path::new("inline-structural-nesting.toml")) {
-        Ok(_) => {
-            return Err(anyhow::anyhow!(
-                "child outside parent span must fail closed"
-            ));
-        }
-        Err(err) => err,
+    let Err(err) = parse_loaded_fixture(&root, Path::new("inline-structural-nesting.toml")) else {
+        return Err(anyhow::anyhow!(
+            "child outside parent span must fail closed"
+        ));
     };
-    assert!(err.to_string().contains("not nested within parent span"));
+    if !err.to_string().contains("not nested within parent span") {
+        return Err(anyhow::anyhow!(
+            "expected `not nested within parent span` error, got: {err}"
+        ));
+    }
     Ok(())
 }

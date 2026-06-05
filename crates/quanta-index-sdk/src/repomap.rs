@@ -95,7 +95,17 @@ impl crate::NamespaceIngest for RepoMapNs {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
-            other => Err(SdkError::unexpected_response(
+            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+            | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap receipt",
                 QuantaIndex::ingest_response_kind(&other),
             )),

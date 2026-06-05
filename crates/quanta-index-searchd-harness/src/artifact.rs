@@ -299,10 +299,6 @@ mod tests {
         clippy::float_cmp,
         reason = "percentile boundaries land on exact integer-valued samples"
     )]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the Some invariant for a non-empty sample set"
-    )]
     fn nearest_rank_on_one_to_hundred() {
         let samples: Vec<f64> = (1..=100).map(f64::from).collect();
         let summary = LatencySummary::from_samples_ms(&samples).expect("non-empty");
@@ -323,10 +319,6 @@ mod tests {
         clippy::float_cmp,
         reason = "single-sample percentiles collapse to the exact input value"
     )]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the Some invariant for a non-empty sample set"
-    )]
     fn single_element_collapses_all_percentiles() {
         let summary = LatencySummary::from_samples_ms(&[7.5]).expect("non-empty");
         assert_eq!(summary.p50_ms, 7.5);
@@ -336,10 +328,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the Some invariant for a non-empty sample set"
-    )]
     fn nan_is_ordered_defensively() {
         // Should not panic; NaN sorts to the high end via total_cmp.
         let summary = LatencySummary::from_samples_ms(&[1.0, f64::NAN, 2.0]).expect("non-empty");
@@ -347,10 +335,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the JSON value is an object"
-    )]
     fn measured_row_to_json_has_expected_keys() {
         let row = BenchRow {
             scenario_id: "lexical.keyword.native".to_string(),
@@ -392,10 +376,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the JSON value is an object"
-    )]
     fn early_stop_row_emits_null_latency() {
         let row = BenchRow {
             scenario_id: "history.diff_added.native".to_string(),
@@ -425,10 +405,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts the JSON envelope is an object with a rows array"
-    )]
     fn artifact_to_json_envelope() {
         let mut artifact = BenchArtifact::new(BenchMode::Warm, "rev123");
         assert_eq!(artifact.schema_version, SCHEMA_VERSION);

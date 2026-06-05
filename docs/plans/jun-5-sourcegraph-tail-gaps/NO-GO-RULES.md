@@ -12,6 +12,7 @@ Do not do any of the following in this packet.
 - do not treat lowering preserve as sufficient proof for SG structural mixed execution
 - do not remove typed-fail rails before replacement proof exists
 - do not leave a cell in ambiguous `부분 지원` state
+- do not report clean preflight when the persona/session scripts are absent
 
 If a surface cannot be implemented on the real owner seam, close it as explicit
 `미지원`.

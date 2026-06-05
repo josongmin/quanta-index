@@ -402,10 +402,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::expect_used,
-        reason = "test asserts a known scenario id resolves"
-    )]
     fn scenario_by_id_round_trips() {
         let s = scenario_by_id("lexical.keyword.native").expect("known id resolves");
         assert_eq!(s.id, "lexical.keyword.native");

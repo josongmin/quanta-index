@@ -210,7 +210,17 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         SearchPlaneIngestIpcResponse::Error(err) => {
             Err(format!("ingest failed code={} message={}", err.code, err.message).into())
         }
-        _ => Ok(()),
+        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
+        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
+        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
+        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
+        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => Ok(()),
     }
 }
 
@@ -489,16 +499,16 @@ fn lexical_chunk(
     chunk_id: &str,
     path: &str,
     snippet: &str,
-    _text_digest: &str,
-    _shape_digest: &str,
+    text_digest: &str,
+    shape_digest: &str,
     end_byte: u32,
 ) -> Result<ChunkRecord, Box<dyn Error>> {
     lexical_chunk_with_source_repo(
         chunk_id,
         path,
         snippet,
-        _text_digest,
-        _shape_digest,
+        text_digest,
+        shape_digest,
         end_byte,
         None,
     )
@@ -528,18 +538,20 @@ fn lexical_chunk_with_source_repo(
     })
 }
 
-fn now_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
+fn now_epoch_ms() -> Result<u64, Box<dyn Error>> {
+    let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_millis()
-        .try_into()
-        .expect("epoch millis overflow u64")
+        .map_err(|err| -> Box<dyn Error> {
+            format!("system time before unix epoch: {err}").into()
+        })?
+        .as_millis();
+    u64::try_from(millis)
+        .map_err(|err| -> Box<dyn Error> { format!("epoch millis overflow u64: {err}").into() })
 }
 
-fn repo_commit_recency_batch() -> RepoCommitRecencyBatch {
-    let now_ms = now_epoch_ms();
-    RepoCommitRecencyBatch::new(
+fn repo_commit_recency_batch() -> Result<RepoCommitRecencyBatch, Box<dyn Error>> {
+    let now_ms = now_epoch_ms()?;
+    Ok(RepoCommitRecencyBatch::new(
         repo(),
         revision(),
         generation(),
@@ -549,7 +561,7 @@ fn repo_commit_recency_batch() -> RepoCommitRecencyBatch {
         RepoId::new("corp-a"),
         now_ms.saturating_sub(6 * 60 * 60 * 1000),
     )
-    .entry(RepoId::new("corp-b"), 1_700_000_000_000)
+    .entry(RepoId::new("corp-b"), 1_700_000_000_000))
 }
 
 fn repo_meta_batch() -> RepoMetaBatch {
@@ -651,15 +663,15 @@ fn rev_at_time_lexical_batch(
         repo(),
         revision_id,
         generation,
-        &format!("manifest:rev-at-time:{}:{}", path, generation.get()),
-        &format!("batch:rev-at-time:{}:{}", path, generation.get()),
+        format!("manifest:rev-at-time:{}:{}", path, generation.get()),
+        format!("batch:rev-at-time:{}:{}", path, generation.get()),
     )
     .replace_scope(
         SearchScopeKey {
             doc_surface: SearchScopeSurface::File,
             repo_relative_path: RepoRelativePath::new(path),
         },
-        &format!("scope:rev-at-time:{path}"),
+        format!("scope:rev-at-time:{path}"),
         vec![lexical_chunk(
             candidate_id,
             path,
@@ -674,9 +686,9 @@ fn rev_at_time_lexical_batch(
     ))
 }
 
-fn rev_at_time_history_batch() -> quanta_index_sdk::HistoryBatch {
-    let now_ms = now_epoch_ms();
-    quanta_index_sdk::HistoryBatch::new(
+fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn Error>> {
+    let now_ms = now_epoch_ms()?;
+    Ok(quanta_index_sdk::HistoryBatch::new(
         repo(),
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
@@ -685,8 +697,9 @@ fn rev_at_time_history_batch() -> quanta_index_sdk::HistoryBatch {
     .manifest_digest("manifest:rev-at-time-history-sdk")
     .commit(CommitRecord {
         wire_version: 1,
-        sha: CommitSha::from_hex("1111111111111111111111111111111111111111")
-            .expect("valid rev-at-time ancestor sha"),
+        sha: CommitSha::from_hex("1111111111111111111111111111111111111111").map_err(
+            |err| -> Box<dyn Error> { format!("invalid rev-at-time ancestor sha: {err}").into() },
+        )?,
         parents: Vec::new(),
         author_time_ms: now_ms.saturating_sub(63_072_000_000),
         committer_time_ms: now_ms.saturating_sub(63_072_000_000),
@@ -699,11 +712,13 @@ fn rev_at_time_history_batch() -> quanta_index_sdk::HistoryBatch {
     })
     .commit(CommitRecord {
         wire_version: 1,
-        sha: CommitSha::from_hex("2222222222222222222222222222222222222222")
-            .expect("valid rev-at-time head sha"),
+        sha: CommitSha::from_hex("2222222222222222222222222222222222222222").map_err(
+            |err| -> Box<dyn Error> { format!("invalid rev-at-time head sha: {err}").into() },
+        )?,
         parents: vec![
-            CommitSha::from_hex("1111111111111111111111111111111111111111")
-                .expect("valid rev-at-time parent sha"),
+            CommitSha::from_hex("1111111111111111111111111111111111111111").map_err(
+                |err| -> Box<dyn Error> { format!("invalid rev-at-time parent sha: {err}").into() },
+            )?,
         ],
         author_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
         committer_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
@@ -716,9 +731,10 @@ fn rev_at_time_history_batch() -> quanta_index_sdk::HistoryBatch {
     })
     .ref_upsert(
         "HEAD",
-        CommitSha::from_hex("2222222222222222222222222222222222222222")
-            .expect("valid rev-at-time HEAD sha"),
-    )
+        CommitSha::from_hex("2222222222222222222222222222222222222222").map_err(
+            |err| -> Box<dyn Error> { format!("invalid rev-at-time HEAD sha: {err}").into() },
+        )?,
+    ))
 }
 
 fn symbol_record() -> Result<SymbolRecord, Box<dyn Error>> {
@@ -2561,7 +2577,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
     let _history_receipt = client.history().publish(&history_batch())?;
     let _repo_commit_recency_receipt = client
         .history()
-        .publish_repo_commit_recency(&repo_commit_recency_batch())?;
+        .publish_repo_commit_recency(&repo_commit_recency_batch()?)?;
     let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
     let _repo_topic_receipt = client.history().publish_repo_topic(&repo_topic_batch())?;
     let _file_ownership_receipt = client
@@ -2870,7 +2886,11 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     SdkError::Remote { code, message }
                         if code == expected_error.code
                             && message.contains(expected_error.message_contains) => {}
-                    other => {
+                    other @ (SdkError::Usage(_)
+                    | SdkError::Protocol(_)
+                    | SdkError::Serialization(_)
+                    | SdkError::Transport(_)
+                    | SdkError::Remote { .. }) => {
                         stop_runtime(&shutdown, join)?;
                         return Err(format!(
                             "{} typed error drifted: expected code={} fragment={:?}, got {other:?}",
@@ -2904,7 +2924,7 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         "chunk-rev-at-time-head",
         "needle_token head_choice",
     )?)?;
-    let _history_receipt = client.history().publish(&rev_at_time_history_batch())?;
+    let _history_receipt = client.history().publish(&rev_at_time_history_batch()?)?;
 
     let _activate_ancestor = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
@@ -2942,7 +2962,11 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         },
         |response| response.generation == rev_at_time_head_pin() && response.results.len() == 1,
     )?;
-    if head.results.len() != 1 || head.results[0].candidate_id != "chunk-rev-at-time-head" {
+    let [head_candidate] = head.results.as_slice() else {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected future rev:at.time response: {head:?}").into());
+    };
+    if head_candidate.candidate_id != "chunk-rev-at-time-head" {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected future rev:at.time response: {head:?}").into());
     }
@@ -2960,9 +2984,11 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         },
         |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
     )?;
-    if relative.results.len() != 1
-        || relative.results[0].candidate_id != "chunk-rev-at-time-ancestor"
-    {
+    let [relative_candidate] = relative.results.as_slice() else {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
+    };
+    if relative_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected human relative rev:at.time response: {relative:?}").into());
     }
@@ -2980,7 +3006,11 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
         },
         |response| response.generation == rev_at_time_ancestor_pin() && response.results.len() == 1,
     )?;
-    if named.results.len() != 1 || named.results[0].candidate_id != "chunk-rev-at-time-ancestor" {
+    let [named_candidate] = named.results.as_slice() else {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
+    };
+    if named_candidate.candidate_id != "chunk-rev-at-time-ancestor" {
         stop_runtime(&shutdown, join)?;
         return Err(format!("unexpected named relative rev:at.time response: {named:?}").into());
     }
@@ -3313,8 +3343,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
                 && response
                     .results
                     .first()
-                    .map(|candidate| !candidate.bindings.is_empty())
-                    .unwrap_or(false)
+                    .is_some_and(|candidate| !candidate.bindings.is_empty())
         },
     )?;
     if mixed_or.results.len() != 1 {

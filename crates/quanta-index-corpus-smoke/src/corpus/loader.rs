@@ -931,9 +931,13 @@ mod tests {
             Vec::new()
         });
         assert_eq!(expected.len(), 1);
-        assert_eq!(expected[0].len(), 1);
-        assert_eq!(expected[0][0].metavariable, "name");
-        assert_eq!(expected[0][0].start_byte, 3);
+        for group in &expected {
+            assert_eq!(group.len(), 1);
+            for binding in group {
+                assert_eq!(binding.metavariable, "name");
+                assert_eq!(binding.start_byte, 3);
+            }
+        }
     }
 
     #[test]

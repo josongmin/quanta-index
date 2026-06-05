@@ -506,15 +506,15 @@ fn filter_canonical_key(f: &LqFilter) -> String {
         LqFilter::Message { pattern } => format!("message:{pattern}"),
         LqFilter::Before { timeref } => format!("before:{timeref}"),
         LqFilter::After { timeref } => format!("after:{timeref}"),
-        LqFilter::Since { timeref } => {
-            if let Some(value) = timeref.strip_prefix("time:") {
-                format!("since.time:{value}")
-            } else if let Some(value) = timeref.strip_prefix("commit:") {
-                format!("since.commit:{value}")
-            } else {
-                format!("since:{timeref}")
-            }
-        }
+        LqFilter::Since { timeref } => timeref.strip_prefix("time:").map_or_else(
+            || {
+                timeref.strip_prefix("commit:").map_or_else(
+                    || format!("since:{timeref}"),
+                    |value| format!("since.commit:{value}"),
+                )
+            },
+            |value| format!("since.time:{value}"),
+        ),
         LqFilter::Until { timeref } => format!("until:{timeref}"),
         LqFilter::DiffAdded { pattern } => format!("diff.added:{pattern}"),
         LqFilter::DiffRemoved { pattern } => format!("diff.removed:{pattern}"),

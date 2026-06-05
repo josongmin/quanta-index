@@ -16,7 +16,15 @@ Do not touch landed `jun-4` surfaces unless you are repairing a regression.
 4. [rfc.md](rfc.md)
 5. one `SGT-*` ticket only
 
-## 3. First Commands
+## 3. Preflight Truth
+
+- current checkout does not contain:
+  - `scripts/check-persona-target-policy.sh`
+  - `scripts/cg-agent-session`
+- carry preflight status as `unverified`
+- do not call the packet clean-preflight complete unless those scripts actually exist and pass
+
+## 4. First Commands
 
 ```bash
 rg -n "repo:contains.file|repo:contains.path|repo:has.description|repo:has.meta\\(key\\)|repo:has.meta\\(tag:|file:has.contributor|structural direct lexical|mixed non-repo predicate sibling" docs/analysis docs/plans/jun-5-sourcegraph-tail-gaps
@@ -24,7 +32,7 @@ python3 tools/benchmark/sourcegraph_parity.py --check
 python3 tools/ci/lint/check-dsl-capability-truth.py
 ```
 
-## 4. Work Rules
+## 5. Work Rules
 
 - Work one `SGT-*` ticket at a time.
 - Freeze current behavior before widening.
@@ -32,7 +40,7 @@ python3 tools/ci/lint/check-dsl-capability-truth.py
 - If the owning seam is absent, close the cell as explicit unsupported.
 - Do not upgrade alias, regex, or structural surfaces from parser-only evidence.
 
-## 5. Done Rule
+## 6. Done Rule
 
 A ticket is not done until:
 
@@ -40,3 +48,4 @@ A ticket is not done until:
 2. owner seam is explicit
 3. runtime/front-door/parity proof exists for supported claims, or typed-fail proof exists for unsupported claims
 4. docs and guard reflect the same verdict
+5. preflight truth is still reported as `unverified` when the scripts are absent

@@ -11,19 +11,28 @@ use quanta_index_contract::{
 use quanta_index_lq_bridge::{BridgeCandidate, TRANSLATOR_VERSION};
 
 fn directive_query(directives: Vec<LqDirective>, source_syntax: &str) -> LqQuery {
+    #[expect(
+        clippy::manual_unwrap_or,
+        clippy::option_if_let_else,
+        reason = "Result::unwrap_or is disallowed by clippy.toml; saturate source length to u32::MAX"
+    )]
+    let span_len = match u32::try_from(source_syntax.len()) {
+        Ok(len) => len,
+        Err(_) => u32::MAX,
+    };
     LqQuery {
         lq_version: LQ_VERSION_TAG,
         expr: LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
         filters: Vec::new(),
         directives,
         options: LqOptions::defaults(),
-        source_span: LqSpan::eof(u32::try_from(source_syntax.len()).expect("syntax len")),
+        source_span: LqSpan::eof(span_len),
     }
 }
 
 fn assert_directive_packet(source_syntax: &str, directive: LqDirective) {
     let translated = directive_query(vec![directive.clone()], source_syntax);
-    let candidate = BridgeCandidate::new(source_syntax, translated.clone());
+    let candidate = BridgeCandidate::new(source_syntax, translated);
     assert_eq!(candidate.translator_version.as_ref(), TRANSLATOR_VERSION);
     assert_eq!(candidate.source_syntax.as_ref(), source_syntax);
     assert_eq!(candidate.translated.directives, vec![directive]);

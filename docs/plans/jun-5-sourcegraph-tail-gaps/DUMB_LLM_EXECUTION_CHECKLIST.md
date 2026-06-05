@@ -5,7 +5,9 @@ Before editing:
 1. Read [NO-GO-RULES.md](NO-GO-RULES.md)
 2. Open [SOURCE_TRUTH_MAP.md](SOURCE_TRUTH_MAP.md)
 3. Pick exactly one `SGT-*` ticket
-4. Write down:
+4. Record preflight truth:
+   - if `scripts/check-persona-target-policy.sh` or `scripts/cg-agent-session` are absent, status is `unverified`
+5. Write down:
    - current code fact
    - official Sourcegraph baseline
    - owner seam
@@ -25,3 +27,4 @@ Before saying done:
 3. `sourcegraph_parity.py --check` is green
 4. `check-dsl-capability-truth.py` is green
 5. `Not Done If` conditions are all false
+6. preflight residue is still explicit
