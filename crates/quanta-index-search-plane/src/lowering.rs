@@ -252,6 +252,17 @@ pub(crate) fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_
 }
 
 fn structural_route_supports_predicate(name: &str) -> bool {
+    // Only the repo-GATE family is a sound SG structural sibling: it restricts the
+    // repo set, leaving the structural candidate buckets keyed correctly.
+    //
+    // SGX-06 verdict (REAFFIRM DEMOTION): the candidate-level content leaves
+    // (`file.contains` / `file.has.content`) and `symbol.has.name` are NOT added
+    // here. An empirical runtime proof (e2e_dual_syntax) showed that preserving
+    // a scoped `file:contains(path:..., content)` sibling yields a SILENTLY EMPTY
+    // intersection — the scoped content predicate does not execute through the
+    // structural subexpr evaluator, exactly the rolled-back preserve-only
+    // false-green. Until a real candidate-level execution seam exists, these stay
+    // explicit `BridgeTranslateFail`.
     matches!(
         name,
         "repo.has.file" | "repo.has.path" | "repo.has.content" | "repo.contains.content"

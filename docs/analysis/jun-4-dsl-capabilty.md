@@ -204,7 +204,7 @@
     - `file:has.contributor(<name-or-email regex>)` (SGX-04: producer must emit split name/email; exact-string set today)
     - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05: grammar gives no distinct sibling slot; permanent demotion)
     - SG structural mixed `symbol.has.name(...)` (SGX-06: symbol_id↔chunk_id key mismatch; no projection authority)
+    - SG structural mixed `file.contains(path|file:...)` / `file.has.content(path|file:...)` (SGX-06: preserve-only widening was attempted under TDD and rolled back — the scoped content-leaf sibling returns a **silently empty** candidate intersection through the structural subexpr evaluator (runtime AND/OR proof returned `[]`; native LQ `AND NOT` form also `PARSE_FAIL`), so it is reaffirmed as explicit `BridgeTranslateFail` demotion, not a partial green)
   - 남은 widening backlog:
     - `repo:has.description(...)` (SGX-02: full new producer-publishable authority; large breaking contract/SDK + fuzz + public-api)
     - `repo:has.meta(/key/:/value/)` (SGX-03 regex: synthetic DocResolver + RegexExecutor over the enumerable meta set)
-    - SG structural mixed `file.contains(path|file:...)` / `file.has.content(path|file:...)` (SGX-06: drop the lowering allow-list gate + candidate-level intersection proof in AND/OR/AND NOT)
