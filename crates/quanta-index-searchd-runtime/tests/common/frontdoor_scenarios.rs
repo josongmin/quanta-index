@@ -107,14 +107,17 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         ]),
     },
     SdkFrontdoorScenario {
-        name: "sourcegraph_repo_has_meta_key_only_typed_fail",
+        // SGX-03: key existence gates every repo with the key present. Both
+        // corp-a and corp-b carry `license`, so all three needle chunks gate.
+        name: "sourcegraph_repo_has_meta_key_only_existence",
         surface: SdkFrontdoorSurface::Lexical,
         syntax: TextQuerySyntax::Sourcegraph,
         query_text: "repo:has.meta(license) shared_oracle_needle",
-        expected: SdkFrontdoorExpectation::TypedError(TypedErrorExpectation {
-            code: "LEX_PREDICATE_UNIMPLEMENTED",
-            message_contains: "key:value",
-        }),
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-b",
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
     },
     SdkFrontdoorScenario {
         name: "sourcegraph_repo_has_topic_positive",

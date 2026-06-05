@@ -770,58 +770,95 @@ fn repo_has_meta_predicate_executes_on_sourcegraph_surface() -> AnyResult<()> {
 }
 
 #[test]
-fn repo_has_meta_rejects_key_only_shape_typed() -> AnyResult<()> {
+fn repo_has_meta_key_only_existence_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    // SGX-03: `repo:has.meta(key)` gates repos that have the key PRESENT with any
+    // value — genuine existence (contains_key), not a wildcard or empty-string
+    // match. Corpus: corp-a={license, tier}, corp-b={license}.
     let mut rt = boot_with_multi_repo_and_repo_meta()?;
-    let result = rt.query_text(
+
+    // `tier` exists only on corp-a → gates to corp-a. (An inverted "key absent"
+    // gate would wrongly select corp-b, so this distinguishes the two.)
+    let tier = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(tier) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        tier.typed_error.is_none(),
+        "key existence must not error: {:?}",
+        tier.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&tier) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.meta(tier) must gate to corp-a (only repo with key `tier`), got {:?}",
+        sorted_candidate_paths(&tier),
+    );
+
+    // `license` exists on both repos → gates to both.
+    let license = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.meta(license) shared_oracle_needle",
         10,
     );
-    let Some(error) = result.typed_error else {
-        anyhow::bail!(
-            "key-only repo:has.meta must typed-fail, got {:?}",
-            result.candidate_ids
-        );
-    };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-        "key-only repo:has.meta must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
-        error.code
+        sorted_candidate_paths(&license)
+            == [
+                "lib/gate-a.rs",
+                "src/corp-a.rs",
+                "src/corp-b.rs",
+                "src/gate-a.rs",
+                "src/gate-b.py"
+            ],
+        "repo:has.meta(license) must gate to both repos, got {:?}",
+        sorted_candidate_paths(&license),
+    );
+
+    // A key present on no repo → empty.
+    let missing = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(absent_key_zzz) shared_oracle_needle",
+        10,
     );
     ensure!(
-        error.message.contains("key:value"),
-        "key-only repo:has.meta must mention key:value arity, got {:?}",
-        error.message
+        missing.typed_error.is_none() && missing.candidate_ids.is_empty(),
+        "absent key must gate to empty, got {:?}",
+        sorted_candidate_paths(&missing),
+    );
+
+    // Exact `key:value` must NOT regress: corp-a has license=apache-2.0.
+    let kv = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(license:apache-2.0) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        sorted_candidate_paths(&kv) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "exact key:value must still gate to corp-a only, got {:?}",
+        sorted_candidate_paths(&kv),
     );
     Ok(())
 }
 
 #[test]
-fn repo_has_meta_rejects_tag_null_value_shape_typed() -> AnyResult<()> {
-    // SGT-03: `repo:has.meta(tag:)` is a tag/null-value shape. The exact-string
-    // metadata substrate has no null/tag concept, so it must fail closed rather
-    // than silently exact-matching an empty value.
+fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface() -> AnyResult<()> {
+    // SGX-03: `repo:has.meta(tag:)` (empty value) is the key-existence shape —
+    // `repo:has.meta(tier:)` gates repos where key `tier` is present (corp-a),
+    // NOT repos with an empty-string `tier` value.
     let mut rt = boot_with_multi_repo_and_repo_meta()?;
     let result = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        "repo:has.meta(tag:) shared_oracle_needle",
+        "repo:has.meta(tier:) shared_oracle_needle",
         10,
     );
-    let Some(error) = result.typed_error else {
-        anyhow::bail!(
-            "tag/null-value repo:has.meta must typed-fail, got {:?}",
-            result.candidate_ids
-        );
-    };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-        "tag-null repo:has.meta must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
-        error.code
+        result.typed_error.is_none(),
+        "tag existence must not error: {:?}",
+        result.typed_error,
     );
     ensure!(
-        error.message.contains("non-empty metadata value"),
-        "tag-null repo:has.meta diagnostic must name the empty-value reason, got {:?}",
-        error.message
+        sorted_candidate_paths(&result) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "repo:has.meta(tier:) must gate to corp-a (key present), got {:?}",
+        sorted_candidate_paths(&result),
     );
     Ok(())
 }
@@ -1464,35 +1501,85 @@ fn repo_contains_file_alias_executes_on_sourcegraph_surface() -> AnyResult<()> {
 }
 
 #[test]
-fn repo_has_file_nested_content_matcher_fails_closed_on_sourcegraph_surface() -> AnyResult<()> {
-    // SGT-01 Cell 3: `repo:has.file(path:... content:...)` has no executable
-    // owner seam — the repo-file gate carries no content matcher. It must fail
-    // closed (typed), never silently widen to a path-only match.
+fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface() -> AnyResult<()> {
+    // SGX-01: `repo:has.file(path:... content:...)` gates a repo only when ONE
+    // file satisfies BOTH path AND content — true per-document correlation, not a
+    // repo-level cross-product. Corpus: corp-a has src/gate-a.rs (contains the
+    // unique token "123") and src/corp-a.rs (does NOT contain "123").
     let mut rt = boot_with_multi_repo()?;
+
+    // Positive: the file at src/gate-a.rs DOES contain "123" → gates corp-a.
     for query in [
-        "repo:has.file(path:src/gate-a.rs, content:shared_oracle_needle) shared_oracle_needle",
-        "repo:contains.file(path:src/gate-a.rs, content:shared_oracle_needle) shared_oracle_needle",
+        "repo:has.file(path:src/gate-a.rs, content:123) shared_oracle_needle",
+        "repo:contains.file(path:src/gate-a.rs, content:123) shared_oracle_needle",
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        let Some(error) = result.typed_error else {
-            anyhow::bail!(
-                "{query} must typed-fail (no content matcher seam), got candidates {:?}",
-                result.candidate_ids,
-            );
-        };
         ensure!(
-            error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-            "{query} must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
-            error.code,
+            result.typed_error.is_none(),
+            "{query} must not error: {:?}",
+            result.typed_error,
         );
-        // Pin the REASON: the matcher set is rejected as an unsupported arg
-        // shape (no content matcher seam), not an arity/no-matcher failure.
         ensure!(
-            error.message.contains("only supports"),
-            "{query} must fail for the unsupported-matcher reason (no content seam), got {:?}",
-            error.message,
+            sorted_candidate_paths(&result) == ["src/corp-a.rs", "src/gate-a.rs"],
+            "{query} must gate to corp-a (file at path contains content), got {:?}",
+            sorted_candidate_paths(&result),
         );
     }
+
+    // Anti-overmatch: src/corp-a.rs does NOT contain "123" (only src/gate-a.rs,
+    // a DIFFERENT file in the same repo, does). A repo-level conjunction would
+    // wrongly match corp-a; true per-doc correlation must return EMPTY.
+    let overmatch = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/corp-a.rs, content:123) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        overmatch.typed_error.is_none(),
+        "anti-overmatch query must not error: {:?}",
+        overmatch.typed_error,
+    );
+    ensure!(
+        overmatch.candidate_ids.is_empty(),
+        "src/corp-a.rs has no `123`; path+content must NOT match via a different file, got {:?}",
+        sorted_candidate_paths(&overmatch),
+    );
+
+    // Content-miss: a content token present in no file at the path → empty.
+    let miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/gate-a.rs, content:absent_zzz_token) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        miss.typed_error.is_none(),
+        "content-miss must not error: {:?}",
+        miss.typed_error,
+    );
+    ensure!(
+        miss.candidate_ids.is_empty(),
+        "content-miss must return no docs, got {:?}",
+        sorted_candidate_paths(&miss),
+    );
+
+    // Empty content value still fails closed (typed).
+    let empty = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.file(path:src/gate-a.rs, content:) shared_oracle_needle",
+        10,
+    );
+    let Some(error) = empty.typed_error else {
+        anyhow::bail!(
+            "empty content value must typed-fail, got {:?}",
+            empty.candidate_ids
+        );
+    };
+    ensure!(
+        error.code == "LEX_PREDICATE_UNIMPLEMENTED" && error.message.contains("content:"),
+        "empty content must fail with the content: empty reason, got {} {:?}",
+        error.code,
+        error.message,
+    );
     Ok(())
 }
 

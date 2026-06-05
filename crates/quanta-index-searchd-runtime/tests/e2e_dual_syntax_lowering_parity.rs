@@ -720,6 +720,30 @@ const SCENARIOS: &[ParityScenario] = &[
             ids: &["alpha_rust", "delta_other_path", "beta_py"],
         },
     },
+    // SGX-01: `repo:has.file(path:... content:...)` correlates per-document.
+    // src/lib.rs (alpha_rust) content is `fn parity_needle_alpha() {}`, so the
+    // file at that path DOES contain the token → gate opens.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_content_predicate_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, content:parity_needle_alpha) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, content:parity_needle_alpha) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust", "delta_other_path", "beta_py"],
+        },
+    },
+    // Load-bearing: the file at src/lib.rs does NOT contain `absent_zzz_token`, so
+    // the content clause closes the gate to empty. A no-op content (path-only
+    // overmatch) would instead return the three needle hits.
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_file_path_content_miss_parity",
+        sg_query: "repo:has.file(path:src/lib.rs, content:absent_zzz_token) parity_needle_alpha",
+        lq_query: "repo:has.file(path:src/lib.rs, content:absent_zzz_token) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
     ParityScenario {
         route: QueryRoute::Text,
         id: "repo_has_file_path_name_predicate_parity",
@@ -1523,28 +1547,31 @@ const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
             ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
         },
     },
+    // SGX-03: key-only and `tag:` are key-EXISTENCE shapes (key present with any
+    // value). Both parity repos carry `license=apache-2.0`, so existence of
+    // `license` gates both.
     ParityScenario {
         route: QueryRoute::Text,
-        id: "repo_has_meta_key_only_typed_fail_parity",
+        id: "repo_has_meta_key_only_existence_parity",
         sg_query: "repo:has.meta(license) parity_needle_alpha",
         lq_query: "repo.has.meta(license) parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
         },
     },
-    // SGT-03: tag/null-value and slash-delimited regex meta shapes fail closed
-    // identically on both syntaxes — the exact-string substrate supports neither.
     ParityScenario {
         route: QueryRoute::Text,
-        id: "repo_has_meta_tag_null_typed_fail_parity",
-        sg_query: "repo:has.meta(tag:) parity_needle_alpha",
-        lq_query: "repo.has.meta(tag:) parity_needle_alpha",
+        id: "repo_has_meta_tag_existence_parity",
+        sg_query: "repo:has.meta(license:) parity_needle_alpha",
+        lq_query: "repo.has.meta(license:) parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
         },
     },
+    // SGX-03: slash-delimited regex key/value remains the deferred typed-fail
+    // shape (no regex-capable meta substrate yet); fails closed on both syntaxes.
     ParityScenario {
         route: QueryRoute::Text,
         id: "repo_has_meta_regex_key_value_typed_fail_parity",

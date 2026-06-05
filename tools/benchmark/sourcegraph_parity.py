@@ -118,30 +118,18 @@ SG_SELECT_SURFACES = [
 ]
 
 EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = (
-    (
-        "repo.has.file.path_content",
-        "repo:has.file(path:... content:...)",
-        "repo-file gate has no content matcher seam",
-    ),
+    # SGX-01 promoted repo:has.file(path:... content:...) to a correlated
+    # per-document gate; SGX-03 promoted repo:has.meta(key) / (tag:) to genuine
+    # key-existence. Those cells now live in the supported inventory.
     (
         "repo.has.description",
         "repo:has.description(...)",
         "no producer-published repo-description authority exists on the current tree",
     ),
     (
-        "repo.has.meta.key_only",
-        "repo:has.meta(key)",
-        "key existence is not exposed by the exact-string metadata substrate",
-    ),
-    (
-        "repo.has.meta.tag_null",
-        "repo:has.meta(tag:)",
-        "exact-string metadata substrate has no null-value or tag-only concept",
-    ),
-    (
         "repo.has.meta.regex",
         "repo:has.meta(/key/:/value/)",
-        "metadata authority is exact-string only and has no regex engine",
+        "metadata authority is exact-string only and has no regex engine (SGX-03 deferred)",
     ),
     (
         "file.has.contributor.regex",
@@ -331,18 +319,6 @@ def unsupported_surface_ids_in(query: str) -> set[str]:
             found.add(surface)
     if "repo:has.description(" in query or "repo.has.description(" in query:
         found.add("repo.has.description")
-    if (
-        ("repo:has.file(" in query or "repo.has.file(" in query)
-        and "content:" in query
-    ) or (
-        ("repo:contains.file(" in query or "repo.contains.file(" in query)
-        and "content:" in query
-    ):
-        found.add("repo.has.file.path_content")
-    if "repo:has.meta(tag:)" in query or "repo.has.meta(tag:)" in query:
-        found.add("repo.has.meta.tag_null")
-    if re.search(r"repo[:.]has\.meta\([^):]+\)", query):
-        found.add("repo.has.meta.key_only")
     if re.search(r"repo[:.]has\.meta\([^)]*/", query):
         found.add("repo.has.meta.regex")
     if re.search(r"file[:.]has\.contributor\(/", query):

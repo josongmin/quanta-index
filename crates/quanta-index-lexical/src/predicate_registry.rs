@@ -274,13 +274,20 @@ pub(crate) fn unimplemented_predicate(message: String) -> CoreError {
 /// Each matcher narrows the repo-existence gate on a distinct indexed field:
 /// `Path` against the full repo-relative path, `Name` against the file name,
 /// `Language` against the indexed language code (ADV-01 widened arg-shape
-/// family). Each lowers to exactly one canonical field query in `lib.rs`, so
-/// the widening adds no ambiguity.
+/// family), `Content` against the chunk text (SGX-01 `path + content`
+/// correlation). Each lowers to exactly one canonical field query in `lib.rs`
+/// and is AND-ed (`Occur::Must`) per indexed document, so a repo matches only
+/// when ONE file satisfies all matchers — no cross-file overmatching.
 #[derive(Clone)]
 pub(crate) enum RepoFileMatcher {
     Path(String),
     Name(String),
     Language(String),
+    /// `content:` chunk-text matcher. Lowered (in `lib.rs`) through the same
+    /// `content_leaf_from_scalar` regex-delimiter path the `ContentLeaf` family
+    /// uses, so a `/regex/` content stays a regex and a bare value is a standard
+    /// tokenized match.
+    Content(String),
 }
 
 /// A fully validated `repo.has.file` argument set.
@@ -299,10 +306,12 @@ pub(crate) enum RepoFileArgError {
     /// - exactly one textual scalar path shorthand, or
     /// - one or more `path:` / `name:` / `lang:` filters.
     UnsupportedArg,
-    /// No `path:` / `name:` / `lang:` matcher was supplied.
+    /// No `path:` / `name:` / `lang:` / `content:` matcher was supplied.
     NoMatcher,
     /// A `lang:` matcher value was empty or whitespace-only.
     EmptyLanguageValue,
+    /// A `content:` matcher value was empty or whitespace-only.
+    EmptyContentValue,
 }
 
 /// Parse `repo.has.file(...)` arguments into validated matchers.
@@ -348,6 +357,14 @@ pub(crate) fn parse_repo_file_matchers(
                     return Err(RepoFileArgError::EmptyLanguageValue);
                 }
                 matchers.push(RepoFileMatcher::Language(value.clone()));
+            }
+            LqPredicateArg::Filter { name, value } if name == "content" => {
+                // SGX-01: `content:` correlates per-document with the path/name
+                // matchers. An empty content value is not a usable matcher.
+                if value.trim().is_empty() {
+                    return Err(RepoFileArgError::EmptyContentValue);
+                }
+                matchers.push(RepoFileMatcher::Content(value.clone()));
             }
             LqPredicateArg::Keyword(_)
             | LqPredicateArg::Phrase(_)
@@ -417,11 +434,17 @@ pub(crate) fn parse_timeref_scalar_arg(
     }
 }
 
-/// A validated `repo.has.meta(key:value)` argument.
+/// A validated `repo.has.meta(...)` argument.
+///
+/// v1 admits only exact `key:value` equality.
+///
+/// `None` remains in the shape so future widening can add key-existence
+/// semantics without rewriting every owner seam, but the current shipped
+/// parser/executor still fails closed on key-only and empty-value inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepoMetaArg {
     pub key: String,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 /// A validated `repo.has.topic(topic)` argument.
@@ -476,16 +499,12 @@ pub(crate) enum RepoTopicArgError {
 pub(crate) enum RepoMetaArgError {
     /// Not exactly one positional argument.
     WrongArity,
-    /// The single argument was not a `key:value` filter (e.g. key-only or a
-    /// bare scalar). Key-only shapes stay typed-fail: the exact-string metadata
-    /// substrate exposes only `key == value` equality, not key existence.
+    /// The single argument was not an admitted meta shape — i.e. a numeric arg.
+    /// (`key:value` equality is admitted; bare `key` existence stays a deferred
+    /// SGX-03 shape and `/.../ ` regex is a distinct typed-fail.)
     UnsupportedArg,
-    /// The `key:value` filter carried an empty/whitespace-only key.
+    /// The argument carried an empty/whitespace-only key (or bare empty token).
     EmptyKey,
-    /// The `key:value` filter carried an empty/whitespace-only value
-    /// (`repo:has.meta(tag:)`). The exact-string substrate has no tag/null-value
-    /// concept, so an empty value is not an admitted shape.
-    EmptyValue,
     /// The key or value was wrapped in `/.../ ` regex delimiters
     /// (`repo:has.meta(/key/:/value/)`). The metadata authority is exact-string
     /// only and carries no regex engine, so regex key/value is unsupported.
@@ -513,8 +532,9 @@ fn is_regex_delimited(token: &str) -> bool {
 ///
 /// Single owner of the `repo.has.meta` argument contract: exactly one
 /// `key:value` filter is admitted, surfaced by the parser as
-/// [`LqPredicateArg::Filter`]. Both lexical lowering and planner validation
-/// route through here so the contract cannot diverge.
+/// [`LqPredicateArg::Filter`]. Key-only, tag/null-value, and regex shapes stay
+/// explicit typed-fail backlog cells. Both lexical lowering and planner
+/// validation route through here so the contract cannot diverge.
 pub(crate) fn parse_repo_meta_arg(
     args: &[LqPredicateArg],
 ) -> Result<RepoMetaArg, RepoMetaArgError> {
@@ -528,23 +548,38 @@ pub(crate) fn parse_repo_meta_arg(
             }
             // `/key/:/value/` regex syntax has no regex-capable authority on the
             // exact-string substrate; fail closed rather than literal-matching
-            // the slashes. Checked before the empty-value guard so a regex key
-            // with an empty value still reports the regex reason.
+            // the slashes. (Regex key/value remains the SGX-03 deferred shape.)
             if is_regex_delimited(name) || is_regex_delimited(value) {
                 return Err(RepoMetaArgError::RegexUnsupported);
             }
-            if value.trim().is_empty() {
-                return Err(RepoMetaArgError::EmptyValue);
-            }
+            // SGX-03: empty value (`repo:has.meta(tag:)`) is key-existence, not a
+            // failure and not an empty-string match.
+            let value = if value.trim().is_empty() {
+                None
+            } else {
+                Some(value.clone())
+            };
             Ok(RepoMetaArg {
                 key: name.clone(),
-                value: value.clone(),
+                value,
             })
         }
-        LqPredicateArg::Keyword(_)
-        | LqPredicateArg::Phrase(_)
-        | LqPredicateArg::RawString(_)
-        | LqPredicateArg::Number(_) => Err(RepoMetaArgError::UnsupportedArg),
+        // SGX-03: a bare scalar (`repo:has.meta(license)`) is key-existence.
+        LqPredicateArg::Keyword(value)
+        | LqPredicateArg::Phrase(value)
+        | LqPredicateArg::RawString(value) => {
+            if value.trim().is_empty() {
+                return Err(RepoMetaArgError::EmptyKey);
+            }
+            if is_regex_delimited(value) {
+                return Err(RepoMetaArgError::RegexUnsupported);
+            }
+            Ok(RepoMetaArg {
+                key: value.clone(),
+                value: None,
+            })
+        }
+        LqPredicateArg::Number(_) => Err(RepoMetaArgError::UnsupportedArg),
     }
 }
 
@@ -799,12 +834,16 @@ mod tests {
             }]),
             Ok(RepoMetaArg {
                 key: "license".to_string(),
-                value: "MIT".to_string(),
+                value: Some("MIT".to_string()),
             })
         );
+        // SGX-03: bare `key` is key-existence (value: None).
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Keyword("license".to_string())]),
-            Err(RepoMetaArgError::UnsupportedArg)
+            Ok(RepoMetaArg {
+                key: "license".to_string(),
+                value: None,
+            })
         );
         assert_eq!(parse_repo_meta_arg(&[]), Err(RepoMetaArgError::WrongArity));
         assert_eq!(
@@ -814,27 +853,41 @@ mod tests {
             }]),
             Err(RepoMetaArgError::EmptyKey)
         );
+        // SGX-03: a bare empty key still fails closed.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Keyword("  ".to_string())]),
+            Err(RepoMetaArgError::EmptyKey)
+        );
+        // A numeric arg is still unsupported.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Number(7)]),
+            Err(RepoMetaArgError::UnsupportedArg)
+        );
     }
 
     #[test]
-    fn repo_meta_arg_rejects_empty_value_tag_shape() {
-        // SGT-03: `repo:has.meta(tag:)` parses to a `tag` key with an empty
-        // value. The exact-string substrate has no tag/null-value concept, so
-        // an empty value must fail closed instead of silently exact-matching the
-        // empty string — that would overstate tag-null support.
+    fn repo_meta_arg_admits_tag_existence_shape() {
+        // SGX-03: `repo:has.meta(tag:)` (empty value) is the key-existence shape —
+        // the key must be PRESENT with any value, NOT an empty-string match.
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "tag".to_string(),
                 value: String::new(),
             }]),
-            Err(RepoMetaArgError::EmptyValue)
+            Ok(RepoMetaArg {
+                key: "tag".to_string(),
+                value: None,
+            })
         );
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "license".to_string(),
                 value: "   ".to_string(),
             }]),
-            Err(RepoMetaArgError::EmptyValue)
+            Ok(RepoMetaArg {
+                key: "license".to_string(),
+                value: None,
+            })
         );
     }
 
@@ -876,7 +929,7 @@ mod tests {
             }]),
             Ok(RepoMetaArg {
                 key: "path".to_string(),
-                value: "/usr/bin".to_string(),
+                value: Some("/usr/bin".to_string()),
             })
         );
     }
@@ -1081,10 +1134,33 @@ mod tests {
     }
 
     #[test]
-    fn repo_file_matchers_reject_content_filter() {
-        // SGT-01 Cell 3: `repo:has.file(path:... content:...)` has no executable
-        // owner seam on the repo-file gate (no Content matcher variant). The
-        // nested `content:` filter must fail closed, not be silently widened.
+    fn repo_file_matchers_admit_path_and_content() {
+        // SGX-01: `repo:has.file(path:... content:...)` is now a real correlated
+        // matcher set — path AND content are both admitted (and AND-ed per-doc by
+        // the executor). A `/regex/` content stays a regex via the executor's
+        // content_leaf_from_scalar path; the parser just carries the raw value.
+        let constraint = match parse_repo_file_matchers(&[
+            LqPredicateArg::Filter {
+                name: "path".to_string(),
+                value: "src/lib.rs".to_string(),
+            },
+            LqPredicateArg::Filter {
+                name: "content".to_string(),
+                value: "needle".to_string(),
+            },
+        ]) {
+            Ok(constraint) => constraint,
+            Err(err) => panic!("path+content must be admitted, got {err:?}"),
+        };
+        assert!(matches!(
+            constraint.matchers.as_slice(),
+            [RepoFileMatcher::Path(_), RepoFileMatcher::Content(v)] if v == "needle"
+        ));
+    }
+
+    #[test]
+    fn repo_file_matchers_reject_empty_content_value() {
+        // An empty/whitespace content value is not a usable matcher — fail closed.
         assert!(matches!(
             parse_repo_file_matchers(&[
                 LqPredicateArg::Filter {
@@ -1093,10 +1169,10 @@ mod tests {
                 },
                 LqPredicateArg::Filter {
                     name: "content".to_string(),
-                    value: "needle".to_string(),
+                    value: "  ".to_string(),
                 },
             ]),
-            Err(RepoFileArgError::UnsupportedArg)
+            Err(RepoFileArgError::EmptyContentValue)
         ));
     }
 

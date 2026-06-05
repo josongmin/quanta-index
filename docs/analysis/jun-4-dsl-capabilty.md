@@ -41,6 +41,7 @@
 | lexical predicate | `file.has.content(path:..., <scalar>)` / `file.has.content(file:..., <scalar>)` | 예 | 예 | exact runtime/front-door/parity green |
 | lexical predicate | `file.has.content(lang:..., /.../)` | 예 | 예 | exact runtime/front-door/parity green |
 | lexical predicate | `repo.has.file(path:...)` / `name:...` / `lang:...` | 예 | 예 | exact runtime/front-door/parity green |
+| lexical predicate | `repo.has.file(path:... content:...)` | 예 | 예 | SGX-01: per-document path∧content correlation (`Occur::Must` on one doc), NOT a repo-level cross-product. anti-overmatch + runtime/parity/corpus/front-door green |
 | lexical predicate | `repo.has.file(<scalar-path>)` | 예 | 예 | scalar-path shorthand |
 | lexical predicate | `repo.has.file(path+name)` / `path+lang` / `name+lang` / `path+name+lang` | 예 | 예 | combinatorial matcher matrix exact green |
 | lexical predicate | `repo.has.content(<keyword|phrase|raw|number>)` | 예 | 예 | exact runtime/front-door/parity green |
@@ -54,6 +55,7 @@
 | Sourcegraph predicate family | `repo:has.commit.after(...)` | 예 | 예 | quanta-index contract/sdk/runtime/front-door/parity green. Semantica ingress owner auto-emits repo commit recency from history publish and live ingress roundtrip proof is green |
 | Sourcegraph predicate family | `repo:contains.commit.after(...)` | 예 | 예 | canonical alias parity green, including live producer ingress proof |
 | Sourcegraph predicate family | `repo:has.meta(key:value)` | 예 | 예 | repo-scoped metadata authority is executable on current tree. key/value exact semantics, runtime/front-door/parity/corpus green |
+| Sourcegraph predicate family | `repo:has.meta(key)` / `repo:has.meta(tag:)` | 예 | 예 | SGX-03: genuine key-EXISTENCE (`contains_key`, key present with any value) — not a wildcard `key:*` nor an empty-string match. runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `repo:has.topic(...)` | 예 | 예 | source-repo keyed repo-topic authority is executable on current tree. lowercase exact topic-set semantics, runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `file:has.owner(...)` / `file:has.owner()` | 예 | 예 | source-repo keyed file-ownership authority is executable on current tree. one textual owner arg is exact lowercase owner-identity gate; zero-arg form means any-owner. runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `file:has.contributor(...)` | 예 | 예 | source-repo keyed file-contributor authority is executable on current tree. one textual contributor arg is exact lowercase contributor-identity gate backed by file-level contributor sets. runtime/front-door/parity/corpus green |
@@ -74,11 +76,8 @@
 | lexical predicate | scoped content predicate inside `OR` / `NOT` | 예 | 아니오 | native LQ는 되지만 SG bridge는 scoped predicates under `OR/NOT` 불가 |
 | lexical predicate | `file:contains("a", "b")` 같은 multi-scalar content shape | 아니오 | 아니오 | typed fail |
 | runtime catalog | `dirty:only` | 아니오 | 아니오 | explicit typed fail |
-| Sourcegraph predicate family | `repo:has.meta(key)` | 아니오 | 아니오 | current executable subset is key:value only. key-only shape is typed fail. SGT-03: key existence not exposed by exact-string substrate |
-| Sourcegraph predicate family | `repo:has.meta(tag:)` | 아니오 | 아니오 | SGT-03: tag/null-value shape. exact-string substrate has no null concept; empty value is typed fail (`LEX_PREDICATE_UNIMPLEMENTED`), not a silent empty-string match |
-| Sourcegraph predicate family | `repo:has.meta(/key/:/value/)` | 아니오 | 아니오 | SGT-03: regex key/value. metadata authority is exact-string `BTreeMap`; `/.../ ` delimited key/value is typed fail, not a silent literal match |
-| Sourcegraph predicate family | `repo:has.file(path:... content:...)` | 아니오 | 아니오 | SGT-01: repo-file gate has no content matcher seam (path/name/lang only). nested `content:` is typed fail |
-| Sourcegraph predicate family | `repo:has.description(...)` | 아니오 | 아니오 | SGT-02: no producer-published repo-description authority exists (no SDK publish surface, contract DTO, or shard). search-plane cannot fabricate source bytes; typed fail |
+| Sourcegraph predicate family | `repo:has.meta(/key/:/value/)` | 아니오 | 아니오 | SGT-03 closed as typed-fail; SGX-03 keeps it deferred. metadata authority is exact-string `BTreeMap` with no regex engine over the key/value set yet |
+| Sourcegraph predicate family | `repo:has.description(...)` | 아니오 | 아니오 | SGT-02/SGX-02: no producer-published repo-description authority exists yet (no SDK publish surface, contract DTO, or shard). search-plane cannot fabricate source bytes; typed fail until the authority lands |
 | Sourcegraph predicate family | `file:has.contributor(/<regex>/)` | 아니오 | 아니오 | SGT-04: contributor authority is a flat, case-folded exact-string set with no name/email split and no regex engine. `/.../ ` delimited arg is typed fail, not regex theater over exact strings |
 | structural | SG structural direct lexical `Phrase` sibling | 예 | 아니오 | direct SG surface 없음. quoted phrase는 structural body로 해석됨 |
 | structural | SG structural direct lexical `Regex` sibling | 예 | 아니오 | direct SG surface 없음. `/.../`는 structural regex body로 해석됨 |
@@ -196,5 +195,16 @@
       - `file.contains(path|file:...)`
       - `file.has.content(path|file:...)`
       - `symbol.has.name(...)`
-- optional new-scope only:
-  - SG structural mixed non-repo predicate sibling support — only via a new candidate-level structural execution seam (SGT-06), not a lowering-preserve patch
+- `jun-6-sourcegraph-expansion` packet (in progress):
+  - packet: [docs/plans/jun-6-sourcegraph-expansion/rfc.md](../plans/jun-6-sourcegraph-expansion/rfc.md)
+  - 지원됨으로 승격 (real owner seam + proof, machine-checked):
+    - `repo:has.file(path:... content:...)` (SGX-01: per-document path∧content correlation)
+    - `repo:has.meta(key)` / `repo:has.meta(tag:)` (SGX-03: genuine key-existence via `contains_key`)
+  - 미지원 재확인 (verdict holds, no real seam yet):
+    - `file:has.contributor(<name-or-email regex>)` (SGX-04: producer must emit split name/email; exact-string set today)
+    - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05: grammar gives no distinct sibling slot; permanent demotion)
+    - SG structural mixed `symbol.has.name(...)` (SGX-06: symbol_id↔chunk_id key mismatch; no projection authority)
+  - 남은 widening backlog:
+    - `repo:has.description(...)` (SGX-02: full new producer-publishable authority; large breaking contract/SDK + fuzz + public-api)
+    - `repo:has.meta(/key/:/value/)` (SGX-03 regex: synthetic DocResolver + RegexExecutor over the enumerable meta set)
+    - SG structural mixed `file.contains(path|file:...)` / `file.has.content(path|file:...)` (SGX-06: drop the lowering allow-list gate + candidate-level intersection proof in AND/OR/AND NOT)

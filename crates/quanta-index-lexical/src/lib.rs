@@ -3051,6 +3051,12 @@ struct PreparedPredicatePlan {
     force_empty: bool,
 }
 
+struct PreparedExecutableQuery {
+    query: LqQuery,
+    predicate_plan: PreparedPredicatePlan,
+    doc_kind: QueryDocKind,
+}
+
 /// A repo-existence gate to intersect into `allowed_repo_ids`.
 ///
 /// `repo.has.file` gates by an indexed `path:`/`name:`/`lang:` matcher;
@@ -3654,6 +3660,7 @@ impl TantivySearcher {
     fn repo_has_file_path_query(
         &self,
         constraint: &RepoFileConstraint,
+        options: &LqOptions,
     ) -> Result<Box<dyn Query>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> =
             Vec::with_capacity(constraint.matchers.len());
@@ -3664,6 +3671,15 @@ impl TantivySearcher {
                 }
                 RepoFileMatcher::Name(pattern) => {
                     self.regex_text_query(self.fields.file_name, pattern)?
+                }
+                RepoFileMatcher::Content(value) => {
+                    // SGX-01: AND the content clause onto the SAME per-document
+                    // BooleanQuery as the path/name/lang clauses, so a repo
+                    // matches only when ONE file satisfies path AND content.
+                    // Lower through content_leaf_from_scalar so `/regex/` content
+                    // stays a regex; compile_leaf builds the chunk_text query.
+                    let leaf = content_leaf_from_scalar(&ContentScalarArg::Keyword(value.clone()));
+                    self.compile_leaf(&leaf, options, false)?
                 }
                 RepoFileMatcher::Language(value) => {
                     // normalize_language case-folds the value for the exact
@@ -3689,8 +3705,9 @@ impl TantivySearcher {
     fn collect_repo_ids_for_repo_has_file(
         &self,
         constraint: &RepoFileConstraint,
+        options: &LqOptions,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let compiled = self.repo_has_file_path_query(constraint)?;
+        let compiled = self.repo_has_file_path_query(constraint, options)?;
         let searcher = self.reader.searcher();
         let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
@@ -3877,16 +3894,13 @@ impl TantivySearcher {
             })
             .map_err(|err| match err {
                 RepoMetaArgError::WrongArity => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` requires exactly one `key:value` filter argument (owner: {PREDICATE_OWNER})"
+                    "lexical: predicate leaf `{name}` requires exactly one metadata argument (owner: {PREDICATE_OWNER})"
                 )),
                 RepoMetaArgError::UnsupportedArg => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` only supports a single `key:value` filter argument; key-only shapes are not admitted on the exact-string metadata substrate (owner: {PREDICATE_OWNER})"
+                    "lexical: predicate leaf `{name}` only supports `key:value`, bare `key`, or `tag:` existence shapes (owner: {PREDICATE_OWNER})"
                 )),
                 RepoMetaArgError::EmptyKey => unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` requires a non-empty metadata key (owner: {PREDICATE_OWNER})"
-                )),
-                RepoMetaArgError::EmptyValue => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` requires a non-empty metadata value; tag/null-value shapes are not supported on the exact-string metadata substrate (owner: {PREDICATE_OWNER})"
                 )),
                 RepoMetaArgError::RegexUnsupported => unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` does not support `/.../ ` regex key/value; the metadata authority is exact-string only (owner: {PREDICATE_OWNER})"
@@ -3902,7 +3916,16 @@ impl TantivySearcher {
         Ok(authority
             .meta_by_repo_id
             .iter()
-            .filter(|(_, by_key)| by_key.get(&arg.key) == Some(&arg.value))
+            .filter(|(_, by_key)| {
+                // SGX-03: `Some(v)` is exact key:value equality; `None` is genuine
+                // key EXISTENCE (key present with any value). NOTE: this must NOT
+                // be folded to `get(key) == value.as_ref()` — for `None` that
+                // would test key ABSENCE, the exact inverse of existence.
+                arg.value.as_ref().map_or_else(
+                    || by_key.contains_key(&arg.key),
+                    |value| by_key.get(&arg.key) == Some(value),
+                )
+            })
             .map(|(repo_id, _)| repo_id.clone())
             .collect())
     }
@@ -4181,13 +4204,16 @@ impl TantivySearcher {
     ) -> Result<RepoFileConstraint, CoreError> {
         parse_repo_file_matchers(args).map_err(|err| match err {
             RepoFileArgError::UnsupportedArg => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` only supports one scalar path argument or path:/name:/lang: filter arguments (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` only supports one scalar path argument or path:/name:/lang:/content: filter arguments (owner: {PREDICATE_OWNER})"
             )),
             RepoFileArgError::NoMatcher => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` requires either one scalar path argument or at least one path:/name:/lang: argument (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` requires either one scalar path argument or at least one path:/name:/lang:/content: argument (owner: {PREDICATE_OWNER})"
             )),
             RepoFileArgError::EmptyLanguageValue => unimplemented_predicate(format!(
                 "lexical: predicate leaf `{name}` lang: argument cannot be empty (owner: {PREDICATE_OWNER})"
+            )),
+            RepoFileArgError::EmptyContentValue => unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` content: argument cannot be empty (owner: {PREDICATE_OWNER})"
             )),
         })
     }
@@ -4457,7 +4483,9 @@ impl TantivySearcher {
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
             let repo_ids = match constraint {
-                RepoScopeConstraint::File(file) => self.collect_repo_ids_for_repo_has_file(file)?,
+                RepoScopeConstraint::File(file) => {
+                    self.collect_repo_ids_for_repo_has_file(file, &query.options)?
+                }
                 RepoScopeConstraint::Content(leaf) => {
                     self.collect_repo_ids_for_repo_has_content(leaf, &query.options)?
                 }
@@ -4523,16 +4551,6 @@ impl TantivySearcher {
             allowed_candidate_ids: None,
             force_empty: false,
         })
-    }
-
-    fn planner_view_query(&self, query: &LqQuery) -> Result<Option<LqQuery>, CoreError> {
-        let prepared = self.prepare_predicate_plan(query)?;
-        if prepared.force_empty {
-            return Ok(None);
-        }
-        let mut planner_query = query.clone();
-        planner_query.expr = prepared.expr;
-        Ok(Some(planner_query))
     }
 
     fn repo_filter_matches(&self, filter: &LqFilter) -> Result<Option<bool>, CoreError> {
@@ -5088,7 +5106,7 @@ impl TantivySearcher {
                     };
                     let constraint =
                         self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
-                    let repo_ids = self.collect_repo_ids_for_repo_has_file(&constraint)?;
+                    let repo_ids = self.collect_repo_ids_for_repo_has_file(&constraint, options)?;
                     if repo_ids.is_empty() {
                         return Ok(self.match_none_query());
                     }
@@ -5320,8 +5338,11 @@ impl TantivySearcher {
         }
     }
 
-    fn compile_query(&self, query: &LqQuery) -> Result<Option<Box<dyn Query>>, CoreError> {
-        let prepared = self.prepare_predicate_plan(query)?;
+    fn compile_query_from_prepared(
+        &self,
+        query: &LqQuery,
+        prepared: &PreparedPredicatePlan,
+    ) -> Result<Option<Box<dyn Query>>, CoreError> {
         if prepared.force_empty {
             return Ok(None);
         }
@@ -5361,17 +5382,21 @@ impl TantivySearcher {
         }
     }
 
-    fn compile_query_for_doc_kind(
+    fn prepare_executable_query(
         &self,
         query: &LqQuery,
         default_doc_kind: QueryDocKind,
-    ) -> Result<Option<Box<dyn Query>>, CoreError> {
-        let (prepared_query, doc_kind) =
-            self.prepare_query_for_doc_kind(query, default_doc_kind)?;
-        let Some(base) = self.compile_query(&prepared_query)? else {
+    ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
+        let (prepared_query, doc_kind) = self.prepare_query_for_doc_kind(query, default_doc_kind)?;
+        let predicate_plan = self.prepare_predicate_plan(&prepared_query)?;
+        if predicate_plan.force_empty {
             return Ok(None);
-        };
-        Ok(Some(self.with_doc_kind(base, doc_kind.as_str())))
+        }
+        Ok(Some(PreparedExecutableQuery {
+            query: prepared_query,
+            predicate_plan,
+            doc_kind,
+        }))
     }
 
     fn document_to_candidate(
@@ -5635,18 +5660,25 @@ impl LexicalSearcher for TantivySearcher {
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query(&effective_query)?;
-        let Some(planner_query) = self.planner_view_query(&effective_query)? else {
+        let Some(prepared_query) =
+            self.prepare_executable_query(&effective_query, QueryDocKind::Text)?
+        else {
             return Ok(Vec::new());
         };
+        let mut planner_query = prepared_query.query.clone();
+        planner_query.expr = prepared_query.predicate_plan.expr.clone();
         planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) =
-            self.compile_query_for_doc_kind(&effective_query, QueryDocKind::Text)?
+        let Some(base) = self.compile_query_from_prepared(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+        )?
         else {
             return Ok(Vec::new());
         };
+        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
         let requested = usize::try_from(top_k)
             .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
         let limit = self.effective_limit(&effective_query, requested);
@@ -5746,18 +5778,25 @@ impl LexicalSearcher for TantivySearcher {
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
         LexicalPolicy::validate_query(&effective_query)?;
-        let Some(planner_query) = self.planner_view_query(&effective_query)? else {
+        let Some(prepared_query) =
+            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol)?
+        else {
             return Ok(Vec::new());
         };
+        let mut planner_query = prepared_query.query.clone();
+        planner_query.expr = prepared_query.predicate_plan.expr.clone();
         planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) =
-            self.compile_query_for_doc_kind(&effective_query, QueryDocKind::Symbol)?
+        let Some(base) = self.compile_query_from_prepared(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+        )?
         else {
             return Ok(Vec::new());
         };
+        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
         let requested = usize::try_from(top_k)
             .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
         let limit = self.effective_limit(&effective_query, requested);
@@ -5789,16 +5828,22 @@ impl LexicalSearcher for TantivySearcher {
 
     fn search_all(&self, query: &LqQuery) -> Result<Vec<LexicalCandidate>, CoreError> {
         LexicalPolicy::validate_query(query)?;
-        let Some(planner_query) = self.planner_view_query(query)? else {
+        let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
         };
+        let mut planner_query = prepared_query.query.clone();
+        planner_query.expr = prepared_query.predicate_plan.expr.clone();
         planner_preflight(&planner_query, self.repo_metadata.is_some())?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(compiled) = self.compile_query_for_doc_kind(query, QueryDocKind::Text)? else {
+        let Some(base) = self.compile_query_from_prepared(
+            &prepared_query.query,
+            &prepared_query.predicate_plan,
+        )? else {
             return Ok(Vec::new());
         };
+        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
         let searcher = self.reader.searcher();
         let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
