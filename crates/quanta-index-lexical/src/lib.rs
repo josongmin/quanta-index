@@ -1336,6 +1336,12 @@ fn decode_repo_description_snapshot(bytes: &[u8]) -> Result<RepoDescriptionShard
             };
             match field_name.as_str() {
                 "source_repo_id" => {
+                    if source_repo_id.is_some() {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: repo description decode: duplicate entry field `source_repo_id`"
+                                .to_string(),
+                        ));
+                    }
                     let CborValue::Text(text) = field_value else {
                         return Err(CoreError::InvalidContract(
                             "lexical: repo description decode: `source_repo_id` must be text"
@@ -1345,6 +1351,12 @@ fn decode_repo_description_snapshot(bytes: &[u8]) -> Result<RepoDescriptionShard
                     source_repo_id = Some(text);
                 }
                 "description" => {
+                    if description.is_some() {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: repo description decode: duplicate entry field `description`"
+                                .to_string(),
+                        ));
+                    }
                     let CborValue::Text(text) = field_value else {
                         return Err(CoreError::InvalidContract(
                             "lexical: repo description decode: `description` must be text"

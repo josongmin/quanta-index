@@ -2103,8 +2103,18 @@ impl<'de> Visitor<'de> for RepoDescriptionEntryVisitor {
         let mut description: Option<String> = None;
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
-                "source_repo_id" => source_repo_id = Some(map.next_value()?),
-                "description" => description = Some(map.next_value()?),
+                "source_repo_id" => {
+                    if source_repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("source_repo_id"));
+                    }
+                    source_repo_id = Some(map.next_value()?);
+                }
+                "description" => {
+                    if description.is_some() {
+                        return Err(de::Error::duplicate_field("description"));
+                    }
+                    description = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -2186,11 +2196,36 @@ impl<'de> Visitor<'de> for RepoDescriptionIngestBatchVisitor {
         let mut entries: Option<Vec<RepoDescriptionEntry>> = None;
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
-                "generation" => generation = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "entries" => entries = Some(map.next_value()?),
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "generation" => {
+                    if generation.is_some() {
+                        return Err(de::Error::duplicate_field("generation"));
+                    }
+                    generation = Some(map.next_value()?);
+                }
+                "batch_digest" => {
+                    if batch_digest.is_some() {
+                        return Err(de::Error::duplicate_field("batch_digest"));
+                    }
+                    batch_digest = Some(map.next_value()?);
+                }
+                "entries" => {
+                    if entries.is_some() {
+                        return Err(de::Error::duplicate_field("entries"));
+                    }
+                    entries = Some(map.next_value()?);
+                }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
