@@ -1,14 +1,14 @@
 use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
 use quanta_index_contract::{
-    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
-    GenerationPin, GenerationSelector, HistoryDiffHunkUpsert, HistoryIngestBatch,
-    HistoryQueryRequest, HistoryRefDelete, HistoryRefMutation, HistoryRefUpsert,
-    HistoryTagMutation, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicEntry,
-    RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    TextQuerySyntax,
+    FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
+    FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, GenerationSelector,
+    HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryQueryRequest, HistoryRefDelete,
+    HistoryRefMutation, HistoryRefUpsert, HistoryTagMutation, ManifestGeneration,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchPlaneHistoryQueryResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -130,7 +130,7 @@ pub struct FileContributorBatch {
 pub struct FileContributorMutation {
     pub source_repo_id: RepoId,
     pub repo_relative_path: RepoRelativePath,
-    pub contributors: Vec<String>,
+    pub contributors: Vec<FileContributorIdentityEntry>,
 }
 
 impl HistoryBatch {
@@ -383,6 +383,28 @@ impl FileContributorBatch {
         repo_relative_path: RepoRelativePath,
         contributors: Vec<String>,
     ) -> Self {
+        self = self.entry_identities(
+            source_repo_id,
+            repo_relative_path,
+            contributors
+                .into_iter()
+                .map(|canonical| FileContributorIdentityEntry {
+                    canonical,
+                    name: None,
+                    email: None,
+                })
+                .collect(),
+        );
+        self
+    }
+
+    #[must_use]
+    pub fn entry_identities(
+        mut self,
+        source_repo_id: RepoId,
+        repo_relative_path: RepoRelativePath,
+        contributors: Vec<FileContributorIdentityEntry>,
+    ) -> Self {
         self.entries.push(FileContributorMutation {
             source_repo_id,
             repo_relative_path,
@@ -546,11 +568,9 @@ impl<'a> HistoryNamespace<'a> {
                 })
                 .collect(),
         };
-        let response = self
-            .client
-            .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(
-                wire,
-            ))?;
+        let response = self.client.dispatch_ingest(
+            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(wire),
+        )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => Ok(receipt),
             other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)

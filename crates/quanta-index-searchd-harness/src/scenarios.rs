@@ -77,6 +77,43 @@ impl FixtureKind {
     }
 }
 
+/// Which fast verification lane owns a scenario as golden-truth authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum HellgateLane {
+    TextRoute,
+    StructuralRoute,
+}
+
+/// Verification metadata carried by each scenario row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ScenarioVerification {
+    pub bench_truth: bool,
+    pub perf_compare: bool,
+    pub fast_hellgate_lane: Option<HellgateLane>,
+    pub requires_frontdoor: bool,
+    pub requires_history: bool,
+    pub requires_structural: bool,
+    pub requires_cross_repo: bool,
+}
+
+const fn verification(
+    fast_hellgate_lane: Option<HellgateLane>,
+    requires_frontdoor: bool,
+    requires_history: bool,
+    requires_structural: bool,
+    requires_cross_repo: bool,
+) -> ScenarioVerification {
+    ScenarioVerification {
+        bench_truth: true,
+        perf_compare: true,
+        fast_hellgate_lane,
+        requires_frontdoor,
+        requires_history,
+        requires_structural,
+        requires_cross_repo,
+    }
+}
+
 /// One static DSL benchmark scenario definition.
 #[derive(Clone, Copy, Debug)]
 pub struct DslBenchScenario {
@@ -86,301 +123,432 @@ pub struct DslBenchScenario {
     pub query: QuerySpec,
     pub fixture: FixtureKind,
     pub expected_shape: ResultShape,
+    pub expected_count: Option<u64>,
+    pub expected_warm_count: Option<u64>,
+    pub expected_typed_error_code: Option<&'static str>,
+    pub verification: ScenarioVerification,
+}
+
+const fn ok_scenario(
+    id: &'static str,
+    route_family: RouteFamily,
+    syntax: BenchSyntax,
+    query: QuerySpec,
+    fixture: FixtureKind,
+    expected_shape: ResultShape,
+    expected_count: u64,
+) -> DslBenchScenario {
+    DslBenchScenario {
+        id,
+        route_family,
+        syntax,
+        query,
+        fixture,
+        expected_shape,
+        expected_count: Some(expected_count),
+        expected_warm_count: None,
+        expected_typed_error_code: None,
+        verification: verification(
+            Some(match route_family {
+                RouteFamily::Structural => HellgateLane::StructuralRoute,
+                _ => HellgateLane::TextRoute,
+            }),
+            false,
+            matches!(route_family, RouteFamily::History),
+            matches!(route_family, RouteFamily::Structural),
+            false,
+        ),
+    }
+}
+
+const fn ok_scenario_warm_override(
+    id: &'static str,
+    route_family: RouteFamily,
+    syntax: BenchSyntax,
+    query: QuerySpec,
+    fixture: FixtureKind,
+    expected_shape: ResultShape,
+    expected_count: u64,
+    expected_warm_count: u64,
+) -> DslBenchScenario {
+    DslBenchScenario {
+        id,
+        route_family,
+        syntax,
+        query,
+        fixture,
+        expected_shape,
+        expected_count: Some(expected_count),
+        expected_warm_count: Some(expected_warm_count),
+        expected_typed_error_code: None,
+        verification: verification(
+            Some(match route_family {
+                RouteFamily::Structural => HellgateLane::StructuralRoute,
+                _ => HellgateLane::TextRoute,
+            }),
+            false,
+            matches!(route_family, RouteFamily::History),
+            matches!(route_family, RouteFamily::Structural),
+            false,
+        ),
+    }
+}
+
+const fn typed_error_scenario(
+    id: &'static str,
+    route_family: RouteFamily,
+    syntax: BenchSyntax,
+    query: QuerySpec,
+    fixture: FixtureKind,
+    expected_typed_error_code: &'static str,
+) -> DslBenchScenario {
+    DslBenchScenario {
+        id,
+        route_family,
+        syntax,
+        query,
+        fixture,
+        expected_shape: ResultShape::TypedError,
+        expected_count: None,
+        expected_warm_count: None,
+        expected_typed_error_code: Some(expected_typed_error_code),
+        verification: verification(
+            Some(HellgateLane::TextRoute),
+            false,
+            matches!(route_family, RouteFamily::History),
+            false,
+            false,
+        ),
+    }
 }
 
 /// The full bench scenario table, mirroring the shipped DSL surface.
 pub const SCENARIOS: &[DslBenchScenario] = &[
     // --- LEXICAL (LexicalCorpus / Candidates) ---
-    DslBenchScenario {
-        id: "lexical.keyword.native",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("parity_needle_alpha"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "lexical.phrase.native",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("\"sphinx of quartz\""),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "lexical.regex.native",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("/v\\d+\\.\\d+\\.\\d+/"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "lexical.file_contains.native",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("file.contains('oo_ba')"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "lexical.repo_has_file.sourcegraph",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("repo:has.file(path:src/lib.rs) needle"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
+    ok_scenario_warm_override(
+        "lexical.keyword.native",
+        RouteFamily::Lexical,
+        BenchSyntax::Native,
+        QuerySpec::Literal("parity_needle_alpha"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        3,
+        4,
+    ),
+    ok_scenario(
+        "lexical.phrase.native",
+        RouteFamily::Lexical,
+        BenchSyntax::Native,
+        QuerySpec::Literal("\"sphinx of quartz\""),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        1,
+    ),
+    ok_scenario(
+        "lexical.regex.native",
+        RouteFamily::Lexical,
+        BenchSyntax::Native,
+        QuerySpec::Literal("/v\\d+\\.\\d+\\.\\d+/"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        1,
+    ),
+    ok_scenario(
+        "lexical.file_contains.native",
+        RouteFamily::Lexical,
+        BenchSyntax::Native,
+        QuerySpec::Literal("file.contains('oo_ba')"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        1,
+    ),
+    ok_scenario(
+        "lexical.repo_has_file.sourcegraph",
+        RouteFamily::Lexical,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("repo:has.file(path:src/lib.rs) needle"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        3,
+    ),
     // --- HISTORY (HistoryLedger / Commits, diff.* -> DiffPaths) ---
     // query_history requires the `type:commit` / `type:diff` route discriminator.
-    DslBenchScenario {
-        id: "history.since_time.native",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("type:commit since.time:1970-01-01T00:00:00.011Z fix"),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::Commits,
-    },
-    DslBenchScenario {
-        id: "history.since_commit.native",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("type:commit since.commit:refs/heads/main alpha_content_needle"),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::Commits,
-    },
-    DslBenchScenario {
-        id: "history.after.sourcegraph",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal(
-            "type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle",
-        ),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::Commits,
-    },
-    DslBenchScenario {
-        id: "history.until.sourcegraph",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal(
-            "type:commit until:1970-01-01T00:00:00.013Z alpha_content_needle",
-        ),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::Commits,
-    },
-    DslBenchScenario {
-        id: "history.diff_added.native",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("type:diff diff.added:history"),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::DiffPaths,
-    },
-    DslBenchScenario {
-        id: "history.diff_removed.native",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("type:diff diff.removed:history"),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::DiffPaths,
-    },
-    DslBenchScenario {
-        id: "history.diff_touched.native",
-        route_family: RouteFamily::History,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("type:diff diff.touched:history"),
-        fixture: FixtureKind::HistoryLedger,
-        expected_shape: ResultShape::DiffPaths,
-    },
+    ok_scenario(
+        "history.since_time.native",
+        RouteFamily::History,
+        BenchSyntax::Native,
+        QuerySpec::Literal("type:commit since.time:1970-01-01T00:00:00.011Z fix"),
+        FixtureKind::HistoryLedger,
+        ResultShape::Commits,
+        1,
+    ),
+    ok_scenario(
+        "history.since_commit.native",
+        RouteFamily::History,
+        BenchSyntax::Native,
+        QuerySpec::Literal("type:commit since.commit:refs/heads/main alpha_content_needle"),
+        FixtureKind::HistoryLedger,
+        ResultShape::Commits,
+        1,
+    ),
+    ok_scenario(
+        "history.after.sourcegraph",
+        RouteFamily::History,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("type:commit after:1970-01-01T00:00:00.011Z alpha_content_needle"),
+        FixtureKind::HistoryLedger,
+        ResultShape::Commits,
+        1,
+    ),
+    ok_scenario(
+        "history.until.sourcegraph",
+        RouteFamily::History,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("type:commit until:1970-01-01T00:00:00.013Z alpha_content_needle"),
+        FixtureKind::HistoryLedger,
+        ResultShape::Commits,
+        1,
+    ),
+    ok_scenario(
+        "history.diff_added.native",
+        RouteFamily::History,
+        BenchSyntax::Native,
+        QuerySpec::Literal("type:diff diff.added:history"),
+        FixtureKind::HistoryLedger,
+        ResultShape::DiffPaths,
+        1,
+    ),
+    ok_scenario(
+        "history.diff_removed.native",
+        RouteFamily::History,
+        BenchSyntax::Native,
+        QuerySpec::Literal("type:diff diff.removed:history"),
+        FixtureKind::HistoryLedger,
+        ResultShape::DiffPaths,
+        1,
+    ),
+    ok_scenario(
+        "history.diff_touched.native",
+        RouteFamily::History,
+        BenchSyntax::Native,
+        QuerySpec::Literal("type:diff diff.touched:history"),
+        FixtureKind::HistoryLedger,
+        ResultShape::DiffPaths,
+        1,
+    ),
     // --- RUNTIME_CATALOG (RuntimeCatalog / Candidates) ---
-    DslBenchScenario {
-        id: "runtime.dirty_no.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("dirty:no quartz"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.changed.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("changed:since=1970-01-01T00:00:00.010Z"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.stale.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("stale:before=1970-01-01T00:00:00.030Z"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.snapshot.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("snapshot:active"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.meta_owner.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("meta.owner:team-a"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.meta_service.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("meta.service:search"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.meta_layer.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("meta.layer:index"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.meta_surface.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("meta.surface:lexical"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.affected.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("affected:rebuild=lexical"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "runtime.invalidated_by.sourcegraph",
-        route_family: RouteFamily::RuntimeCatalog,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("invalidated_by:rebuild=lexical"),
-        fixture: FixtureKind::RuntimeCatalog,
-        expected_shape: ResultShape::Candidates,
-    },
+    ok_scenario(
+        "runtime.dirty_no.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("dirty:no quartz"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        1,
+    ),
+    ok_scenario(
+        "runtime.changed.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("changed:since=1970-01-01T00:00:00.010Z"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        2,
+    ),
+    ok_scenario(
+        "runtime.stale.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("stale:before=1970-01-01T00:00:00.030Z"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        9,
+    ),
+    ok_scenario(
+        "runtime.snapshot.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("snapshot:active"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        2,
+    ),
+    ok_scenario(
+        "runtime.meta_owner.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("meta.owner:team-a"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        4,
+    ),
+    ok_scenario(
+        "runtime.meta_service.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("meta.service:search"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        4,
+    ),
+    ok_scenario(
+        "runtime.meta_layer.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("meta.layer:index"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        4,
+    ),
+    ok_scenario(
+        "runtime.meta_surface.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("meta.surface:lexical"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        4,
+    ),
+    ok_scenario(
+        "runtime.affected.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("affected:rebuild=lexical"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        1,
+    ),
+    ok_scenario(
+        "runtime.invalidated_by.sourcegraph",
+        RouteFamily::RuntimeCatalog,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("invalidated_by:rebuild=lexical"),
+        FixtureKind::RuntimeCatalog,
+        ResultShape::Candidates,
+        1,
+    ),
     // --- STRUCTURAL ---
     // Boolean OR / NOT are lexical-route queries (`query_text`) over the
     // multi-file corpus; the genuine tree pattern is a `query_structural` route.
-    DslBenchScenario {
-        id: "structural.mixed_or.native",
-        route_family: RouteFamily::Structural,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("parity_needle_alpha OR documentation"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "structural.mixed_and_not.native",
-        route_family: RouteFamily::Structural,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("parity_needle_alpha NOT helper"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "structural.tree_match.native",
-        route_family: RouteFamily::Structural,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("match { function_item { { identifier :[name] } } }"),
-        fixture: FixtureKind::StructuralTree,
-        expected_shape: ResultShape::Candidates,
-    },
+    ok_scenario_warm_override(
+        "structural.mixed_or.native",
+        RouteFamily::Structural,
+        BenchSyntax::Native,
+        QuerySpec::Literal("parity_needle_alpha OR documentation"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        4,
+        5,
+    ),
+    ok_scenario_warm_override(
+        "structural.mixed_and_not.native",
+        RouteFamily::Structural,
+        BenchSyntax::Native,
+        QuerySpec::Literal("parity_needle_alpha NOT helper"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        2,
+        3,
+    ),
+    ok_scenario(
+        "structural.tree_match.native",
+        RouteFamily::Structural,
+        BenchSyntax::Native,
+        QuerySpec::Literal("match { function_item { { identifier :[name] } } }"),
+        FixtureKind::StructuralTree,
+        ResultShape::Candidates,
+        1,
+    ),
     // --- NATIVE <-> SOURCEGRAPH PARITY ---
     // Same semantic surface, sourcegraph syntax (translated through the lq
     // bridge) vs the native scenarios above (direct parser). Pair these with
     // their `.native` twins by `route_family` to compare cross-syntax latency.
-    DslBenchScenario {
-        id: "lexical.keyword.sourcegraph",
-        route_family: RouteFamily::Lexical,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("parity_needle_alpha"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "structural.mixed_or.sourcegraph",
-        route_family: RouteFamily::Structural,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal("parity_needle_alpha OR documentation"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::Candidates,
-    },
-    DslBenchScenario {
-        id: "structural.tree_match.sourcegraph",
-        route_family: RouteFamily::Structural,
-        syntax: BenchSyntax::Sourcegraph,
-        query: QuerySpec::Literal(
-            "patterntype:structural \"function_item { { identifier :[name] } }\"",
-        ),
-        fixture: FixtureKind::StructuralTree,
-        expected_shape: ResultShape::Candidates,
-    },
+    ok_scenario_warm_override(
+        "lexical.keyword.sourcegraph",
+        RouteFamily::Lexical,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("parity_needle_alpha"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        3,
+        4,
+    ),
+    ok_scenario_warm_override(
+        "structural.mixed_or.sourcegraph",
+        RouteFamily::Structural,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("parity_needle_alpha OR documentation"),
+        FixtureKind::LexicalCorpus,
+        ResultShape::Candidates,
+        4,
+        5,
+    ),
+    ok_scenario(
+        "structural.tree_match.sourcegraph",
+        RouteFamily::Structural,
+        BenchSyntax::Sourcegraph,
+        QuerySpec::Literal("patterntype:structural \"function_item { { identifier :[name] } }\""),
+        FixtureKind::StructuralTree,
+        ResultShape::Candidates,
+        1,
+    ),
     // --- ADVERSARIAL (malformed / cap-boundary -> typed error, fail-closed) ---
     // These exercise the *typed-error path latency*: fail-closed must be fast.
     // The oversized / deep-nesting queries exceed the 16 KiB / depth-32 parser
     // caps, so they carry a `QuerySpec::Generated` rather than a literal.
-    DslBenchScenario {
-        id: "adversarial.unterminated_phrase.native",
-        route_family: RouteFamily::Adversarial,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("\"unterminated"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::TypedError,
-    },
-    DslBenchScenario {
-        id: "adversarial.bad_regex.native",
-        route_family: RouteFamily::Adversarial,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("/[/"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::TypedError,
-    },
-    DslBenchScenario {
-        id: "adversarial.dangling_operator.native",
-        route_family: RouteFamily::Adversarial,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Literal("parity_needle_alpha AND"),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::TypedError,
-    },
-    DslBenchScenario {
-        id: "adversarial.oversized_bytes.native",
-        route_family: RouteFamily::Adversarial,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Generated(oversized_keyword_query),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::TypedError,
-    },
-    DslBenchScenario {
-        id: "adversarial.deep_nesting.native",
-        route_family: RouteFamily::Adversarial,
-        syntax: BenchSyntax::Native,
-        query: QuerySpec::Generated(deep_nesting_query),
-        fixture: FixtureKind::LexicalCorpus,
-        expected_shape: ResultShape::TypedError,
-    },
+    typed_error_scenario(
+        "adversarial.unterminated_phrase.native",
+        RouteFamily::Adversarial,
+        BenchSyntax::Native,
+        QuerySpec::Literal("\"unterminated"),
+        FixtureKind::LexicalCorpus,
+        "PARSE_FAIL",
+    ),
+    typed_error_scenario(
+        "adversarial.bad_regex.native",
+        RouteFamily::Adversarial,
+        BenchSyntax::Native,
+        QuerySpec::Literal("/[/"),
+        FixtureKind::LexicalCorpus,
+        "PARSE_FAIL",
+    ),
+    typed_error_scenario(
+        "adversarial.dangling_operator.native",
+        RouteFamily::Adversarial,
+        BenchSyntax::Native,
+        QuerySpec::Literal("parity_needle_alpha AND"),
+        FixtureKind::LexicalCorpus,
+        "PARSE_FAIL",
+    ),
+    typed_error_scenario(
+        "adversarial.oversized_bytes.native",
+        RouteFamily::Adversarial,
+        BenchSyntax::Native,
+        QuerySpec::Generated(oversized_keyword_query),
+        FixtureKind::LexicalCorpus,
+        "PARSE_FAIL",
+    ),
+    typed_error_scenario(
+        "adversarial.deep_nesting.native",
+        RouteFamily::Adversarial,
+        BenchSyntax::Native,
+        QuerySpec::Generated(deep_nesting_query),
+        FixtureKind::LexicalCorpus,
+        "PARSE_FAIL",
+    ),
 ];
 
 /// Linear lookup of a scenario by its stable id.
 #[must_use]
 pub fn scenario_by_id(id: &str) -> Option<&'static DslBenchScenario> {
     SCENARIOS.iter().find(|s| s.id == id)
+}
+
+#[must_use]
+pub fn hellgate_scenarios(lane: HellgateLane) -> impl Iterator<Item = &'static DslBenchScenario> {
+    SCENARIOS.iter().filter(move |scenario| {
+        scenario.verification.bench_truth && scenario.verification.fast_hellgate_lane == Some(lane)
+    })
 }
 
 #[cfg(test)]
@@ -427,6 +595,45 @@ mod tests {
                 SCENARIOS.iter().any(|s| s.route_family == family),
                 "route family {family:?} missing from SCENARIOS"
             );
+        }
+    }
+
+    #[test]
+    fn every_hellgate_lane_present() {
+        for lane in [HellgateLane::TextRoute, HellgateLane::StructuralRoute] {
+            assert!(
+                hellgate_scenarios(lane).next().is_some(),
+                "hellgate lane {lane:?} missing from SCENARIOS"
+            );
+        }
+    }
+
+    #[test]
+    fn every_scenario_carries_exact_golden_truth() {
+        for scenario in SCENARIOS {
+            match scenario.expected_shape {
+                ResultShape::TypedError => {
+                    assert_eq!(scenario.expected_count, None, "{}", scenario.id);
+                    assert_eq!(scenario.expected_warm_count, None, "{}", scenario.id);
+                    assert!(
+                        scenario.expected_typed_error_code.is_some(),
+                        "{} missing typed error code",
+                        scenario.id
+                    );
+                }
+                _ => {
+                    assert!(
+                        scenario.expected_count.is_some(),
+                        "{} missing expected_count",
+                        scenario.id
+                    );
+                    assert_eq!(
+                        scenario.expected_typed_error_code, None,
+                        "{} unexpectedly carries typed error code",
+                        scenario.id
+                    );
+                }
+            }
         }
     }
 }

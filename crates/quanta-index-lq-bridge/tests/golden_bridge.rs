@@ -5,7 +5,7 @@
 //! cover JFC-05 widened history/runtime filter lowering (translator-only proof;
 //! executable SG/native parity lives in `e2e_dual_syntax_lowering_parity`).
 
-use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType};
+use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType, LqYesNoOnly};
 use quanta_index_lq_bridge::{
     BridgeCandidate, BridgeErrorCode, SourcegraphVersionTag, TRANSLATOR_VERSION, parse_sourcegraph,
     translate_query,
@@ -128,7 +128,7 @@ fn row3_normalized_content_to_pattern_leaf() {
 }
 
 #[test]
-fn row4_refused_index_no_directive() {
+fn row4_index_no_lowers_into_canonical_option() {
     let q = match parse_sourcegraph("index:no foo") {
         Ok(q) => q,
         Err(e) => {
@@ -136,16 +136,14 @@ fn row4_refused_index_no_directive() {
             return;
         }
     };
-    match translate_query(q, &ver(), "index:no foo".len()) {
-        Ok(_) => assert!(false, "index:no must refuse"),
+    let lowered = match translate_query(q, &ver(), "index:no foo".len()) {
+        Ok(q) => q,
         Err(e) => {
-            assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
-            match e.source_construct.as_deref() {
-                Some(s) => assert_eq!(s, "index:no"),
-                None => assert!(false, "expected source_construct"),
-            }
+            assert!(false, "{e}");
+            return;
         }
-    }
+    };
+    assert_eq!(lowered.options.index_mode, Some(LqYesNoOnly::No));
 }
 
 #[test]

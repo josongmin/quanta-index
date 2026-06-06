@@ -81,17 +81,24 @@ owners = []
 [[file_contributor]]
 source_repo_id = "corp-a"
 repo_relative_path = "src/corp-a.rs"
-contributors = ["alice", "carol"]
+contributors = [
+  { canonical = "alice", name = "Alice Example", email = "alice@example.com" },
+  { canonical = "carol", name = "Carol Example", email = "carol@example.com" },
+]
 
 [[file_contributor]]
 source_repo_id = "corp-a"
 repo_relative_path = "src/gate-a.rs"
-contributors = ["alice"]
+contributors = [
+  { canonical = "alice", name = "Alice Example", email = "alice@example.com" },
+]
 
 [[file_contributor]]
 source_repo_id = "corp-b"
 repo_relative_path = "src/corp-b.rs"
-contributors = ["bob"]
+contributors = [
+  { canonical = "bob", name = "Bob Builder", email = "bob@example.com" },
+]
 
 [[file_contributor]]
 source_repo_id = "corp-b"

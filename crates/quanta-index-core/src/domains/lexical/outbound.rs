@@ -167,6 +167,13 @@ pub trait LexicalSearcher: Send + Sync {
         top_k: u32,
     ) -> Result<Vec<SymbolCandidate>, CoreError>;
 
+    /// Return every symbol-domain match for the query within the opened
+    /// generation. Callers use this when chunk-domain structural routing needs
+    /// exact symbol-hit projection without top-k truncation.
+    fn search_symbols_all(&self, query: &LqQuery) -> Result<Vec<SymbolCandidate>, CoreError> {
+        self.search_symbols(query, u32::MAX)
+    }
+
     /// Return every lexical match for the query within the opened generation.
     /// Callers use this for exact scope materialization before downstream
     /// semantic/hybrid narrowing.

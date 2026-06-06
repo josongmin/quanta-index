@@ -2416,11 +2416,18 @@ impl<'de> Deserialize<'de> for FileOwnershipIngestBatch {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FileContributorIdentityEntry {
+    pub canonical: String,
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileContributorEntry {
     pub source_repo_id: RepoId,
     pub repo_relative_path: RepoRelativePath,
-    pub contributors: Vec<String>,
+    pub contributors: Vec<FileContributorIdentityEntry>,
 }
 
 const FILE_CONTRIBUTOR_ENTRY_FIELDS: &[&str] =
@@ -2454,7 +2461,7 @@ impl<'de> Visitor<'de> for FileContributorEntryVisitor {
     {
         let mut source_repo_id: Option<RepoId> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
-        let mut contributors: Option<Vec<String>> = None;
+        let mut contributors: Option<Vec<FileContributorIdentityEntry>> = None;
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
                 "source_repo_id" => source_repo_id = Some(map.next_value()?),
@@ -4445,7 +4452,11 @@ mod tests {
             committer_time_ms: 12,
             applied_at_ms: 13,
             author: "alice".to_string().into_boxed_str(),
+            author_name: Some("Alice Example".to_string().into_boxed_str()),
+            author_email: Some("alice@example.com".to_string().into_boxed_str()),
             committer: "alice".to_string().into_boxed_str(),
+            committer_name: Some("Alice Example".to_string().into_boxed_str()),
+            committer_email: Some("alice@example.com".to_string().into_boxed_str()),
             message: "fix: sample".to_string().into_boxed_str(),
             is_merge: false,
             tags: vec!["v1.0.0".to_string().into_boxed_str()],
@@ -4676,12 +4687,27 @@ mod tests {
                 FileContributorEntry {
                     source_repo_id: RepoId::new("corp-a"),
                     repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
-                    contributors: vec!["alice".to_string(), "carol".to_string()],
+                    contributors: vec![
+                        FileContributorIdentityEntry {
+                            canonical: "alice".to_string(),
+                            name: Some("Alice Example".to_string()),
+                            email: Some("alice@example.com".to_string()),
+                        },
+                        FileContributorIdentityEntry {
+                            canonical: "carol".to_string(),
+                            name: Some("Carol Example".to_string()),
+                            email: Some("carol@example.com".to_string()),
+                        },
+                    ],
                 },
                 FileContributorEntry {
                     source_repo_id: RepoId::new("corp-b"),
                     repo_relative_path: RepoRelativePath::new("src/gate-b.rs"),
-                    contributors: vec!["bob".to_string()],
+                    contributors: vec![FileContributorIdentityEntry {
+                        canonical: "bob".to_string(),
+                        name: Some("Bob Example".to_string()),
+                        email: Some("bob@example.com".to_string()),
+                    }],
                 },
             ],
         }

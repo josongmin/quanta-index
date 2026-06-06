@@ -264,7 +264,11 @@ fn history_partial_shard_batch(
             committer_time_ms: 12,
             applied_at_ms: 13,
             author: "alice".to_string().into_boxed_str(),
+            author_name: None,
+            author_email: None,
             committer: "alice".to_string().into_boxed_str(),
+            committer_name: None,
+            committer_email: None,
             message: "fix: sample history".to_string().into_boxed_str(),
             is_merge: false,
             tags: vec!["v1.0.0".to_string().into_boxed_str()],
@@ -1467,49 +1471,31 @@ fn runtime_catalog_dirty_no_executes_and_does_not_poison_next_query() -> AnyResu
 }
 
 #[test]
-fn runtime_catalog_dirty_only_rejects_typed_and_does_not_poison_next_query() -> AnyResult<()> {
+fn runtime_catalog_dirty_only_executes_and_does_not_poison_next_query() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     seed_runtime_dirty_fixture(&mut rt)?;
 
-    let rejected = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, "dirty:only todo", 10);
-    let error = rejected.typed_error.ok_or_else(|| {
-        anyhow::anyhow!("expected RUNTIME_DIRTY_ONLY_UNSUPPORTED typed rejection")
-    })?;
-    if error.code != "RUNTIME_DIRTY_ONLY_UNSUPPORTED" {
+    let executed = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, "dirty:only todo", 10);
+    require_no_typed_error(executed.typed_error, "dirty:only runtime metadata query")?;
+    if executed.candidate_ids.len() != 1 {
         return Err(anyhow::anyhow!(
-            "expected RUNTIME_DIRTY_ONLY_UNSUPPORTED, got {}",
-            error.code
+            "dirty:only runtime metadata query expected exactly one candidate, got {:?}",
+            executed.candidate_ids
         ));
     }
 
     let follow_up = rt.query_runtime_metadata(TextQuerySyntax::Native, "dirty:yes todo", 10);
     require_no_typed_error(
         follow_up.typed_error,
-        "follow-up runtime metadata query after dirty:only reject",
+        "follow-up runtime metadata query after dirty:only execution",
     )?;
     if follow_up.candidate_ids.len() != 1 {
         return Err(anyhow::anyhow!(
-            "follow-up runtime metadata query diverged after dirty:only reject: {:?}",
+            "follow-up runtime metadata query diverged after dirty:only execution: {:?}",
             follow_up.candidate_ids
         ));
     }
-    assert_closed_metric_suffix(
-        &rt,
-        &[
-            "lq_query_intake_total",
-            "lq_planner_total",
-            "lq_engine_fanout_count",
-            "lq_merge_result_count",
-        ],
-        &[
-            "lq_query_intake_total",
-            "lq_typed_error_invalid_request_total",
-            "lq_planner_total",
-            "lq_engine_fanout_count",
-            "lq_merge_result_count",
-        ],
-        &["dirty:only", "todo"],
-    )
+    assert_success_runtime_metadata_metrics(&rt, &["dirty:only", "todo"])
 }
 
 #[test]

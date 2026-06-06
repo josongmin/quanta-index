@@ -252,20 +252,20 @@ pub(crate) fn structural_leaf_verdict(leaf: &LqLeaf) -> StructuralLeafVerdict<'_
 }
 
 fn structural_route_supports_predicate(name: &str) -> bool {
-    // Only the repo-GATE family is a sound SG structural sibling: it restricts the
-    // repo set, leaving the structural candidate buckets keyed correctly.
-    //
-    // SGX-06 verdict (REAFFIRM DEMOTION): the candidate-level content leaves
-    // (`file.contains` / `file.has.content`) and `symbol.has.name` are NOT added
-    // here. An empirical runtime proof (e2e_dual_syntax) showed that preserving
-    // a scoped `file:contains(path:..., content)` sibling yields a SILENTLY EMPTY
-    // intersection — the scoped content predicate does not execute through the
-    // structural subexpr evaluator, exactly the rolled-back preserve-only
-    // false-green. Until a real candidate-level execution seam exists, these stay
-    // explicit `BridgeTranslateFail`.
+    // Repo-gate predicates, file-scoped content siblings, and symbol-name
+    // siblings are executable on the current SG structural route. File-level
+    // siblings stay keyed on lexical chunk ids directly; `symbol.has.name`
+    // projects symbol hits back into structural chunk scope via path/line
+    // containment before boolean composition.
     matches!(
         name,
-        "repo.has.file" | "repo.has.path" | "repo.has.content" | "repo.contains.content"
+        "repo.has.file"
+            | "repo.has.path"
+            | "repo.has.content"
+            | "repo.contains.content"
+            | "file.contains"
+            | "file.has.content"
+            | "symbol.has.name"
     )
 }
 
@@ -491,40 +491,6 @@ mod tests {
         }
     }
 
-    fn assert_structural_predicate_sibling_rejects(
-        query_text: &str,
-        predicate_name: &str,
-        guidance_fragment: &str,
-    ) -> TestResult {
-        let err = match lower_sourcegraph_structural_query_text(query_text) {
-            Ok(query) => {
-                return Err(format!(
-                    "expected unsupported {predicate_name} predicate sibling failure, got {query:?}"
-                )
-                .into());
-            }
-            Err(err) => err,
-        };
-        let (code, message) = typed_error(err)?;
-        let expected_code = BridgeErrorCode::BridgeTranslateFail.as_code_str();
-        if code != expected_code {
-            return Err(format!("expected code {expected_code}, got {code}").into());
-        }
-        if !message.contains(&format!("`{predicate_name}` is unsupported")) {
-            return Err(format!(
-                "expected unsupported predicate message for {predicate_name}, got {message}"
-            )
-            .into());
-        }
-        if !message.contains(guidance_fragment) {
-            return Err(format!(
-                "expected guidance fragment {guidance_fragment:?} for {predicate_name}, got {message}"
-            )
-            .into());
-        }
-        Ok(())
-    }
-
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
@@ -720,6 +686,105 @@ mod tests {
             )
             .into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_does_not_preserve_quoted_phrase_as_lexical_sibling()
+    -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "literal phrase" AND parity_needle_alpha"#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG structural phrase ambiguity lowering, got {err:?}").into()
+        })?;
+
+        let LqExpr::All(children) = lowered.expr else {
+            return Err(
+                "expected boolean tree after SG structural phrase ambiguity lowering".into(),
+            );
+        };
+        let mut saw_keyword = false;
+        let mut saw_structural = false;
+        for child in children {
+            match child {
+                LqExpr::Leaf(LqLeaf::Keyword(body)) if body == "parity_needle_alpha" => {
+                    saw_keyword = true;
+                }
+                LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => {
+                    saw_structural = true;
+                }
+                LqExpr::Leaf(LqLeaf::Phrase(body)) => {
+                    return Err(format!(
+                        "quoted SG structural token must not survive as lexical phrase sibling, got `{body}`"
+                    )
+                    .into());
+                }
+                other => {
+                    return Err(format!(
+                        "unexpected SG structural phrase ambiguity child: {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        assert!(
+            saw_keyword,
+            "expected lexical keyword sibling to stay preserved"
+        );
+        assert!(
+            saw_structural,
+            "expected quoted SG structural token to lower into structural body"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_does_not_preserve_regex_as_lexical_sibling() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural /^literal.*phrase$/ AND parity_needle_alpha"#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG structural regex ambiguity lowering, got {err:?}").into()
+        })?;
+
+        let LqExpr::All(children) = lowered.expr else {
+            return Err(
+                "expected boolean tree after SG structural regex ambiguity lowering".into(),
+            );
+        };
+        let mut saw_keyword = false;
+        let mut saw_structural = false;
+        for child in children {
+            match child {
+                LqExpr::Leaf(LqLeaf::Keyword(body)) if body == "parity_needle_alpha" => {
+                    saw_keyword = true;
+                }
+                LqExpr::Leaf(LqLeaf::StructuralBlock(_)) => {
+                    saw_structural = true;
+                }
+                LqExpr::Leaf(LqLeaf::Regex(body)) => {
+                    return Err(format!(
+                        "slash SG structural token must not survive as lexical regex sibling, got `{body}`"
+                    )
+                    .into());
+                }
+                other => {
+                    return Err(format!(
+                        "unexpected SG structural regex ambiguity child: {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        assert!(
+            saw_keyword,
+            "expected lexical keyword sibling to stay preserved"
+        );
+        assert!(
+            saw_structural,
+            "expected slash SG structural token to lower into structural regex body"
+        );
         Ok(())
     }
 
@@ -1067,89 +1132,397 @@ mod tests {
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling() -> TestResult {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural file:contains(path:src, "main") AND "function_item { { identifier :[name] } }""#,
-            "file.contains",
-            "move `file:contains(...)` to the lexical route",
+    fn sourcegraph_structural_route_preserves_file_contains_predicate_sibling() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural file:contains(path:src, main) AND "function_item { { identifier :[name] } }""#,
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural file.contains AND lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "file.contains"
+                            && matches!(
+                                args.as_slice(),
+                                [
+                                    LqPredicateArg::Filter { name: path_name, value },
+                                    LqPredicateArg::Keyword(keyword),
+                                ] if path_name == "path" && value == "src" && keyword == "main"
+                            )
+                ) {
+                    return Err(format!(
+                        "expected file.contains predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_or() -> TestResult
-    {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural file:contains(path:src, "main") OR "trait_item""#,
-            "file.contains",
-            "move `file:contains(...)` to the lexical route",
-        )
-    }
-
-    #[test]
-    fn sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_and_not()
+    fn sourcegraph_structural_route_preserves_file_contains_predicate_sibling_under_or()
     -> TestResult {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural "identifier :[name]" AND NOT file:contains(path:src, "main")"#,
-            "file.contains",
-            "move `file:contains(...)` to the lexical route",
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural file:contains(path:src, main) OR "trait_item""#,
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural file.contains OR lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed OR children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "file.contains"
+                            && matches!(
+                                args.as_slice(),
+                                [
+                                    LqPredicateArg::Filter { name: path_name, value },
+                                    LqPredicateArg::Keyword(keyword),
+                                ] if path_name == "path" && value == "src" && keyword == "main"
+                            )
+                ) {
+                    return Err(format!(
+                        "expected file.contains predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
+                return Err(format!("expected mixed OR tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling() -> TestResult {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural file:has.content(path:src, "main") AND "function_item { { identifier :[name] } }""#,
-            "file.has.content",
-            "move `file:has.content(...)` to the lexical route",
-        )
-    }
-
-    #[test]
-    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_or()
+    fn sourcegraph_structural_route_preserves_file_contains_predicate_sibling_under_and_not()
     -> TestResult {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural file:has.content(path:src, "main") OR "trait_item""#,
-            "file.has.content",
-            "move `file:has.content(...)` to the lexical route",
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "identifier :[name]" AND NOT file:contains(path:src, main)"#,
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural file.contains AND NOT lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [structural, not_predicate] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+                if !matches!(
+                    not_predicate,
+                    LqExpr::Not(inner)
+                        if matches!(
+                            inner.as_ref(),
+                            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                                if name == "file.contains"
+                                    && matches!(
+                                        args.as_slice(),
+                                        [
+                                            LqPredicateArg::Filter { name: path_name, value },
+                                            LqPredicateArg::Keyword(keyword),
+                                        ] if path_name == "path" && value == "src" && keyword == "main"
+                                    )
+                        )
+                ) {
+                    return Err(
+                        format!("expected NOT file.contains child, got {not_predicate:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_and_not()
+    fn sourcegraph_structural_route_preserves_file_has_content_predicate_sibling() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural file:has.content(path:src, main) AND "function_item { { identifier :[name] } }""#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural file.has.content AND lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "file.has.content"
+                            && matches!(
+                                args.as_slice(),
+                                [
+                                    LqPredicateArg::Filter { name: path_name, value },
+                                    LqPredicateArg::Keyword(keyword),
+                                ] if path_name == "path" && value == "src" && keyword == "main"
+                            )
+                ) {
+                    return Err(format!(
+                        "expected file.has.content predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_file_has_content_predicate_sibling_under_or()
     -> TestResult {
-        assert_structural_predicate_sibling_rejects(
-            r#"patterntype:structural "identifier :[name]" AND NOT file:has.content(path:src, "main")"#,
-            "file.has.content",
-            "move `file:has.content(...)` to the lexical route",
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural file:has.content(path:src, main) OR "trait_item""#,
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural file.has.content OR lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed OR children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "file.has.content"
+                            && matches!(
+                                args.as_slice(),
+                                [
+                                    LqPredicateArg::Filter { name: path_name, value },
+                                    LqPredicateArg::Keyword(keyword),
+                                ] if path_name == "path" && value == "src" && keyword == "main"
+                            )
+                ) {
+                    return Err(format!(
+                        "expected file.has.content predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
+                return Err(format!("expected mixed OR tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling() -> TestResult {
-        assert_structural_predicate_sibling_rejects(
+    fn sourcegraph_structural_route_preserves_file_has_content_predicate_sibling_under_and_not()
+    -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
+            r#"patterntype:structural "identifier :[name]" AND NOT file:has.content(path:src, main)"#,
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!(
+                "expected SG mixed structural file.has.content AND NOT lowering, got {err:?}"
+            )
+            .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [structural, not_predicate] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+                if !matches!(
+                    not_predicate,
+                    LqExpr::Not(inner)
+                        if matches!(
+                            inner.as_ref(),
+                            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                                if name == "file.has.content"
+                                    && matches!(
+                                        args.as_slice(),
+                                        [
+                                            LqPredicateArg::Filter { name: path_name, value },
+                                            LqPredicateArg::Keyword(keyword),
+                                        ] if path_name == "path" && value == "src" && keyword == "main"
+                                    )
+                        )
+                ) {
+                    return Err(format!(
+                        "expected NOT file.has.content child, got {not_predicate:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_preserves_symbol_has_name_predicate_sibling() -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
             r#"patterntype:structural symbol:has.name(MyTypeSymbol) AND "function_item { { identifier :[name] } }""#,
-            "symbol.has.name",
-            "run `symbol:has.name(...)` on the symbol route",
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural symbol.has.name AND lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "symbol.has.name"
+                            && matches!(args.as_slice(), [LqPredicateArg::Keyword(value)] if value == "MyTypeSymbol")
+                ) {
+                    return Err(format!(
+                        "expected symbol.has.name predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_or() -> TestResult {
-        assert_structural_predicate_sibling_rejects(
+    fn sourcegraph_structural_route_preserves_symbol_has_name_predicate_sibling_under_or()
+    -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
             r#"patterntype:structural symbol:has.name(MyTypeSymbol) OR "trait_item""#,
-            "symbol.has.name",
-            "run `symbol:has.name(...)` on the symbol route",
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural symbol.has.name OR lowering, got {err:?}").into()
+        })?;
+        match lowered.expr {
+            LqExpr::Any(children) => {
+                let [predicate, structural] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed OR children, got {children:?}").into());
+                };
+                if !matches!(
+                    predicate,
+                    LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                        if name == "symbol.has.name"
+                            && matches!(args.as_slice(), [LqPredicateArg::Keyword(value)] if value == "MyTypeSymbol")
+                ) {
+                    return Err(format!(
+                        "expected symbol.has.name predicate sibling, got {predicate:?}"
+                    )
+                    .into());
+                }
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::All(_)) => {
+                return Err(format!("expected mixed OR tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_and_not() -> TestResult
-    {
-        assert_structural_predicate_sibling_rejects(
+    fn sourcegraph_structural_route_preserves_symbol_has_name_predicate_sibling_under_and_not()
+    -> TestResult {
+        let lowered = lower_sourcegraph_structural_query_text(
             r#"patterntype:structural "identifier :[name]" AND NOT symbol:has.name(MyTypeSymbol)"#,
-            "symbol.has.name",
-            "run `symbol:has.name(...)` on the symbol route",
         )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            format!("expected SG mixed structural symbol.has.name AND NOT lowering, got {err:?}")
+                .into()
+        })?;
+        match lowered.expr {
+            LqExpr::All(children) => {
+                let [structural, not_predicate] = children.as_slice() else {
+                    return Err(format!("expected 2 mixed AND children, got {children:?}").into());
+                };
+                if !matches!(structural, LqExpr::Leaf(LqLeaf::StructuralBlock(_))) {
+                    return Err(
+                        format!("expected structural block child, got {structural:?}").into(),
+                    );
+                }
+                if !matches!(
+                    not_predicate,
+                    LqExpr::Not(inner)
+                        if matches!(
+                            inner.as_ref(),
+                            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                                if name == "symbol.has.name"
+                                    && matches!(args.as_slice(), [LqPredicateArg::Keyword(value)] if value == "MyTypeSymbol")
+                        )
+                ) {
+                    return Err(format!(
+                        "expected NOT symbol.has.name child, got {not_predicate:?}"
+                    )
+                    .into());
+                }
+            }
+            other @ (LqExpr::Empty | LqExpr::Leaf(_) | LqExpr::Not(_) | LqExpr::Any(_)) => {
+                return Err(format!("expected mixed AND tree, got {other:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]

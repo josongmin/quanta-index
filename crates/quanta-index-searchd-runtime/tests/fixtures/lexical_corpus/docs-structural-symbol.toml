@@ -1,0 +1,17 @@
+[[doc]]
+id = "struct_symbol_main"
+path = "src/sym.rs"
+content = "fn main {}"
+symbol_name = "MyTypeSymbol"
+
+[[structural_tree]]
+path = "src/sym.rs"
+role_tags = [
+  { role = "item", start_byte = 0, end_byte = 10 },
+  { role = "expr", start_byte = 3, end_byte = 7 },
+  { role = "stmt", start_byte = 8, end_byte = 10 },
+]
+root = { kind = "function_item", start_byte = 0, end_byte = 10, start_line = 1, end_line = 1, children = [
+  { kind = "identifier", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 },
+  { kind = "block", start_byte = 8, end_byte = 10, start_line = 1, end_line = 1 }
+] }

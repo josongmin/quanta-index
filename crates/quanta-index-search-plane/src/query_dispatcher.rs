@@ -1,7 +1,7 @@
 //! Search-plane query orchestration using the in-memory readiness ledger as the
 //! source of truth.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
@@ -27,8 +27,8 @@ use quanta_index_contract::{
     SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticQueryResponse, StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -59,6 +59,7 @@ const ERR_HISTORY_INVALID_TIMEREF: &str = "HISTORY_INVALID_TIMEREF";
 const ERR_RUNTIME_CATALOG_NOT_READY: &str = "RUNTIME_CATALOG_NOT_READY";
 const ERR_RUNTIME_CATALOG_HEAD_MISSING: &str = "RUNTIME_CATALOG_HEAD_MISSING";
 const ERR_RUNTIME_INVALID_SCOPE: &str = "RUNTIME_INVALID_SCOPE";
+#[cfg(test)]
 const ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED: &str = "RUNTIME_DIRTY_ONLY_UNSUPPORTED";
 const ERR_SNAPSHOT_UNKNOWN: &str = "SNAPSHOT_UNKNOWN";
 
@@ -72,10 +73,12 @@ impl QueryObsSink for NoopQueryObsSink {
     fn emit(&self, _sample: MetricSample) {}
 }
 
+const MAX_OBS_SAMPLES: usize = 4_096;
+
 #[derive(Default)]
 pub struct BoundedQueryObsStore {
     guard: Mutex<CardinalityGuard>,
-    samples: Mutex<Vec<MetricSample>>,
+    samples: Mutex<VecDeque<MetricSample>>,
     errors: Mutex<Vec<ObsError>>,
 }
 
@@ -87,7 +90,7 @@ impl BoundedQueryObsStore {
 
     #[must_use]
     pub fn snapshot(&self) -> Vec<MetricSample> {
-        lock_or_recover(&self.samples).clone()
+        lock_or_recover(&self.samples).iter().cloned().collect()
     }
 
     #[must_use]
@@ -113,7 +116,10 @@ impl QueryObsSink for BoundedQueryObsStore {
             }
         };
         let mut samples = lock_or_recover(&self.samples);
-        samples.push(sample);
+        if samples.len() == MAX_OBS_SAMPLES {
+            let _evicted = samples.pop_front();
+        }
+        samples.push_back(sample);
     }
 }
 
@@ -1009,6 +1015,25 @@ impl SearchPlaneDispatcher {
         Ok(guard.track_materialized(repo_id, revision_id, SearchPlaneTrackKind::Lexical))
     }
 
+    fn snapshot_structural_state(
+        &self,
+        pin: &GenerationPin,
+    ) -> Result<StructuralAuthorityState, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard
+            .structural_state(&pin.repo_id, &pin.revision_id, pin.manifest_generation)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "structural: generation {} chunk authority is not materialized",
+                    pin.manifest_generation.get()
+                ))
+            })
+    }
+
     fn validate_semantic_selection(
         &self,
         selection: &SemanticSelection,
@@ -1248,9 +1273,7 @@ impl ExecutableTextPlanePolicy {
             Self::RuntimeMetadata => match filter {
                 LqFilter::Dirty { mode } => {
                     state.saw_runtime_authority_filter = true;
-                    if matches!(mode, LqYesNoOnly::Only) {
-                        return Err(runtime_dirty_only_unsupported());
-                    }
+                    let _ = mode;
                     Ok(())
                 }
                 LqFilter::Changed { scope } => {
@@ -1551,15 +1574,6 @@ fn runtime_invalid_scope(message: impl Into<String>) -> CoreError {
     }
 }
 
-fn runtime_dirty_only_unsupported() -> CoreError {
-    CoreError::Typed {
-        code: ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED.to_string(),
-        message:
-            "runtime metadata: dirty:only is not executable on the current runtime-doc surface"
-                .to_string(),
-    }
-}
-
 fn runtime_catalog_head_missing(field: &str) -> CoreError {
     CoreError::Typed {
         code: ERR_RUNTIME_CATALOG_HEAD_MISSING.to_string(),
@@ -1798,9 +1812,24 @@ impl LexicalSubexprEvaluator<'_> {
             &self.pin.revision_id,
             self.pin.manifest_generation,
         )?;
+        if symbol_name_predicate_leaf(expr) {
+            let results = searcher.search_symbols_all(&subquery)?;
+            let structural_state = self.dispatcher.snapshot_structural_state(self.pin)?;
+            return Ok(symbol_hits_to_structural_buckets(
+                results,
+                &structural_state,
+            ));
+        }
         let results = searcher.search_all(&subquery)?;
         Ok(lexical_hits_to_structural_buckets(results))
     }
+}
+
+fn symbol_name_predicate_leaf(expr: &LqExpr) -> bool {
+    matches!(
+        expr,
+        LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == "symbol.has.name"
+    )
 }
 
 fn lexical_hits_to_structural_buckets(
@@ -1822,6 +1851,45 @@ fn lexical_hits_to_structural_buckets(
         normalize_structural_match_bucket(bucket);
     }
     buckets
+}
+
+fn symbol_hits_to_structural_buckets(
+    results: Vec<SymbolCandidate>,
+    structural_state: &StructuralAuthorityState,
+) -> StructuralCandidateBuckets {
+    let mut buckets = StructuralCandidateBuckets::new();
+    for hit in results {
+        for (chunk_id, chunk) in structural_state.chunks() {
+            if chunk.repo_relative_path != hit.repo_relative_path {
+                continue;
+            }
+            if !symbol_span_overlaps_chunk_lines(&hit, chunk) {
+                continue;
+            }
+            let candidate_id = chunk_id.as_str().to_string();
+            buckets
+                .entry(candidate_id.clone())
+                .or_default()
+                .push(StructuralMatchCandidate {
+                    candidate_id,
+                    pattern_start_byte: chunk.start_byte,
+                    pattern_end_byte: chunk.end_byte,
+                    bindings: Vec::new(),
+                });
+        }
+    }
+    for bucket in buckets.values_mut() {
+        normalize_structural_match_bucket(bucket);
+    }
+    buckets
+}
+
+fn symbol_span_overlaps_chunk_lines(hit: &SymbolCandidate, chunk: &ChunkRecord) -> bool {
+    let hit_start = hit.start_line.max(1);
+    let hit_end = hit.end_line.max(hit_start);
+    let chunk_start = chunk.start_line.max(1);
+    let chunk_end = chunk.end_line.max(chunk_start);
+    hit_start <= chunk_end && hit_end >= chunk_start
 }
 
 fn compile_structural_filter_regex(
@@ -1863,6 +1931,10 @@ fn chunk_matches_structural_filters(
                 let path_match = executor.verify(path.as_bytes());
                 let matched = match scope {
                     LqFileScope::PathOnly => path_match,
+                    LqFileScope::NameOnly => path
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| executor.verify(name.as_bytes())),
                     LqFileScope::NameAndPath => {
                         path_match
                             || path
@@ -2969,7 +3041,11 @@ fn runtime_chunk_matches(
                             return Ok(false);
                         }
                     }
-                    LqYesNoOnly::Only => return Err(runtime_dirty_only_unsupported()),
+                    LqYesNoOnly::Only => {
+                        if !in_dirty {
+                            return Ok(false);
+                        }
+                    }
                 }
             }
             LqFilter::Changed { scope } => {
@@ -3136,7 +3212,13 @@ fn runtime_seed_ids(
                         .cloned()
                         .collect::<BTreeSet<_>>(),
                 ),
-                LqYesNoOnly::Only => return Err(runtime_dirty_only_unsupported()),
+                LqYesNoOnly::Only => Some(
+                    runtime_state
+                        .dirty_docs()
+                        .keys()
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                ),
             },
             LqFilter::Changed { .. } => Some(
                 runtime_state
@@ -4344,7 +4426,7 @@ mod tests {
         BoundedQueryObsStore, ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_INVALID_TIMEREF,
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
-        FailClosedStructuralProducer, QueryObsSink, SearchPlaneDispatcher,
+        FailClosedStructuralProducer, MAX_OBS_SAMPLES, QueryObsSink, SearchPlaneDispatcher,
         classify_error_metric_name, make_pin, runtime_generation_is_stale, runtime_seed_ids,
         validate_history_query, validate_runtime_metadata_query,
     };
@@ -4374,6 +4456,7 @@ mod tests {
         SemanticSearcher,
     };
     use quanta_index_lq_bridge::BridgeErrorCode;
+    use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
     use tempfile::tempdir;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -4574,7 +4657,11 @@ mod tests {
             committer_time_ms: 2,
             applied_at_ms: 3,
             author: "alice".to_string().into_boxed_str(),
+            author_name: None,
+            author_email: None,
             committer: "alice".to_string().into_boxed_str(),
+            committer_name: None,
+            committer_email: None,
             message: "fix: history lane".to_string().into_boxed_str(),
             is_merge: false,
             tags: Vec::new(),
@@ -4711,7 +4798,11 @@ mod tests {
                         committer_time_ms: 100,
                         applied_at_ms: 100,
                         author: "alice".to_string().into_boxed_str(),
+                        author_name: None,
+                        author_email: None,
                         committer: "alice".to_string().into_boxed_str(),
+                        committer_name: None,
+                        committer_email: None,
                         message: "old commit".to_string().into_boxed_str(),
                         is_merge: false,
                         tags: Vec::new(),
@@ -4724,7 +4815,11 @@ mod tests {
                         committer_time_ms: 200,
                         applied_at_ms: 200,
                         author: "alice".to_string().into_boxed_str(),
+                        author_name: None,
+                        author_email: None,
                         committer: "alice".to_string().into_boxed_str(),
+                        committer_name: None,
+                        committer_email: None,
                         message: "head commit".to_string().into_boxed_str(),
                         is_merge: false,
                         tags: Vec::new(),
@@ -5949,6 +6044,27 @@ mod tests {
         }
     }
 
+    fn structural_state_for_test_chunks(
+        chunks: &[(&str, &str, &str)],
+    ) -> Result<crate::readiness::StructuralAuthorityState, Box<dyn std::error::Error>> {
+        let ledger = ready_ledger_with_structural_boolean_chunks();
+        {
+            let mut guard = ledger.write().expect("structural test ledger poisoned");
+            for (chunk_id, path, text) in chunks {
+                install_structural_test_chunk(&mut guard, chunk_id, path, text)?;
+            }
+        }
+        let guard = ledger.read().expect("structural test ledger poisoned");
+        guard
+            .structural_state(
+                &RepoId::new("repo-map-ipc"),
+                &RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )
+            .cloned()
+            .ok_or_else(|| "structural state missing for test chunks".into())
+    }
+
     fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidate {
         LexicalCandidate {
             candidate_id: candidate_id.to_string(),
@@ -5978,6 +6094,56 @@ mod tests {
             default_query_embedder(),
             obs_sink,
         ))
+    }
+
+    #[test]
+    fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let structural_state = structural_state_for_test_chunks(&[
+            (
+                "chunk-symbol-left",
+                "src/symbol.rs",
+                "fn ParityTypeSymbol() {}",
+            ),
+            (
+                "chunk-symbol-right",
+                "src/symbol.rs",
+                "fn ParityTypeSymbol() {}",
+            ),
+        ])?;
+        let buckets = super::symbol_hits_to_structural_buckets(
+            vec![SymbolCandidate {
+                candidate_id: "symbol-hit-1".to_string(),
+                repo_id: RepoId::new("repo-map-ipc"),
+                revision_id: RevisionId::new("rev-map-ipc"),
+                manifest_generation: ManifestGeneration::new(9),
+                repo_relative_path: RepoRelativePath::new("src/symbol.rs"),
+                start_line: 1,
+                end_line: 1,
+                score: 1.0,
+                snippet: "ParityTypeSymbol".to_string(),
+                symbol_kind: SymbolKindCode::from_code_str("function")
+                    .expect("function symbol kind code"),
+                symbol_kind_family: Some(SymbolKindFamily::Callable),
+            }],
+            &structural_state,
+        );
+        let projected_ids = buckets.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            projected_ids,
+            vec![
+                "chunk-symbol-left".to_string(),
+                "chunk-symbol-right".to_string(),
+            ]
+        );
+        for bucket in buckets.values() {
+            assert_eq!(
+                bucket.len(),
+                1,
+                "each overlapping chunk must receive exactly one projected structural bucket"
+            );
+        }
+        Ok(())
     }
 
     fn ready_pin() -> quanta_index_contract::GenerationPin {
@@ -6123,6 +6289,43 @@ mod tests {
             if sample.name.contains("scope") || sample.name.contains("1.0 0.0") {
                 return Err(format!("metric name leaked query content: {}", sample.name).into());
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_obs_store_evicts_oldest_samples_at_capacity() -> TestResult {
+        let store = BoundedQueryObsStore::default();
+        for i in 0..(MAX_OBS_SAMPLES + 8) {
+            store.emit(MetricSample::new(
+                format!("metric-{i}"),
+                MetricKind::Counter,
+                i as f64,
+                Dimensions::new("LXE-10", "8", "local", "repo-map-ipc", 9),
+            ));
+        }
+        let snapshot = store.snapshot();
+        if snapshot.len() != MAX_OBS_SAMPLES {
+            return Err(format!(
+                "expected {} bounded samples, got {}",
+                MAX_OBS_SAMPLES,
+                snapshot.len()
+            )
+            .into());
+        }
+        if snapshot.first().map(|sample| sample.name.as_ref()) != Some("metric-8") {
+            return Err(format!(
+                "expected oldest retained sample to be metric-8, got {:?}",
+                snapshot.first().map(|sample| sample.name.as_ref())
+            )
+            .into());
+        }
+        if snapshot.last().map(|sample| sample.name.as_ref()) != Some("metric-4103") {
+            return Err(format!(
+                "expected newest retained sample to be metric-4103, got {:?}",
+                snapshot.last().map(|sample| sample.name.as_ref())
+            )
+            .into());
         }
         Ok(())
     }
@@ -6280,19 +6483,23 @@ mod tests {
     }
 
     #[test]
-    fn runtime_metadata_dispatch_dirty_only_rejects_typed_error() -> TestResult {
+    fn runtime_metadata_dispatch_dirty_only_executes_like_dirty_yes() -> TestResult {
         let dispatcher =
             runtime_metadata_dispatcher_with_ledger(ready_runtime_metadata_ledger(100, 20))?;
         let response = dispatcher.dispatch(runtime_query_request(
             TextQuerySyntax::Native,
             "dirty:only todo",
         ));
-        let (code, _message) =
-            ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
-        if code != ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED {
-            return Err(
-                format!("expected {ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED}, got {code}").into(),
-            );
+        let SearchPlaneQueryIpcResponse::RuntimeMetadata(response) = response else {
+            return Err("expected RuntimeMetadata response".into());
+        };
+        let candidate_ids = response
+            .results
+            .into_iter()
+            .map(|candidate| candidate.candidate_id.to_string())
+            .collect::<Vec<_>>();
+        if candidate_ids != ["chunk-dirty"] {
+            return Err(format!("expected [\"chunk-dirty\"], got {candidate_ids:?}").into());
         }
         Ok(())
     }

@@ -88,6 +88,9 @@ pub(crate) fn set_append_fail_path_for_debug(path: Option<&str>) {
     failpoint::set_append_fail_path(path);
 }
 
+#[cfg(any(test, debug_assertions))]
+const _: fn(Option<&str>) = set_append_fail_path_for_debug;
+
 pub(crate) const COLUMN_EMBEDDING_ID: &str = "embedding_id";
 pub(crate) const COLUMN_REPO_RELATIVE_PATH: &str = "repo_relative_path";
 pub(crate) const COLUMN_START_LINE: &str = "start_line";

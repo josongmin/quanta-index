@@ -88,6 +88,7 @@ impl LqSelect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LqFileScope {
     NameAndPath,
+    NameOnly,
     PathOnly,
 }
 
@@ -96,6 +97,7 @@ impl LqFileScope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NameAndPath => "name_and_path",
+            Self::NameOnly => "name_only",
             Self::PathOnly => "path_only",
         }
     }
@@ -371,6 +373,8 @@ pub struct LqOptions {
     pub case: Option<LqCase>,
     pub count: Option<LqCountBound>,
     pub timeout_ms: Option<u64>,
+    pub index_mode: Option<LqYesNoOnly>,
+    pub boost_millis: Option<u32>,
 }
 
 impl LqOptions {
@@ -381,6 +385,8 @@ impl LqOptions {
             case: None,
             count: None,
             timeout_ms: None,
+            index_mode: None,
+            boost_millis: None,
         }
     }
 }
@@ -634,8 +640,12 @@ impl<'de> serde::Deserialize<'de> for LqFileScope {
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LqFileScope, E> {
                 match v {
                     "name_and_path" => Ok(LqFileScope::NameAndPath),
+                    "name_only" => Ok(LqFileScope::NameOnly),
                     "path_only" => Ok(LqFileScope::PathOnly),
-                    other => Err(E::unknown_variant(other, &["name_and_path", "path_only"])),
+                    other => Err(E::unknown_variant(
+                        other,
+                        &["name_and_path", "name_only", "path_only"],
+                    )),
                 }
             }
         }
@@ -2202,7 +2212,7 @@ impl serde::Serialize for LqOptions {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap as _;
-        let mut m = ser.serialize_map(Some(4))?;
+        let mut m = ser.serialize_map(Some(6))?;
         m.serialize_entry("pattern_type", &self.pattern_type)?;
         match &self.case {
             Some(c) => m.serialize_entry("case", c)?,
@@ -2215,6 +2225,14 @@ impl serde::Serialize for LqOptions {
         match &self.timeout_ms {
             Some(timeout_ms) => m.serialize_entry("timeout_ms", timeout_ms)?,
             None => m.serialize_entry::<_, Option<u64>>("timeout_ms", &None)?,
+        }
+        match &self.index_mode {
+            Some(index_mode) => m.serialize_entry("index_mode", index_mode)?,
+            None => m.serialize_entry::<_, Option<LqYesNoOnly>>("index_mode", &None)?,
+        }
+        match &self.boost_millis {
+            Some(boost_millis) => m.serialize_entry("boost_millis", boost_millis)?,
+            None => m.serialize_entry::<_, Option<u32>>("boost_millis", &None)?,
         }
         m.end()
     }
@@ -2239,6 +2257,8 @@ impl<'de> serde::Deserialize<'de> for LqOptions {
                 let mut case: Option<LqCase> = None;
                 let mut count: Option<LqCountBound> = None;
                 let mut timeout_ms: Option<u64> = None;
+                let mut index_mode: Option<LqYesNoOnly> = None;
+                let mut boost_millis: Option<u32> = None;
                 while let Some(k) = map.next_key::<String>()? {
                     match k.as_str() {
                         "pattern_type" => pattern_type = Some(map.next_value()?),
@@ -2246,6 +2266,12 @@ impl<'de> serde::Deserialize<'de> for LqOptions {
                         "count" => count = map.next_value()?,
                         "timeout_ms" => {
                             timeout_ms = map.next_value::<Option<u64>>()?.or(timeout_ms);
+                        }
+                        "index_mode" => {
+                            index_mode = map.next_value::<Option<LqYesNoOnly>>()?.or(index_mode);
+                        }
+                        "boost_millis" => {
+                            boost_millis = map.next_value::<Option<u32>>()?.or(boost_millis);
                         }
                         _ => {
                             let _ignored: serde::de::IgnoredAny = map.next_value()?;
@@ -2257,6 +2283,8 @@ impl<'de> serde::Deserialize<'de> for LqOptions {
                     case,
                     count,
                     timeout_ms,
+                    index_mode,
+                    boost_millis,
                 })
             }
         }

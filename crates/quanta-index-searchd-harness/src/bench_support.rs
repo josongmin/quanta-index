@@ -43,6 +43,69 @@ pub struct QueryOutcome {
     pub early_stop_reason: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScenarioTruthMode {
+    /// One runtime per scenario fixture.
+    ///
+    /// This matches the dedicated warm authority runner and the cold runner.
+    IsolatedFixture,
+    /// One shared runtime seeded with every fixture family.
+    ///
+    /// This matches the exploratory criterion bench and can widen lexical
+    /// candidate counts because cross-family text chunks coexist.
+    SharedWarmFixture,
+}
+
+/// Fail-fast golden-truth validation for one bench scenario outcome.
+///
+/// Bench runners call this outside the timed inner loop so latency artifacts
+/// cannot silently drift away from shipped behavior. The same helper also
+/// powers the small bench-truth smoke rail, keeping correctness authority
+/// shared with the latency scenario table.
+pub fn validate_scenario_outcome(
+    scenario: &DslBenchScenario,
+    mode: ScenarioTruthMode,
+    outcome: &QueryOutcome,
+) -> AnyResult<()> {
+    if outcome.result_shape != scenario.expected_shape {
+        return Err(anyhow::anyhow!(
+            "scenario {} returned shape {:?}, expected {:?}",
+            scenario.id,
+            outcome.result_shape,
+            scenario.expected_shape
+        ));
+    }
+    let expected_count = match mode {
+        ScenarioTruthMode::IsolatedFixture => scenario.expected_count,
+        ScenarioTruthMode::SharedWarmFixture => scenario.expected_warm_count,
+    };
+    if expected_count.is_some() && outcome.result_count != expected_count {
+        return Err(anyhow::anyhow!(
+            "scenario {} returned count {:?}, expected {:?} under {:?}",
+            scenario.id,
+            outcome.result_count,
+            expected_count,
+            mode
+        ));
+    }
+    if outcome.typed_error_code.as_deref() != scenario.expected_typed_error_code {
+        return Err(anyhow::anyhow!(
+            "scenario {} returned typed_error_code {:?}, expected {:?}",
+            scenario.id,
+            outcome.typed_error_code.as_deref(),
+            scenario.expected_typed_error_code
+        ));
+    }
+    if outcome.early_stop_reason.is_some() {
+        return Err(anyhow::anyhow!(
+            "scenario {} unexpectedly early-stopped with {:?}",
+            scenario.id,
+            outcome.early_stop_reason
+        ));
+    }
+    Ok(())
+}
+
 fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
     match syntax {
         BenchSyntax::Native => TextQuerySyntax::Native,

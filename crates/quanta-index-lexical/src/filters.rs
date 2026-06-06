@@ -51,6 +51,8 @@ pub struct PathConstraint {
 pub enum FilePathScope {
     /// Match file name OR repo-relative path.
     NameAndPath,
+    /// Match only the file name.
+    NameOnly,
     /// Match only the repo-relative path.
     PathOnly,
 }
@@ -60,6 +62,7 @@ impl FilePathScope {
     pub const fn from_lq(scope: LqFileScope) -> Self {
         match scope {
             LqFileScope::NameAndPath => Self::NameAndPath,
+            LqFileScope::NameOnly => Self::NameOnly,
             LqFileScope::PathOnly => Self::PathOnly,
         }
     }
@@ -69,6 +72,7 @@ impl FilePathScope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NameAndPath => "name_and_path",
+            Self::NameOnly => "name_only",
             Self::PathOnly => "path_only",
         }
     }

@@ -117,23 +117,7 @@ SG_SELECT_SURFACES = [
     "select:file.owners",
 ]
 
-EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = (
-    # SGX-01 promoted repo:has.file(path:... content:...) to a correlated
-    # per-document gate; SGX-03 promoted repo:has.meta(key) / (tag:) to genuine
-    # key-existence; SGX-02 promoted repo:has.description(<regex>) to a distinct
-    # producer-published description authority with a regex gate. Those cells now
-    # live in the supported inventory.
-    (
-        "repo.has.meta.regex",
-        "repo:has.meta(/key/:/value/)",
-        "metadata authority is exact-string only and has no regex engine (SGX-03 deferred)",
-    ),
-    (
-        "file.has.contributor.regex",
-        "file:has.contributor(<name-or-email regex>)",
-        "contributor authority is an exact identity set, not a name-or-email regex substrate",
-    ),
-)
+EXPLICIT_UNSUPPORTED_COMPARISON_GAPS: tuple[tuple[str, str, str], ...] = ()
 
 OUTCOME_LABEL = {
     "Candidates": "candidates",
@@ -199,6 +183,10 @@ REQUIRED_SURFACES: tuple[str, ...] = (
     "repo.has.commit.after",
     "repo.contains.commit.after",
     "repo.has.meta",
+    "repo.has.meta.regex.key_only",
+    "repo.has.meta.regex.key_exact_value",
+    "repo.has.meta.regex.exact_key_value",
+    "repo.has.meta.regex.pair",
     "repo.has.topic",
     "repo.has.description",
     "repo.contains.file",
@@ -212,8 +200,14 @@ REQUIRED_SURFACES: tuple[str, ...] = (
     "file.has.content",
     "file.has.owner",
     "file.has.contributor",
+    "file.has.contributor.regex",
+    "file.has.contributor.regex.name",
+    "file.has.contributor.regex.email",
     "select.file.owners",
     "symbol.has.name",
+    "sg_structural.file_contains_predicate_sibling",
+    "sg_structural.file_has_content_predicate_sibling",
+    "sg_structural.symbol_has_name_predicate_sibling",
 )
 
 UNSUPPORTED_SURFACE_TOKENS: list[tuple[str, tuple[str, ...]]] = []
@@ -225,29 +219,11 @@ DEMOTED_STRUCTURAL_OWNER_TESTS: dict[str, tuple[str, ...]] = {
     "sg_structural.direct_regex_lexical_sibling": (
         "sourcegraph_structural_route_rewrites_regex_body_into_structural_leaf",
     ),
-    "sg_structural.file_contains_predicate_sibling": (
-        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling",
-        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_or",
-        "sourcegraph_structural_route_rejects_file_contains_predicate_sibling_under_and_not",
-    ),
-    "sg_structural.file_has_content_predicate_sibling": (
-        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling",
-        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_or",
-        "sourcegraph_structural_route_rejects_file_has_content_predicate_sibling_under_and_not",
-    ),
-    "sg_structural.symbol_has_name_predicate_sibling": (
-        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling",
-        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_or",
-        "sourcegraph_structural_route_rejects_non_repo_predicate_sibling_under_and_not",
-    ),
 }
 
 DEMOTED_STRUCTURAL_NOTES: dict[str, str] = {
-    "sg_structural.direct_phrase_lexical_sibling": "quoted SG token is structural body syntax, not a distinct lexical sibling surface",
-    "sg_structural.direct_regex_lexical_sibling": "/.../ SG token is structural regex body syntax, not a distinct lexical sibling surface",
-    "sg_structural.file_contains_predicate_sibling": "mixed SG structural boolean cells reject non-repo `file.contains(...)` predicate siblings",
-    "sg_structural.file_has_content_predicate_sibling": "mixed SG structural boolean cells reject non-repo `file.has.content(...)` predicate siblings",
-    "sg_structural.symbol_has_name_predicate_sibling": "mixed SG structural boolean cells reject non-repo `symbol.has.name(...)` predicate siblings",
+    "sg_structural.direct_phrase_lexical_sibling": "quoted SG structural token already communicates structural context and lowers as structural body syntax, not a distinct lexical sibling surface",
+    "sg_structural.direct_regex_lexical_sibling": "/.../ SG structural token lowers as structural regex body syntax on this route, not a distinct lexical sibling surface",
 }
 
 
@@ -293,24 +269,87 @@ def decode_literal_query(raw: str) -> str:
     return raw.replace('\\"', '"').replace("\\\\", "\\")
 
 
+def rust_string_literals(body: str, prefix_pattern: str) -> list[str]:
+    queries = re.findall(prefix_pattern + r'\s*"(.*?)"', body)
+    queries += [
+        query
+        for _, query in re.findall(prefix_pattern + r'\s*r(#+)"(.*?)"\1', body)
+    ]
+    return queries
+
+
+def prefixed_rust_query_literals(body: str, prefix_pattern: str) -> list[str]:
+    queries = re.findall(
+        prefix_pattern
+        + r'\s*"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"',
+        body,
+    )
+    queries += [
+        query
+        for _, query in re.findall(
+            prefix_pattern
+            + r'\s*r(#+)"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"\1',
+            body,
+        )
+    ]
+    return queries
+
+
 def surface_ids_in(query: str) -> set[str]:
     found: set[str] = set()
     for surface, tokens in SURFACE_TOKENS:
         if any(token in query for token in tokens):
             found.add(surface)
+    found.update(repo_meta_regex_surface_ids_in(query))
+    if "patterntype:structural" in query:
+        if "file:contains(path:" in query or "file:contains(file:" in query:
+            found.add("sg_structural.file_contains_predicate_sibling")
+        if "file:has.content(path:" in query or "file:has.content(file:" in query:
+            found.add("sg_structural.file_has_content_predicate_sibling")
+        if "symbol:has.name(" in query:
+            found.add("sg_structural.symbol_has_name_predicate_sibling")
+    if re.search(r"file[:.]has\.contributor\(/", query):
+        found.add("file.has.contributor.regex")
+        if "@" in query:
+            found.add("file.has.contributor.regex.email")
+        else:
+            found.add("file.has.contributor.regex.name")
     return found
 
 
 def demoted_structural_surface_ids_in(query: str) -> set[str]:
+    return set()
+
+
+def is_slash_delimited_regex_token(token: str) -> bool:
+    token = token.strip()
+    return len(token) >= 2 and token.startswith("/") and token.endswith("/")
+
+
+def repo_meta_regex_surface_ids_in(query: str) -> set[str]:
     found: set[str] = set()
-    if "patterntype:structural" not in query:
-        return found
-    if "file:contains(path:" in query or "file:contains(file:" in query:
-        found.add("sg_structural.file_contains_predicate_sibling")
-    if "file:has.content(path:" in query or "file:has.content(file:" in query:
-        found.add("sg_structural.file_has_content_predicate_sibling")
-    if "symbol:has.name(" in query:
-        found.add("sg_structural.symbol_has_name_predicate_sibling")
+    for arg in re.findall(r"repo[:.]has\.meta\(([^)]*)\)", query):
+        value = arg.strip()
+        if not value:
+            continue
+        if ":" not in value:
+            if is_slash_delimited_regex_token(value):
+                found.add("repo.has.meta.regex.key_only")
+            continue
+        key_token, value_token = value.split(":", 1)
+        key_token = key_token.strip()
+        value_token = value_token.strip()
+        key_is_regex = is_slash_delimited_regex_token(key_token)
+        value_is_regex = is_slash_delimited_regex_token(value_token)
+        if key_is_regex and not value_token:
+            found.add("repo.has.meta.regex.key_only")
+            continue
+        if key_is_regex and value_is_regex:
+            found.add("repo.has.meta.regex.pair")
+        elif key_is_regex:
+            found.add("repo.has.meta.regex.key_exact_value")
+        elif value_is_regex:
+            found.add("repo.has.meta.regex.exact_key_value")
     return found
 
 
@@ -319,10 +358,6 @@ def unsupported_surface_ids_in(query: str) -> set[str]:
     for surface, tokens in UNSUPPORTED_SURFACE_TOKENS:
         if any(token in query for token in tokens):
             found.add(surface)
-    if re.search(r"repo[:.]has\.meta\([^)]*/", query):
-        found.add("repo.has.meta.regex")
-    if re.search(r"file[:.]has\.contributor\(/", query):
-        found.add("file.has.contributor.regex")
     return found
 
 
@@ -428,19 +463,18 @@ def scan_filter_exec(
     # Lexical queries pass the literal directly to `query_text(...)`; history
     # queries route through a helper but always carry the `type:commit` /
     # `type:diff` discriminator, so match those literals wherever they appear.
-    queries = re.findall(r'query_text\(\s*TextQuerySyntax::\w+,\s*"(.*?)"', body)
-    queries += re.findall(
-        r'query_text_with_pin\(\s*TextQuerySyntax::\w+,\s*"(.*?)"', body
+    queries = rust_string_literals(
+        body, r"query_text\(\s*TextQuerySyntax::\w+,"
+    )
+    queries += rust_string_literals(
+        body, r"query_text_with_pin\(\s*TextQuerySyntax::\w+,"
     )
     # Some negative rails batch Sourcegraph literals through `for query in [...]`
     # loops before calling `query_text(...)`; scan only those loop-local literal
     # blocks instead of every string in the file to keep evidence fail-closed.
     for block in re.findall(r"for\s+\w+\s+in\s+\[(.*?)\]\s*\{", body, re.DOTALL):
-        queries += re.findall(
-            r'"((?:repo:|repo[.]|file:|file[.]|select:|select[.]|patterntype:|symbol:|symbol[.]|type:(?:commit|diff)).*?)"',
-            block,
-        )
-    queries += re.findall(r'"(type:(?:commit|diff)[^"]*)"', body)
+        queries += prefixed_rust_query_literals(block, "")
+    queries += prefixed_rust_query_literals(body, "")
     for query in queries:
         decoded = decode_literal_query(query)
         record_query(
@@ -464,7 +498,7 @@ def scan_frontdoor_scenarios(
     if not FRONTDOOR_SCENARIOS_RS.exists():
         return 0
     body = read(FRONTDOOR_SCENARIOS_RS)
-    queries = re.findall(r'query_text:\s*"(.*?)"', body)
+    queries = rust_string_literals(body, r"query_text:")
     for query in queries:
         decoded = decode_literal_query(query)
         record_query(

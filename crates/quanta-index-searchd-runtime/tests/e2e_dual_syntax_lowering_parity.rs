@@ -38,9 +38,10 @@ use quanta_index_searchd_harness as e2e_harness;
 
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
-    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
-    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry,
-    RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, TextQuerySyntax,
+    FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
+    FileOwnershipEntry, FileOwnershipIngestBatch, RepoCommitRecencyEntry,
+    RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch, TextQuerySyntax,
 };
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -482,32 +483,58 @@ const SCENARIOS: &[ParityScenario] = &[
     },
     ParityScenario {
         route: QueryRoute::Text,
-        id: "file_contains_scoped_or_typed_fail_parity",
-        sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\") OR parity_needle_alpha",
-        lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\") OR parity_needle_alpha",
+        id: "file_contains_scoped_or_single_hit_parity",
+        sg_query: "file:contains(path:src/phrase.rs, \"lemon yellow banana\") OR missing_corpus_token",
+        lq_query: "file.contains(path:src/phrase.rs, \"lemon yellow banana\") OR missing_corpus_token",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
         },
     },
     ParityScenario {
         route: QueryRoute::Text,
-        id: "file_contains_scoped_not_typed_fail_parity",
-        sg_query: "NOT file:contains(path:src/phrase.rs, \"lemon yellow banana\")",
-        lq_query: "NOT file.contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        id: "file_contains_scoped_not_empty_parity",
+        sg_query: "banana NOT file:contains(path:src/phrase.rs, \"lemon yellow banana\")",
+        lq_query: "banana NOT file.contains(path:src/phrase.rs, \"lemon yellow banana\")",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
-        },
+        expected: ExpectedOutcome::Candidates { ids: &[] },
     },
     ParityScenario {
         route: QueryRoute::Text,
-        id: "file_contains_scoped_unknown_matcher_typed_fail_parity",
+        id: "file_contains_scoped_name_hit_parity",
         sg_query: "file:contains(name:phrase.rs, \"lemon yellow banana\")",
         lq_query: "file.contains(name:phrase.rs, \"lemon yellow banana\")",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_or_single_hit_parity",
+        sg_query: "file:has.content(path:src/phrase.rs, \"lemon yellow banana\") OR missing_corpus_token",
+        lq_query: "file.has.content(path:src/phrase.rs, \"lemon yellow banana\") OR missing_corpus_token",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_not_empty_parity",
+        sg_query: "banana NOT file:has.content(path:src/phrase.rs, \"lemon yellow banana\")",
+        lq_query: "banana NOT file.has.content(path:src/phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_content_scoped_name_hit_parity",
+        sg_query: "file:has.content(name:phrase.rs, \"lemon yellow banana\")",
+        lq_query: "file.has.content(name:phrase.rs, \"lemon yellow banana\")",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["delta_phrase"],
         },
     },
     ParityScenario {
@@ -1120,6 +1147,62 @@ const SCENARIOS: &[ParityScenario] = &[
         top_k: 10,
         expected: ExpectedOutcome::Candidates { ids: &[] },
     },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_contains_path_and_parity",
+        sg_query: r#"patterntype:structural file:contains(path:src/lib.rs, parity_needle_alpha) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "file.contains(path:src/lib.rs, parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_contains_path_or_parity",
+        sg_query: r#"patterntype:structural file:contains(path:src/lib.rs, parity_needle_alpha) OR "function_item { { identifier :[name] } }""#,
+        lq_query: "file.contains(path:src/lib.rs, parity_needle_alpha) OR match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_contains_path_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT file:contains(path:src/lib.rs, parity_needle_alpha)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT file.contains(path:src/lib.rs, parity_needle_alpha)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_has_content_path_and_parity",
+        sg_query: r#"patterntype:structural file:has.content(path:src/lib.rs, parity_needle_alpha) AND "function_item { { identifier :[name] } }""#,
+        lq_query: "file.has.content(path:src/lib.rs, parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_has_content_path_or_parity",
+        sg_query: r#"patterntype:structural file:has.content(path:src/lib.rs, parity_needle_alpha) OR "function_item { { identifier :[name] } }""#,
+        lq_query: "file.has.content(path:src/lib.rs, parity_needle_alpha) OR match { function_item { { identifier :[name] } } }",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["alpha_rust"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Structural,
+        id: "structural_sourcegraph_native_mixed_file_has_content_path_and_not_parity",
+        sg_query: r#"patterntype:structural "function_item { { identifier :[name] } }" AND NOT file:has.content(path:src/lib.rs, parity_needle_alpha)"#,
+        lq_query: "match { function_item { { identifier :[name] } } } AND NOT file.has.content(path:src/lib.rs, parity_needle_alpha)",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates { ids: &[] },
+    },
     // Repo-scoped filters under mixed OR are bridge fail-closed; see lowering scoped-filter test.
     ParityScenario {
         route: QueryRoute::Structural,
@@ -1570,16 +1653,44 @@ const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
             ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
         },
     },
-    // SGX-03: slash-delimited regex key/value remains the deferred typed-fail
-    // shape (no regex-capable meta substrate yet); fails closed on both syntaxes.
     ParityScenario {
         route: QueryRoute::Text,
-        id: "repo_has_meta_regex_key_value_typed_fail_parity",
+        id: "repo_has_meta_regex_key_value_parity",
         sg_query: "repo:has.meta(/license/:/apache.*/) parity_needle_alpha",
         lq_query: "repo.has.meta(/license/:/apache.*/) parity_needle_alpha",
         top_k: 10,
-        expected: ExpectedOutcome::TypedError {
-            code: "LEX_PREDICATE_UNIMPLEMENTED",
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_regex_key_only_parity",
+        sg_query: "repo:has.meta(/license/) parity_needle_alpha",
+        lq_query: "repo.has.meta(/license/) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_exact_key_regex_value_parity",
+        sg_query: "repo:has.meta(license:/apache.*/) parity_needle_alpha",
+        lq_query: "repo.has.meta(license:/apache.*/) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "repo_has_meta_regex_key_exact_value_parity",
+        sg_query: "repo:has.meta(/licens./:apache-2.0) parity_needle_alpha",
+        lq_query: "repo.has.meta(/licens./:apache-2.0) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha", "repo_commit_after_beta"],
         },
     },
     ParityScenario {
@@ -1607,6 +1718,16 @@ const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
         id: "file_has_contributor_predicate_parity",
         sg_query: "file:has.contributor(alice) parity_needle_alpha",
         lq_query: "file.has.contributor(alice) parity_needle_alpha",
+        top_k: 10,
+        expected: ExpectedOutcome::Candidates {
+            ids: &["repo_commit_after_alpha"],
+        },
+    },
+    ParityScenario {
+        route: QueryRoute::Text,
+        id: "file_has_contributor_regex_predicate_parity",
+        sg_query: r#"file:has.contributor(/alice@example\.com/) parity_needle_alpha"#,
+        lq_query: r#"file.has.contributor(/alice@example\.com/) parity_needle_alpha"#,
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["repo_commit_after_alpha"],
@@ -1724,12 +1845,27 @@ fn ingest_authority_fixtures(rt: &mut E2eRuntime) -> AnyResult<()> {
             FileContributorEntry {
                 source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-a.rs"),
-                contributors: vec!["alice".to_string(), "carol".to_string()],
+                contributors: vec![
+                    FileContributorIdentityEntry {
+                        canonical: "alice".to_string(),
+                        name: Some("Alice Example".to_string()),
+                        email: Some("alice@example.com".to_string()),
+                    },
+                    FileContributorIdentityEntry {
+                        canonical: "carol".to_string(),
+                        name: Some("Carol Example".to_string()),
+                        email: Some("carol@example.com".to_string()),
+                    },
+                ],
             },
             FileContributorEntry {
                 source_repo_id: RepoId::new(PARITY_SOURCE_REPO_ID),
                 repo_relative_path: RepoRelativePath::new("src/repo-commit-after-b.py"),
-                contributors: vec!["bob".to_string()],
+                contributors: vec![FileContributorIdentityEntry {
+                    canonical: "bob".to_string(),
+                    name: Some("Bob Builder".to_string()),
+                    email: Some("bob@example.com".to_string()),
+                }],
             },
         ],
     })?;
@@ -2326,6 +2462,242 @@ fn select_file_owners_dual_syntax_projection_parity() -> AnyResult<()> {
             ],
         "select:file.owners projection rows drifted: {:?}",
         sorted_file_owner_projection_rows(&sg),
+    );
+    Ok(())
+}
+
+#[test]
+fn native_structural_mixed_scoped_file_predicates_execute_on_current_route() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    ingest_corpus(&mut rt)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let mut rt = rt.reopen();
+
+    let lexical_file_contains = rt.query_text(
+        TextQuerySyntax::Native,
+        "file.contains(path:src/lib.rs, parity_needle_alpha)",
+        10,
+    );
+    ensure!(
+        lexical_file_contains.typed_error.is_none(),
+        "native lexical file.contains typed-error: {:?}",
+        lexical_file_contains.typed_error,
+    );
+    let lexical_contains_obs = observe(&lexical_file_contains);
+    ensure!(
+        lexical_contains_obs.corpus_ids == ["alpha_rust"],
+        "native lexical file.contains expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&lexical_file_contains),
+        lexical_contains_obs.corpus_ids,
+    );
+
+    let structural_first_file_contains = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { identifier :[name] } } } AND file.contains(path:src/lib.rs, parity_needle_alpha)",
+        10,
+    );
+    ensure!(
+        structural_first_file_contains.typed_error.is_none(),
+        "native structural-first mixed file.contains typed-error: {:?}",
+        structural_first_file_contains.typed_error,
+    );
+    let structural_first_contains_obs = observe(&structural_first_file_contains);
+    ensure!(
+        structural_first_contains_obs.corpus_ids == ["alpha_rust"],
+        "native structural-first mixed file.contains expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&structural_first_file_contains),
+        structural_first_contains_obs.corpus_ids,
+    );
+
+    let file_contains = rt.query_structural(
+        TextQuerySyntax::Native,
+        "file.contains(path:src/lib.rs, parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        10,
+    );
+    ensure!(
+        file_contains.typed_error.is_none(),
+        "native structural mixed file.contains typed-error: {:?}",
+        file_contains.typed_error,
+    );
+    let contains_obs = observe(&file_contains);
+    ensure!(
+        contains_obs.corpus_ids == ["alpha_rust"],
+        "native structural mixed file.contains expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&file_contains),
+        contains_obs.corpus_ids,
+    );
+
+    let lexical_file_has_content = rt.query_text(
+        TextQuerySyntax::Native,
+        "file.has.content(path:src/lib.rs, parity_needle_alpha)",
+        10,
+    );
+    ensure!(
+        lexical_file_has_content.typed_error.is_none(),
+        "native lexical file.has.content typed-error: {:?}",
+        lexical_file_has_content.typed_error,
+    );
+    let lexical_has_content_obs = observe(&lexical_file_has_content);
+    ensure!(
+        lexical_has_content_obs.corpus_ids == ["alpha_rust"],
+        "native lexical file.has.content expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&lexical_file_has_content),
+        lexical_has_content_obs.corpus_ids,
+    );
+
+    let structural_first_file_has_content = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { identifier :[name] } } } AND file.has.content(path:src/lib.rs, parity_needle_alpha)",
+        10,
+    );
+    ensure!(
+        structural_first_file_has_content.typed_error.is_none(),
+        "native structural-first mixed file.has.content typed-error: {:?}",
+        structural_first_file_has_content.typed_error,
+    );
+    let structural_first_has_content_obs = observe(&structural_first_file_has_content);
+    ensure!(
+        structural_first_has_content_obs.corpus_ids == ["alpha_rust"],
+        "native structural-first mixed file.has.content expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&structural_first_file_has_content),
+        structural_first_has_content_obs.corpus_ids,
+    );
+
+    let file_has_content = rt.query_structural(
+        TextQuerySyntax::Native,
+        "file.has.content(path:src/lib.rs, parity_needle_alpha) AND match { function_item { { identifier :[name] } } }",
+        10,
+    );
+    ensure!(
+        file_has_content.typed_error.is_none(),
+        "native structural mixed file.has.content typed-error: {:?}",
+        file_has_content.typed_error,
+    );
+    let has_content_obs = observe(&file_has_content);
+    ensure!(
+        has_content_obs.corpus_ids == ["alpha_rust"],
+        "native structural mixed file.has.content expected alpha_rust, got raw={:?} mapped={:?}",
+        raw_candidate_ids(&file_has_content),
+        has_content_obs.corpus_ids,
+    );
+    Ok(())
+}
+
+#[test]
+fn native_structural_symbol_has_name_projects_into_structural_chunk_scope() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    let content = "fn ParityTypeSymbol() {}";
+    rt.ingest_text("repo-e2e", "src/sym-struct.rs", content)?;
+    rt.ingest_structural_function_tree("src/sym-struct.rs", content, "ParityTypeSymbol")?;
+    rt.ingest_symbol(
+        "repo-e2e",
+        "src/sym-struct.rs",
+        "sym-struct-needle",
+        "ParityTypeSymbol",
+    )?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let mut rt = rt.reopen();
+
+    let admitted = rt.query_structural(
+        TextQuerySyntax::Native,
+        "symbol.has.name(ParityTypeSymbol) AND match { function_item { { identifier :[name] } } }",
+        10,
+    );
+    ensure!(
+        admitted.typed_error.is_none(),
+        "native structural symbol.has.name AND typed-error: {:?}",
+        admitted.typed_error,
+    );
+    ensure!(
+        admitted.candidate_ids.len() == 1
+            && admitted
+                .candidate_ids
+                .first()
+                .is_some_and(|id| id.ends_with("-src/sym-struct.rs")),
+        "native structural symbol.has.name AND must project to one structural chunk, got {:?}",
+        admitted.candidate_ids,
+    );
+
+    let or = rt.query_structural(
+        TextQuerySyntax::Native,
+        "symbol.has.name(ParityTypeSymbol) OR match { trait_item }",
+        10,
+    );
+    ensure!(
+        or.typed_error.is_none(),
+        "native structural symbol.has.name OR typed-error: {:?}",
+        or.typed_error,
+    );
+    ensure!(
+        or.candidate_ids.len() == 1 && or.candidate_ids == admitted.candidate_ids,
+        "native structural symbol.has.name OR must preserve the projected structural chunk, got {:?}",
+        or.candidate_ids,
+    );
+
+    let and_not = rt.query_structural(
+        TextQuerySyntax::Native,
+        "match { function_item { { identifier :[name] } } } AND NOT symbol.has.name(ParityTypeSymbol)",
+        10,
+    );
+    ensure!(
+        and_not.typed_error.is_none(),
+        "native structural symbol.has.name AND NOT typed-error: {:?}",
+        and_not.typed_error,
+    );
+    ensure!(
+        and_not.candidate_ids.is_empty(),
+        "native structural symbol.has.name AND NOT must subtract the projected chunk, got {:?}",
+        and_not.candidate_ids,
+    );
+
+    let sg_and = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural symbol:has.name(ParityTypeSymbol) AND "function_item { { identifier :[name] } }""#,
+        10,
+    );
+    ensure!(
+        sg_and.typed_error.is_none(),
+        "sourcegraph structural symbol.has.name AND typed-error: {:?}",
+        sg_and.typed_error,
+    );
+    ensure!(
+        sg_and.candidate_ids == admitted.candidate_ids,
+        "sourcegraph structural symbol.has.name AND must match native projection, got {:?}",
+        sg_and.candidate_ids,
+    );
+
+    let sg_or = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural symbol:has.name(ParityTypeSymbol) OR "trait_item""#,
+        10,
+    );
+    ensure!(
+        sg_or.typed_error.is_none(),
+        "sourcegraph structural symbol.has.name OR typed-error: {:?}",
+        sg_or.typed_error,
+    );
+    ensure!(
+        sg_or.candidate_ids == or.candidate_ids,
+        "sourcegraph structural symbol.has.name OR must preserve the projected chunk, got {:?}",
+        sg_or.candidate_ids,
+    );
+
+    let sg_and_not = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "identifier :[name]" AND NOT symbol:has.name(ParityTypeSymbol)"#,
+        10,
+    );
+    ensure!(
+        sg_and_not.typed_error.is_none(),
+        "sourcegraph structural symbol.has.name AND NOT typed-error: {:?}",
+        sg_and_not.typed_error,
+    );
+    ensure!(
+        sg_and_not.candidate_ids == and_not.candidate_ids,
+        "sourcegraph structural symbol.has.name AND NOT must match native subtraction, got {:?}",
+        sg_and_not.candidate_ids,
     );
     Ok(())
 }

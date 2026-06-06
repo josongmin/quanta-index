@@ -22,7 +22,9 @@ use std::time::Instant;
 use criterion::Criterion;
 
 use quanta_index_searchd_harness::artifact::{BenchArtifact, BenchMode, BenchRow, LatencySummary};
-use quanta_index_searchd_harness::bench_support::{prepare_warm_runtime, run_scenario_query};
+use quanta_index_searchd_harness::bench_support::{
+    ScenarioTruthMode, prepare_warm_runtime, run_scenario_query, validate_scenario_outcome,
+};
 use quanta_index_searchd_harness::scenarios::SCENARIOS;
 
 /// Manual percentile-sample count per scenario (in addition to the criterion
@@ -65,6 +67,8 @@ fn main() -> anyhow::Result<()> {
         let samples_n = warm_samples();
         let mut group = criterion.benchmark_group("dsl_query_matrix");
         for scenario in SCENARIOS {
+            let probe = run_scenario_query(&mut runtime, scenario);
+            validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &probe)?;
             let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> =
                 group.bench_function(scenario.id, |b| {
                     b.iter(|| {
@@ -80,6 +84,7 @@ fn main() -> anyhow::Result<()> {
                 last = run_scenario_query(&mut runtime, scenario);
                 samples.push(elapsed_ms(started));
             }
+            validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &last)?;
 
             artifact.rows.push(BenchRow {
                 scenario_id: scenario.id.to_string(),

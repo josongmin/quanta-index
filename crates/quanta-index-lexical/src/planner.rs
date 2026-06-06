@@ -118,6 +118,11 @@ impl LexicalPlanner {
         })
     }
 
+    pub(crate) fn validate_expr(query: &LqQuery, expr: &LqExpr) -> Result<(), LexicalPlannerError> {
+        let _planned = Self::plan_expr(query, expr)?;
+        Ok(())
+    }
+
     fn plan_expr(query: &LqQuery, expr: &LqExpr) -> Result<PlannedExpr, LexicalPlannerError> {
         match expr {
             LqExpr::Empty => Ok((PlanNode::Empty, PlanTraceNode::Empty, BTreeSet::new())),

@@ -264,6 +264,7 @@ pub quanta_index_sdk::FileContributorBatch::repo_id: quanta_index_contract_base:
 pub quanta_index_sdk::FileContributorBatch::revision_id: quanta_index_contract_base::ids::RevisionId
 impl quanta_index_sdk::FileContributorBatch
 pub fn quanta_index_sdk::FileContributorBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn quanta_index_sdk::FileContributorBatch::entry_identities(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::FileContributorIdentityEntry>) -> Self
 pub fn quanta_index_sdk::FileContributorBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, batch_digest: impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for quanta_index_sdk::FileContributorBatch
 pub fn quanta_index_sdk::FileContributorBatch::clone(&self) -> quanta_index_sdk::FileContributorBatch
@@ -281,7 +282,7 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::FileContributorBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileContributorBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileContributorBatch
 pub struct quanta_index_sdk::FileContributorMutation
-pub quanta_index_sdk::FileContributorMutation::contributors: alloc::vec::Vec<alloc::string::String>
+pub quanta_index_sdk::FileContributorMutation::contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::FileContributorIdentityEntry>
 pub quanta_index_sdk::FileContributorMutation::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
 pub quanta_index_sdk::FileContributorMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
 impl core::clone::Clone for quanta_index_sdk::FileContributorMutation

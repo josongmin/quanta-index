@@ -16,11 +16,11 @@
 
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIngestBatch,
-    FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin, HistoryIngestBatch,
-    HistoryRefMutation, HistoryRefUpsert, LexicalIngestBatch, LexicalReplaceScope, LqVisibility,
-    ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId,
+    BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
+    HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert, LexicalIngestBatch,
+    LexicalReplaceScope, LqVisibility, ManifestGeneration, RepoCommitRecencyEntry,
+    RepoCommitRecencyIngestBatch, RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId,
     RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch,
     RevisionId, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
     lex::CommitSha, lex::LanguageCode,
@@ -163,6 +163,12 @@ fn candidate_paths(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
 
 fn sorted_candidate_paths(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
     let mut out = candidate_paths(result);
+    out.sort();
+    out
+}
+
+fn sorted_candidate_ids(result: &e2e_harness::E2eQueryResult) -> Vec<String> {
+    let mut out = result.candidate_ids.clone();
     out.sort();
     out
 }
@@ -409,17 +415,36 @@ fn boot_with_multi_repo_and_file_contributor() -> AnyResult<E2eRuntime> {
             FileContributorEntry {
                 source_repo_id: RepoId::new("corp-a"),
                 repo_relative_path: RepoRelativePath::new("src/corp-a.rs"),
-                contributors: vec!["alice".to_string(), "carol".to_string()],
+                contributors: vec![
+                    FileContributorIdentityEntry {
+                        canonical: "alice".to_string(),
+                        name: Some("Alice Example".to_string()),
+                        email: Some("alice@example.com".to_string()),
+                    },
+                    FileContributorIdentityEntry {
+                        canonical: "carol".to_string(),
+                        name: Some("Carol Example".to_string()),
+                        email: Some("carol@example.com".to_string()),
+                    },
+                ],
             },
             FileContributorEntry {
                 source_repo_id: RepoId::new("corp-a"),
                 repo_relative_path: RepoRelativePath::new("src/gate-a.rs"),
-                contributors: vec!["alice".to_string()],
+                contributors: vec![FileContributorIdentityEntry {
+                    canonical: "alice".to_string(),
+                    name: Some("Alice Example".to_string()),
+                    email: Some("alice@example.com".to_string()),
+                }],
             },
             FileContributorEntry {
                 source_repo_id: RepoId::new("corp-b"),
                 repo_relative_path: RepoRelativePath::new("src/corp-b.rs"),
-                contributors: vec!["bob".to_string()],
+                contributors: vec![FileContributorIdentityEntry {
+                    canonical: "bob".to_string(),
+                    name: Some("Bob Builder".to_string()),
+                    email: Some("bob@example.com".to_string()),
+                }],
             },
             FileContributorEntry {
                 source_repo_id: RepoId::new("corp-b"),
@@ -533,7 +558,11 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
                 committer_time_ms: now_ms.saturating_sub(63_072_000_000),
                 applied_at_ms: now_ms.saturating_sub(63_072_000_000),
                 author: "alice".to_string().into_boxed_str(),
+                author_name: None,
+                author_email: None,
                 committer: "alice".to_string().into_boxed_str(),
+                committer_name: None,
+                committer_email: None,
                 message: "legacy commit".to_string().into_boxed_str(),
                 is_merge: false,
                 tags: Vec::new(),
@@ -550,7 +579,11 @@ fn boot_with_rev_at_time_generations() -> AnyResult<(E2eRuntime, GenerationPin)>
                 committer_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
                 applied_at_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
                 author: "alice".to_string().into_boxed_str(),
+                author_name: None,
+                author_email: None,
                 committer: "alice".to_string().into_boxed_str(),
+                committer_name: None,
+                committer_email: None,
                 message: "head commit".to_string().into_boxed_str(),
                 is_merge: false,
                 tags: Vec::new(),
@@ -889,33 +922,116 @@ fn repo_has_meta_tag_existence_executes_on_sourcegraph_surface() -> AnyResult<()
 }
 
 #[test]
-fn repo_has_meta_rejects_slash_delimited_regex_shape_typed() -> AnyResult<()> {
-    // SGT-03: `repo:has.meta(/key/:/value/)` is Sourcegraph regex key/value
-    // syntax. There is no regex-capable metadata authority on this exact-string
-    // substrate, so it must fail closed instead of literal-matching the slashes.
+fn repo_has_meta_regex_family_executes_on_sourcegraph_surface() -> AnyResult<()> {
     let mut rt = boot_with_multi_repo_and_repo_meta()?;
-    for query in [
+
+    let regex_pair = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
         "repo:has.meta(/license/:/apache.*/) shared_oracle_needle",
-        "repo:has.meta(license:/apache.*/) shared_oracle_needle",
-    ] {
-        let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        let Some(error) = result.typed_error else {
-            anyhow::bail!(
-                "{query} regex repo:has.meta must typed-fail, got {:?}",
-                result.candidate_ids
-            );
-        };
-        ensure!(
-            error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-            "{query} must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
-            error.code
+        10,
+    );
+    ensure!(
+        regex_pair.typed_error.is_none(),
+        "regex key/value must not error: {:?}",
+        regex_pair.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&regex_pair) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "regex key/value must gate to corp-a only, got {:?}",
+        sorted_candidate_paths(&regex_pair),
+    );
+
+    let regex_key_only = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(/tier/) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        regex_key_only.typed_error.is_none(),
+        "regex key-only must not error: {:?}",
+        regex_key_only.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&regex_key_only) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "regex key-only must gate to corp-a only, got {:?}",
+        sorted_candidate_paths(&regex_key_only),
+    );
+
+    let exact_key_regex_value = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(license:/gpl-.*/) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        exact_key_regex_value.typed_error.is_none(),
+        "exact-key regex-value must not error: {:?}",
+        exact_key_regex_value.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&exact_key_regex_value)
+            == ["lib/gate-a.rs", "src/corp-b.rs", "src/gate-b.py"],
+        "exact-key regex-value must gate to corp-b only, got {:?}",
+        sorted_candidate_paths(&exact_key_regex_value),
+    );
+
+    let regex_key_exact_value = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(/licens./:apache-2.0) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        regex_key_exact_value.typed_error.is_none(),
+        "regex-key exact-value must not error: {:?}",
+        regex_key_exact_value.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&regex_key_exact_value) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "regex-key exact-value must gate to corp-a only, got {:?}",
+        sorted_candidate_paths(&regex_key_exact_value),
+    );
+
+    let regex_miss = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(/nope/:/apache.*/) shared_oracle_needle",
+        10,
+    );
+    ensure!(
+        regex_miss.typed_error.is_none(),
+        "regex miss must not error: {:?}",
+        regex_miss.typed_error,
+    );
+    ensure!(
+        regex_miss.candidate_ids.is_empty(),
+        "regex miss must return no docs, got {:?}",
+        sorted_candidate_paths(&regex_miss),
+    );
+    Ok(())
+}
+
+#[test]
+fn repo_has_meta_invalid_regex_typed_fails() -> AnyResult<()> {
+    let mut rt = boot_with_multi_repo_and_repo_meta()?;
+    let result = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "repo:has.meta(/license(/:/apache.*/) shared_oracle_needle",
+        10,
+    );
+    let Some(error) = result.typed_error else {
+        anyhow::bail!(
+            "invalid regex repo:has.meta must typed-fail, got {:?}",
+            result.candidate_ids
         );
-        ensure!(
-            error.message.contains("regex"),
-            "{query} diagnostic must name the regex reason, got {:?}",
-            error.message
-        );
-    }
+    };
+    ensure!(
+        error.code.starts_with("LEX_REGEX_"),
+        "invalid regex repo:has.meta must fail with lexical regex code, got {}",
+        error.code
+    );
+    ensure!(
+        error.message.contains("failed to compile"),
+        "invalid regex repo:has.meta diagnostic must name compile failure, got {:?}",
+        error.message
+    );
     Ok(())
 }
 
@@ -1274,14 +1390,10 @@ fn file_has_contributor_executes_on_sourcegraph_surface() -> AnyResult<()> {
 }
 
 #[test]
-fn file_has_contributor_is_exact_only_and_refuses_regex() -> AnyResult<()> {
-    // SGT-04: pin exact-string semantics separately from any future regex
-    // behavior. A prefix of a real contributor must NOT match (no substring
-    // widening), and Sourcegraph `/.../ ` regex syntax must fail closed rather
-    // than silently exact-matching the literal slashes to nothing.
+fn file_has_contributor_supports_name_and_email_regex_without_canonical_fallback() -> AnyResult<()>
+{
     let mut rt = boot_with_multi_repo_and_file_contributor()?;
 
-    // Exact-only: a strict prefix of `alice` does not match.
     let prefix = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "file:has.contributor(alic) shared_oracle_needle",
@@ -1298,27 +1410,69 @@ fn file_has_contributor_is_exact_only_and_refuses_regex() -> AnyResult<()> {
         sorted_candidate_paths(&prefix),
     );
 
-    // Regex shape fails closed (no regex-capable contributor authority).
-    let regex = rt.query_text(
+    let name_regex = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        "file:has.contributor(/ali.*/) shared_oracle_needle",
+        "file:has.contributor(/alice examp.*/) shared_oracle_needle",
         10,
     );
-    let Some(error) = regex.typed_error else {
+    ensure!(
+        name_regex.typed_error.is_none(),
+        "name-regex file:has.contributor must not error: {:?}",
+        name_regex.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&name_regex) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "name-regex file:has.contributor must gate to alice-contributed corp-a paths, got {:?}",
+        sorted_candidate_paths(&name_regex),
+    );
+
+    let email_regex = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        r#"file:has.contributor(/alice@example\.com/) shared_oracle_needle"#,
+        10,
+    );
+    ensure!(
+        email_regex.typed_error.is_none(),
+        "email-regex file:has.contributor must not error: {:?}",
+        email_regex.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&email_regex) == ["src/corp-a.rs", "src/gate-a.rs"],
+        "email-regex file:has.contributor must gate to alice email-matched corp-a paths, got {:?}",
+        sorted_candidate_paths(&email_regex),
+    );
+
+    let no_canonical_fallback = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        r#"file:has.contributor(/^alice$/) shared_oracle_needle"#,
+        10,
+    );
+    ensure!(
+        no_canonical_fallback.typed_error.is_none(),
+        "canonical-only regex file:has.contributor must not error: {:?}",
+        no_canonical_fallback.typed_error,
+    );
+    ensure!(
+        no_canonical_fallback.candidate_ids.is_empty(),
+        "regex file:has.contributor must not fall back to canonical-only identities, got {:?}",
+        sorted_candidate_paths(&no_canonical_fallback),
+    );
+
+    let invalid_regex = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        r#"file:has.contributor(/alice(/) shared_oracle_needle"#,
+        10,
+    );
+    let Some(error) = invalid_regex.typed_error else {
         anyhow::bail!(
-            "regex file:has.contributor must typed-fail, got {:?}",
-            regex.candidate_ids
+            "invalid regex file:has.contributor must typed-fail, got {:?}",
+            invalid_regex.candidate_ids
         );
     };
     ensure!(
-        error.code == "LEX_PREDICATE_UNIMPLEMENTED",
-        "regex file:has.contributor must fail with LEX_PREDICATE_UNIMPLEMENTED, got {}",
+        error.code.starts_with("LEX_REGEX_"),
+        "invalid regex file:has.contributor must fail with LEX_REGEX_*, got {}",
         error.code
-    );
-    ensure!(
-        error.message.contains("regex"),
-        "regex file:has.contributor diagnostic must name the regex reason, got {:?}",
-        error.message
     );
     Ok(())
 }
@@ -2053,28 +2207,57 @@ fn scoped_file_content_predicates_execute_on_sourcegraph_surface() -> AnyResult<
 }
 
 #[test]
-fn scoped_file_content_predicates_fail_closed_under_or_not_and_bad_matchers() -> AnyResult<()> {
+fn scoped_file_content_predicates_execute_under_or_not_and_name_scope() -> AnyResult<()> {
     let mut rt = boot_with_lexical()?;
-    for query in [
-        "file:contains(path:docs/colors.md, \"lemon yellow banana\") OR alpha_content_needle",
-        "NOT file:contains(path:docs/colors.md, \"lemon yellow banana\")",
+    for (query, expected) in [
+        (
+            "file:contains(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token",
+            vec!["docs/colors.md"],
+        ),
+        (
+            "file:has.content(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token",
+            vec!["docs/colors.md"],
+        ),
+        (
+            "file:contains(name:colors.md, \"lemon yellow banana\")",
+            vec!["docs/colors.md"],
+        ),
+        (
+            "file:has.content(name:colors.md, \"lemon yellow banana\")",
+            vec!["docs/colors.md"],
+        ),
     ] {
         let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
-        let Some(error) = result.typed_error else {
-            anyhow::bail!(
-                "query `{query}` must typed-fail, got {:?}",
-                result.candidate_ids
-            );
-        };
         ensure!(
-            error.code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED",
-            "query `{query}` must fail with scoped boolean code, got {}",
-            error.code
+            result.typed_error.is_none(),
+            "query `{query}` must execute, got {:?}",
+            result.typed_error
+        );
+        ensure!(
+            sorted_candidate_paths(&result) == expected,
+            "query `{query}` must yield {expected:?}, got {:?}",
+            sorted_candidate_paths(&result),
         );
     }
 
     for query in [
-        "file:contains(name:colors.md, \"lemon yellow banana\")",
+        "ripens NOT file:contains(path:docs/colors.md, \"lemon yellow banana\")",
+        "ripens NOT file:has.content(path:docs/colors.md, \"lemon yellow banana\")",
+    ] {
+        let result = rt.query_text(TextQuerySyntax::Sourcegraph, query, 10);
+        ensure!(
+            result.typed_error.is_none(),
+            "query `{query}` must execute, got {:?}",
+            result.typed_error
+        );
+        ensure!(
+            sorted_candidate_paths(&result).is_empty(),
+            "query `{query}` must exclude the scoped file and return empty, got {:?}",
+            sorted_candidate_paths(&result),
+        );
+    }
+
+    for query in [
         "file:contains(\"lemon\", \"banana\")",
         "repo:has.content(path:src, 7)",
     ] {
@@ -2291,6 +2474,57 @@ fn context_filter_admits_member_context_and_excludes_others() -> AnyResult<()> {
         other.candidate_ids.is_empty(),
         "context: for a non-member context must exclude the doc, got {}",
         other.candidate_ids.len(),
+    );
+    Ok(())
+}
+
+#[test]
+fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()> {
+    let mut rt = boot_with_lexical()?;
+    let baseline = rt.query_text(TextQuerySyntax::Sourcegraph, "parity_needle_alpha", 10);
+    ensure!(
+        baseline.typed_error.is_none(),
+        "baseline lexical query must succeed"
+    );
+
+    let index_no = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "index:no parity_needle_alpha",
+        10,
+    );
+    ensure!(index_no.typed_error.is_none(), "index:no must execute");
+    ensure!(
+        sorted_candidate_ids(&index_no) == sorted_candidate_ids(&baseline),
+        "index:no must preserve candidate universe, got {:?} vs {:?}",
+        sorted_candidate_ids(&index_no),
+        sorted_candidate_ids(&baseline),
+    );
+
+    let boosted = rt.query_text(
+        TextQuerySyntax::Sourcegraph,
+        "boost:5 parity_needle_alpha",
+        10,
+    );
+    ensure!(boosted.typed_error.is_none(), "boost: must execute");
+    ensure!(
+        boosted.candidate_ids == baseline.candidate_ids,
+        "boost: must preserve ranked candidate order, got {:?} vs {:?}",
+        boosted.candidate_ids,
+        baseline.candidate_ids,
+    );
+    let baseline_score = baseline
+        .candidates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("baseline query returned no candidates"))?
+        .score;
+    let boosted_score = boosted
+        .candidates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("boost query returned no candidates"))?
+        .score;
+    ensure!(
+        boosted_score > baseline_score,
+        "boost: must increase lexical score magnitude, got baseline={baseline_score} boosted={boosted_score}",
     );
     Ok(())
 }

@@ -191,7 +191,40 @@ rust-test-cli-smoke:
     {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-searchctl --test cli_smoke --all-features --locked
     {{cargo}} --lane test-cli-smoke-lane test -p quanta-index-corpus-smoke --test cli_smoke --all-features --locked
 
+rust-bench-dsl-truth:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --test dsl_scenario_truth --all-features --locked -- --nocapture
+
+rust-verify-hellgate-fast:
+    @just rust-bench-dsl-truth
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-search-plane --lib --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_text_route_hellgate --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_structural_hellgate --all-features --locked -- --nocapture
+    python3 tools/benchmark/sourcegraph_parity.py --check
+    python3 tools/ci/lint/check-dsl-capability-truth.py
+
+rust-verify-hellgate-broad:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test sdk_frontdoor --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_perf_chaos --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test explain --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test repo_map_end_to_end --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_full_corpus --all-features --locked -- --nocapture
+
+rust-verify-hellgate-cross-repo semantica_root="/Users/songmin/Documents/code-new/semantica-codegraph-v2":
+    bash -lc 'test -n "$QUANTA_INDEX_SEARCHD_BIN" || { echo "QUANTA_INDEX_SEARCHD_BIN is required"; exit 1; }'
+    env QUANTA_INDEX_SEARCHD_BIN="${QUANTA_INDEX_SEARCHD_BIN}" cargo test --manifest-path {{semantica_root}}/packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime --no-default-features --features index-sdk-ingress --test index_sdk_ingress_publish_contract_test index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1 -- --nocapture
+
+rust-verify-hellgate-all samples="20":
+    @just rust-verify-hellgate-fast
+    @just rust-verify-hellgate-broad
+    @just rust-bench-dsl-warm
+    @just rust-bench-dsl-cold {{samples}}
+    @just rust-bench-dsl-compare
+
 rust-test-e2e:
+    @just rust-bench-dsl-truth
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test dsl_scenarios --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test end_to_end --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-runtime --test e2e_restart_replay_determinism --all-features --locked
@@ -226,7 +259,7 @@ rust-bench-build:
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench
     env CARGO_NET_OFFLINE=true {{cargo}} --lane bench-lane build -p quanta-index-searchd-harness --bin dsl_warm_matrix --profile bench --quiet --locked
-    env QUANTA_INDEX_BUILD_LANE=bench-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
+    env QUANTA_INDEX_BUILD_LANE=bench-lane QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
 
 # Exploratory criterion view for warm scenarios. Not gate authority.
 rust-bench-dsl-warm-criterion:
@@ -236,7 +269,7 @@ rust-bench-dsl-warm-criterion:
 
 rust-bench-dsl-cold samples="20":
     mkdir -p artifacts/dsl-bench
-    python3 tools/benchmark/run_dsl_cold_matrix.py --samples {{samples}} --out artifacts/dsl-bench/cold-matrix.json
+    env QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 python3 tools/benchmark/run_dsl_cold_matrix.py --samples {{samples}} --out artifacts/dsl-bench/cold-matrix.json
 
 # Authority refresh: run warm and cold producers serially, then gate against baselines.
 rust-bench-dsl-refresh samples="20":

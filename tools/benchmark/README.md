@@ -81,9 +81,23 @@ must be fast). Several lexical/structural surfaces also have a sourcegraph twin
 for native↔sourcegraph parity. Each is seeded by a deterministic fixture and
 served through the real runtime — no mocked latencies.
 
+Every scenario row also carries golden behavior truth:
+
+- `expected_shape`
+- `expected_count`
+- `expected_typed_error_code`
+
+The bench runners validate that truth before emitting latency artifacts. A
+latency run that drifts in behavior now fails instead of quietly publishing
+numbers for the wrong result shape.
+
 ## Convenience recipes
 
 ```
+just rust-bench-dsl-truth       # small golden-truth smoke over the bench scenario table
+just rust-verify-hellgate-fast  # fast correctness hellgate (bench truth + text + structural + guards)
+just rust-verify-hellgate-broad # broad daemon lifecycle sweep
+just rust-verify-hellgate-all   # fast + broad + warm/cold compare
 just rust-bench-dsl-warm        # dedicated warm authority runner -> warm-matrix.json
 just rust-bench-dsl-warm-criterion  # exploratory criterion view -> warm-matrix.criterion.json
 just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
@@ -100,6 +114,38 @@ Authority artifacts must be produced **serially**. Do not run warm and cold
 producers in parallel on the same machine and then treat the results as gate
 authority; shared CPU/package-cache contention can distort warm tail advisories
 and cold first-query latency.
+
+## Golden-truth smoke rail
+
+`just rust-bench-dsl-truth` runs the same bench `SCENARIOS` table without any
+timing assertions:
+
+- `warm_matrix_scenarios_match_golden_truth`
+- `cold_matrix_scenarios_match_golden_truth`
+
+This is the correctness companion to the latency tooling. Use it when the full
+runtime E2E rails are too broad and you want a smaller fail-fast proof that the
+bench scenario authority still executes the shipped behavior exactly.
+
+## Hellgate split
+
+Verification now uses four separate lanes:
+
+- fast correctness
+  - `just rust-verify-hellgate-fast`
+  - bench-owned truth + small text-route + small structural-route + inventory
+    guards
+- broad daemon lifecycle
+  - `just rust-verify-hellgate-broad`
+  - real daemon boot, front-door, replay, restart, fail-closed, corpus sweep
+- cross-repo ingress
+  - `just rust-verify-hellgate-cross-repo`
+  - external producer publish + ingress live roundtrip
+- perf compare
+  - `just rust-bench-dsl-compare`
+
+Do not collapse them into one verdict. A green perf compare is not correctness.
+A green fast hellgate is not restart/replay proof.
 
 ## Scripts
 

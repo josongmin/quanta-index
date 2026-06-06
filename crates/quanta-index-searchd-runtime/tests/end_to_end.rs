@@ -193,7 +193,11 @@ fn history_commit_record() -> CommitRecord {
         committer_time_ms: 12,
         applied_at_ms: 13,
         author: "alice".to_string().into_boxed_str(),
+        author_name: None,
+        author_email: None,
         committer: "alice".to_string().into_boxed_str(),
+        committer_name: None,
+        committer_email: None,
         message: "fix: sample".to_string().into_boxed_str(),
         is_merge: false,
         tags: vec!["v1.0.0".to_string().into_boxed_str()],
@@ -545,7 +549,11 @@ fn publish_history_authority_fixture(socket: &Path) -> TestResult {
                 committer_time_ms: 12,
                 applied_at_ms: 13,
                 author: "alice".to_string().into_boxed_str(),
+                author_name: None,
+                author_email: None,
                 committer: "alice".to_string().into_boxed_str(),
+                committer_name: None,
+                committer_email: None,
                 message: "fix: sample alpha_content_needle"
                     .to_string()
                     .into_boxed_str(),
@@ -1961,11 +1969,11 @@ fn semantic_query_rejects_generation_pin_mismatch_with_lexical_scope() -> TestRe
 }
 
 #[test]
-fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
+fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
-        start_runtime(state_root, "searchd-semantic-lowering-error-test")?;
+        start_runtime(state_root, "searchd-semantic-unindexed-scope-test")?;
     let alpha = chunk_record("alpha", "semantic alpha")?;
     publish_lexical_chunks(&ingest_socket, vec![alpha], None)?;
     seal_lexical(&ingest_socket)?;
@@ -1974,13 +1982,13 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
         payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
-            query_text: "semantic".to_string(),
+            query_text: "alpha".to_string(),
             generation: Some(pin.clone()),
             generation_selector: None,
             lexical_scope: Some(TextQueryRequest {
                 syntax: TextQuerySyntax::Sourcegraph,
-                query_text: "index:no scoped".to_string(),
-                generation: Some(pin),
+                query_text: "index:no semantic".to_string(),
+                generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 1,
             }),
@@ -1990,35 +1998,38 @@ fn semantic_query_surfaces_scoped_lexical_lowering_typed_error() -> TestResult {
 
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&socket, &req)
-            .map(|resp| match resp.payload {
-                SearchPlaneQueryIpcResponse::Error(err) => err.code != "NOT_READY",
-                _ => true,
-            })
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
             .unwrap_or(false)
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err("semantic lowering error never progressed past NOT_READY".into());
+        return Err("semantic unindexed scope query never became ready".into());
     }
 
     let response = send_query_request(&socket, &req)?;
-    let err = match response.payload {
-        SearchPlaneQueryIpcResponse::Error(err) => err,
+    let results = match response.payload {
+        SearchPlaneQueryIpcResponse::Semantic(semantic) => {
+            if semantic.generation != pin {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err("semantic response generation did not echo request pin".into());
+            }
+            semantic.results
+        }
         other => {
             shutdown.store(true, Ordering::Release);
             drop(join.join());
-            return Err(format!("expected Error, got {other:?}").into());
+            return Err(format!("expected Semantic, got {other:?}").into());
         }
     };
-    if err.code != "BRIDGE_UNSUPPORTED_DIRECTIVE" {
+    let ids: Vec<String> = results
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect();
+    if ids != ["alpha".to_string()] {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!("expected BRIDGE_UNSUPPORTED_DIRECTIVE, got {}", err.code).into());
-    }
-    if !err.message.contains("index:no") {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(format!("unexpected lowering error message: {}", err.message).into());
+        return Err(format!("expected scoped semantic intersection [alpha], got {ids:?}").into());
     }
 
     stop_runtime(shutdown, join)

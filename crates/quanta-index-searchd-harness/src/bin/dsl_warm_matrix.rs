@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{BenchArtifact, BenchMode, BenchRow, LatencySummary};
 use quanta_index_searchd_harness::bench_support::{
-    QueryOutcome, prepare_cold_runtime, run_scenario_query,
+    QueryOutcome, ScenarioTruthMode, prepare_cold_runtime, run_scenario_query,
+    validate_scenario_outcome,
 };
 use quanta_index_searchd_harness::scenarios::{DslBenchScenario, SCENARIOS};
 
@@ -109,7 +110,8 @@ fn measure_pass(
 )> {
     let mut runtime = prepare_cold_runtime(scenario)?;
     for _ in 0..prime_queries {
-        let _warmup = run_scenario_query(&mut runtime, scenario);
+        let warmup = run_scenario_query(&mut runtime, scenario);
+        validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &warmup)?;
         thread::sleep(settle);
     }
     let mut samples = Vec::with_capacity(samples_n);
@@ -120,6 +122,7 @@ fn measure_pass(
         last = run_scenario_query(&mut runtime, scenario);
         samples.push(elapsed_ms(started));
     }
+    validate_scenario_outcome(scenario, ScenarioTruthMode::IsolatedFixture, &last)?;
     Ok((samples, last))
 }
 

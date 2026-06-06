@@ -43,12 +43,13 @@ use quanta_index_contract::lex::{
     LexicalErrorCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkRecord, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, LexicalCandidate, LexicalFullBundle, LexicalIngestBatch, LexicalSeal,
-    LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery,
-    LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicIngestBatch, RevisionId, SymbolCandidate, TombstoneLexicalScope,
+    BatchIngestMode, ChunkRecord, FileContributorIdentityEntry, FileContributorIngestBatch,
+    FileOwnerProjectionRow, FileOwnershipIngestBatch, LexicalCandidate, LexicalFullBundle,
+    LexicalIngestBatch, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicIngestBatch, RevisionId, SymbolCandidate, TombstoneLexicalScope,
 };
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
@@ -70,8 +71,8 @@ use quanta_index_lq_trigram::{
 use crate::phrase::{PhraseField, PhrasePolicy, plan_phrase, tokenize_phrase_terms};
 use crate::predicate_registry::{
     ContentPathScope, ContentPredicateArgError, ContentPredicateConstraint, ContentScalarArg,
-    ContentScalarArgError, FileContributorArg, FileContributorArgError, FileOwnerArg,
-    FileOwnerArgError, PREDICATE_OWNER, PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE, PredicateKind,
+    ContentScalarArgError, ContributorPattern, FileContributorArg, FileContributorArgError,
+    FileOwnerArg, FileOwnerArgError, MetaPattern, PREDICATE_OWNER, PredicateKind,
     RepoDescriptionArg, RepoDescriptionArgError, RepoFileArgError, RepoFileConstraint,
     RepoFileMatcher, RepoMetaArg, RepoMetaArgError, RepoTopicArg, RepoTopicArgError,
     TimerefScalarArgError, canonicalize_predicate_call, kind_of,
@@ -101,6 +102,7 @@ const REPO_TOPIC_FILE_NAME: &str = "repo-topic.cbor";
 const REPO_DESCRIPTION_FILE_NAME: &str = "repo-description.cbor";
 const FILE_OWNERSHIP_FILE_NAME: &str = "file-ownership.cbor";
 const FILE_CONTRIBUTOR_FILE_NAME: &str = "file-contributor.cbor";
+const REGEX_MATCH_CACHE_MAX: usize = 128;
 const CASE_SENSITIVE_TOKENIZER_NAME: &str = "qi_case_sensitive";
 const TEXT_AUTHORITY_DOC_TABLE_FILE_NAME: &str = "text-authority-docs.cbor";
 const TEXT_AUTHORITY_TRIGRAM_FILE_NAME: &str = "text-authority-trigram.cbor";
@@ -359,6 +361,68 @@ impl WriterCache {
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
         Ok(Some(guarded.index.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct RegexMatchCacheKey {
+    generation: GenKey,
+    normalized_source: String,
+}
+
+struct RegexMatchCache {
+    entries: BTreeMap<RegexMatchCacheKey, BTreeSet<String>>,
+    order: VecDeque<RegexMatchCacheKey>,
+}
+
+impl RegexMatchCache {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn touch(&mut self, key: &RegexMatchCacheKey) {
+        if let Some(position) = self.order.iter().position(|candidate| candidate == key) {
+            let removed = self.order.remove(position);
+            if let Some(key) = removed {
+                self.order.push_back(key);
+            }
+        }
+    }
+
+    fn get(&mut self, key: &RegexMatchCacheKey) -> Option<BTreeSet<String>> {
+        let cached = self.entries.get(key).cloned()?;
+        self.touch(key);
+        Some(cached)
+    }
+
+    fn insert(&mut self, key: RegexMatchCacheKey, matches: BTreeSet<String>) {
+        if self.entries.contains_key(&key) {
+            let _replaced = self.entries.insert(key.clone(), matches);
+            self.touch(&key);
+            return;
+        }
+        while self.entries.len() >= REGEX_MATCH_CACHE_MAX {
+            let Some(evicted) = self.order.pop_front() else {
+                break;
+            };
+            let _removed = self.entries.remove(&evicted);
+        }
+        self.order.push_back(key.clone());
+        let _inserted = self.entries.insert(key, matches);
+    }
+
+    fn invalidate_generation(&mut self, generation: &GenKey) {
+        self.entries
+            .retain(|key, _matches| &key.generation != generation);
+        self.order.retain(|key| &key.generation != generation);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -1416,8 +1480,8 @@ fn persist_repo_description_snapshot(
         // entries for the same source repo is a malformed/conflicting authority
         // input. Fail closed rather than silently last-wins — never let a buggy
         // producer batch pick a description non-deterministically.
-        if let Some(prior) = descriptions_by_repo_id
-            .insert(entry.source_repo_id.as_str().to_string(), description)
+        if let Some(prior) =
+            descriptions_by_repo_id.insert(entry.source_repo_id.as_str().to_string(), description)
         {
             return Err(CoreError::InvalidContract(format!(
                 "lexical: repo description ingest carries conflicting entries for source_repo_id `{}` (prior `{prior}`); one description per repo per batch",
@@ -1708,7 +1772,25 @@ fn encode_file_contributor_snapshot(shard: &FileContributorShard) -> Result<Vec<
                         contributors
                             .iter()
                             .cloned()
-                            .map(CborValue::Text)
+                            .map(|contributor| {
+                                let mut fields = vec![(
+                                    CborValue::Text("canonical".to_string()),
+                                    CborValue::Text(contributor.canonical),
+                                )];
+                                if let Some(name) = contributor.name {
+                                    fields.push((
+                                        CborValue::Text("name".to_string()),
+                                        CborValue::Text(name),
+                                    ));
+                                }
+                                if let Some(email) = contributor.email {
+                                    fields.push((
+                                        CborValue::Text("email".to_string()),
+                                        CborValue::Text(email),
+                                    ));
+                                }
+                                CborValue::Map(fields)
+                            })
                             .collect::<Vec<_>>(),
                     ),
                 ),
@@ -1762,8 +1844,10 @@ fn decode_file_contributor_snapshot(bytes: &[u8]) -> Result<FileContributorShard
             }
         }
     }
-    let mut contributors_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
-        BTreeMap::new();
+    let mut contributors_by_repo_id: BTreeMap<
+        String,
+        BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>,
+    > = BTreeMap::new();
     for entry in entries.ok_or_else(|| {
         CoreError::InvalidContract(
             "lexical: file contributor decode: missing field `entries`".to_string(),
@@ -1776,7 +1860,7 @@ fn decode_file_contributor_snapshot(bytes: &[u8]) -> Result<FileContributorShard
         };
         let mut source_repo_id: Option<String> = None;
         let mut repo_relative_path: Option<String> = None;
-        let mut contributors: Option<BTreeSet<String>> = None;
+        let mut contributors: Option<BTreeSet<FileContributorIdentityEntry>> = None;
         for (field_key, field_value) in fields {
             let CborValue::Text(field_name) = field_key else {
                 return Err(CoreError::InvalidContract(
@@ -1809,21 +1893,9 @@ fn decode_file_contributor_snapshot(bytes: &[u8]) -> Result<FileContributorShard
                                 .to_string(),
                         ));
                     };
-                    let mut normalized: BTreeSet<String> = BTreeSet::new();
+                    let mut normalized: BTreeSet<FileContributorIdentityEntry> = BTreeSet::new();
                     for item in items {
-                        let CborValue::Text(text) = item else {
-                            return Err(CoreError::InvalidContract(
-                                "lexical: file contributor decode: contributor must be text"
-                                    .to_string(),
-                            ));
-                        };
-                        let contributor =
-                            normalize_contributor_identity(&text).ok_or_else(|| {
-                                CoreError::InvalidContract(
-                                "lexical: file contributor decode: contributor must be non-empty"
-                                    .to_string(),
-                            )
-                            })?;
+                        let contributor = decode_file_contributor_identity_entry(&item)?;
                         let _inserted = normalized.insert(contributor);
                     }
                     contributors = Some(normalized);
@@ -1864,15 +1936,17 @@ fn persist_file_contributor_snapshot(
     path: &Path,
     batch: &FileContributorIngestBatch,
 ) -> Result<(), CoreError> {
-    let mut contributors_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
-        BTreeMap::new();
+    let mut contributors_by_repo_id: BTreeMap<
+        String,
+        BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>,
+    > = BTreeMap::new();
     for entry in &batch.entries {
         let repo_relative_path = entry.repo_relative_path.as_str().to_string();
         let contributors = entry
             .contributors
             .iter()
             .map(|contributor| {
-                normalize_contributor_identity(contributor).ok_or_else(|| {
+                normalize_contributor_identity_entry(contributor).ok_or_else(|| {
                     CoreError::InvalidContract(
                         "lexical: file contributor ingest contributor must not be empty"
                             .to_string(),
@@ -1951,6 +2025,22 @@ fn normalize_repo_meta_key(value: &str) -> Option<String> {
     }
 }
 
+fn normalize_repo_meta_pattern(pattern: MetaPattern) -> Result<MetaPattern, RepoMetaArgError> {
+    match pattern {
+        MetaPattern::Exact(value) => normalize_repo_meta_key(&value)
+            .map(MetaPattern::Exact)
+            .ok_or(RepoMetaArgError::EmptyKey),
+        MetaPattern::Regex(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err(RepoMetaArgError::EmptyKey)
+            } else {
+                Ok(MetaPattern::Regex(trimmed.to_string()))
+            }
+        }
+    }
+}
+
 fn normalize_repo_topic_value(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1978,11 +2068,150 @@ fn normalize_contributor_identity(value: &str) -> Option<String> {
     }
 }
 
+fn normalize_contributor_identity_entry(
+    entry: &FileContributorIdentityEntry,
+) -> Option<FileContributorIdentityEntry> {
+    let canonical = normalize_contributor_identity(&entry.canonical)?;
+    let name = entry
+        .name
+        .as_deref()
+        .and_then(normalize_contributor_identity);
+    let email = entry
+        .email
+        .as_deref()
+        .and_then(normalize_contributor_identity);
+    Some(FileContributorIdentityEntry {
+        canonical,
+        name,
+        email,
+    })
+}
+
+fn decode_file_contributor_identity_entry(
+    value: &CborValue,
+) -> Result<FileContributorIdentityEntry, CoreError> {
+    match value {
+        CborValue::Text(text) => {
+            normalize_contributor_identity_entry(&FileContributorIdentityEntry {
+                canonical: text.clone(),
+                name: None,
+                email: None,
+            })
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "lexical: file contributor decode: contributor must be non-empty".to_string(),
+                )
+            })
+        }
+        CborValue::Map(fields) => {
+            let mut canonical: Option<String> = None;
+            let mut name: Option<Option<String>> = None;
+            let mut email: Option<Option<String>> = None;
+            for (field_key, field_value) in fields {
+                let CborValue::Text(field_name) = field_key else {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: file contributor decode: contributor field name must be text"
+                            .to_string(),
+                    ));
+                };
+                match field_name.as_str() {
+                    "canonical" => {
+                        let CborValue::Text(text) = field_value else {
+                            return Err(CoreError::InvalidContract(
+                                "lexical: file contributor decode: contributor `canonical` must be text"
+                                    .to_string(),
+                            ));
+                        };
+                        canonical = Some(text.clone());
+                    }
+                    "name" => match field_value {
+                        CborValue::Text(text) => name = Some(Some(text.clone())),
+                        CborValue::Null => name = Some(None),
+                        _ => {
+                            return Err(CoreError::InvalidContract(
+                                "lexical: file contributor decode: contributor `name` must be text or null"
+                                    .to_string(),
+                            ));
+                        }
+                    },
+                    "email" => match field_value {
+                        CborValue::Text(text) => email = Some(Some(text.clone())),
+                        CborValue::Null => email = Some(None),
+                        _ => {
+                            return Err(CoreError::InvalidContract(
+                                "lexical: file contributor decode: contributor `email` must be text or null"
+                                    .to_string(),
+                            ));
+                        }
+                    },
+                    other => {
+                        return Err(CoreError::InvalidContract(format!(
+                            "lexical: file contributor decode: unknown contributor field `{other}`"
+                        )));
+                    }
+                }
+            }
+            normalize_contributor_identity_entry(&FileContributorIdentityEntry {
+                canonical: canonical.ok_or_else(|| {
+                    CoreError::InvalidContract(
+                        "lexical: file contributor decode: contributor missing field `canonical`"
+                            .to_string(),
+                    )
+                })?,
+                name: name.unwrap_or(None),
+                email: email.unwrap_or(None),
+            })
+            .ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "lexical: file contributor decode: contributor must be non-empty".to_string(),
+                )
+            })
+        }
+        _ => Err(CoreError::InvalidContract(
+            "lexical: file contributor decode: contributor must be text or map".to_string(),
+        )),
+    }
+}
+
 fn file_name_for_path(path: &str) -> Option<&str> {
     Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
+}
+
+fn language_from_path_hint(path: &str) -> Option<&'static str> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "md" => Some("markdown"),
+        "java" => Some("java"),
+        "js" => Some("javascript"),
+        "ts" => Some("typescript"),
+        "jsx" => Some("javascriptreact"),
+        "tsx" => Some("typescriptreact"),
+        "rb" => Some("ruby"),
+        "go" => Some("go"),
+        "c" => Some("c"),
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => Some("cpp"),
+        "cs" => Some("csharp"),
+        "kt" | "kts" => Some("kotlin"),
+        "swift" => Some("swift"),
+        "scala" => Some("scala"),
+        "php" => Some("php"),
+        "html" | "htm" => Some("html"),
+        "css" => Some("css"),
+        "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "toml" => Some("toml"),
+        "sh" | "bash" => Some("shell"),
+        "txt" => Some("text"),
+        _ => None,
+    }
 }
 
 fn case_sensitive_text_options() -> TextOptions {
@@ -2115,7 +2344,8 @@ struct FileOwnershipShard {
 
 #[derive(Clone, Debug, Default)]
 struct FileContributorShard {
-    contributors_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
+    contributors_by_repo_id:
+        BTreeMap<String, BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>>,
 }
 
 struct TextAuthorityShard {
@@ -2539,6 +2769,7 @@ pub struct LexicalAdapter {
     fields: SchemaFields,
     writers: Arc<Mutex<WriterCache>>,
     repo_metadata: Arc<Mutex<BTreeMap<GenKey, LexicalRepoMetadataPayload>>>,
+    regex_match_cache: Arc<Mutex<RegexMatchCache>>,
     /// Per-deployment regex policy injected at construction time.
     ///
     /// Owned by the adapter (not fabricated at the leaf call site) so all
@@ -2572,6 +2803,7 @@ impl LexicalAdapter {
             fields: SchemaFields::build(),
             writers: Arc::new(Mutex::new(WriterCache::new())),
             repo_metadata: Arc::new(Mutex::new(BTreeMap::new())),
+            regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new())),
             regex_policy,
         }
     }
@@ -2590,6 +2822,15 @@ impl LexicalAdapter {
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
         guard.get_or_open(key, &self.fields, &path)
+    }
+
+    fn invalidate_regex_match_cache_generation(&self, key: &GenKey) -> Result<(), CoreError> {
+        let mut guard = self
+            .regex_match_cache
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?;
+        guard.invalidate_generation(key);
+        Ok(())
     }
 
     fn repo_metadata_path(&self, key: &GenKey) -> PathBuf {
@@ -3208,6 +3449,7 @@ impl LexicalAdapter {
                 .commit()
                 .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
             if needs_text_authority_rebuild {
+                self.invalidate_regex_match_cache_generation(key)?;
                 persist_text_authority_sidecars(
                     self.index_path(key).as_path(),
                     &self.fields,
@@ -3255,6 +3497,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             None => open_or_create_index(&self.fields, &path)?,
         };
         let repo_metadata = self.repo_metadata_for_key(&key)?;
+        let regex_match_cache = Arc::clone(&self.regex_match_cache);
         let reader: IndexReader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -3279,6 +3522,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             index,
             reader,
             repo_metadata,
+            regex_match_cache,
             regex_policy: self.regex_policy,
             text_authority,
             repo_commit_recency,
@@ -3299,6 +3543,7 @@ struct TantivySearcher {
     index: Index,
     reader: IndexReader,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
+    regex_match_cache: Arc<Mutex<RegexMatchCache>>,
     /// Deployment-scoped regex policy threaded from the adapter at open time.
     /// Read at the regex-leaf compile site rather than fabricated there, so
     /// the dialect/literal/trigram-cap knobs are a single source of truth.
@@ -3539,6 +3784,714 @@ impl TantivySearcher {
         hits
     }
 
+    fn uses_unindexed_scan(options: &LqOptions) -> bool {
+        matches!(options.index_mode, Some(LqYesNoOnly::No))
+    }
+
+    fn boost_factor(options: &LqOptions) -> f32 {
+        options
+            .boost_millis
+            .map(|millis| millis as f32 / 1_000.0)
+            .unwrap_or(1.0)
+    }
+
+    fn apply_query_boost_score(score: f32, options: &LqOptions) -> f32 {
+        score * Self::boost_factor(options)
+    }
+
+    fn normalize_for_case(text: &str, case_sensitive: bool) -> String {
+        if case_sensitive {
+            text.to_string()
+        } else {
+            text.to_ascii_lowercase()
+        }
+    }
+
+    fn contains_text(needle: &str, haystack: &str, case_sensitive: bool) -> bool {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return false;
+        }
+        if case_sensitive {
+            haystack.contains(needle)
+        } else {
+            haystack
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase())
+        }
+    }
+
+    fn token_matches(needle: &str, haystack: &str, case_sensitive: bool) -> bool {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return false;
+        }
+        let normalized_needle = Self::normalize_for_case(needle, case_sensitive);
+        haystack
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .filter(|token| !token.is_empty())
+            .map(|token| Self::normalize_for_case(token, case_sensitive))
+            .any(|token| token == normalized_needle)
+    }
+
+    fn doc_content_text(&self, doc: &TantivyDocument) -> String {
+        stored_text(doc, self.fields.chunk_text)
+            .or_else(|| stored_text(doc, self.fields.snippet))
+            .unwrap_or_default()
+    }
+
+    fn doc_language(&self, doc: &TantivyDocument, repo_relative_path: &str) -> Option<String> {
+        stored_text(doc, self.fields.language).or_else(|| {
+            language_from_path_hint(repo_relative_path).map(std::string::ToString::to_string)
+        })
+    }
+
+    fn manual_filter_regex(
+        &self,
+        pattern: &str,
+        filter_name: &str,
+    ) -> Result<RegexExecutor, CoreError> {
+        RegexExecutor::compile(pattern).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: {filter_name} regex filter compile: {err}"
+            ))
+        })
+    }
+
+    fn manual_regex_matches(
+        &self,
+        source: &str,
+        options: &LqOptions,
+        haystack: &str,
+    ) -> Result<bool, CoreError> {
+        let normalized_source = Self::regex_source_for_options(source, options);
+        let executor =
+            RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
+                code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                message: format!(
+                    "lexical: regex {:?} failed to compile on unindexed scan route: {err}",
+                    source
+                ),
+            })?;
+        Ok(executor.verify(haystack.as_bytes()))
+    }
+
+    fn manual_doc_restrictions_allow(
+        &self,
+        prepared: &PreparedPredicatePlan,
+        candidate_id: &str,
+        repo_id: &str,
+        repo_relative_path: &str,
+    ) -> bool {
+        if prepared
+            .allowed_candidate_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(candidate_id))
+        {
+            return false;
+        }
+        if prepared
+            .allowed_repo_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(repo_id))
+        {
+            return false;
+        }
+        if prepared
+            .allowed_paths
+            .as_ref()
+            .is_some_and(|paths| !paths.contains(repo_relative_path))
+        {
+            return false;
+        }
+        true
+    }
+
+    fn manual_repo_gate_matches(&self, repo_ids: BTreeSet<String>, repo_id: &str) -> bool {
+        repo_ids.contains(repo_id)
+    }
+
+    fn manual_file_owner_matches(
+        &self,
+        arg: &FileOwnerArg,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+    ) -> Result<bool, CoreError> {
+        let authority = self.file_ownership_authority()?;
+        let Some(owners) = authority
+            .owners_by_repo_id
+            .get(source_repo_id)
+            .and_then(|by_path| by_path.get(repo_relative_path))
+        else {
+            return Ok(false);
+        };
+        Ok(arg
+            .owner
+            .as_ref()
+            .map_or(!owners.is_empty(), |owner| owners.contains(owner)))
+    }
+
+    fn manual_file_contributor_matches(
+        &self,
+        arg: &FileContributorArg,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+    ) -> Result<bool, CoreError> {
+        let authority = self.file_contributor_authority()?;
+        let Some(contributors) = authority
+            .contributors_by_repo_id
+            .get(source_repo_id)
+            .and_then(|by_path| by_path.get(repo_relative_path))
+        else {
+            return Ok(false);
+        };
+        match &arg.contributor {
+            ContributorPattern::Exact(contributor) => Ok(contributors
+                .iter()
+                .any(|identity| identity.canonical == *contributor)),
+            ContributorPattern::Regex(source) => {
+                let executor = RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
+                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    message: format!(
+                        "lexical: file.has.contributor regex {:?} failed to compile: {err}",
+                        source
+                    ),
+                })?;
+                Ok(contributors.iter().any(|identity| {
+                    identity
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| executor.verify(name.as_bytes()))
+                        || identity
+                            .email
+                            .as_deref()
+                            .is_some_and(|email| executor.verify(email.as_bytes()))
+                }))
+            }
+        }
+    }
+
+    fn manual_file_filter_matches(
+        &self,
+        pattern: &str,
+        scope: LqFileScope,
+        repo_relative_path: &str,
+    ) -> Result<bool, CoreError> {
+        let executor = self.manual_filter_regex(pattern, "file")?;
+        let path_match = executor.verify(repo_relative_path.as_bytes());
+        Ok(match scope {
+            LqFileScope::PathOnly => path_match,
+            LqFileScope::NameOnly => file_name_for_path(repo_relative_path)
+                .is_some_and(|name| executor.verify(name.as_bytes())),
+            LqFileScope::NameAndPath => {
+                path_match
+                    || file_name_for_path(repo_relative_path)
+                        .is_some_and(|name| executor.verify(name.as_bytes()))
+            }
+        })
+    }
+
+    fn manual_content_predicate_matches(
+        &self,
+        constraint: &ContentPredicateConstraint,
+        options: &LqOptions,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+        content: &str,
+    ) -> Result<bool, CoreError> {
+        if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref()
+            && !self.manual_file_filter_matches(pattern, *scope, repo_relative_path)?
+        {
+            return Ok(false);
+        }
+        if let Some(language) = constraint.language.as_ref() {
+            let Some(normalized) = normalize_language(language) else {
+                return Err(CoreError::InvalidContract(
+                    "lexical: scoped content predicate escaped with an empty lang value"
+                        .to_string(),
+                ));
+            };
+            if self
+                .doc_language(&TantivyDocument::new(), repo_relative_path)
+                .as_deref()
+                != Some(normalized.as_str())
+            {
+                return Ok(false);
+            }
+        }
+        let lowered = self.predicate_content_leaf_from_constraint(constraint);
+        self.manual_leaf_matches(
+            &lowered,
+            options,
+            source_repo_id,
+            repo_relative_path,
+            content,
+            false,
+        )
+    }
+
+    fn manual_predicate_matches(
+        &self,
+        name: &str,
+        args: &[LqPredicateArg],
+        options: &LqOptions,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+        content: &str,
+    ) -> Result<bool, CoreError> {
+        let Some((canonical_name, canonical_args)) =
+            self.canonicalize_predicate_call(name, args)?
+        else {
+            return Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+            )));
+        };
+        match kind_of(&canonical_name) {
+            Some(PredicateKind::RepoFileGate) => {
+                let constraint = self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_file(&constraint, options)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::RepoContentGate) => {
+                let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_content(&leaf, options)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::RepoCommitRecencyGate) => {
+                let timeref =
+                    self.repo_commit_after_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_commit_after(&timeref)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::RepoMetaGate) => {
+                let arg = self.repo_meta_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_meta(&arg)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::RepoTopicGate) => {
+                let arg = self.repo_topic_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_topic(&arg)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::RepoDescriptionGate) => {
+                let arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
+                Ok(self.manual_repo_gate_matches(
+                    self.collect_repo_ids_for_repo_has_description(&arg)?,
+                    source_repo_id,
+                ))
+            }
+            Some(PredicateKind::FileOwnerGate) => {
+                let arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
+                self.manual_file_owner_matches(&arg, source_repo_id, repo_relative_path)
+            }
+            Some(PredicateKind::FileContributorGate) => {
+                let arg = self.file_contributor_constraint(&canonical_name, &canonical_args)?;
+                self.manual_file_contributor_matches(&arg, source_repo_id, repo_relative_path)
+            }
+            Some(PredicateKind::ContentLeaf) => {
+                let constraint =
+                    self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                self.manual_content_predicate_matches(
+                    &constraint,
+                    options,
+                    source_repo_id,
+                    repo_relative_path,
+                    content,
+                )
+            }
+            None => Err(unimplemented_predicate(format!(
+                "lexical: predicate leaf `{canonical_name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
+            ))),
+        }
+    }
+
+    fn manual_leaf_matches(
+        &self,
+        leaf: &LqLeaf,
+        options: &LqOptions,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+        content: &str,
+        include_path_terms: bool,
+    ) -> Result<bool, CoreError> {
+        let case_sensitive = Self::is_case_sensitive(options);
+        match leaf {
+            LqLeaf::Keyword(text) => {
+                if options.pattern_type == LqPatternType::Regexp {
+                    return self.manual_regex_matches(text, options, content);
+                }
+                Ok(Self::token_matches(text, content, case_sensitive)
+                    || (include_path_terms
+                        && Self::token_matches(text, repo_relative_path, case_sensitive)))
+            }
+            LqLeaf::Phrase(text) => Ok(Self::contains_text(text, content, case_sensitive)),
+            LqLeaf::RawString(text) => {
+                if options.pattern_type == LqPatternType::Regexp {
+                    return self.manual_regex_matches(text, options, content);
+                }
+                Ok(Self::contains_text(text, content, case_sensitive))
+            }
+            LqLeaf::Regex(text) => self.manual_regex_matches(text, options, content),
+            LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
+                code: "STR_PRODUCER_PARSE_TREE_UNAVAILABLE".to_string(),
+                message: "lexical: structural leaf cannot execute on the unindexed scan route"
+                    .to_string(),
+            }),
+            LqLeaf::Predicate { name, args } => self.manual_predicate_matches(
+                name,
+                args,
+                options,
+                source_repo_id,
+                repo_relative_path,
+                content,
+            ),
+        }
+    }
+
+    fn manual_expr_matches(
+        &self,
+        expr: &LqExpr,
+        options: &LqOptions,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+        content: &str,
+        include_path_terms: bool,
+    ) -> Result<bool, CoreError> {
+        match expr {
+            LqExpr::Empty => Ok(true),
+            LqExpr::Leaf(leaf) => self.manual_leaf_matches(
+                leaf,
+                options,
+                source_repo_id,
+                repo_relative_path,
+                content,
+                include_path_terms,
+            ),
+            LqExpr::All(children) => {
+                for child in children {
+                    if !self.manual_expr_matches(
+                        child,
+                        options,
+                        source_repo_id,
+                        repo_relative_path,
+                        content,
+                        false,
+                    )? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LqExpr::Any(children) => {
+                for child in children {
+                    if self.manual_expr_matches(
+                        child,
+                        options,
+                        source_repo_id,
+                        repo_relative_path,
+                        content,
+                        false,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            LqExpr::Not(inner) => Ok(!self.manual_expr_matches(
+                inner,
+                options,
+                source_repo_id,
+                repo_relative_path,
+                content,
+                false,
+            )?),
+        }
+    }
+
+    fn manual_filter_matches(
+        &self,
+        filter: &LqFilter,
+        options: &LqOptions,
+        source_repo_id: &str,
+        repo_relative_path: &str,
+        content: &str,
+    ) -> Result<bool, CoreError> {
+        match filter {
+            LqFilter::Repo { pattern, revs } => {
+                if !revs.is_empty() {
+                    return Err(CoreError::Typed {
+                        code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
+                        message: "lexical: repo filter revisions require a history producer"
+                            .to_string(),
+                    });
+                }
+                let executor = self.manual_filter_regex(pattern, "repo")?;
+                Ok(executor.verify(source_repo_id.as_bytes()))
+            }
+            LqFilter::File { pattern, scope } => {
+                self.manual_file_filter_matches(pattern, *scope, repo_relative_path)
+            }
+            LqFilter::Content { leaf } => self.manual_leaf_matches(
+                leaf,
+                options,
+                source_repo_id,
+                repo_relative_path,
+                content,
+                false,
+            ),
+            LqFilter::Lang { id } => {
+                let Some(language) = normalize_language(id.as_str()) else {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: lang filter value cannot be empty".to_string(),
+                    ));
+                };
+                let doc_language = self.doc_language(&TantivyDocument::new(), repo_relative_path);
+                Ok(
+                    language_from_path_hint(repo_relative_path).or(doc_language.as_deref())
+                        == Some(language.as_str()),
+                )
+            }
+            LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => Ok(true),
+            LqFilter::Rev { spec } => Err(CoreError::Typed {
+                code: crate::filters::codes::REV_UNAVAILABLE.to_string(),
+                message: if is_rev_at_time_spec(spec) {
+                    "lexical: rev:at.time(...) requires revision-selection and pin rebinding before lexical execution".to_string()
+                } else {
+                    "lexical: rev filter requires history producer".to_string()
+                },
+            }),
+            LqFilter::Author { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::AUTHOR_UNAVAILABLE.to_string(),
+                message: "lexical: author filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Committer { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::COMMITTER_UNAVAILABLE.to_string(),
+                message: "lexical: committer filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Message { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::MESSAGE_UNAVAILABLE.to_string(),
+                message: "lexical: message filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Dirty { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::DIRTY_UNAVAILABLE.to_string(),
+                message: "lexical: dirty filter is not executable on the current adapter set"
+                    .to_string(),
+            }),
+            LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::RUNTIME_CATALOG_UNAVAILABLE.to_string(),
+                message:
+                    "lexical: runtime catalog filters are not executable on the current adapter set"
+                        .to_string(),
+            }),
+            LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. } => Err(CoreError::Typed {
+                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE.to_string(),
+                message: "lexical: history date/diff filters require history producer".to_string(),
+            }),
+            LqFilter::Type { .. } | LqFilter::Select { .. } => Err(CoreError::Typed {
+                code: "LEX_FILTER_UNROUTED".to_string(),
+                message: format!(
+                    "lexical: type/select filters must be routed through doc-kind preparation, got `{filter:?}`"
+                ),
+            }),
+        }
+    }
+
+    fn manual_text_search(
+        &self,
+        query: &LqQuery,
+        prepared: &PreparedExecutableQuery,
+        limit: usize,
+        apply_select_projection: bool,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        let searcher = self.reader.searcher();
+        let doc_limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while materializing unindexed scan: {err}"
+            ))
+        })?;
+        if doc_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let hits = searcher
+            .search(&AllQuery, &TopDocs::with_limit(doc_limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: unindexed scan: {err}")))?;
+        let include_path_terms =
+            Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
+        let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
+        let mut out: Vec<LexicalCandidate> = Vec::new();
+        for (_score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if stored_text(&doc, self.fields.doc_kind).as_deref()
+                != Some(prepared.doc_kind.as_str())
+            {
+                continue;
+            }
+            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
+                continue;
+            };
+            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
+                continue;
+            };
+            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
+                continue;
+            };
+            if !self.manual_doc_restrictions_allow(
+                &prepared.predicate_plan,
+                &candidate_id,
+                &source_repo_id,
+                &repo_relative_path,
+            ) {
+                continue;
+            }
+            let content = self.doc_content_text(&doc);
+            if !self.manual_expr_matches(
+                &prepared.predicate_plan.expr,
+                &query.options,
+                &source_repo_id,
+                &repo_relative_path,
+                &content,
+                include_path_terms,
+            )? {
+                continue;
+            }
+            let mut allowed = true;
+            for filter in &prepared.query.filters {
+                if !self.manual_filter_matches(
+                    filter,
+                    &query.options,
+                    &source_repo_id,
+                    &repo_relative_path,
+                    &content,
+                )? {
+                    allowed = false;
+                    break;
+                }
+            }
+            if !allowed {
+                continue;
+            }
+            out.push(self.document_to_candidate(&doc, boosted_score)?);
+        }
+        let out = if apply_select_projection {
+            Self::collapse_select_projection(query, out)
+        } else {
+            out
+        };
+        Ok(self.stabilize_and_cap_hits(query, out, limit))
+    }
+
+    fn manual_symbol_search(
+        &self,
+        query: &LqQuery,
+        prepared: &PreparedExecutableQuery,
+        limit: usize,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        let searcher = self.reader.searcher();
+        let doc_limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while materializing symbol unindexed scan: {err}"
+            ))
+        })?;
+        if doc_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let hits = searcher
+            .search(&AllQuery, &TopDocs::with_limit(doc_limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: symbol unindexed scan: {err}")))?;
+        let include_path_terms =
+            Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
+        let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
+        let mut out: Vec<SymbolCandidate> = Vec::new();
+        for (_score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if stored_text(&doc, self.fields.doc_kind).as_deref()
+                != Some(prepared.doc_kind.as_str())
+            {
+                continue;
+            }
+            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
+                continue;
+            };
+            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
+                continue;
+            };
+            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
+                continue;
+            };
+            if !self.manual_doc_restrictions_allow(
+                &prepared.predicate_plan,
+                &candidate_id,
+                &source_repo_id,
+                &repo_relative_path,
+            ) {
+                continue;
+            }
+            let content = self.doc_content_text(&doc);
+            if !self.manual_expr_matches(
+                &prepared.predicate_plan.expr,
+                &query.options,
+                &source_repo_id,
+                &repo_relative_path,
+                &content,
+                include_path_terms,
+            )? {
+                continue;
+            }
+            let mut allowed = true;
+            for filter in &prepared.query.filters {
+                if !self.manual_filter_matches(
+                    filter,
+                    &query.options,
+                    &source_repo_id,
+                    &repo_relative_path,
+                    &content,
+                )? {
+                    allowed = false;
+                    break;
+                }
+            }
+            if !allowed {
+                continue;
+            }
+            out.push(self.document_to_symbol_candidate(&doc, boosted_score)?);
+        }
+        Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
+    }
+
     fn missing_repo_metadata_error(filter_name: &str) -> CoreError {
         CoreError::NotReady(format!(
             "lexical: repo metadata snapshot missing for filter `{filter_name}` in LexicalFullBundle.payload"
@@ -3565,14 +4518,13 @@ impl TantivySearcher {
         scope: LqFileScope,
     ) -> Result<Box<dyn Query>, CoreError> {
         let path_query = self.regex_text_query(self.fields.repo_relative_path, pattern)?;
+        let name_query = self.regex_text_query(self.fields.file_name, pattern)?;
         match scope {
             LqFileScope::PathOnly => Ok(path_query),
+            LqFileScope::NameOnly => Ok(name_query),
             LqFileScope::NameAndPath => Ok(Box::new(BooleanQuery::new(vec![
                 (Occur::Should, path_query),
-                (
-                    Occur::Should,
-                    self.regex_text_query(self.fields.file_name, pattern)?,
-                ),
+                (Occur::Should, name_query),
             ]))),
         }
     }
@@ -3820,13 +4772,36 @@ impl TantivySearcher {
         options.timeout_ms
     }
 
+    fn regex_match_cache_key(&self, normalized_source: &str) -> RegexMatchCacheKey {
+        RegexMatchCacheKey {
+            generation: GenKey {
+                repo_id: self.repo_id.clone(),
+                revision_id: self.revision_id.clone(),
+                generation: self.generation,
+            },
+            normalized_source: normalized_source.to_string(),
+        }
+    }
+
     fn collect_matching_candidate_ids_for_regex(
         &self,
         source: &str,
         options: &LqOptions,
     ) -> Result<BTreeSet<String>, CoreError> {
-        let authority = self.text_authority("LEX_REGEX_TRIGRAM")?;
         let normalized_source = Self::regex_source_for_options(source, options);
+        let cache_key = options
+            .timeout_ms
+            .is_none()
+            .then(|| self.regex_match_cache_key(&normalized_source));
+        if let Some(cache_key) = cache_key.as_ref() {
+            let mut cache = self.regex_match_cache.lock().map_err(|err| {
+                CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
+            })?;
+            if let Some(cached) = cache.get(cache_key) {
+                return Ok(cached);
+            }
+        }
+        let authority = self.text_authority("LEX_REGEX_TRIGRAM")?;
         let plan = crate::regex::plan_regex(&normalized_source, options, &self.regex_policy)
             .map_err(map_regex_plan_error)?;
         let executor = RegexExecutor::compile(&normalized_source).map_err(|err| {
@@ -3896,6 +4871,12 @@ impl TantivySearcher {
                 )));
             };
             let _inserted: bool = out.insert(doc.candidate_id.clone());
+        }
+        if let Some(cache_key) = cache_key {
+            let mut cache = self.regex_match_cache.lock().map_err(|err| {
+                CoreError::Storage(format!("lexical regex cache poisoned: {err}"))
+            })?;
+            cache.insert(cache_key, out.clone());
         }
         Ok(out)
     }
@@ -4038,10 +5019,10 @@ impl TantivySearcher {
                 "lexical: predicate leaf `{name}` only supports one content scalar argument (owner: {PREDICATE_OWNER})"
             )),
             ContentPredicateArgError::UnsupportedFilter => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` only supports one content scalar plus optional file:/path:/lang: scope filters (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` only supports one content scalar plus optional file:/path:/name:/lang: scope filters (owner: {PREDICATE_OWNER})"
             )),
             ContentPredicateArgError::DuplicatePathScope => unimplemented_predicate(format!(
-                "lexical: predicate leaf `{name}` only supports one file:/path: scope filter (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `{name}` only supports one file:/path:/name: scope filter (owner: {PREDICATE_OWNER})"
             )),
             ContentPredicateArgError::DuplicateLanguage => unimplemented_predicate(format!(
                 "lexical: predicate leaf `{name}` only supports one lang: scope filter (owner: {PREDICATE_OWNER})"
@@ -4161,12 +5142,11 @@ impl TantivySearcher {
     ) -> Result<RepoMetaArg, CoreError> {
         parse_repo_meta_arg(args)
             .and_then(|arg| {
-                let Some(key) = normalize_repo_meta_key(&arg.key) else {
-                    return Err(RepoMetaArgError::EmptyKey);
-                };
+                let key = normalize_repo_meta_pattern(arg.key)?;
+                let value = arg.value.map(normalize_repo_meta_pattern).transpose()?;
                 Ok(RepoMetaArg {
                     key,
-                    value: arg.value,
+                    value,
                 })
             })
             .map_err(|err| match err {
@@ -4174,15 +5154,44 @@ impl TantivySearcher {
                     "lexical: predicate leaf `{name}` requires exactly one metadata argument (owner: {PREDICATE_OWNER})"
                 )),
                 RepoMetaArgError::UnsupportedArg => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` only supports `key:value`, bare `key`, or `tag:` existence shapes (owner: {PREDICATE_OWNER})"
+                    "lexical: predicate leaf `{name}` only supports `key:value`, bare `key`, `tag:`, or slash-delimited regex key/value metadata shapes (owner: {PREDICATE_OWNER})"
                 )),
                 RepoMetaArgError::EmptyKey => unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` requires a non-empty metadata key (owner: {PREDICATE_OWNER})"
                 )),
-                RepoMetaArgError::RegexUnsupported => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` does not support `/.../ ` regex key/value; the metadata authority is exact-string only (owner: {PREDICATE_OWNER})"
-                )),
             })
+    }
+
+    fn compile_repo_meta_pattern(
+        &self,
+        field_name: &str,
+        pattern: &MetaPattern,
+    ) -> Result<Option<RegexExecutor>, CoreError> {
+        let MetaPattern::Regex(source) = pattern else {
+            return Ok(None);
+        };
+        RegexExecutor::compile(source)
+            .map(Some)
+            .map_err(|err| CoreError::Typed {
+                code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                message: format!(
+                    "lexical: repo.has.meta {field_name} regex {:?} failed to compile: {err}",
+                    source
+                ),
+            })
+    }
+
+    fn repo_meta_pattern_matches(
+        &self,
+        pattern: &MetaPattern,
+        executor: Option<&RegexExecutor>,
+        candidate: &str,
+    ) -> bool {
+        match (pattern, executor) {
+            (MetaPattern::Exact(expected), _) => candidate == expected,
+            (MetaPattern::Regex(_), Some(executor)) => executor.verify(candidate.as_bytes()),
+            (MetaPattern::Regex(_), None) => false,
+        }
     }
 
     fn collect_repo_ids_for_repo_has_meta(
@@ -4190,18 +5199,23 @@ impl TantivySearcher {
         arg: &RepoMetaArg,
     ) -> Result<BTreeSet<String>, CoreError> {
         let authority = self.repo_meta_authority()?;
+        let key_executor = self.compile_repo_meta_pattern("key", &arg.key)?;
+        let value_executor = arg
+            .value
+            .as_ref()
+            .map(|pattern| self.compile_repo_meta_pattern("value", pattern))
+            .transpose()?
+            .flatten();
         Ok(authority
             .meta_by_repo_id
             .iter()
             .filter(|(_, by_key)| {
-                // SGX-03: `Some(v)` is exact key:value equality; `None` is genuine
-                // key EXISTENCE (key present with any value). NOTE: this must NOT
-                // be folded to `get(key) == value.as_ref()` — for `None` that
-                // would test key ABSENCE, the exact inverse of existence.
-                arg.value.as_ref().map_or_else(
-                    || by_key.contains_key(&arg.key),
-                    |value| by_key.get(&arg.key) == Some(value),
-                )
+                by_key.iter().any(|(key, value)| {
+                    self.repo_meta_pattern_matches(&arg.key, key_executor.as_ref(), key)
+                        && arg.value.as_ref().map_or(true, |pattern| {
+                            self.repo_meta_pattern_matches(pattern, value_executor.as_ref(), value)
+                        })
+                })
             })
             .map(|(repo_id, _)| repo_id.clone())
             .collect())
@@ -4383,24 +5397,28 @@ impl TantivySearcher {
         args: &[LqPredicateArg],
     ) -> Result<FileContributorArg, CoreError> {
         parse_file_contributor_arg(args)
-            .and_then(|arg| {
-                let Some(contributor) = normalize_contributor_identity(&arg.contributor) else {
-                    return Err(FileContributorArgError::EmptyContributor);
-                };
-                Ok(FileContributorArg { contributor })
+            .and_then(|arg| match arg.contributor {
+                ContributorPattern::Exact(contributor) => {
+                    let Some(contributor) = normalize_contributor_identity(&contributor) else {
+                        return Err(FileContributorArgError::EmptyContributor);
+                    };
+                    Ok(FileContributorArg {
+                        contributor: ContributorPattern::Exact(contributor),
+                    })
+                }
+                ContributorPattern::Regex(source) => Ok(FileContributorArg {
+                    contributor: ContributorPattern::Regex(source.to_ascii_lowercase()),
+                }),
             })
             .map_err(|err| match err {
                 FileContributorArgError::WrongArity => unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` requires exactly one contributor identity argument (owner: {PREDICATE_OWNER})"
                 )),
                 FileContributorArgError::UnsupportedArg => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` only supports one keyword/phrase/raw-string contributor identity (owner: {PREDICATE_OWNER})"
+                    "lexical: predicate leaf `{name}` only supports one keyword/phrase/raw-string contributor identity or `/.../` regex contributor pattern (owner: {PREDICATE_OWNER})"
                 )),
                 FileContributorArgError::EmptyContributor => unimplemented_predicate(format!(
                     "lexical: predicate leaf `{name}` contributor identity cannot be empty (owner: {PREDICATE_OWNER})"
-                )),
-                FileContributorArgError::RegexUnsupported => unimplemented_predicate(format!(
-                    "lexical: predicate leaf `{name}` does not support `/.../ ` regex contributor patterns; the contributor authority is exact-string only (owner: {PREDICATE_OWNER})"
                 )),
             })
     }
@@ -4419,6 +5437,18 @@ impl TantivySearcher {
         if limit == 0 {
             return Ok(BTreeSet::new());
         }
+        let contributor_regex = match &arg.contributor {
+            ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
+                |err| CoreError::Typed {
+                    code: format!("LEX_REGEX_{}", err.code.as_code_str()),
+                    message: format!(
+                        "lexical: file.has.contributor regex {:?} failed to compile: {err}",
+                        source
+                    ),
+                },
+            )?),
+            ContributorPattern::Exact(_) => None,
+        };
         let hits = searcher
             .search(&AllQuery, &TopDocs::with_limit(limit))
             .map_err(|err| {
@@ -4448,7 +5478,25 @@ impl TantivySearcher {
             else {
                 continue;
             };
-            if contributors.contains(&arg.contributor) {
+            let matches = match &arg.contributor {
+                ContributorPattern::Exact(contributor) => contributors
+                    .iter()
+                    .any(|identity| identity.canonical == *contributor),
+                ContributorPattern::Regex(_) => {
+                    let executor = contributor_regex.as_ref().expect("regex compiled once");
+                    contributors.iter().any(|identity| {
+                        identity
+                            .name
+                            .as_deref()
+                            .is_some_and(|name| executor.verify(name.as_bytes()))
+                            || identity
+                                .email
+                                .as_deref()
+                                .is_some_and(|email| executor.verify(email.as_bytes()))
+                    })
+                }
+            };
+            if matches {
                 let _inserted = out.insert(candidate_id);
             }
         }
@@ -4512,6 +5560,40 @@ impl TantivySearcher {
         Ok(Some(out))
     }
 
+    fn collect_candidate_ids_for_paths(
+        &self,
+        paths: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        if paths.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let compiled = self.with_doc_kind(self.path_restriction_query(paths), TEXT_DOC_KIND);
+        let searcher = self.reader.searcher();
+        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while collecting scoped content candidate ids: {err}"
+            ))
+        })?;
+        if limit == 0 {
+            return Ok(BTreeSet::new());
+        }
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(limit))
+            .map_err(|err| {
+                CoreError::Storage(format!("lexical: scoped content candidate search: {err}"))
+            })?;
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for (_, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            if let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) {
+                let _inserted = out.insert(candidate_id);
+            }
+        }
+        Ok(out)
+    }
+
     fn allowed_paths_for_content_predicate(
         &self,
         constraint: &ContentPredicateConstraint,
@@ -4522,6 +5604,14 @@ impl TantivySearcher {
             return Ok(content_paths);
         };
         Ok(content_paths.intersection(&scope_paths).cloned().collect())
+    }
+
+    fn allowed_candidate_ids_for_content_predicate(
+        &self,
+        constraint: &ContentPredicateConstraint,
+    ) -> Result<BTreeSet<String>, CoreError> {
+        let allowed_paths = self.allowed_paths_for_content_predicate(constraint)?;
+        self.collect_candidate_ids_for_paths(&allowed_paths)
     }
 
     fn repo_has_file_constraint(
@@ -4619,17 +5709,11 @@ impl TantivySearcher {
             Some(PredicateKind::ContentLeaf) => {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
-                if constraint.has_scopes() {
-                    return Err(CoreError::Typed {
-                        code: PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE.to_string(),
-                        message: format!(
-                            "lexical: predicate leaf `{canonical_name}` with file:/path:/lang: scope is not executable inside OR/NOT boolean scope (owner: {PREDICATE_OWNER})"
-                        ),
-                    });
-                }
-                Ok(LqExpr::Leaf(
-                    self.predicate_content_leaf_from_constraint(&constraint),
-                ))
+                drop(self.allowed_candidate_ids_for_content_predicate(&constraint)?);
+                Ok(LqExpr::Leaf(LqLeaf::Predicate {
+                    name: canonical_name,
+                    args: canonical_args,
+                }))
             }
             None => Err(unimplemented_predicate(format!(
                 "lexical: predicate leaf `{canonical_name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
@@ -5574,9 +6658,12 @@ impl TantivySearcher {
                     let constraint =
                         self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                     if constraint.has_scopes() {
-                        return Err(CoreError::InvalidContract(format!(
-                            "lexical: scoped content predicate `{canonical_name}` must be prepared before compile_leaf"
-                        )));
+                        let candidate_ids =
+                            self.allowed_candidate_ids_for_content_predicate(&constraint)?;
+                        if candidate_ids.is_empty() {
+                            return Ok(self.match_none_query());
+                        }
+                        return Ok(self.candidate_restriction_query(&candidate_ids));
                     }
                     let lowered = self.predicate_content_leaf_from_constraint(&constraint);
                     return self.compile_leaf(&lowered, options, false);
@@ -5891,12 +6978,14 @@ fn is_unavailable_suppressed_by_metadata(code: &str, has_repo_metadata: bool) ->
 /// shapes surface as `CoreError::NotImplemented` carrying the owning
 /// follow-up ticket. The planner is now the single authority for these IR
 /// shapes — there is no silent delegation to a legacy executor.
-fn planner_preflight(query: &LqQuery, has_repo_metadata: bool) -> Result<(), CoreError> {
-    let plan = match crate::planner::LexicalPlanner::plan(query) {
-        Ok(plan) => plan,
-        Err(err) => return Err(map_planner_error(&err)),
-    };
-    for entry in &plan.filters.typed_unavailable {
+fn planner_preflight_expr(
+    query: &LqQuery,
+    expr: &LqExpr,
+    has_repo_metadata: bool,
+) -> Result<(), CoreError> {
+    let filter_plan = crate::filters::plan_filters(&query.filters, &query.options)
+        .map_err(|err| map_planner_error(&crate::planner::LexicalPlannerError::FilterPlan(err)))?;
+    for entry in &filter_plan.typed_unavailable {
         if is_unavailable_suppressed_by_metadata(entry.code, has_repo_metadata) {
             continue;
         }
@@ -5905,7 +6994,8 @@ fn planner_preflight(query: &LqQuery, has_repo_metadata: bool) -> Result<(), Cor
             message: entry.reason.to_string(),
         });
     }
-    Ok(())
+    crate::planner::LexicalPlanner::validate_expr(query, expr)
+        .map_err(|err| map_planner_error(&err))
 }
 
 /// Lower a [`crate::regex::RegexPlannerError`] into a typed [`CoreError`].
@@ -6008,6 +7098,53 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
     }
 }
 
+#[cfg(test)]
+mod regex_match_cache_tests {
+    use super::*;
+
+    fn sample_generation(generation: u64) -> GenKey {
+        GenKey {
+            repo_id: RepoId::new("repo-alpha"),
+            revision_id: RevisionId::new("rev-alpha"),
+            generation: ManifestGeneration::new(generation),
+        }
+    }
+
+    fn sample_matches(candidate_id: &str) -> BTreeSet<String> {
+        std::iter::once(candidate_id.to_string()).collect()
+    }
+
+    #[test]
+    fn regex_match_cache_invalidates_only_target_generation() {
+        let generation_one = sample_generation(7);
+        let generation_two = sample_generation(8);
+        let key_one = RegexMatchCacheKey {
+            generation: generation_one.clone(),
+            normalized_source: "foo".to_string(),
+        };
+        let key_two = RegexMatchCacheKey {
+            generation: generation_one.clone(),
+            normalized_source: "bar".to_string(),
+        };
+        let key_three = RegexMatchCacheKey {
+            generation: generation_two.clone(),
+            normalized_source: "foo".to_string(),
+        };
+        let mut cache = RegexMatchCache::new();
+        cache.insert(key_one.clone(), sample_matches("cand-1"));
+        cache.insert(key_two.clone(), sample_matches("cand-2"));
+        cache.insert(key_three.clone(), sample_matches("cand-3"));
+        assert_eq!(cache.len(), 3);
+
+        cache.invalidate_generation(&generation_one);
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(&key_one).is_none());
+        assert!(cache.get(&key_two).is_none());
+        assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
+    }
+}
+
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         // Validation ordering: `LexicalPolicy::validate_query` runs FIRST so
@@ -6025,11 +7162,22 @@ impl LexicalSearcher for TantivySearcher {
         else {
             return Ok(Vec::new());
         };
-        let mut planner_query = prepared_query.query.clone();
-        planner_query.expr = prepared_query.predicate_plan.expr.clone();
-        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
+        planner_preflight_expr(
+            &prepared_query.query,
+            &prepared_query.predicate_plan.expr,
+            self.repo_metadata.is_some(),
+        )?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
+        }
+        let requested = usize::try_from(top_k)
+            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
+        let limit = self.effective_limit(&effective_query, requested);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        if Self::uses_unindexed_scan(&effective_query.options) {
+            return self.manual_text_search(&effective_query, &prepared_query, limit, true);
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
@@ -6037,13 +7185,8 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         };
         let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
-        let requested = usize::try_from(top_k)
-            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
-        let limit = self.effective_limit(&effective_query, requested);
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         let collect_limit = self.collect_limit(&effective_query, requested, limit);
+        let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
         let mut hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
@@ -6059,7 +7202,10 @@ impl LexicalSearcher for TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            out.push(self.document_to_candidate(&doc, score)?);
+            out.push(self.document_to_candidate(
+                &doc,
+                Self::apply_query_boost_score(score, boosted_options),
+            )?);
         }
         let projected = Self::collapse_select_projection(&effective_query, out);
         Ok(self.stabilize_and_cap_hits(&effective_query, projected, limit))
@@ -6141,11 +7287,22 @@ impl LexicalSearcher for TantivySearcher {
         else {
             return Ok(Vec::new());
         };
-        let mut planner_query = prepared_query.query.clone();
-        planner_query.expr = prepared_query.predicate_plan.expr.clone();
-        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
+        planner_preflight_expr(
+            &prepared_query.query,
+            &prepared_query.predicate_plan.expr,
+            self.repo_metadata.is_some(),
+        )?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(Vec::new());
+        }
+        let requested = usize::try_from(top_k)
+            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
+        let limit = self.effective_limit(&effective_query, requested);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        if Self::uses_unindexed_scan(&effective_query.options) {
+            return self.manual_symbol_search(&effective_query, &prepared_query, limit);
         }
         let Some(base) = self
             .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
@@ -6153,13 +7310,8 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(Vec::new());
         };
         let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
-        let requested = usize::try_from(top_k)
-            .map_err(|err| CoreError::InvalidContract(format!("lexical: top_k: {err}")))?;
-        let limit = self.effective_limit(&effective_query, requested);
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         let collect_limit = self.collect_limit(&effective_query, requested, limit);
+        let boosted_options = &effective_query.options;
         let searcher = self.reader.searcher();
         let mut hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
@@ -6177,7 +7329,63 @@ impl LexicalSearcher for TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            out.push(self.document_to_symbol_candidate(&doc, score)?);
+            out.push(self.document_to_symbol_candidate(
+                &doc,
+                Self::apply_query_boost_score(score, boosted_options),
+            )?);
+        }
+        Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
+    }
+
+    fn search_symbols_all(&self, query: &LqQuery) -> Result<Vec<SymbolCandidate>, CoreError> {
+        let effective_query =
+            rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
+        LexicalPolicy::validate_query(&effective_query)?;
+        let Some(prepared_query) =
+            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol)?
+        else {
+            return Ok(Vec::new());
+        };
+        planner_preflight_expr(
+            &prepared_query.query,
+            &prepared_query.predicate_plan.expr,
+            self.repo_metadata.is_some(),
+        )?;
+        if !self.repo_filters_allow(&effective_query)? {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
+            CoreError::InvalidContract(format!(
+                "lexical: num_docs overflow while materializing symbol scope: {err}"
+            ))
+        })?;
+        let limit = self.effective_limit(&effective_query, requested);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        if Self::uses_unindexed_scan(&effective_query.options) {
+            return self.manual_symbol_search(&effective_query, &prepared_query, limit);
+        }
+        let Some(base) = self
+            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        else {
+            return Ok(Vec::new());
+        };
+        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
+        let collect_limit = self.collect_limit(&effective_query, requested, limit);
+        let hits = searcher
+            .search(&*compiled, &TopDocs::with_limit(collect_limit))
+            .map_err(|err| CoreError::Storage(format!("lexical: search_symbols_all: {err}")))?;
+        let mut out: Vec<SymbolCandidate> = Vec::with_capacity(hits.len());
+        for (score, doc_address) in hits {
+            let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
+                CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
+            })?;
+            out.push(self.document_to_symbol_candidate(
+                &doc,
+                Self::apply_query_boost_score(score, &effective_query.options),
+            )?);
         }
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
     }
@@ -6187,18 +7395,14 @@ impl LexicalSearcher for TantivySearcher {
         let Some(prepared_query) = self.prepare_executable_query(query, QueryDocKind::Text)? else {
             return Ok(Vec::new());
         };
-        let mut planner_query = prepared_query.query.clone();
-        planner_query.expr = prepared_query.predicate_plan.expr.clone();
-        planner_preflight(&planner_query, self.repo_metadata.is_some())?;
+        planner_preflight_expr(
+            &prepared_query.query,
+            &prepared_query.predicate_plan.expr,
+            self.repo_metadata.is_some(),
+        )?;
         if !self.repo_filters_allow(query)? {
             return Ok(Vec::new());
         }
-        let Some(base) = self
-            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
-        else {
-            return Ok(Vec::new());
-        };
-        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
         let searcher = self.reader.searcher();
         let requested = usize::try_from(searcher.num_docs()).map_err(|err| {
             CoreError::InvalidContract(format!(
@@ -6209,6 +7413,16 @@ impl LexicalSearcher for TantivySearcher {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        if Self::uses_unindexed_scan(&query.options) {
+            let hits = self.manual_text_search(query, &prepared_query, limit, false)?;
+            return Ok(Self::collapse_repo_projection(query, hits));
+        }
+        let Some(base) = self
+            .compile_query_from_prepared(&prepared_query.query, &prepared_query.predicate_plan)?
+        else {
+            return Ok(Vec::new());
+        };
+        let compiled = self.with_doc_kind(base, prepared_query.doc_kind.as_str());
         let collect_limit = self.collect_limit(query, requested, limit);
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
@@ -6218,7 +7432,10 @@ impl LexicalSearcher for TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            out.push(self.document_to_candidate(&doc, score)?);
+            out.push(self.document_to_candidate(
+                &doc,
+                Self::apply_query_boost_score(score, &query.options),
+            )?);
         }
         Ok(Self::collapse_repo_projection(
             query,

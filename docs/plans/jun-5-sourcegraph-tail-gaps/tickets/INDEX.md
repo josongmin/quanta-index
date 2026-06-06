@@ -7,6 +7,7 @@ Status summary:
 - packet landed
 - `jun-4-sourcegraph-parity` stays landed
 - this packet is exact-gap backlog only
+- final widening closeout lives in [../../jun-6-sourcegraph-expansion/rfc.md](../../jun-6-sourcegraph-expansion/rfc.md)
 - done surfaces are intentionally excluded from the backlog
 - final verdicts: `repo:contains.file` / `repo:contains.path` supported (alias); all other tail cells closed as explicit typed-fail or permanent demotion. See [../../../../docs/analysis/jun-4-dsl-capabilty.md](../../../analysis/jun-4-dsl-capabilty.md)
 

@@ -22,16 +22,16 @@ use quanta_index_contract::lex::{
     compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, GenerationSelector, HistoryQueryRequest,
-    HybridSeedQueryRequest, ManifestGeneration, RepoId, RepoMapActivateGenerationRequest,
-    RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge, RepoMapDocType, RepoMapEdge,
-    RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto, RepoMapGraphCoverage,
-    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode, RepoMapNodeRef,
-    RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState, RepoMapSourceBundle,
-    RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord,
-    RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest,
-    RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
+    HistoryQueryRequest, HybridSeedQueryRequest, ManifestGeneration, RepoId,
+    RepoMapActivateGenerationRequest, RepoMapChunkExactness, RepoMapChunkNode, RepoMapContainsEdge,
+    RepoMapDocType, RepoMapEdge, RepoMapExactnessSummary, RepoMapFileNode, RepoMapFocusSubjectDto,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapRedactionState,
+    RepoMapSourceBundle, RepoMapSymbolNode, RevisionId, RuntimeCatalogIngestBatch,
+    RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
+    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
     StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
@@ -220,7 +220,8 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_) => Ok(()),
+        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
     }
 }
 
@@ -258,7 +259,11 @@ fn history_batch() -> quanta_index_sdk::HistoryBatch {
             committer_time_ms: 12,
             applied_at_ms: 13,
             author: "alice".to_string().into_boxed_str(),
+            author_name: None,
+            author_email: None,
             committer: "alice".to_string().into_boxed_str(),
+            committer_name: None,
+            committer_email: None,
             message: "fix: sample".to_string().into_boxed_str(),
             is_merge: false,
             tags: vec!["v1.0.0".to_string().into_boxed_str()],
@@ -297,7 +302,11 @@ fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
         committer_time_ms: 22,
         applied_at_ms: 23,
         author: "alice".to_string().into_boxed_str(),
+        author_name: None,
+        author_email: None,
         committer: "alice".to_string().into_boxed_str(),
+        committer_name: None,
+        committer_email: None,
         message: "todo: shard gap".to_string().into_boxed_str(),
         is_merge: false,
         tags: Vec::new(),
@@ -603,20 +612,39 @@ fn file_contributor_batch() -> FileContributorBatch {
         generation(),
         "batch:file-contributor-sdk",
     )
-    .entry(
+    .entry_identities(
         RepoId::new("corp-a"),
         RepoRelativePath::new("src/recency_a.rs"),
-        vec!["alice".to_string(), "carol".to_string()],
+        vec![
+            FileContributorIdentityEntry {
+                canonical: "alice".to_string(),
+                name: Some("Alice Example".to_string()),
+                email: Some("alice@example.com".to_string()),
+            },
+            FileContributorIdentityEntry {
+                canonical: "carol".to_string(),
+                name: Some("Carol Example".to_string()),
+                email: Some("carol@example.com".to_string()),
+            },
+        ],
     )
-    .entry(
+    .entry_identities(
         RepoId::new("corp-a"),
         RepoRelativePath::new("src/recency_gate.rs"),
-        vec!["alice".to_string()],
+        vec![FileContributorIdentityEntry {
+            canonical: "alice".to_string(),
+            name: Some("Alice Example".to_string()),
+            email: Some("alice@example.com".to_string()),
+        }],
     )
-    .entry(
+    .entry_identities(
         RepoId::new("corp-b"),
         RepoRelativePath::new("src/recency_b.rs"),
-        vec!["bob".to_string()],
+        vec![FileContributorIdentityEntry {
+            canonical: "bob".to_string(),
+            name: Some("Bob Builder".to_string()),
+            email: Some("bob@example.com".to_string()),
+        }],
     )
 }
 
@@ -705,7 +733,11 @@ fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn
         committer_time_ms: now_ms.saturating_sub(63_072_000_000),
         applied_at_ms: now_ms.saturating_sub(63_072_000_000),
         author: "alice".to_string().into_boxed_str(),
+        author_name: None,
+        author_email: None,
         committer: "alice".to_string().into_boxed_str(),
+        committer_name: None,
+        committer_email: None,
         message: "legacy rev-at-time commit".to_string().into_boxed_str(),
         is_merge: false,
         tags: Vec::new(),
@@ -724,7 +756,11 @@ fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn
         committer_time_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
         applied_at_ms: now_ms.saturating_sub(12 * 60 * 60 * 1000),
         author: "alice".to_string().into_boxed_str(),
+        author_name: None,
+        author_email: None,
         committer: "alice".to_string().into_boxed_str(),
+        committer_name: None,
+        committer_email: None,
         message: "head rev-at-time commit".to_string().into_boxed_str(),
         is_merge: false,
         tags: Vec::new(),
@@ -2575,6 +2611,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         .lexical()
         .publish(&lexical_frontdoor_matrix_batch()?)?;
     let _history_receipt = client.history().publish(&history_batch())?;
+    let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _repo_commit_recency_receipt = client
         .history()
         .publish_repo_commit_recency(&repo_commit_recency_batch()?)?;
@@ -2596,7 +2633,10 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
             .revision(revision())
             .generation(generation())
             .manifest_digest("manifest:sdk-frontdoor-matrix")
-            .tracks([SearchPlaneTrackKind::Lexical])?
+            .tracks([
+                SearchPlaneTrackKind::Lexical,
+                SearchPlaneTrackKind::Structural,
+            ])?
             .commit()
     })?;
 

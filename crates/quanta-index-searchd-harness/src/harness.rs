@@ -634,7 +634,11 @@ impl E2eRuntime {
                     committer_time_ms: spec.committer_time_ms,
                     applied_at_ms: spec.applied_at_ms,
                     author: spec.author.to_string().into_boxed_str(),
+                    author_name: None,
+                    author_email: None,
                     committer: spec.committer.to_string().into_boxed_str(),
+                    committer_name: None,
+                    committer_email: None,
                     message: spec.message.to_string().into_boxed_str(),
                     is_merge: false,
                     tags: vec![spec.tag_name.to_string().into_boxed_str()],
@@ -721,6 +725,13 @@ impl E2eRuntime {
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileContributorBatch(
             batch,
         ))
+    }
+
+    pub fn publish_structural_batch(
+        &mut self,
+        batch: quanta_index_contract::StructuralIngestBatch,
+    ) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch))
     }
 
     pub fn ingest_dirty_for_path(&mut self, path: &str, applied_at_ms: u64) -> AnyResult<()> {

@@ -30,7 +30,7 @@
 | history | `type:commit since.time:` / `since.commit:` | 예 | 예 | unknown ref는 typed fail |
 | history | `type:commit author:` / `committer:` / `message:` / `rev:` | 예 | 예 | commit-route filter surface |
 | history | `type:diff diff.added:` / `diff.removed:` / `diff.touched:` | 예 | 예 | diff route |
-| runtime catalog | `dirty:yes` / `dirty:no` | 예 | 예 | `dirty:only`는 미지원 |
+| runtime catalog | `dirty:yes` / `dirty:no` / `dirty:only` | 예 | 예 | `dirty:only`는 current runtime-doc surface에서 `dirty:yes`와 같은 dirty-doc subset으로 실행된다. runtime/front-door/chaos/corpus green |
 | runtime catalog | `changed:` / `stale:` / `snapshot:` | 예 | 예 | unknown snapshot은 typed fail |
 | runtime catalog | `meta.owner:` / `meta.service:` / `meta.layer:` / `meta.surface:` | 예 | 예 | runtime metadata surface |
 | runtime catalog | `affected:` / `invalidated_by:` | 예 | 예 | runtime catalog edge authority |
@@ -56,15 +56,19 @@
 | Sourcegraph predicate family | `repo:contains.commit.after(...)` | 예 | 예 | canonical alias parity green, including live producer ingress proof |
 | Sourcegraph predicate family | `repo:has.meta(key:value)` | 예 | 예 | repo-scoped metadata authority is executable on current tree. key/value exact semantics, runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `repo:has.meta(key)` / `repo:has.meta(tag:)` | 예 | 예 | SGX-03: genuine key-EXISTENCE (`contains_key`, key present with any value) — not a wildcard `key:*` nor an empty-string match. runtime/front-door/parity/corpus green |
+| Sourcegraph predicate family | `repo:has.meta(/key/)` / `repo:has.meta(/key/:)` / `repo:has.meta(key:/value/)` / `repo:has.meta(/key/:value)` / `repo:has.meta(/key/:/value/)` | 예 | 예 | SGX-03: regex key-only, regex-key exact-value, exact-key regex-value, regex pair 모두 query-time `RegexExecutor`로 same-pair semantics 위에서 실행된다. malformed regex는 empty가 아니라 `LEX_REGEX_*` typed fail. runtime/front-door/parity/corpus green |
+| Sourcegraph predicate family | `repo:has.description(...)` | 예 | 예 | SGX-02: distinct producer-published repo-description authority (`RepoDescriptionIngestBatch` → `repo-description.cbor` shard) is executable on current tree. one textual pattern scalar compiled as a regex over each repo's verbatim description; malformed pattern → `LEX_REGEX_*`, missing authority → `REPO_DESCRIPTION_UNAVAILABLE`. runtime/round-trip/parity/public-api green |
 | Sourcegraph predicate family | `repo:has.topic(...)` | 예 | 예 | source-repo keyed repo-topic authority is executable on current tree. lowercase exact topic-set semantics, runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `file:has.owner(...)` / `file:has.owner()` | 예 | 예 | source-repo keyed file-ownership authority is executable on current tree. one textual owner arg is exact lowercase owner-identity gate; zero-arg form means any-owner. runtime/front-door/parity/corpus green |
 | Sourcegraph predicate family | `file:has.contributor(...)` | 예 | 예 | source-repo keyed file-contributor authority is executable on current tree. one textual contributor arg is exact lowercase contributor-identity gate backed by file-level contributor sets. runtime/front-door/parity/corpus green |
+| Sourcegraph predicate family | `file:has.contributor(/<regex>/)` | 예 | 예 | SGX-04: query/runtime surface is executable on current tree. producer contract widened to structured contributor identities (`canonical`, optional `name`, optional `email`), `/.../` arg matches normalized `name` OR `email`, and raw `canonical` regex fallback는 없다. malformed regex는 `LEX_REGEX_*` typed fail. runtime/front-door/parity/corpus green; semantica `index-sdk-ingress` live publish roundtrip is targeted green |
 | Sourcegraph filter / select | `rev:at.time(...)` | 아니오 | 예 | text dispatch가 history-backed revision selection으로 pin을 재결정한다. owner-local dispatcher rail + targeted runtime rail + SDK/front-door rail green |
 | symbol predicate | `symbol.has.name(...)` | 예 | 예 | shared symbol route exact green |
 | structural native | root-kind / root-capture / wildcard / `where` / `inside` / `outside` / variadic / typed holes | 예 | 해당 없음 | native structural surface |
 | structural mixed | lexical + structural `AND` / `OR` / `AND NOT` / pure-negative root | 예 | Native만 전체 | SG는 아래 proved subset만 shipped |
 | structural SG subset | `patterntype:structural` + structural body + lexical `Keyword` / `RawString` sibling | 해당 없음 | 예 | exact lowering/runtime/parity green |
 | structural SG subset | `patterntype:structural` + structural body + repo gate predicate sibling `repo.has.file` / `repo.has.path` / `repo.has.content` / `repo.contains.content` in `AND` / `OR` / `AND NOT` | 해당 없음 | 예 | exact runtime/parity green |
+| structural SG subset | `patterntype:structural` + structural body + `file.contains(path|file:...)` / `file.has.content(path|file:...)` / `symbol.has.name(...)` in `AND` / `OR` / `AND NOT` | 해당 없음 | 예 | SGX-06: exact lowering/runtime/front-door/parity green. file/content siblings run on current structural route; symbol sibling projects same-path, line-overlapping symbol hits into all matching structural chunks with deterministic union |
 ## 미지원 DSL
 
 | 분류 | 표현식 / 시나리오 | Native | Sourcegraph 지원 | 상태 / 이유 |
@@ -72,61 +76,64 @@
 | parser-only | empty query | 아니오 | 아니오 | parser는 `LqExpr::Empty` 생성, executable route는 reject |
 | lexical predicate | shipped subset 밖 predicate name | 아니오 | 아니오 | `LEX_PREDICATE_UNIMPLEMENTED` typed fail |
 | lexical predicate | unsupported predicate arg shape | 아니오 | 아니오 | executable registry closed set 바깥 |
-| lexical predicate | `file.contains(name:..., <scalar>)` | 예 | 아니오 | SG bridge는 이 scoped content shape를 executable subset으로 열지 않음 |
-| lexical predicate | scoped content predicate inside `OR` / `NOT` | 예 | 아니오 | native LQ는 되지만 SG bridge는 scoped predicates under `OR/NOT` 불가 |
 | lexical predicate | `file:contains("a", "b")` 같은 multi-scalar content shape | 아니오 | 아니오 | typed fail |
-| runtime catalog | `dirty:only` | 아니오 | 아니오 | explicit typed fail |
-| Sourcegraph predicate family | `repo:has.meta(/key/:/value/)` | 아니오 | 아니오 | SGT-03 closed as typed-fail; SGX-03 keeps it deferred. metadata authority is exact-string `BTreeMap` with no regex engine over the key/value set yet |
-| Sourcegraph predicate family | `repo:has.description(...)` | 예 | 예 | SGX-02: distinct producer-published repo-description authority (`RepoDescriptionIngestBatch` → `repo-description.cbor` shard) is executable on current tree. one textual pattern scalar compiled as a regex over each repo's verbatim description; malformed pattern → `LEX_REGEX_*`, missing authority → `REPO_DESCRIPTION_UNAVAILABLE`. runtime/round-trip/parity/public-api green |
-| Sourcegraph predicate family | `file:has.contributor(/<regex>/)` | 아니오 | 아니오 | SGT-04: contributor authority is a flat, case-folded exact-string set with no name/email split and no regex engine. `/.../ ` delimited arg is typed fail, not regex theater over exact strings |
-| structural | SG structural direct lexical `Phrase` sibling | 예 | 아니오 | direct SG surface 없음. quoted phrase는 structural body로 해석됨 |
-| structural | SG structural direct lexical `Regex` sibling | 예 | 아니오 | direct SG surface 없음. `/.../`는 structural regex body로 해석됨 |
-| structural | SG structural mixed non-repo predicate sibling (`file.contains(path|file:...)`, `file.has.content(path|file:...)`, `symbol.has.name(...)`) | 예* | 아니오 | SG structural mixed predicate subset은 아직 repo gate family만 shipped다. 위 세 family는 preserve-only widening으로는 parity가 닫히지 않았고, 현재는 explicit `BridgeTranslateFail` + owner-local/runtime/front-door demotion rail로 고정한다 |
+| structural | SG structural direct lexical `Phrase` sibling | 예 | 아니오 | direct SG surface 없음. `patterntype:structural "foo bar"`의 quoted token은 lexical phrase sibling이 아니라 structural body로 해석됨 |
+| structural | SG structural direct lexical `Regex` sibling | 예 | 아니오 | direct SG surface 없음. `patterntype:structural /foo.*/`의 slash token은 lexical regex sibling이 아니라 structural regex body로 해석됨 |
 | structural | SG structural pre-shaped `StructuralBlock` leaf | 아니오 | 아니오 | `BridgeTranslateFail` |
-| directives | `index:no` | 해당 없음 | 아니오 | explicit refused directive |
-| directives | `boost:` | 해당 없음 | 아니오 | explicit refused directive |
 
 ## 비실행 / 별도 carrier
 
 | 분류 | 표현식 / 시나리오 | Native | Sourcegraph 지원 | 비고 |
 | --- | --- | --- | --- | --- |
 | bridge carrier | `into:codeql` / `scope:results` / `with:lexical` | 해당 없음 | 해당 없음 | runtime search-result surface가 아니라 bridge packet carrier |
-| directives | `index:yes` / `index:only` | 해당 없음 | 해당 없음 | accepted but normalized away on this index-only stack; distinct executable capability 아님 |
+| directives | `index:yes` / `index:only` | 예 | 예 | canonical option carrier로 accept되지만 current index-only stack에서는 distinct executable capability를 만들지 않는다 |
+| directives | `index:no` | 예 | 예 | canonical option carrier로 accept되고 active lexical rail에서 stored-doc full scan으로 실행된다. indexed route와 candidate universe parity를 유지한다 |
+| directives | `boost:` | 예 | 예 | canonical option carrier(`boost_millis`)로 accept되고 active lexical rail에서 score magnitude multiplier로 실행된다. query-wide boost라 ordering은 보통 유지되고 score 크기만 달라진다 |
 
 ## 감사상 주의점
 
 - `tools/benchmark/sourcegraph_parity.py --check`는 이제 두 층을 본다.
   - accepted `SgFilter` keyword surface
-  - canonical predicate/alias/select surface id (`rev.at.time`, `repo.has.commit.after`, `repo.contains.commit.after`, `repo.has.meta`, `repo.has.topic`, `repo.has.file`, `repo.has.path`, `repo.has.content`, `repo.contains.content`, `file.contains`, `file.contains.content`, `file.has.content`, `file.has.owner`, `file.has.contributor`, `select.file.owners`, `symbol.has.name`)
-  - explicit unsupported structural demotion inventory
+  - canonical predicate/alias/select surface id (`rev.at.time`, `repo.has.commit.after`, `repo.contains.commit.after`, `repo.has.meta`, `repo.has.meta.regex.key_only`, `repo.has.meta.regex.key_exact_value`, `repo.has.meta.regex.exact_key_value`, `repo.has.meta.regex.pair`, `repo.has.topic`, `repo.has.file`, `repo.has.path`, `repo.has.content`, `repo.contains.content`, `file.contains`, `file.contains.content`, `file.has.content`, `file.has.owner`, `file.has.contributor`, `select.file.owners`, `symbol.has.name`, `sg_structural.file_contains_predicate_sibling`, `sg_structural.file_has_content_predicate_sibling`, `sg_structural.symbol_has_name_predicate_sibling`)
+  - explicit unsupported structural demotion inventory (`sg_structural.direct_phrase_lexical_sibling`, `sg_structural.direct_regex_lexical_sibling`)
 - 다만 이 guard도 모든 조합 행렬을 대신하지는 않는다.
   - combinatorial matcher proof와 structural mixed boolean proof의 최종 authority는 여전히 exact runtime/front-door/parity rail이다.
-- native structural mixed non-repo predicate sibling은 code path만 보면 generic lexical subquery evaluator에 태워진다.
-  - 근거: `crates/quanta-index-search-plane/src/query_dispatcher.rs`
-  - 하지만 SG structural route에서는 repo gate family 외 non-repo predicate sibling이 아직 exact parity를 못 닫는다.
-  - 특히 `file.contains(...)` / `file.has.content(...)`는 lowering preserve만으로는 runtime/front-door/parity가 닫히지 않았다.
+- SG structural mixed non-repo predicate sibling은 이제 exact proof가 있다.
+  - `file.contains(path|file:...)`
+  - `file.has.content(path|file:...)`
+  - `symbol.has.name(...)`
+  - 근거: `crates/quanta-index-search-plane/src/lowering.rs`, `crates/quanta-index-search-plane/src/query_dispatcher.rs`, `crates/quanta-index-searchd-runtime/tests/common/frontdoor_scenarios.rs`, `crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs`, `crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml`
 
 ## 최신 검증 스냅샷
 
 - 재실행 일시:
-  - 2026-06-05 Asia/Seoul
+  - 2026-06-07 Asia/Seoul
 - exact rail:
-  - `./scripts/cargow test -p quanta-index-core --lib -- --nocapture`
-    - status: `30 passed`
-  - `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_filter_execution -- --nocapture`
-    - status: `38 passed` (jun-5 tail-gap typed-fail + alias rails added)
+  - `./scripts/cargow test -p quanta-index-search-plane --lib -- --nocapture`
+    - status: `108 passed`
   - `./scripts/cargow test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
     - status: `13 passed`
   - `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity -- --nocapture`
-    - status: `2 passed`
+    - status: `4 passed`
   - `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
     - status: `4 passed`
   - `python3 tools/benchmark/sourcegraph_parity.py --check`
-    - status: `green`
+    - status: `OK: 38 filters and 29 required surfaces`
   - `python3 tools/ci/lint/check-dsl-capability-truth.py`
     - status: `in sync`
-  - `cargo test --manifest-path /Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime --no-default-features --features index-sdk-ingress,integration-test-support --test index_sdk_ingress_publish_contract_test index_sdk_ingress_live_repo_commit_recency_publish_and_query_roundtrip_v1 -- --nocapture`
-    - status: `1 passed`
+- verification packet rail:
+  - `just rust-bench-dsl-truth`
+    - status: `2 passed`
+  - `just rust-verify-hellgate-fast`
+    - status: `green`
+  - `just rust-verify-hellgate-broad`
+    - status: `green`
+  - `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo`
+    - status: `green`
+  - `just rust-bench-dsl-compare`
+    - status: `green`
+  - `just rust-verify-hellgate-all`
+    - status: aggregate target exists, but this snapshot was revalidated via the component gates above instead of one monolithic rerun
 - preflight:
   - `./scripts/check-persona-target-policy.sh --expect-agent`
   - `./scripts/cg-agent-session`
@@ -153,24 +160,23 @@
 
 - lexical / history / runtime-catalog / core structural DSL은 현재 tree에서 executable이다.
 - Sourcegraph text route는 shipped predicate/alias/select surface, repo commit recency gate, repo metadata gate, repo topic gate, owner/contributor authority gate, shared symbol route까지 포함해 현재 inventory 기준으로 커버된다.
-- `jun-5-sourcegraph-tail-gaps` 결과까지 합치면 docs baseline tail gap은 더 이상 ambiguous하지 않다.
+- `jun-5`와 `jun-6` 결과까지 합치면 docs baseline tail gap은 더 이상 ambiguous하지 않다.
   - 지원됨으로 종결:
     - `repo:contains.file(...)`
     - `repo:contains.path(...)`
-  - 명시적 미지원으로 종결:
     - `repo:has.file(path:... content:...)`
     - `repo:has.description(...)`
     - `repo:has.meta(key)`
     - `repo:has.meta(tag:)`
+    - `repo:has.meta(/key/)`
+    - `repo:has.meta(/key/:)`
+    - `repo:has.meta(key:/value/)`
+    - `repo:has.meta(/key/:value)`
     - `repo:has.meta(/key/:/value/)`
     - `file:has.contributor(<name-or-email regex>)`
 - 중간 상태 셀은 없다. 현재 inventory는 `지원됨`, `미지원`, `비실행 / 별도 carrier` 세 상태만 쓴다.
 - 남은 경계는 intentional unsupported뿐이다.
   - SG structural direct lexical `Phrase` / `Regex` sibling 없음
-  - SG structural mixed non-repo predicate sibling 없음
-    - `file.contains(path|file:...)`
-    - `file.has.content(path|file:...)`
-    - `symbol.has.name(...)`
   - shipped subset 밖 Sourcegraph-style predicate family support 없음
 ## 남은 작업
 
@@ -183,28 +189,40 @@
   - 지원됨으로 종결 (SGT-01):
     - `repo:contains.file(...)` — alias → `repo.has.file`
     - `repo:contains.path(...)` — alias → `repo.has.file(path:...)`
-  - 명시적 미지원으로 종결 (typed fail, machine-checked):
-    - `repo:has.file(path:... content:...)` (SGT-01: no content matcher seam)
-    - `repo:has.description(...)` (SGT-02: no producer description authority)
-    - `repo:has.meta(key)` (SGT-03: key existence not exposed by exact-string substrate)
-    - `repo:has.meta(tag:)` (SGT-03: no null-value concept)
-    - `repo:has.meta(/key/:/value/)` (SGT-03: exact-string substrate, no regex engine)
-    - `file:has.contributor(<name-or-email regex>)` (SGT-04: exact-string set, no name/email split)
-    - SG structural direct lexical `Phrase` / `Regex` sibling (SGT-05: body syntax, no distinct sibling surface; permanent demotion)
-    - SG structural mixed non-repo predicate sibling (SGT-06: preserve-only widening ruled out; needs a new candidate-level structural execution seam)
-      - `file.contains(path|file:...)`
-      - `file.has.content(path|file:...)`
-      - `symbol.has.name(...)`
-- `jun-6-sourcegraph-expansion` packet (in progress):
+  - 이후 `jun-6`에서 지원됨으로 승격된 셀:
+    - `repo:has.file(path:... content:...)`
+    - `repo:has.description(...)`
+    - `repo:has.meta(key)`
+    - `repo:has.meta(tag:)`
+    - `repo:has.meta(/key/)`
+    - `repo:has.meta(/key/:)`
+    - `repo:has.meta(key:/value/)`
+    - `repo:has.meta(/key/:value)`
+    - `repo:has.meta(/key/:/value/)`
+  - 이후 `jun-6`에서 최종 지원됨/종결된 셀:
+    - `file:has.contributor(<name-or-email regex>)` (SGX-04: structured `name`/`email` authority + regex match)
+    - SG structural mixed non-repo predicate sibling (SGX-06: exact support)
+- `jun-6-sourcegraph-expansion` packet (landed):
   - packet: [docs/plans/jun-6-sourcegraph-expansion/rfc.md](../plans/jun-6-sourcegraph-expansion/rfc.md)
-  - 지원됨으로 승격 (real owner seam + proof, machine-checked):
-    - `repo:has.file(path:... content:...)` (SGX-01: per-document path∧content correlation)
-    - `repo:has.meta(key)` / `repo:has.meta(tag:)` (SGX-03: genuine key-existence via `contains_key`)
-    - `repo:has.description(<regex>)` (SGX-02: distinct producer-published description authority — `RepoDescriptionIngestBatch` → `repo-description.cbor` shard — matched by `RegexExecutor::verify`; not folded into repo:has.meta. fail-closed on bad regex / missing authority. runtime + round-trip + parity + public-api proof)
-  - 미지원 재확인 (verdict holds, no real seam yet):
-    - `file:has.contributor(<name-or-email regex>)` (SGX-04: producer must emit split name/email; exact-string set today)
-    - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05: grammar gives no distinct sibling slot; permanent demotion)
-    - SG structural mixed `symbol.has.name(...)` (SGX-06: symbol_id↔chunk_id key mismatch; no projection authority)
-    - SG structural mixed `file.contains(path|file:...)` / `file.has.content(path|file:...)` (SGX-06: preserve-only widening was attempted under TDD and rolled back — the scoped content-leaf sibling returns a **silently empty** candidate intersection through the structural subexpr evaluator (runtime AND/OR proof returned `[]`; native LQ `AND NOT` form also `PARSE_FAIL`), so it is reaffirmed as explicit `BridgeTranslateFail` demotion, not a partial green)
-  - 남은 widening backlog:
-    - `repo:has.meta(/key/:/value/)` (SGX-03 regex: synthetic DocResolver + RegexExecutor over the enumerable meta set)
+  - closed unsupported, not backlog:
+    - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05)
+      - reason: SG structural route에서 quoted/slash token은 direct lexical sibling slot이 아니라 structural body syntax로 소비됨
+  - landed support, not backlog:
+    - `file:has.contributor(<name-or-email regex>)`
+    - SG structural mixed `file.contains(path|file:...)`
+    - SG structural mixed `file.has.content(path|file:...)`
+    - SG structural mixed `symbol.has.name(...)`
+  - external proof:
+    - `semantica-codegraph-v2` `index-sdk-ingress` live contributor publish + query roundtrip is green
+    - `quanta-runtime --lib history_wire_batch_maps_to_file_contributor_batch_v1` broad exact rail is also green
+- verification follow-on:
+  - packet: [docs/plans/jun-7-verification-hellgates/rfc.md](../plans/jun-7-verification-hellgates/rfc.md)
+  - packet status: landed
+  - this is not feature backlog
+  - it owns fast hellgates, broad daemon lifecycle gates, cross-repo ingress proof routing, and perf compare naming only
+  - current gate snapshot:
+    - `rust-bench-dsl-truth` green
+    - `rust-verify-hellgate-fast` green
+    - `rust-verify-hellgate-broad` green
+    - `rust-verify-hellgate-cross-repo` green
+    - `rust-bench-dsl-compare` green

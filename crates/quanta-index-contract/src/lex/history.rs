@@ -221,7 +221,11 @@ pub struct CommitRecord {
     pub committer_time_ms: u64,
     pub applied_at_ms: u64,
     pub author: Box<str>,
+    pub author_name: Option<Box<str>>,
+    pub author_email: Option<Box<str>>,
     pub committer: Box<str>,
+    pub committer_name: Option<Box<str>>,
+    pub committer_email: Option<Box<str>>,
     pub message: Box<str>,
     pub is_merge: bool,
     pub tags: Vec<Box<str>>,
@@ -235,7 +239,11 @@ const COMMIT_RECORD_FIELDS: &[&str] = &[
     "committer_time_ms",
     "applied_at_ms",
     "author",
+    "author_name",
+    "author_email",
     "committer",
+    "committer_name",
+    "committer_email",
     "message",
     "is_merge",
     "tags",
@@ -264,7 +272,7 @@ impl Serialize for CommitRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CommitRecord", 11)?;
+        let mut state = serializer.serialize_struct("CommitRecord", 15)?;
         state.serialize_field("wire_version", &self.wire_version)?;
         state.serialize_field("sha", &self.sha)?;
         state.serialize_field("parents", &self.parents)?;
@@ -272,7 +280,11 @@ impl Serialize for CommitRecord {
         state.serialize_field("committer_time_ms", &self.committer_time_ms)?;
         state.serialize_field("applied_at_ms", &self.applied_at_ms)?;
         state.serialize_field("author", self.author.as_ref())?;
+        state.serialize_field("author_name", &self.author_name)?;
+        state.serialize_field("author_email", &self.author_email)?;
         state.serialize_field("committer", self.committer.as_ref())?;
+        state.serialize_field("committer_name", &self.committer_name)?;
+        state.serialize_field("committer_email", &self.committer_email)?;
         state.serialize_field("message", self.message.as_ref())?;
         state.serialize_field("is_merge", &self.is_merge)?;
         state.serialize_field("tags", &TagsSer { items: &self.tags })?;
@@ -300,7 +312,11 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
         let mut committer_time_ms: Option<u64> = None;
         let mut applied_at_ms: Option<u64> = None;
         let mut author: Option<String> = None;
+        let mut author_name: Option<Option<String>> = None;
+        let mut author_email: Option<Option<String>> = None;
         let mut committer: Option<String> = None;
+        let mut committer_name: Option<Option<String>> = None;
+        let mut committer_email: Option<Option<String>> = None;
         let mut message: Option<String> = None;
         let mut is_merge: Option<bool> = None;
         let mut tags: Option<Vec<String>> = None;
@@ -348,11 +364,35 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
                     }
                     author = Some(map.next_value()?);
                 }
+                "author_name" => {
+                    if author_name.is_some() {
+                        return Err(de::Error::duplicate_field("author_name"));
+                    }
+                    author_name = Some(map.next_value()?);
+                }
+                "author_email" => {
+                    if author_email.is_some() {
+                        return Err(de::Error::duplicate_field("author_email"));
+                    }
+                    author_email = Some(map.next_value()?);
+                }
                 "committer" => {
                     if committer.is_some() {
                         return Err(de::Error::duplicate_field("committer"));
                     }
                     committer = Some(map.next_value()?);
+                }
+                "committer_name" => {
+                    if committer_name.is_some() {
+                        return Err(de::Error::duplicate_field("committer_name"));
+                    }
+                    committer_name = Some(map.next_value()?);
+                }
+                "committer_email" => {
+                    if committer_email.is_some() {
+                        return Err(de::Error::duplicate_field("committer_email"));
+                    }
+                    committer_email = Some(map.next_value()?);
                 }
                 "message" => {
                     if message.is_some() {
@@ -397,7 +437,11 @@ impl<'de> Visitor<'de> for CommitRecordVisitor {
             committer_time_ms,
             applied_at_ms,
             author: author.into_boxed_str(),
+            author_name: author_name.unwrap_or(None).map(String::into_boxed_str),
+            author_email: author_email.unwrap_or(None).map(String::into_boxed_str),
             committer: committer.into_boxed_str(),
+            committer_name: committer_name.unwrap_or(None).map(String::into_boxed_str),
+            committer_email: committer_email.unwrap_or(None).map(String::into_boxed_str),
             message: message.into_boxed_str(),
             is_merge,
             tags: tags.into_iter().map(String::into_boxed_str).collect(),

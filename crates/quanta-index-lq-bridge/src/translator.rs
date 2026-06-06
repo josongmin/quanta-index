@@ -15,7 +15,7 @@
 //! | `repo:` / `file:` / `path:` / `lang:` / `rev:` / `author:` / `committer:` / `message:` / `case:` / `select:` / `count:` / `type:` / `patterntype:` | adopted | 1:1 `LqFilter` |
 //! | `dirty:` / `fork:` / `archived:` / `visibility:` / `context:` | adopted | active LQ filter surface |
 //! | `content:` | normalized | `Pattern{kind: Literal, body: <value>}` |
-//! | `index:` / `boost:` | refused | `BRIDGE_UNSUPPORTED_DIRECTIVE` |
+//! | `index:` / `boost:` | adopted | canonical `LqOptions` carrier |
 //! | `timeout:` | adopted | `LqOptions.timeout_ms` |
 //! | `file:contains(...)` / `file:has.content(...)` | adopted | active LQ predicate leaf or executable pattern lowering downstream |
 //! | remaining `repo:` / `file:` predicates | adopted | active LQ predicate leaf lowering downstream |
@@ -40,6 +40,8 @@ struct BridgeMetadata {
     case: Option<LqCase>,
     count: Option<LqCountBound>,
     timeout_ms: Option<u64>,
+    index_mode: Option<LqYesNoOnly>,
+    boost_millis: Option<u32>,
 }
 
 impl BridgeMetadata {
@@ -50,6 +52,8 @@ impl BridgeMetadata {
             && self.case.is_none()
             && self.count.is_none()
             && self.timeout_ms.is_none()
+            && self.index_mode.is_none()
+            && self.boost_millis.is_none()
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -67,6 +71,12 @@ impl BridgeMetadata {
         if let Some(timeout_ms) = other.timeout_ms {
             self.timeout_ms = Some(timeout_ms);
         }
+        if let Some(index_mode) = other.index_mode {
+            self.index_mode = Some(index_mode);
+        }
+        if let Some(boost_millis) = other.boost_millis {
+            self.boost_millis = Some(boost_millis);
+        }
     }
 
     fn apply_to_query(self, query: &mut LqQuery) {
@@ -83,6 +93,12 @@ impl BridgeMetadata {
         }
         if let Some(timeout_ms) = self.timeout_ms {
             query.options.timeout_ms = Some(timeout_ms);
+        }
+        if let Some(index_mode) = self.index_mode {
+            query.options.index_mode = Some(index_mode);
+        }
+        if let Some(boost_millis) = self.boost_millis {
+            query.options.boost_millis = Some(boost_millis);
         }
     }
 }
@@ -270,21 +286,8 @@ fn lower_filter(f: &SgFilter, metadata: &mut BridgeMetadata) -> Result<LowerOutc
         SgFilter::Content(v) => Ok(LowerOutcome::ContentPattern(LqExpr::Leaf(LqLeaf::Keyword(
             v.to_string(),
         )))),
-        SgFilter::Index(v) => match v.as_ref() {
-            "yes" | "only" => Ok(LowerOutcome::Drop),
-            "no" => Err(BridgeError::unsupported_directive(
-                "index:no",
-                "Sourcegraph `index:no` is refused because this stack is index-only",
-            )),
-            other => Err(BridgeError::unsupported_directive(
-                &format!("index:{other}"),
-                "Sourcegraph `index:` value must be one of yes|no|only",
-            )),
-        },
-        SgFilter::Boost(v) => Err(BridgeError::unsupported_directive(
-            &format!("boost:{v}"),
-            "Sourcegraph `boost:` is not representable on the active LQ contract",
-        )),
+        SgFilter::Index(v) => apply_bridge_filter("index", v, metadata),
+        SgFilter::Boost(v) => apply_bridge_filter("boost", v, metadata),
         SgFilter::Context(v) => apply_bridge_filter("context", v, metadata),
         SgFilter::Timeout(v) => apply_bridge_filter("timeout", v, metadata),
         SgFilter::Before(v) => apply_bridge_filter("before", v, metadata),
@@ -712,6 +715,12 @@ fn apply_bridge_filter(
         "timeout" => {
             metadata.timeout_ms = Some(parse_timeout_ms(value)?);
         }
+        "index" => {
+            metadata.index_mode = Some(lower_yes_no_only_filter("index", value)?);
+        }
+        "boost" => {
+            metadata.boost_millis = Some(parse_boost_millis(value)?);
+        }
         "patterntype" => {
             metadata.pattern_type = Some(match value {
                 "literal" => LqPatternType::Literal,
@@ -794,6 +803,24 @@ fn parse_timeout_ms(value: &str) -> Result<u64, BridgeError> {
             "bridge: invalid timeout `{value}`: duration exceeds u64 milliseconds"
         ))
     })
+}
+
+fn parse_boost_millis(value: &str) -> Result<u32, BridgeError> {
+    let parsed: f64 = value.parse().map_err(|err| {
+        BridgeError::translate_fail(format!("bridge: invalid boost `{value}`: {err}"))
+    })?;
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(BridgeError::translate_fail(format!(
+            "bridge: invalid boost `{value}`: value must be a positive decimal"
+        )));
+    }
+    let scaled = (parsed * 1000.0).round();
+    if !scaled.is_finite() || scaled <= 0.0 || scaled > f64::from(u32::MAX) {
+        return Err(BridgeError::translate_fail(format!(
+            "bridge: invalid boost `{value}`: exceeds canonical precision/range"
+        )));
+    }
+    Ok(scaled as u32)
 }
 
 fn split_timeout_value(value: &str) -> Option<(&str, &str)> {
@@ -988,21 +1015,15 @@ mod tests {
     }
 
     #[test]
-    fn index_no_is_refused_but_yes_and_only_are_dropped() {
-        match translate_query(parse("index:no foo"), &ver(), "index:no foo".len()) {
-            Ok(_) => assert!(false, "index:no must refuse"),
-            Err(e) => {
-                assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
-                match e.source_construct.as_deref() {
-                    Some("index:no") => {}
-                    None => assert!(false, "expected source_construct"),
-                    Some(_) => assert!(false, "expected index:no construct"),
-                }
-            }
-        }
-
-        for sg in ["index:yes foo", "index:only foo"] {
+    fn index_filter_lowers_into_canonical_option() {
+        let lowered = run("index:no foo");
+        assert_eq!(lowered.options.index_mode, Some(LqYesNoOnly::No));
+        for (sg, expected) in [
+            ("index:yes foo", LqYesNoOnly::Yes),
+            ("index:only foo", LqYesNoOnly::Only),
+        ] {
             let lowered = run(sg);
+            assert_eq!(lowered.options.index_mode, Some(expected));
             assert_eq!(
                 lowered.expr,
                 LqExpr::Leaf(LqLeaf::Keyword("foo".to_string()))
@@ -1011,17 +1032,9 @@ mod tests {
     }
 
     #[test]
-    fn boost_is_typed_refusal() {
-        match translate_query(parse("boost:5 foo"), &ver(), "boost:5 foo".len()) {
-            Ok(_) => assert!(false, "boost:5 foo must refuse"),
-            Err(e) => {
-                assert_eq!(e.code, BridgeErrorCode::BridgeUnsupportedDirective);
-                match e.source_construct.as_deref() {
-                    Some(s) => assert_eq!(s, "boost:5"),
-                    None => assert!(false, "expected source_construct"),
-                }
-            }
-        }
+    fn boost_lowers_into_canonical_option() {
+        let lowered = run("boost:5 foo");
+        assert_eq!(lowered.options.boost_millis, Some(5000));
     }
 
     #[test]

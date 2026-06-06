@@ -52,6 +52,8 @@ use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
 };
 
+const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
+
 pub struct SearchdRuntimeParts {
     pub lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
@@ -82,6 +84,12 @@ impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
             message: "query-time embedder is not configured for this runtime".to_string(),
         })
     }
+}
+
+struct NoopQueryObsSink;
+
+impl QueryObsSink for NoopQueryObsSink {
+    fn emit(&self, _sample: quanta_index_search_plane::MetricSample) {}
 }
 
 fn build_query_text_embedder(
@@ -275,6 +283,10 @@ fn chunk_matches_structural_filters(
                 let path_match = regex.is_match(path);
                 let matched = match scope {
                     LqFileScope::PathOnly => path_match,
+                    LqFileScope::NameOnly => path
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| regex.is_match(name)),
                     LqFileScope::NameAndPath => {
                         path_match
                             || path
@@ -530,7 +542,12 @@ impl SearchdRuntime {
         );
 
         let query_obs_store = Arc::new(BoundedQueryObsStore::default());
-        let query_obs_sink: Arc<dyn QueryObsSink + Send + Sync> = query_obs_store.clone();
+        let query_obs_sink: Arc<dyn QueryObsSink + Send + Sync> =
+            if std::env::var_os(BENCH_DISABLE_QUERY_OBS_ENV).is_some() {
+                Arc::new(NoopQueryObsSink)
+            } else {
+                query_obs_store.clone()
+            };
         let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
             lex_open_port,
             sem_open_port,

@@ -974,7 +974,7 @@ min = 5
 max = 5
 
 [[row]]
-id = "runtime_sourcegraph_repo_has_meta_regex_typed_fail"
+id = "runtime_sourcegraph_repo_has_meta_regex_key_value"
 query = "repo:has.meta(/license/:/apache.*/) shared_oracle_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
@@ -983,15 +983,91 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
-runtime_error_message_contains = "regex"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_meta_regex_key_only"
+query = "repo:has.meta(/license/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path", "corp_b_doc", "corp_b_path_lang", "corp_b_name_only"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 5
+max = 5
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_meta_invalid_regex_typed_fail"
+query = "repo:has.meta(/license(/:/apache.*/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+runtime_error_code = "LEX_REGEX_PARSE_FAIL"
+runtime_error_message_contains = "failed to compile"
 top_k = 10
 
 [row.expected]
 kind = "empty"
 
 [[row]]
-id = "runtime_sourcegraph_repo_has_description_typed_fail"
+id = "runtime_sourcegraph_repo_has_meta_regex_key_exact_value"
+query = "repo:has.meta(/licens./:apache-2.0) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_meta_exact_key_regex_value"
+query = "repo:has.meta(license:/apache.*/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["repo.has.meta"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_repo_has_description_authority_unavailable"
 query = "repo:has.description(enginecorp) shared_oracle_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
@@ -1000,8 +1076,8 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
-runtime_error_message_contains = "repo.has.description"
+runtime_error_code = "REPO_DESCRIPTION_UNAVAILABLE"
+runtime_error_message_contains = "requires materialized source-repo repo description authority"
 top_k = 10
 
 [row.expected]
@@ -1119,8 +1195,8 @@ expected_engines_touched = ["lexical"]
 kind = "single"
 
 [[row]]
-id = "runtime_sourcegraph_file_has_contributor_regex_typed_fail"
-query = "file:has.contributor(/ali.*/) shared_oracle_needle"
+id = "runtime_sourcegraph_file_has_contributor_regex_positive"
+query = "file:has.contributor(/alice@example\\.com/) shared_oracle_needle"
 gate = "active"
 engines = ["lexical_content", "sourcegraph_lowering"]
 filters = ["file.has.contributor"]
@@ -1128,12 +1204,33 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
-runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
-runtime_error_message_contains = "regex"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 2
+max = 2
+
+[[row]]
+id = "runtime_sourcegraph_file_has_contributor_name_regex_positive"
+query = "file:has.contributor(/alice examp.*/) shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["file.has.contributor"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 2
+max = 2
 
 [[row]]
 id = "runtime_native_case_sensitive_miss"
@@ -1681,8 +1778,8 @@ top_k = 10
 kind = "empty"
 
 [[row]]
-id = "runtime_native_file_contains_scoped_or_typed_fail"
-query = "file.contains(path:docs/colors.md, \"lemon yellow banana\") OR alpha_content_needle"
+id = "runtime_native_file_contains_scoped_or_hit"
+query = "file.contains(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token"
 gate = "active"
 engines = ["lexical_phrase", "boolean:or"]
 filters = ["file.contains", "path", "boolean:or"]
@@ -1690,11 +1787,29 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-runtime_error_code = "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED"
+expected_ids = ["delta_phrase"]
 top_k = 10
+expected_engines_touched = ["lexical"]
 
 [row.expected]
-kind = "empty"
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_contains_scoped_or_hit"
+query = "file:contains(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_phrase", "boolean:or", "sourcegraph_lowering"]
+filters = ["file.contains", "path", "boolean:or"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
 
 [[row]]
 id = "runtime_native_repo_has_content_scoped_typed_fail"
@@ -1729,8 +1844,8 @@ top_k = 10
 kind = "empty"
 
 [[row]]
-id = "runtime_native_file_contains_scoped_not_typed_fail"
-query = "NOT file.contains(path:docs/colors.md, \"lemon yellow banana\")"
+id = "runtime_native_file_contains_scoped_not_empty"
+query = "ripens NOT file.contains(path:docs/colors.md, \"lemon yellow banana\")"
 gate = "active"
 engines = ["lexical_phrase", "boolean:not"]
 filters = ["file.contains", "path", "boolean:not"]
@@ -1738,14 +1853,30 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-runtime_error_code = "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED"
+expected_ids = []
 top_k = 10
 
 [row.expected]
 kind = "empty"
 
 [[row]]
-id = "runtime_native_file_contains_scoped_unknown_matcher_typed_fail"
+id = "runtime_sourcegraph_file_contains_scoped_not_empty"
+query = "ripens NOT file:contains(path:docs/colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "boolean:not", "sourcegraph_lowering"]
+filters = ["file.contains", "path", "boolean:not"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_file_contains_scoped_name_hit"
 query = "file.contains(name:colors.md, \"lemon yellow banana\")"
 gate = "active"
 engines = ["lexical_phrase"]
@@ -1754,11 +1885,129 @@ syntax = "native"
 classification = "runtime"
 runtime_route = "text"
 fixture = "docs-main.toml"
-runtime_error_code = "LEX_PREDICATE_UNIMPLEMENTED"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_contains_scoped_name_hit"
+query = "file:contains(name:colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.contains", "name"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_or_hit"
+query = "file.has.content(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_phrase", "boolean:or"]
+filters = ["file.has.content", "path", "boolean:or"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_or_hit"
+query = "file:has.content(path:docs/colors.md, \"lemon yellow banana\") OR missing_corpus_token"
+gate = "active"
+engines = ["lexical_phrase", "boolean:or", "sourcegraph_lowering"]
+filters = ["file.has.content", "path", "boolean:or"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_not_empty"
+query = "ripens NOT file.has.content(path:docs/colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "boolean:not"]
+filters = ["file.has.content", "path", "boolean:not"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
 top_k = 10
 
 [row.expected]
 kind = "empty"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_not_empty"
+query = "ripens NOT file:has.content(path:docs/colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "boolean:not", "sourcegraph_lowering"]
+filters = ["file.has.content", "path", "boolean:not"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = []
+top_k = 10
+
+[row.expected]
+kind = "empty"
+
+[[row]]
+id = "runtime_native_file_has_content_scoped_name_hit"
+query = "file.has.content(name:colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase"]
+filters = ["file.has.content", "name"]
+syntax = "native"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_file_has_content_scoped_name_hit"
+query = "file:has.content(name:colors.md, \"lemon yellow banana\")"
+gate = "active"
+engines = ["lexical_phrase", "sourcegraph_lowering"]
+filters = ["file.has.content", "name"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-main.toml"
+expected_ids = ["delta_phrase"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "single"
 
 [[row]]
 id = "runtime_native_file_contains_multiple_scalars_typed_fail"
@@ -2973,7 +3222,7 @@ kind = "empty"
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_contains_path_and"
-query = "patterntype:structural file:contains(path:src/main.rs, \"fn main\") AND \"function_item { { identifier :[name] } }\""
+query = "patterntype:structural file:contains(path:src/main.rs, main) AND \"function_item { { identifier :[name] } }\""
 gate = "active"
 engines = ["structural", "sourcegraph_lowering"]
 filters = ["structural", "mixed", "predicate", "file.contains"]
@@ -2982,15 +3231,17 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.contains` is unsupported"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
 
 [row.expected]
-kind = "empty"
+kind = "single"
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_contains_path_or"
-query = "patterntype:structural file:contains(path:src/main.rs, \"fn main\") OR \"trait_item\""
+query = "patterntype:structural file:contains(path:src/main.rs, main) OR \"trait_item\""
 gate = "active"
 engines = ["structural", "boolean:or", "sourcegraph_lowering"]
 filters = ["structural", "boolean:or", "mixed", "predicate", "file.contains"]
@@ -2999,15 +3250,17 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.contains` is unsupported"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 2
+max = 2
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_contains_path_and_not"
-query = "patterntype:structural \"identifier :[name]\" AND NOT file:contains(path:src/main.rs, \"fn main\")"
+query = "patterntype:structural \"identifier :[name]\" AND NOT file:contains(path:src/main.rs, main)"
 gate = "active"
 engines = ["structural", "boolean:not", "sourcegraph_lowering"]
 filters = ["structural", "boolean:not", "mixed", "predicate", "file.contains"]
@@ -3016,15 +3269,14 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.contains` is unsupported"
+expected_ids = []
 
 [row.expected]
 kind = "empty"
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_has_content_path_and"
-query = "patterntype:structural file:has.content(path:src/main.rs, \"fn main\") AND \"function_item { { identifier :[name] } }\""
+query = "patterntype:structural file:has.content(path:src/main.rs, main) AND \"function_item { { identifier :[name] } }\""
 gate = "active"
 engines = ["structural", "sourcegraph_lowering"]
 filters = ["structural", "mixed", "predicate", "file.has.content"]
@@ -3033,15 +3285,17 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.has.content` is unsupported"
+expected_ids = ["struct_fn_main"]
+expected_bindings = [[
+  { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+]]
 
 [row.expected]
-kind = "empty"
+kind = "single"
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_has_content_path_or"
-query = "patterntype:structural file:has.content(path:src/main.rs, \"fn main\") OR \"trait_item\""
+query = "patterntype:structural file:has.content(path:src/main.rs, main) OR \"trait_item\""
 gate = "active"
 engines = ["structural", "boolean:or", "sourcegraph_lowering"]
 filters = ["structural", "boolean:or", "mixed", "predicate", "file.has.content"]
@@ -3050,15 +3304,17 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.has.content` is unsupported"
+expected_ids = ["struct_fn_main", "struct_trait_main"]
+expected_bindings = [[], []]
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 2
+max = 2
 
 [[row]]
 id = "runtime_sourcegraph_structural_file_has_content_path_and_not"
-query = "patterntype:structural \"identifier :[name]\" AND NOT file:has.content(path:src/main.rs, \"fn main\")"
+query = "patterntype:structural \"identifier :[name]\" AND NOT file:has.content(path:src/main.rs, main)"
 gate = "active"
 engines = ["structural", "boolean:not", "sourcegraph_lowering"]
 filters = ["structural", "boolean:not", "mixed", "predicate", "file.has.content"]
@@ -3067,14 +3323,13 @@ classification = "runtime"
 runtime_route = "structural"
 fixture = "docs-structural-main.toml"
 top_k = 10
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`file.has.content` is unsupported"
+expected_ids = []
 
 [row.expected]
 kind = "empty"
 
 [[row]]
-id = "runtime_sourcegraph_structural_symbol_has_name_and_typed_fail"
+id = "runtime_sourcegraph_structural_symbol_has_name_and"
 query = "patterntype:structural symbol:has.name(MyTypeSymbol) AND \"function_item { { identifier :[name] } }\""
 gate = "active"
 engines = ["structural", "sourcegraph_lowering"]
@@ -3082,16 +3337,20 @@ filters = ["structural", "mixed", "predicate", "symbol.has.name"]
 syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "structural"
-fixture = "docs-structural-main.toml"
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`symbol.has.name` is unsupported"
+fixture = "docs-structural-symbol.toml"
 top_k = 10
+expected_ids = ["struct_symbol_main"]
+expected_bindings = [
+  [
+    { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
+  ]
+]
 
 [row.expected]
-kind = "empty"
+kind = "single"
 
 [[row]]
-id = "runtime_sourcegraph_structural_symbol_has_name_or_typed_fail"
+id = "runtime_sourcegraph_structural_symbol_has_name_or"
 query = "patterntype:structural symbol:has.name(MyTypeSymbol) OR \"trait_item\""
 gate = "active"
 engines = ["structural", "boolean:or", "sourcegraph_lowering"]
@@ -3099,16 +3358,18 @@ filters = ["structural", "boolean:or", "mixed", "predicate", "symbol.has.name"]
 syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "structural"
-fixture = "docs-structural-main.toml"
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`symbol.has.name` is unsupported"
+fixture = "docs-structural-symbol.toml"
 top_k = 10
+expected_ids = ["struct_symbol_main"]
+expected_bindings = [[]]
 
 [row.expected]
-kind = "empty"
+kind = "multi"
+min = 1
+max = 1
 
 [[row]]
-id = "runtime_sourcegraph_structural_symbol_has_name_and_not_typed_fail"
+id = "runtime_sourcegraph_structural_symbol_has_name_and_not"
 query = "patterntype:structural \"identifier :[name]\" AND NOT symbol:has.name(MyTypeSymbol)"
 gate = "active"
 engines = ["structural", "boolean:not", "sourcegraph_lowering"]
@@ -3116,10 +3377,9 @@ filters = ["structural", "boolean:not", "mixed", "predicate", "symbol.has.name"]
 syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "structural"
-fixture = "docs-structural-main.toml"
-runtime_error_code = "BRIDGE_TRANSLATE_FAIL"
-runtime_error_message_contains = "`symbol.has.name` is unsupported"
+fixture = "docs-structural-symbol.toml"
 top_k = 10
+expected_ids = []
 
 [row.expected]
 kind = "empty"
@@ -3518,7 +3778,7 @@ top_k = 10
 kind = "single"
 
 [[row]]
-id = "runtime_sourcegraph_runtime_dirty_only_unsupported"
+id = "runtime_sourcegraph_runtime_dirty_only"
 query = "dirty:only todo"
 gate = "active"
 engines = ["runtime_metadata"]
@@ -3527,12 +3787,11 @@ syntax = "sourcegraph"
 classification = "runtime"
 runtime_route = "runtime_metadata"
 fixture = "docs-main.toml"
-runtime_error_code = "RUNTIME_DIRTY_ONLY_UNSUPPORTED"
-runtime_error_message_contains = "dirty:only"
+expected_ids = ["iota_dirty"]
 top_k = 10
 
 [row.expected]
-kind = "empty"
+kind = "single"
 
 [[row]]
 id = "runtime_sourcegraph_runtime_dirty_missing_filter"

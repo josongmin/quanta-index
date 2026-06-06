@@ -2752,7 +2752,7 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
 }
 
 #[test]
-fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() -> TestResult {
+fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
 
@@ -2940,15 +2940,17 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
         }),
         LqExpr::Leaf(LqLeaf::Keyword("alpha_content_needle".to_string())),
     ]));
-    match searcher.search(&or_query, 10) {
-        Err(CoreError::Typed { code, .. })
-            if code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED" => {}
-        other => {
-            return Err(format!(
-                "expected scoped file.contains OR to fail closed with LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED, got {other:?}"
-            )
-            .into());
-        }
+    let mut or_ids: Vec<String> = searcher
+        .search(&or_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    or_ids.sort();
+    if or_ids != vec!["alpha".to_string(), "phrase_hit".to_string()] {
+        return Err(format!(
+            "expected scoped file.contains OR to hit [alpha, phrase_hit], got {or_ids:?}"
+        )
+        .into());
     }
 
     let not_query = make_query(LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
@@ -2961,15 +2963,23 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
             LqPredicateArg::Phrase("lemon yellow banana".to_string()),
         ],
     }))));
-    match searcher.search(&not_query, 10) {
-        Err(CoreError::Typed { code, .. })
-            if code == "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED" => {}
-        other => {
-            return Err(format!(
-                "expected scoped file.contains NOT to fail closed with LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED, got {other:?}"
-            )
-            .into());
-        }
+    let mut not_ids: Vec<String> = searcher
+        .search(&not_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    not_ids.sort();
+    if not_ids
+        != vec![
+            "alpha".to_string(),
+            "phrase_miss".to_string(),
+            "regex_hit".to_string(),
+        ]
+    {
+        return Err(format!(
+            "expected scoped file.contains NOT to exclude only phrase_hit, got {not_ids:?}"
+        )
+        .into());
     }
 
     let bad_matcher_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
@@ -2982,14 +2992,16 @@ fn tantivy_executes_scoped_file_content_predicates_and_fails_closed_in_or_not() 
             LqPredicateArg::Phrase("lemon yellow banana".to_string()),
         ],
     }));
-    match searcher.search(&bad_matcher_query, 10) {
-        Err(CoreError::Typed { code, .. }) if code == "LEX_PREDICATE_UNIMPLEMENTED" => {}
-        other => {
-            return Err(format!(
-                "expected file.contains(name:...) to fail closed with LEX_PREDICATE_UNIMPLEMENTED, got {other:?}"
-            )
-            .into());
-        }
+    let matcher_ids: Vec<String> = searcher
+        .search(&bad_matcher_query, 10)?
+        .into_iter()
+        .map(|hit| hit.candidate_id)
+        .collect();
+    if matcher_ids != vec!["phrase_hit".to_string()] {
+        return Err(format!(
+            "expected file.contains(name:...) to hit [phrase_hit], got {matcher_ids:?}"
+        )
+        .into());
     }
 
     let multiple_scalars_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
@@ -3053,6 +3065,90 @@ fn tantivy_search_all_materializes_full_scope() -> TestResult {
     if ids != vec!["c1".to_string(), "c2".to_string(), "c3".to_string()] {
         return Err(format!("expected full scope ids [c1, c2, c3], got {ids:?}").into());
     }
+    Ok(())
+}
+
+#[test]
+fn tantivy_executes_index_no_full_scan_with_scoped_content_predicate() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert_with_metadata("alpha", "src/lib.rs", "rust", 1, 2, "needle alpha")?,
+        upsert_with_metadata("beta", "src/main.rs", "rust", 1, 2, "needle beta")?,
+        upsert_with_metadata("gamma", "docs/readme.md", "markdown", 1, 2, "needle gamma")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let mut query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: r"lib\.rs".to_string(),
+            },
+            LqPredicateArg::Keyword("needle".to_string()),
+        ],
+    }));
+    query.options.index_mode = Some(LqYesNoOnly::No);
+
+    let hits = searcher.search(&query, 10)?;
+    let ids: Vec<String> = hits.into_iter().map(|hit| hit.candidate_id).collect();
+    if ids != ["alpha".to_string()] {
+        return Err(format!(
+            "expected index:no scoped content predicate to match [alpha], got {ids:?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tantivy_applies_query_boost_to_scores() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+
+    let ops = vec![
+        upsert("alpha", "boosted needle alpha")?,
+        upsert("beta", "boosted miss")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let baseline_query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+    let baseline_hits = searcher.search(&baseline_query, 10)?;
+    let baseline_first = baseline_hits
+        .first()
+        .ok_or("baseline boost test returned no hits")?;
+
+    let mut boosted_query = baseline_query.clone();
+    boosted_query.options.boost_millis = Some(5_000);
+    let boosted_hits = searcher.search(&boosted_query, 10)?;
+    let boosted_first = boosted_hits
+        .first()
+        .ok_or("boosted query returned no hits")?;
+
+    if boosted_hits
+        .iter()
+        .map(|hit| hit.candidate_id.clone())
+        .collect::<Vec<_>>()
+        != baseline_hits
+            .iter()
+            .map(|hit| hit.candidate_id.clone())
+            .collect::<Vec<_>>()
+    {
+        return Err("boost changed ranked candidate ids".into());
+    }
+    if boosted_first.score <= baseline_first.score {
+        return Err(format!(
+            "expected boost to increase score magnitude, baseline={} boosted={}",
+            baseline_first.score, boosted_first.score
+        )
+        .into());
+    }
+
     Ok(())
 }
 

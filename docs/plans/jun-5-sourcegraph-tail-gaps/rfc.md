@@ -22,6 +22,7 @@ External comparison baseline:
 This packet is a follow-on backlog packet. It does not reopen:
 
 - [../jun-4-sourcegraph-parity/rfc.md](../jun-4-sourcegraph-parity/rfc.md)
+- final widening closeout lives in [../jun-6-sourcegraph-expansion/rfc.md](../jun-6-sourcegraph-expansion/rfc.md)
 
 ## 1. Scope Lock
 
@@ -48,7 +49,6 @@ Tail gaps owned here:
 - `repo:has.meta(key)`
 - `repo:has.meta(tag:)`
 - `repo:has.meta(/key/:/value/)` regex key/value semantics
-- `file:has.contributor(<name-or-email regex>)`
 - SG structural direct lexical `Phrase` sibling
 - SG structural direct lexical `Regex` sibling
 - SG structural mixed non-repo predicate sibling
@@ -98,7 +98,7 @@ Execution ordering rule:
 - `jun-4-sourcegraph-parity` mandatory residue:
   - 없음
 - tail-gap mandatory residue:
-  - this packet
+  - 없음
 
 ## 6. Ticket Index
 

@@ -23,9 +23,10 @@ use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    FileContributorEntry, FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch,
-    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry,
-    RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch,
+    FileContributorEntry, FileContributorIdentityEntry, FileContributorIngestBatch,
+    FileOwnershipEntry, FileOwnershipIngestBatch, RepoCommitRecencyEntry,
+    RepoCommitRecencyIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch,
 };
 use quanta_index_contract::{LqVisibility, SearchExplanation, TextQuerySyntax};
 use quanta_index_corpus_smoke::{
@@ -125,7 +126,14 @@ struct FixtureFileOwnershipSpec {
 struct FixtureFileContributorSpec {
     source_repo_id: String,
     repo_relative_path: String,
-    contributors: Vec<String>,
+    contributors: Vec<FixtureFileContributorIdentitySpec>,
+}
+
+#[derive(Clone)]
+struct FixtureFileContributorIdentitySpec {
+    canonical: String,
+    name: Option<String>,
+    email: Option<String>,
 }
 
 struct FixtureDirtySpec {
@@ -981,14 +989,62 @@ fn parse_file_contributor_specs(
             Some(Value::Array(items)) => items
                 .iter()
                 .map(|item| match item {
-                    Value::String(value) => Ok(value.clone()),
+                    Value::String(value) => Ok(FixtureFileContributorIdentitySpec {
+                        canonical: value.clone(),
+                        name: None,
+                        email: None,
+                    }),
+                    Value::Table(fields) => Ok(FixtureFileContributorIdentitySpec {
+                        canonical: fields
+                            .get("canonical")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "fixture {} [[file_contributor]].contributors table must carry string `canonical`",
+                                    path.display()
+                                )
+                            })?
+                            .to_string(),
+                        name: match fields.get("name") {
+                            Some(Value::String(value)) => Some(value.clone()),
+                            Some(Value::Integer(_)
+                            | Value::Float(_)
+                            | Value::Boolean(_)
+                            | Value::Datetime(_)
+                            | Value::Array(_)
+                            | Value::Table(_)) => {
+                                return Err(anyhow::anyhow!(
+                                    "fixture {} [[file_contributor]].contributors.name must be a string when present",
+                                    path.display()
+                                ));
+                            }
+                            None => None,
+                        },
+                        email: match fields.get("email") {
+                            Some(Value::String(value)) => Some(value.clone()),
+                            Some(Value::Integer(_)
+                            | Value::Float(_)
+                            | Value::Boolean(_)
+                            | Value::Datetime(_)
+                            | Value::Array(_)
+                            | Value::Table(_)) => {
+                                return Err(anyhow::anyhow!(
+                                    "fixture {} [[file_contributor]].contributors.email must be a string when present",
+                                    path.display()
+                                ));
+                            }
+                            None => None,
+                        },
+                    }),
                     other @ (Value::Integer(_)
                     | Value::Float(_)
                     | Value::Boolean(_)
-                    | Value::Datetime(_)
-                    | Value::Array(_)
-                    | Value::Table(_)) => Err(anyhow::anyhow!(
-                        "fixture {} [[file_contributor]].contributors entries must be strings, got {other:?}",
+                    | Value::Datetime(_)) => Err(anyhow::anyhow!(
+                        "fixture {} [[file_contributor]].contributors entries must be strings or tables, got {other:?}",
+                        path.display()
+                    )),
+                    Value::Array(_) => Err(anyhow::anyhow!(
+                        "fixture {} [[file_contributor]].contributors entries must not be arrays",
                         path.display()
                     )),
                 })
@@ -1366,7 +1422,16 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
                 .map(|entry| FileContributorEntry {
                     source_repo_id: RepoId::new(&entry.source_repo_id),
                     repo_relative_path: RepoRelativePath::new(&entry.repo_relative_path),
-                    contributors: entry.contributors.clone(),
+                    contributors: entry
+                        .contributors
+                        .iter()
+                        .cloned()
+                        .map(|identity| FileContributorIdentityEntry {
+                            canonical: identity.canonical,
+                            name: identity.name,
+                            email: identity.email,
+                        })
+                        .collect(),
                 })
                 .collect(),
         })?;

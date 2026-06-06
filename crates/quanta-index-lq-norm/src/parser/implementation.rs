@@ -652,6 +652,26 @@ impl Parser<'_> {
                 self.options.timeout_ms = Some(parse_timeout_ms(value, span)?);
                 Ok(())
             }
+            "index" => {
+                let mode = match value {
+                    "yes" => LqYesNoOnly::Yes,
+                    "no" => LqYesNoOnly::No,
+                    "only" => LqYesNoOnly::Only,
+                    _ => {
+                        return Err(LqParseError::new(
+                            LqParseErrorCode::InvalidFilterValue,
+                            span,
+                            "index: value not in {yes,no,only}",
+                        ));
+                    }
+                };
+                self.options.index_mode = Some(mode);
+                Ok(())
+            }
+            "boost" => {
+                self.options.boost_millis = Some(parse_boost_millis(value, span)?);
+                Ok(())
+            }
             "patterntype" => {
                 if self.seen_pattern_type {
                     return Err(LqParseError::new(
@@ -757,6 +777,32 @@ fn parse_timeout_ms(value: &str, span: LqSpan) -> Result<u64, LqParseError> {
             "timeout: duration exceeds u64 milliseconds",
         )
     })
+}
+
+fn parse_boost_millis(value: &str, span: LqSpan) -> Result<u32, LqParseError> {
+    let parsed: f64 = value.parse().map_err(|_err| {
+        LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "boost: value must be a positive decimal",
+        )
+    })?;
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "boost: value must be a positive decimal",
+        ));
+    }
+    let scaled = (parsed * 1000.0).round();
+    if !scaled.is_finite() || scaled <= 0.0 || scaled > f64::from(u32::MAX) {
+        return Err(LqParseError::new(
+            LqParseErrorCode::InvalidFilterValue,
+            span,
+            "boost: value exceeds canonical precision/range",
+        ));
+    }
+    Ok(scaled as u32)
 }
 
 fn split_timeout_value(value: &str) -> Option<(&str, &str)> {
@@ -1887,6 +1933,7 @@ mod tests {
     use super::parse;
     use crate::ast::{
         LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType, LqType,
+        LqYesNoOnly,
     };
     use crate::errors::LqParseErrorCode;
     use crate::tokenizer::tokenize;
@@ -2130,6 +2177,18 @@ mod tests {
     fn into_codeql_emits_directive() {
         let q = parse_input("Iterator into:codeql");
         assert_eq!(q.directives, vec![LqDirective::IntoCodeQl]);
+    }
+
+    #[test]
+    fn index_mode_propagates_to_options() {
+        let q = parse_input("index:no foo");
+        assert_eq!(q.options.index_mode, Some(LqYesNoOnly::No));
+    }
+
+    #[test]
+    fn boost_propagates_to_options() {
+        let q = parse_input("boost:2.5 foo");
+        assert_eq!(q.options.boost_millis, Some(2500));
     }
 
     #[test]

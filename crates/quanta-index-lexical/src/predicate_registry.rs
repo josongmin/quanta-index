@@ -35,8 +35,6 @@ pub(crate) const PREDICATE_UNIMPLEMENTED_CODE: &str = "LEX_PREDICATE_UNIMPLEMENT
 
 /// Follow-up owner referenced by predicate typed-reject diagnostics.
 pub(crate) const PREDICATE_OWNER: &str = "LXE-03-predicate-extensions";
-pub(crate) const PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED_CODE: &str =
-    "LEX_PREDICATE_SCOPED_BOOLEAN_UNSUPPORTED";
 
 /// Lowering target classification for a registered predicate.
 ///
@@ -443,17 +441,18 @@ pub(crate) fn parse_timeref_scalar_arg(
     }
 }
 
+/// A validated exact-or-regex metadata matcher.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MetaPattern {
+    Exact(String),
+    Regex(String),
+}
+
 /// A validated `repo.has.meta(...)` argument.
-///
-/// v1 admits only exact `key:value` equality.
-///
-/// `None` remains in the shape so future widening can add key-existence
-/// semantics without rewriting every owner seam, but the current shipped
-/// parser/executor still fails closed on key-only and empty-value inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepoMetaArg {
-    pub key: String,
-    pub value: Option<String>,
+    pub key: MetaPattern,
+    pub value: Option<MetaPattern>,
 }
 
 /// A validated `repo.has.topic(topic)` argument.
@@ -479,7 +478,14 @@ pub(crate) struct FileOwnerArg {
 /// A validated `file.has.contributor` argument.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileContributorArg {
-    pub contributor: String,
+    pub contributor: ContributorPattern,
+}
+
+/// The `file.has.contributor` textual pattern shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ContributorPattern {
+    Exact(String),
+    Regex(String),
 }
 
 /// Why a `file.has.owner` argument set is not admissible.
@@ -496,11 +502,6 @@ pub(crate) enum FileContributorArgError {
     WrongArity,
     UnsupportedArg,
     EmptyContributor,
-    /// The contributor identity was wrapped in `/.../ ` regex delimiters
-    /// (`file:has.contributor(/name/)`). The contributor authority is an
-    /// exact-string set with no name/email split and no regex engine, so regex
-    /// contributor matching is unsupported.
-    RegexUnsupported,
 }
 
 /// Why a `repo.has.topic` argument set is not admissible.
@@ -529,15 +530,9 @@ pub(crate) enum RepoMetaArgError {
     /// Not exactly one positional argument.
     WrongArity,
     /// The single argument was not an admitted meta shape — i.e. a numeric arg.
-    /// (`key:value` equality is admitted; bare `key` existence stays a deferred
-    /// SGX-03 shape and `/.../ ` regex is a distinct typed-fail.)
     UnsupportedArg,
     /// The argument carried an empty/whitespace-only key (or bare empty token).
     EmptyKey,
-    /// The key or value was wrapped in `/.../ ` regex delimiters
-    /// (`repo:has.meta(/key/:/value/)`). The metadata authority is exact-string
-    /// only and carries no regex engine, so regex key/value is unsupported.
-    RegexUnsupported,
 }
 
 /// Whether a token is wrapped in `/.../ ` regex delimiters (a leading AND
@@ -557,13 +552,28 @@ fn is_regex_delimited(token: &str) -> bool {
     token.len() >= 2 && token.starts_with('/') && token.ends_with('/')
 }
 
+fn parse_meta_pattern(token: &str) -> MetaPattern {
+    let token = token.trim();
+    if is_regex_delimited(token) {
+        MetaPattern::Regex(token[1..token.len() - 1].to_string())
+    } else {
+        MetaPattern::Exact(token.to_string())
+    }
+}
+
 /// Parse a `repo.has.meta(key:value)` argument.
 ///
-/// Single owner of the `repo.has.meta` argument contract: exactly one
-/// `key:value` filter is admitted, surfaced by the parser as
-/// [`LqPredicateArg::Filter`]. Key-only, tag/null-value, and regex shapes stay
-/// explicit typed-fail backlog cells. Both lexical lowering and planner
-/// validation route through here so the contract cannot diverge.
+/// Single owner of the `repo.has.meta` argument contract.
+///
+/// Admitted shapes:
+/// - `key:value`
+/// - `key`
+/// - `key:`
+/// - `/key/`
+/// - `/key/:`
+/// - `key:/value/`
+/// - `/key/:value`
+/// - `/key/:/value/`
 pub(crate) fn parse_repo_meta_arg(
     args: &[LqPredicateArg],
 ) -> Result<RepoMetaArg, RepoMetaArgError> {
@@ -575,36 +585,24 @@ pub(crate) fn parse_repo_meta_arg(
             if name.trim().is_empty() {
                 return Err(RepoMetaArgError::EmptyKey);
             }
-            // `/key/:/value/` regex syntax has no regex-capable authority on the
-            // exact-string substrate; fail closed rather than literal-matching
-            // the slashes. (Regex key/value remains the SGX-03 deferred shape.)
-            if is_regex_delimited(name) || is_regex_delimited(value) {
-                return Err(RepoMetaArgError::RegexUnsupported);
-            }
-            // SGX-03: empty value (`repo:has.meta(tag:)`) is key-existence, not a
-            // failure and not an empty-string match.
             let value = if value.trim().is_empty() {
                 None
             } else {
-                Some(value.clone())
+                Some(parse_meta_pattern(value))
             };
             Ok(RepoMetaArg {
-                key: name.clone(),
+                key: parse_meta_pattern(name),
                 value,
             })
         }
-        // SGX-03: a bare scalar (`repo:has.meta(license)`) is key-existence.
         LqPredicateArg::Keyword(value)
         | LqPredicateArg::Phrase(value)
         | LqPredicateArg::RawString(value) => {
             if value.trim().is_empty() {
                 return Err(RepoMetaArgError::EmptyKey);
             }
-            if is_regex_delimited(value) {
-                return Err(RepoMetaArgError::RegexUnsupported);
-            }
             Ok(RepoMetaArg {
-                key: value.clone(),
+                key: parse_meta_pattern(value),
                 value: None,
             })
         }
@@ -698,6 +696,7 @@ pub(crate) fn parse_file_owner_arg(
 ///
 /// Admitted shapes:
 /// - `file.has.contributor(<keyword|phrase|raw>)` => exact contributor identity
+/// - `file.has.contributor(/.../)` => name/email regex identity pattern
 pub(crate) fn parse_file_contributor_arg(
     args: &[LqPredicateArg],
 ) -> Result<FileContributorArg, FileContributorArgError> {
@@ -711,13 +710,13 @@ pub(crate) fn parse_file_contributor_arg(
             if value.trim().is_empty() {
                 return Err(FileContributorArgError::EmptyContributor);
             }
-            // `/name/` regex syntax has no regex-capable contributor authority;
-            // fail closed rather than literal-matching the slashes.
-            if is_regex_delimited(value) {
-                return Err(FileContributorArgError::RegexUnsupported);
-            }
             Ok(FileContributorArg {
-                contributor: value.clone(),
+                contributor: if is_regex_delimited(value) {
+                    let trimmed = value.trim();
+                    ContributorPattern::Regex(trimmed[1..trimmed.len() - 1].to_string())
+                } else {
+                    ContributorPattern::Exact(value.clone())
+                },
             })
         }
         LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
@@ -829,6 +828,15 @@ pub(crate) fn parse_content_predicate_constraint(
                     scope: LqFileScope::PathOnly,
                 });
             }
+            LqPredicateArg::Filter { name, value } if name == "name" => {
+                if path_scope.is_some() {
+                    return Err(ContentPredicateArgError::DuplicatePathScope);
+                }
+                path_scope = Some(ContentPathScope {
+                    pattern: value.clone(),
+                    scope: LqFileScope::NameOnly,
+                });
+            }
             LqPredicateArg::Filter { name, value } if name == "lang" => {
                 if value.trim().is_empty() {
                     return Err(ContentPredicateArgError::EmptyLanguageValue);
@@ -891,15 +899,15 @@ mod tests {
                 value: "MIT".to_string(),
             }]),
             Ok(RepoMetaArg {
-                key: "license".to_string(),
-                value: Some("MIT".to_string()),
+                key: MetaPattern::Exact("license".to_string()),
+                value: Some(MetaPattern::Exact("MIT".to_string())),
             })
         );
         // SGX-03: bare `key` is key-existence (value: None).
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Keyword("license".to_string())]),
             Ok(RepoMetaArg {
-                key: "license".to_string(),
+                key: MetaPattern::Exact("license".to_string()),
                 value: None,
             })
         );
@@ -933,7 +941,7 @@ mod tests {
                 value: String::new(),
             }]),
             Ok(RepoMetaArg {
-                key: "tag".to_string(),
+                key: MetaPattern::Exact("tag".to_string()),
                 value: None,
             })
         );
@@ -943,51 +951,59 @@ mod tests {
                 value: "   ".to_string(),
             }]),
             Ok(RepoMetaArg {
-                key: "license".to_string(),
+                key: MetaPattern::Exact("license".to_string()),
                 value: None,
             })
         );
     }
 
     #[test]
-    fn repo_meta_arg_rejects_slash_delimited_regex_shape() {
-        // SGT-03: `repo:has.meta(/key/:/value/)` is Sourcegraph regex key/value
-        // syntax. The metadata authority is an exact-string `BTreeMap` with no
-        // regex engine, so a `/.../`-delimited key or value must fail closed
-        // rather than silently exact-match the literal slashes.
+    fn repo_meta_arg_admits_slash_delimited_regex_shapes() {
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "/key/".to_string(),
                 value: "/value/".to_string(),
             }]),
-            Err(RepoMetaArgError::RegexUnsupported)
+            Ok(RepoMetaArg {
+                key: MetaPattern::Regex("key".to_string()),
+                value: Some(MetaPattern::Regex("value".to_string())),
+            })
         );
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "license".to_string(),
                 value: "/apache.*/".to_string(),
             }]),
-            Err(RepoMetaArgError::RegexUnsupported)
+            Ok(RepoMetaArg {
+                key: MetaPattern::Exact("license".to_string()),
+                value: Some(MetaPattern::Regex("apache.*".to_string())),
+            })
         );
-        // A regex KEY with a plain value is rejected too — the guard checks both
-        // operands, not just the value.
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "/key/".to_string(),
                 value: "plain".to_string(),
             }]),
-            Err(RepoMetaArgError::RegexUnsupported)
+            Ok(RepoMetaArg {
+                key: MetaPattern::Regex("key".to_string()),
+                value: Some(MetaPattern::Exact("plain".to_string())),
+            })
         );
-        // A value that merely contains a slash (path-like) is NOT regex syntax
-        // and must keep exact-string semantics.
+        assert_eq!(
+            parse_repo_meta_arg(&[LqPredicateArg::Keyword("/license/".to_string())]),
+            Ok(RepoMetaArg {
+                key: MetaPattern::Regex("license".to_string()),
+                value: None,
+            })
+        );
         assert_eq!(
             parse_repo_meta_arg(&[LqPredicateArg::Filter {
                 name: "path".to_string(),
                 value: "/usr/bin".to_string(),
             }]),
             Ok(RepoMetaArg {
-                key: "path".to_string(),
-                value: Some("/usr/bin".to_string()),
+                key: MetaPattern::Exact("path".to_string()),
+                value: Some(MetaPattern::Exact("/usr/bin".to_string())),
             })
         );
     }
@@ -1290,13 +1306,13 @@ mod tests {
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Keyword("alice".to_string())]),
             Ok(FileContributorArg {
-                contributor: "alice".to_string(),
+                contributor: ContributorPattern::Exact("alice".to_string()),
             })
         );
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Phrase("carol@example.com".to_string())]),
             Ok(FileContributorArg {
-                contributor: "carol@example.com".to_string(),
+                contributor: ContributorPattern::Exact("carol@example.com".to_string()),
             })
         );
     }
@@ -1332,34 +1348,29 @@ mod tests {
     }
 
     #[test]
-    fn file_contributor_arg_rejects_slash_delimited_regex_shape() {
-        // SGT-04: Sourcegraph documents `file:has.contributor(<regex>)` as a
-        // name-or-email regex. This stack stores a flat, case-folded exact-string
-        // contributor set with no name/email split and no regex engine, so a
-        // `/.../ `-delimited arg must fail closed rather than silently exact-match
-        // the literal slashes to nothing (regex theater over exact strings).
+    fn file_contributor_arg_accepts_slash_delimited_regex_shape() {
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Keyword("/ali.*/".to_string())]),
-            Err(FileContributorArgError::RegexUnsupported)
+            Ok(FileContributorArg {
+                contributor: ContributorPattern::Regex("ali.*".to_string()),
+            })
         );
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Phrase("/carol@.*/".to_string())]),
-            Err(FileContributorArgError::RegexUnsupported)
+            Ok(FileContributorArg {
+                contributor: ContributorPattern::Regex("carol@.*".to_string()),
+            })
         );
-        // An exact identity that merely contains a slash is not regex syntax and
-        // keeps exact-string semantics.
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Keyword("a/b".to_string())]),
             Ok(FileContributorArg {
-                contributor: "a/b".to_string(),
+                contributor: ContributorPattern::Exact("a/b".to_string()),
             })
         );
-        // Boundary: a single leading slash is NOT a `/.../ ` delimiter pair, so
-        // it stays an exact identity rather than being misread as regex.
         assert_eq!(
             parse_file_contributor_arg(&[LqPredicateArg::Keyword("/x".to_string())]),
             Ok(FileContributorArg {
-                contributor: "/x".to_string(),
+                contributor: ContributorPattern::Exact("/x".to_string()),
             })
         );
     }
@@ -1423,6 +1434,31 @@ mod tests {
             })
         );
         assert_eq!(constraint.language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn content_predicate_constraint_accepts_name_scope_filter() {
+        let Ok(constraint) = parse_content_predicate_constraint(&[
+            LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: "colors.md".to_string(),
+            },
+            LqPredicateArg::Phrase("lemon yellow banana".to_string()),
+        ]) else {
+            assert!(false, "name-scoped content predicate accepted");
+            return;
+        };
+        assert_eq!(
+            constraint.path_scope,
+            Some(ContentPathScope {
+                pattern: "colors.md".to_string(),
+                scope: LqFileScope::NameOnly,
+            })
+        );
+        assert_eq!(
+            constraint.content,
+            ContentScalarArg::Phrase("lemon yellow banana".to_string())
+        );
     }
 
     #[test]

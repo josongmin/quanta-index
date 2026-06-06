@@ -274,7 +274,7 @@ mod tests {
 
     use super::*;
     use quanta_index_contract::{
-        LQ_VERSION_TAG, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
+        LQ_VERSION_TAG, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock, LqYesNoOnly,
     };
 
     fn make_query(expr: LqExpr, filters: Vec<LqFilter>, options: LqOptions) -> LqQuery {
@@ -330,6 +330,28 @@ mod tests {
             LqOptions::defaults(),
         );
         q.options.timeout_ms = Some(0);
+        assert!(LexicalPolicy::validate_query(&q).is_ok());
+    }
+
+    #[test]
+    fn index_no_is_canonical_and_policy_admitted() {
+        let mut q = make_query(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            Vec::new(),
+            LqOptions::defaults(),
+        );
+        q.options.index_mode = Some(LqYesNoOnly::No);
+        assert!(LexicalPolicy::validate_query(&q).is_ok());
+    }
+
+    #[test]
+    fn boost_is_canonical_and_policy_admitted() {
+        let mut q = make_query(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            Vec::new(),
+            LqOptions::defaults(),
+        );
+        q.options.boost_millis = Some(2500);
         assert!(LexicalPolicy::validate_query(&q).is_ok());
     }
 
