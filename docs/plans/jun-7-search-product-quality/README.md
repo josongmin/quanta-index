@@ -19,7 +19,7 @@ Read order:
 5. [COMMAND_AND_ARTIFACT_CONTRACT.md](COMMAND_AND_ARTIFACT_CONTRACT.md)
 6. [DUMB_LLM_EXECUTION_CHECKLIST.md](DUMB_LLM_EXECUTION_CHECKLIST.md)
 7. [rfc.md](rfc.md)
-8. [tickets/INDEX.md](tickets/INDEX.md)
+8. [tickets-wave2/INDEX.md](tickets-wave2/INDEX.md)
 
 Current packet target:
 

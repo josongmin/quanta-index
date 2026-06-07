@@ -141,6 +141,17 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         ]),
     },
     SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_meta_tag_existence",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.meta(license:) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-b",
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
         name: "sourcegraph_repo_has_meta_regex_key_value_positive",
         surface: SdkFrontdoorSurface::Lexical,
         syntax: TextQuerySyntax::Sourcegraph,
@@ -181,6 +192,16 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         }),
     },
     SdkFrontdoorScenario {
+        name: "sourcegraph_repo_has_description_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "repo:has.description(distributed) shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
         name: "sourcegraph_repo_has_topic_positive",
         surface: SdkFrontdoorSurface::Lexical,
         syntax: TextQuerySyntax::Sourcegraph,
@@ -217,6 +238,17 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         query_text: "file:has.owner(@alice) shared_oracle_needle",
         expected: SdkFrontdoorExpectation::CandidateIds(&[
             "chunk-recency-a",
+            "chunk-recency-a-gate",
+        ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_file_has_owner_existence_positive",
+        surface: SdkFrontdoorSurface::Lexical,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: "file:has.owner() shared_oracle_needle",
+        expected: SdkFrontdoorExpectation::CandidateIds(&[
+            "chunk-recency-a",
+            "chunk-recency-b",
             "chunk-recency-a-gate",
         ]),
     },
@@ -260,6 +292,20 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
             "chunk-recency-b",
             "chunk-recency-a-gate",
         ]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_direct_phrase_demotes_to_body",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural "function_item { { identifier :[name] } }""#,
+        expected: SdkFrontdoorExpectation::CandidateIds(&["chunk-tree"]),
+    },
+    SdkFrontdoorScenario {
+        name: "sourcegraph_structural_direct_regex_demotes_to_body",
+        surface: SdkFrontdoorSurface::Structural,
+        syntax: TextQuerySyntax::Sourcegraph,
+        query_text: r#"patterntype:structural /^main$/"#,
+        expected: SdkFrontdoorExpectation::CandidateIds(&["chunk-tree"]),
     },
     SdkFrontdoorScenario {
         name: "sourcegraph_structural_file_contains_path_and_positive",

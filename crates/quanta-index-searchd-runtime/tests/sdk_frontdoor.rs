@@ -39,8 +39,9 @@ use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
     FileContributorBatch, FileOwnershipBatch, LexicalBatch, ParseNode, ParseRoleTag,
-    ParseTreeRecord, QuantaIndex, RepoCommitRecencyBatch, RepoMetaBatch, RepoRelativePath,
-    RepoTopicBatch, SdkError, SearchScopeKey, SearchScopeSurface, StructuralBatch,
+    ParseTreeRecord, QuantaIndex, RepoCommitRecencyBatch, RepoDescriptionBatch, RepoMetaBatch,
+    RepoRelativePath, RepoTopicBatch, SdkError, SearchScopeKey, SearchScopeSurface,
+    StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
@@ -584,6 +585,17 @@ fn repo_topic_batch() -> RepoTopicBatch {
         .entry(RepoId::new("corp-a"), "security")
         .entry(RepoId::new("corp-a"), "platform")
         .entry(RepoId::new("corp-b"), "ml")
+}
+
+fn repo_description_batch() -> RepoDescriptionBatch {
+    RepoDescriptionBatch::new(
+        repo(),
+        revision(),
+        generation(),
+        "batch:repo-description-sdk",
+    )
+    .entry(RepoId::new("corp-a"), "Apache distributed systems platform")
+    .entry(RepoId::new("corp-b"), "Machine learning training pipelines")
 }
 
 fn file_ownership_batch() -> FileOwnershipBatch {
@@ -1230,7 +1242,7 @@ where
     loop {
         match run() {
             Ok(value) => return Ok(value),
-            Err(SdkError::Remote { code, message })
+            Err(SdkError::Remote { code, message, .. })
                 if code == "NOT_READY" && start.elapsed() < timeout =>
             {
                 drop(message);
@@ -1264,7 +1276,7 @@ where
         match run() {
             Ok(value) if ready(&value) || start.elapsed() >= timeout => return Ok(value),
             Ok(_value) => thread::sleep(Duration::from_millis(10)),
-            Err(SdkError::Remote { code, message })
+            Err(SdkError::Remote { code, message, .. })
                 if retry_codes.iter().any(|candidate| code == *candidate)
                     && start.elapsed() < timeout =>
             {
@@ -1290,7 +1302,7 @@ where
             Ok(_) => {
                 return Err("query unexpectedly succeeded while waiting for typed error".into());
             }
-            Err(SdkError::Remote { code, message })
+            Err(SdkError::Remote { code, message, .. })
                 if retry_codes.iter().any(|candidate| code == *candidate)
                     && start.elapsed() < timeout =>
             {
@@ -2616,6 +2628,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         .history()
         .publish_repo_commit_recency(&repo_commit_recency_batch()?)?;
     let _repo_meta_receipt = client.history().publish_repo_meta(&repo_meta_batch())?;
+    let _repo_description_receipt = client
+        .history()
+        .publish_repo_description(&repo_description_batch())?;
     let _repo_topic_receipt = client.history().publish_repo_topic(&repo_topic_batch())?;
     let _file_ownership_receipt = client
         .history()
@@ -2923,7 +2938,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     }
                 };
                 match err {
-                    SdkError::Remote { code, message }
+                    SdkError::Remote { code, message, .. }
                         if code == expected_error.code
                             && message.contains(expected_error.message_contains) => {}
                     other @ (SdkError::Usage(_)
@@ -3257,7 +3272,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "Sourcegraph lexical timeout must fail closed",
     )?;
     match lexical_timeout {
-        SdkError::Remote { code, message }
+        SdkError::Remote { code, message, .. }
             if code == "QUERY_TIMEOUT"
                 && (message.contains("timeout") || message.contains("timed out")) => {}
         other @ (SdkError::Usage(_)
@@ -3307,7 +3322,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "Sourcegraph structural timeout must fail closed",
     )?;
     match structural_timeout {
-        SdkError::Remote { code, message }
+        SdkError::Remote { code, message, .. }
             if code == "STR_INVALID_REQUEST" && message.contains("timeout option") => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)
@@ -3330,7 +3345,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "unsupported typed hole must fail closed",
     )?;
     match typed_hole {
-        SdkError::Remote { code, message }
+        SdkError::Remote { code, message, .. }
             if code == "STR_HOLE_KIND_UNSUPPORTED"
                 && message.contains("typed hole kind `lambda`") => {}
         other @ (SdkError::Usage(_)
@@ -3478,7 +3493,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         "Sourcegraph structural route requires patterntype:structural",
     )?;
     match missing_patterntype {
-        SdkError::Remote { code, message }
+        SdkError::Remote { code, message, .. }
             if code == "BRIDGE_TRANSLATE_FAIL" && message.contains("patterntype:structural") => {}
         other @ (SdkError::Usage(_)
         | SdkError::Protocol(_)

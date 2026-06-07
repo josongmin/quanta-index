@@ -138,6 +138,7 @@ pub quanta_index_sdk::SdkError::Protocol(alloc::string::String)
 pub quanta_index_sdk::SdkError::Remote
 pub quanta_index_sdk::SdkError::Remote::code: alloc::string::String
 pub quanta_index_sdk::SdkError::Remote::message: alloc::string::String
+pub quanta_index_sdk::SdkError::Remote::repair: core::option::Option<quanta_index_contract::ipc::error::QueryErrorRepair>
 pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)
 pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::codec::IpcError)
 pub quanta_index_sdk::SdkError::Usage(alloc::string::String)

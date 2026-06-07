@@ -1,3 +1,4 @@
+use quanta_index_contract::QueryErrorRepair;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,9 +19,15 @@ pub enum SdkError {
     // `Channel(ChannelError)` variant was removed alongside the dependency
     // drop. Channel-level failures now surface through the ingest
     // dispatcher as typed `SearchPlaneIpcError` (code/message) and arrive
-    // here as `Remote { code, message }`.
+    // here as `Remote { code, message, repair }`. `repair` is optional typed
+    // query-failure repair metadata (J7Q-06); it is None for control/ingest
+    // failures and for query failures with no repairable class.
     #[error("remote {code}: {message}")]
-    Remote { code: String, message: String },
+    Remote {
+        code: String,
+        message: String,
+        repair: Option<QueryErrorRepair>,
+    },
 }
 
 impl SdkError {

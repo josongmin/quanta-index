@@ -1121,6 +1121,25 @@ min = 2
 max = 2
 
 [[row]]
+id = "runtime_sourcegraph_file_has_owner_existence_multi_repo"
+query = "file:has.owner() shared_oracle_needle"
+gate = "active"
+engines = ["lexical_content", "sourcegraph_lowering"]
+filters = ["file.has.owner"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "text"
+fixture = "docs-multi-repo.toml"
+expected_ids = ["corp_a_doc", "corp_b_doc", "corp_a_only_path"]
+top_k = 10
+expected_engines_touched = ["lexical"]
+
+[row.expected]
+kind = "multi"
+min = 3
+max = 3
+
+[[row]]
 id = "runtime_sourcegraph_file_has_contributor_true_gate_multi_repo"
 query = "file:has.contributor(alice) shared_oracle_needle"
 gate = "active"
@@ -2674,6 +2693,22 @@ expected_ids = ["struct_fn_main"]
 expected_bindings = [[
   { metavariable = "name", start_byte = 3, end_byte = 7, start_line = 1, end_line = 1 }
 ]]
+top_k = 10
+
+[row.expected]
+kind = "single"
+
+[[row]]
+id = "runtime_sourcegraph_patterntype_structural_regex_body"
+query = "repo:repo-e2e path:src/main.rs lang:rust patterntype:structural /^main$/"
+gate = "active"
+engines = ["structural", "sourcegraph_lowering"]
+filters = ["structural", "patterntype:structural", "regex-body"]
+syntax = "sourcegraph"
+classification = "runtime"
+runtime_route = "structural"
+fixture = "docs-structural-main.toml"
+expected_ids = ["struct_fn_main"]
 top_k = 10
 
 [row.expected]

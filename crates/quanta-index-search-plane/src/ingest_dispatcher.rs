@@ -838,7 +838,13 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
         CoreError::NotFound(msg) => (ERR_NOT_FOUND.to_string(), msg),
         CoreError::Storage(msg) => (ERR_INTERNAL.to_string(), msg),
     };
-    SearchPlaneIpcError { code, message }
+    // Ingest failures carry no query-intent repair metadata (J7Q-06 repair is
+    // query-route specific); the wire field stays None.
+    SearchPlaneIpcError {
+        code,
+        message,
+        repair: None,
+    }
 }
 
 // =============================================================================

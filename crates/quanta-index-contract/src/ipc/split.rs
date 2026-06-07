@@ -1071,6 +1071,7 @@ mod tests {
             payload: SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
                 code: "INVALID_REQUEST".to_string(),
                 message: "bad request".to_string(),
+                repair: None,
             }),
         };
         let value = match serde_json::to_value(&envelope) {

@@ -131,6 +131,7 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
                 message: error.message,
+                repair: error.repair,
             }),
             payload @ (SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -165,6 +166,7 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
                 message: error.message,
+                repair: error.repair,
             }),
             payload @ (SearchPlaneControlIpcResponse::ActivationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
@@ -196,6 +198,7 @@ impl QuantaIndex {
             SearchPlaneIngestIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
                 message: error.message,
+                repair: error.repair,
             }),
             payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)

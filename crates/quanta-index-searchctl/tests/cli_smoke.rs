@@ -616,6 +616,7 @@ fn error_response(code: &str, message: impl Into<String>) -> SearchPlaneQueryIpc
     SearchPlaneQueryIpcResponse::Error(SearchPlaneIpcError {
         code: code.to_string(),
         message: message.into(),
+        repair: None,
     })
 }
 

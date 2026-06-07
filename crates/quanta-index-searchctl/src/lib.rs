@@ -12,13 +12,13 @@ use std::process::ExitCode;
 
 use quanta_index_contract::{
     EarlyStopReason, EngineTouched, GenerationPin, HistoryQueryRequest, HybridSeedQueryRequest,
-    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, RepoId, RepoMapDocType,
-    RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest,
-    SearchExplanation, SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    LexicalCandidate, ManifestGeneration, PlannerTraceEntry, QueryErrorRepair, RepoId,
+    RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -803,7 +803,14 @@ fn map_sdk_error(error: SdkError) -> CliError {
             CliError::protocol(format!("ipc serialization failed: {message}"))
         }
         SdkError::Transport(error) => CliError::transport(format!("ipc request failed: {error}")),
-        SdkError::Remote { code, message } => CliError::remote(format!("{code}: {message}")),
+        SdkError::Remote {
+            code,
+            message,
+            repair,
+        } => match render_remote_error_text(&code, &message, repair.as_ref()) {
+            Ok(text) => CliError::remote(text),
+            Err(err) => err,
+        },
     }
 }
 
@@ -1036,10 +1043,9 @@ fn render_pretty(
             }
             Ok(())
         }
-        SearchPlaneQueryIpcResponse::Error(error) => Err(CliError::remote(format!(
-            "{}: {}",
-            error.code, error.message
-        ))),
+        SearchPlaneQueryIpcResponse::Error(error) => Err(CliError::remote(
+            render_remote_error_text(&error.code, &error.message, error.repair.as_ref())?,
+        )),
         SearchPlaneQueryIpcResponse::RuntimeMetadata(payload) => {
             render_runtime_metadata_payload(payload, rendered)
         }
@@ -1397,6 +1403,42 @@ fn hex_digit(nibble: u8) -> CliResult<char> {
 
 fn fmt_ok(result: std::fmt::Result) -> CliResult<()> {
     result.map_err(|_err| CliError::protocol("string formatting failed".to_string()))
+}
+
+/// Render a typed remote error for the pretty CLI path (J7Q-06).
+///
+/// `code: message` stays the headline; when the wire carried typed repair
+/// metadata it is appended as a distinct, scriptable hint block (class, the
+/// supported alternative shapes, and the docs anchor). One renderer serves both
+/// the wire-error and the `SdkError::Remote` arms so the guidance shape cannot
+/// drift between them. The JSON path needs no special handling — it serializes
+/// the whole envelope, `repair` included. This only renders guidance; it never
+/// rewrites the query or softens the failure.
+fn render_remote_error_text(
+    code: &str,
+    message: &str,
+    repair: Option<&QueryErrorRepair>,
+) -> CliResult<String> {
+    let mut text = String::new();
+    fmt_ok(write!(text, "{code}: {message}"))?;
+    if let Some(repair) = repair {
+        fmt_ok(write!(
+            text,
+            "\n  repair class: {}",
+            repair.class.as_code_str()
+        ))?;
+        if !repair.supported_alternatives.is_empty() {
+            fmt_ok(write!(
+                text,
+                "\n  try: {}",
+                repair.supported_alternatives.join(" | ")
+            ))?;
+        }
+        if let Some(anchor) = &repair.docs_anchor {
+            fmt_ok(write!(text, "\n  docs: {anchor}"))?;
+        }
+    }
+    Ok(text)
 }
 
 fn usage() -> &'static str {

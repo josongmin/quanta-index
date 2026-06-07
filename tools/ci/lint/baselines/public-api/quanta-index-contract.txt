@@ -919,6 +919,36 @@ impl core::marker::Unpin for quanta_index_contract::HistoryRefMutation
 impl core::marker::UnsafeUnpin for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HistoryRefMutation
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HistoryRefMutation
+pub enum quanta_index_contract::ipc::RepairClass
+pub quanta_index_contract::ipc::RepairClass::Ambiguous
+pub quanta_index_contract::ipc::RepairClass::Malformed
+pub quanta_index_contract::ipc::RepairClass::Unsupported
+pub quanta_index_contract::ipc::RepairClass::WrongRoute
+impl quanta_index_contract::RepairClass
+pub const fn quanta_index_contract::RepairClass::as_code_str(self) -> &'static str
+pub fn quanta_index_contract::RepairClass::from_code_str(s: &str) -> core::option::Option<Self>
+impl core::clone::Clone for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::clone(&self) -> quanta_index_contract::RepairClass
+impl core::cmp::Eq for quanta_index_contract::RepairClass
+impl core::cmp::PartialEq for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::eq(&self, other: &quanta_index_contract::RepairClass) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::RepairClass
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepairClass
+impl serde_core::ser::Serialize for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RepairClass
+impl core::marker::Send for quanta_index_contract::RepairClass
+impl core::marker::Sync for quanta_index_contract::RepairClass
+impl core::marker::Unpin for quanta_index_contract::RepairClass
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepairClass
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepairClass
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepairClass
 pub enum quanta_index_contract::ipc::SearchPlaneControlIpcRequest
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ActivateGeneration(quanta_index_contract::SearchPlaneActivateGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
@@ -1638,6 +1668,29 @@ impl core::marker::Unpin for quanta_index_contract::LexicalTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalTombstoneScope
+pub struct quanta_index_contract::ipc::QueryErrorRepair
+pub quanta_index_contract::ipc::QueryErrorRepair::class: quanta_index_contract::RepairClass
+pub quanta_index_contract::ipc::QueryErrorRepair::docs_anchor: core::option::Option<alloc::string::String>
+pub quanta_index_contract::ipc::QueryErrorRepair::supported_alternatives: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::clone(&self) -> quanta_index_contract::QueryErrorRepair
+impl core::cmp::Eq for quanta_index_contract::QueryErrorRepair
+impl core::cmp::PartialEq for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::eq(&self, other: &quanta_index_contract::QueryErrorRepair) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryErrorRepair
+impl serde_core::ser::Serialize for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryErrorRepair
+impl core::marker::Send for quanta_index_contract::QueryErrorRepair
+impl core::marker::Sync for quanta_index_contract::QueryErrorRepair
+impl core::marker::Unpin for quanta_index_contract::QueryErrorRepair
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryErrorRepair
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryErrorRepair
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryErrorRepair
 pub struct quanta_index_contract::ipc::RepoCommitRecencyEntry
 pub quanta_index_contract::ipc::RepoCommitRecencyEntry::latest_committer_time_ms: u64
 pub quanta_index_contract::ipc::RepoCommitRecencyEntry::source_repo_id: quanta_index_contract_base::ids::RepoId
@@ -2088,6 +2141,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::ipc::SearchPlaneIpcError
 pub quanta_index_contract::ipc::SearchPlaneIpcError::code: alloc::string::String
 pub quanta_index_contract::ipc::SearchPlaneIpcError::message: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIpcError
 pub fn quanta_index_contract::SearchPlaneIpcError::clone(&self) -> quanta_index_contract::SearchPlaneIpcError
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneIpcError
@@ -5563,6 +5617,36 @@ impl core::marker::Unpin for quanta_index_contract::PlannerStage
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerStage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerStage
+pub enum quanta_index_contract::RepairClass
+pub quanta_index_contract::RepairClass::Ambiguous
+pub quanta_index_contract::RepairClass::Malformed
+pub quanta_index_contract::RepairClass::Unsupported
+pub quanta_index_contract::RepairClass::WrongRoute
+impl quanta_index_contract::RepairClass
+pub const fn quanta_index_contract::RepairClass::as_code_str(self) -> &'static str
+pub fn quanta_index_contract::RepairClass::from_code_str(s: &str) -> core::option::Option<Self>
+impl core::clone::Clone for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::clone(&self) -> quanta_index_contract::RepairClass
+impl core::cmp::Eq for quanta_index_contract::RepairClass
+impl core::cmp::PartialEq for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::eq(&self, other: &quanta_index_contract::RepairClass) -> bool
+impl core::fmt::Debug for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+impl core::marker::Copy for quanta_index_contract::RepairClass
+impl core::marker::StructuralPartialEq for quanta_index_contract::RepairClass
+impl serde_core::ser::Serialize for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::RepairClass
+pub fn quanta_index_contract::RepairClass::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::RepairClass
+impl core::marker::Send for quanta_index_contract::RepairClass
+impl core::marker::Sync for quanta_index_contract::RepairClass
+impl core::marker::Unpin for quanta_index_contract::RepairClass
+impl core::marker::UnsafeUnpin for quanta_index_contract::RepairClass
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::RepairClass
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::RepairClass
 pub enum quanta_index_contract::RepoMapChunkExactness
 pub quanta_index_contract::RepoMapChunkExactness::Approximate
 pub quanta_index_contract::RepoMapChunkExactness::Exact
@@ -7160,6 +7244,29 @@ impl core::marker::Unpin for quanta_index_contract::PlannerTraceEntry
 impl core::marker::UnsafeUnpin for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::PlannerTraceEntry
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::PlannerTraceEntry
+pub struct quanta_index_contract::QueryErrorRepair
+pub quanta_index_contract::QueryErrorRepair::class: quanta_index_contract::RepairClass
+pub quanta_index_contract::QueryErrorRepair::docs_anchor: core::option::Option<alloc::string::String>
+pub quanta_index_contract::QueryErrorRepair::supported_alternatives: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::clone(&self) -> quanta_index_contract::QueryErrorRepair
+impl core::cmp::Eq for quanta_index_contract::QueryErrorRepair
+impl core::cmp::PartialEq for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::eq(&self, other: &quanta_index_contract::QueryErrorRepair) -> bool
+impl core::fmt::Debug for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::QueryErrorRepair
+impl serde_core::ser::Serialize for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::QueryErrorRepair
+pub fn quanta_index_contract::QueryErrorRepair::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::QueryErrorRepair
+impl core::marker::Send for quanta_index_contract::QueryErrorRepair
+impl core::marker::Sync for quanta_index_contract::QueryErrorRepair
+impl core::marker::Unpin for quanta_index_contract::QueryErrorRepair
+impl core::marker::UnsafeUnpin for quanta_index_contract::QueryErrorRepair
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::QueryErrorRepair
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::QueryErrorRepair
 pub struct quanta_index_contract::ReplaceLexicalScope
 pub quanta_index_contract::ReplaceLexicalScope::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ReplaceLexicalScope::payload: alloc::vec::Vec<u8>
@@ -8283,6 +8390,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlane
 pub struct quanta_index_contract::SearchPlaneIpcError
 pub quanta_index_contract::SearchPlaneIpcError::code: alloc::string::String
 pub quanta_index_contract::SearchPlaneIpcError::message: alloc::string::String
+pub quanta_index_contract::SearchPlaneIpcError::repair: core::option::Option<quanta_index_contract::QueryErrorRepair>
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIpcError
 pub fn quanta_index_contract::SearchPlaneIpcError::clone(&self) -> quanta_index_contract::SearchPlaneIpcError
 impl core::cmp::Eq for quanta_index_contract::SearchPlaneIpcError

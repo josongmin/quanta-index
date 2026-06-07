@@ -6,9 +6,13 @@ Goal:
 
 - add a small runtime rail for structural mixed predicate siblings
 - keep direct SG lexical `Phrase` / `Regex` sibling demotion explicit
-- keep the reason explicit: this witness remains owner-local in lowering
-  because the current SG grammar has no distinct runtime query surface for a
-  direct lexical phrase/regex sibling
+- prove the demoted execution path at runtime too:
+  - quoted SG structural token executes as a structural body
+  - slash-delimited SG structural token executes as a structural regex body
+- keep the sibling verdict explicit: the "not a distinct lexical sibling
+  surface" witness remains owner-local in lowering because the current SG
+  grammar has no separate runtime query surface for a direct lexical
+  phrase/regex sibling
 
 Owner seam:
 
@@ -18,6 +22,8 @@ Owner seam:
 Covered families:
 
 - bench-owned structural subset from `SCENARIOS`
+- direct SG quoted body demotion
+- direct SG slash-regex body demotion
 - `file:contains(path:...)` mixed structural sibling
 - `file:has.content(path:...)` mixed structural sibling
 - `symbol:has.name(...)` mixed structural sibling
@@ -26,5 +32,7 @@ DoD:
 
 - AND / OR / AND NOT exactness is pinned
 - ambiguous symbol projection union is explicitly asserted
-- direct SG lexical `Phrase` / `Regex` sibling demotion remains pinned at
-  lowering, not mislabeled as a missing runtime typed-fail rail
+- direct SG quoted/slash token execution is pinned in runtime hellgate and
+  shared front-door rails
+- direct SG lexical `Phrase` / `Regex` sibling non-preservation remains pinned
+  at lowering, not mislabeled as a missing runtime typed-fail rail

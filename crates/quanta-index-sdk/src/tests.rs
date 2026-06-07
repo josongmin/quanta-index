@@ -1926,6 +1926,7 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         SearchPlaneIngestIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError {
             code: "INVALID_REQUEST".to_string(),
             message: "channel rejected".to_string(),
+            repair: None,
         }),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest);
@@ -1941,7 +1942,7 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         matches!(err, Some(crate::SdkError::Remote { .. })),
         "expected Remote error, got {err:?}"
     );
-    let Some(crate::SdkError::Remote { code, message }) = err else {
+    let Some(crate::SdkError::Remote { code, message, .. }) = err else {
         return;
     };
     assert_eq!(code, "INVALID_REQUEST");
@@ -1993,6 +1994,7 @@ fn generations_current_propagates_not_ready_as_typed_remote() {
         SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
             code: "NOT_READY".to_string(),
             message: "no active Lexical generation for repo=r revision=rev".to_string(),
+            repair: None,
         }),
     ));
     let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());

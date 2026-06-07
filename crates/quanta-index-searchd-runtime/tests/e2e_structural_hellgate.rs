@@ -282,6 +282,79 @@ fn sourcegraph_structural_file_predicate_siblings_execute_in_boolean_scope() -> 
 }
 
 #[test]
+fn sourcegraph_structural_direct_phrase_and_regex_demote_into_structural_bodies() -> AnyResult<()> {
+    let mut rt = boot_structural_file_predicate_fixture()?;
+
+    let direct_phrase = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural "function_item { { identifier :[name] } }""#,
+        10,
+    );
+    ensure!(
+        direct_phrase.typed_error.is_none(),
+        "direct SG structural phrase body must execute, got {:?}",
+        direct_phrase.typed_error,
+    );
+    ensure!(
+        direct_phrase.candidate_ids.len() == 1,
+        "quoted SG structural body must match exactly one structural candidate, got {:?}",
+        direct_phrase.candidate_ids,
+    );
+    let phrase_binding = direct_phrase
+        .structural_results
+        .first()
+        .and_then(|candidate| candidate.bindings.first())
+        .ok_or_else(|| anyhow::anyhow!("direct SG structural phrase body must expose binding"))?;
+    ensure!(
+        phrase_binding.metavariable == "name"
+            && phrase_binding.start_byte == 3
+            && phrase_binding.end_byte == 7,
+        "quoted SG structural body must bind identifier span, got {:?}",
+        phrase_binding,
+    );
+
+    let direct_regex = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural /^main$/"#,
+        10,
+    );
+    ensure!(
+        direct_regex.typed_error.is_none(),
+        "direct SG structural regex body must execute, got {:?}",
+        direct_regex.typed_error,
+    );
+    ensure!(
+        direct_regex.candidate_ids.len() == 1,
+        "slash-delimited SG structural regex body must execute against one structural candidate, got {:?}",
+        direct_regex.candidate_ids,
+    );
+    let regex_binding = direct_regex
+        .structural_results
+        .first()
+        .and_then(|candidate| candidate.bindings.first())
+        .ok_or_else(|| anyhow::anyhow!("direct SG structural regex body must expose binding"))?;
+    ensure!(
+        regex_binding.metavariable.starts_with("__sg_regex_")
+            && regex_binding.start_byte == 3
+            && regex_binding.end_byte == 7,
+        "slash-delimited SG structural regex body must bind synthetic regex capture over `main`, got {:?}",
+        regex_binding,
+    );
+
+    let regex_miss = rt.query_structural(
+        TextQuerySyntax::Sourcegraph,
+        r#"patterntype:structural /^missing$/"#,
+        10,
+    );
+    ensure!(
+        regex_miss.typed_error.is_none() && regex_miss.candidate_ids.is_empty(),
+        "non-matching SG structural regex body must miss instead of typed-failing, got {:?}",
+        regex_miss.candidate_ids,
+    );
+    Ok(())
+}
+
+#[test]
 fn sourcegraph_structural_symbol_projection_ambiguous_chunk_union_is_deterministic() -> AnyResult<()>
 {
     let mut rt = boot_symbol_projection_fixture()?;

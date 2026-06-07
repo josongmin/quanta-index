@@ -21,6 +21,7 @@ mod harness;
 
 pub mod artifact;
 pub mod bench_support;
+pub mod relevance;
 pub mod scenarios;
 
 pub use harness::*;

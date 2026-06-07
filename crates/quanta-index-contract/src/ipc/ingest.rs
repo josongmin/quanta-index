@@ -5005,6 +5005,7 @@ mod tests {
             payload: SearchPlaneIngestIpcResponse::Error(SearchPlaneIpcError {
                 code: "lexical_publish_failed".to_string(),
                 message: "channel write rejected".to_string(),
+                repair: None,
             }),
         };
         let bytes = encode(&envelope)?;

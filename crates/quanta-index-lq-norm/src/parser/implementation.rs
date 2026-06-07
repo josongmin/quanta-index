@@ -802,7 +802,18 @@ fn parse_boost_millis(value: &str, span: LqSpan) -> Result<u32, LqParseError> {
             "boost: value exceeds canonical precision/range",
         ));
     }
-    Ok(scaled as u32)
+    // The guard above proves `scaled` is finite, integral (it was `.round()`ed),
+    // strictly positive, and `<= u32::MAX`, so this narrowing is exact and cannot
+    // wrap, truncate, or lose a sign. No safe std `f64 -> u32` exists; the
+    // expectation documents the invariant the guard enforces.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::as_conversions,
+        reason = "guarded: scaled is finite, integral, in [1, u32::MAX]"
+    )]
+    let scaled_u32 = scaled as u32;
+    Ok(scaled_u32)
 }
 
 fn split_timeout_value(value: &str) -> Option<(&str, &str)> {

@@ -276,6 +276,16 @@ fn boot_with_text_route_authorities() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+fn boot_with_runtime_dirty_fixture() -> AnyResult<E2eRuntime> {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text(REPO, "src/dirty.rs", "todo dirty scope")?;
+    rt.ingest_text(REPO, "src/clean.rs", "todo clean scope")?;
+    rt.ingest_dirty_for_path("src/dirty.rs", 100)?;
+    _ = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    Ok(rt)
+}
+
 fn rev_at_time_ancestor_revision() -> RevisionId {
     RevisionId::new("1111111111111111111111111111111111111111")
 }
@@ -962,6 +972,36 @@ fn sourcegraph_legacy_index_and_boost_execute_on_active_stack() -> AnyResult<()>
     ensure!(
         boosted_score > baseline_score,
         "boost: must increase lexical score magnitude, got baseline={baseline_score} boosted={boosted_score}",
+    );
+    Ok(())
+}
+
+#[test]
+fn sourcegraph_dirty_only_runtime_metadata_hellgate() -> AnyResult<()> {
+    let mut rt = boot_with_runtime_dirty_fixture()?;
+
+    let dirty_only = rt.query_runtime_metadata(TextQuerySyntax::Sourcegraph, "dirty:only todo", 10);
+    ensure!(
+        dirty_only.typed_error.is_none(),
+        "dirty:only runtime metadata query must execute: {:?}",
+        dirty_only.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&dirty_only) == ["src/dirty.rs"],
+        "dirty:only must isolate the dirty doc, got {:?}",
+        sorted_candidate_paths(&dirty_only),
+    );
+
+    let follow_up = rt.query_runtime_metadata(TextQuerySyntax::Native, "dirty:yes todo", 10);
+    ensure!(
+        follow_up.typed_error.is_none(),
+        "follow-up dirty:yes query must execute after dirty:only: {:?}",
+        follow_up.typed_error,
+    );
+    ensure!(
+        sorted_candidate_paths(&follow_up) == ["src/dirty.rs"],
+        "dirty:only must not poison the next runtime metadata query, got {:?}",
+        sorted_candidate_paths(&follow_up),
     );
     Ok(())
 }

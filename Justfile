@@ -287,6 +287,25 @@ rust-bench-dsl-parity:
     python3 tools/benchmark/sourcegraph_parity.py --write
     python3 tools/benchmark/sourcegraph_parity.py --check
 
+# --------------------------------------------------------------------------
+# Search product quality rails (docs/plans/jun-7-search-product-quality).
+# One command proves exactly one quality dimension; see MEASUREMENT_MATRIX.md
+# and COMMAND_AND_ARTIFACT_CONTRACT.md. Blocking unless a recipe says advisory.
+# --------------------------------------------------------------------------
+
+# Relevance ranking rail (J7Q-01A). Blocking dimension: relevance.
+# Proves: pure-metric unit tests + adversarial gate tests, then runs the judged
+# seeded corpus end to end and enforces per-route MRR@10 / NDCG@10 / Recall@20
+# plus top1 / top-k-containment / hard-negative ordering invariants.
+# Artifacts: artifacts/search-quality/relevance/latest/{summary,query_judgments,sourcegraph-overlap}.json
+# External lexical floor (Sourcegraph overlap, J7Q-01B) is emitted as
+# `unprovisioned`, NOT a pass, until a local Sourcegraph instance exists.
+rust-verify-quality-relevance:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/relevance/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
+
 rust-machete:
     env QUANTA_INDEX_BUILD_LANE=machete-lane bash -lc 'source scripts/quanta-index-env.sh && cargo machete --with-metadata'
 
