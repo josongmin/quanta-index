@@ -29,6 +29,8 @@ single verdict.
 - `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-verification-hellgates/rfc.md`
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
 - `/Users/songmin/Documents/code-new/quanta-index/docs/analysis/jun-4-dsl-capabilty.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/MEASUREMENT_MATRIX.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -59,6 +61,7 @@ single verdict.
    - “tail advisory”
    - “relevance regression”
 3. Ensure later tickets inherit one consistent closeout vocabulary.
+4. Freeze stable quality command names and artifact paths.
 
 ## First Increment
 
@@ -93,6 +96,8 @@ sed -n '1,220p' tools/benchmark/README.md
 ## DoD
 
 - every later ticket can use one stable measurement vocabulary
+- `MEASUREMENT_MATRIX.md` and `COMMAND_AND_ARTIFACT_CONTRACT.md` are sufficient
+  for a low-context worker to know what to emit and how to name it
 
 ## Not Done If
 

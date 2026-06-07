@@ -28,6 +28,7 @@ current toy and medium fixtures.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/bench_support.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -48,6 +49,14 @@ current toy and medium fixtures.
 2. Add a synthetic authority generator for those tiers.
 3. Measure ingest, open, reopen, query, restart, and memory footprint.
 4. Record current scale limits honestly.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-scale`
+- canonical artifacts:
+  - `artifacts/search-quality/scale/latest/summary.json`
+  - `artifacts/search-quality/scale/latest/tier_manifest.json`
 
 ## First Increment
 
@@ -88,3 +97,4 @@ sed -n '1,260p' crates/quanta-index-searchd-harness/src/bin/dsl_cold_matrix.rs
 
 - large-corpus behavior is still inferred from small fixtures
 - tier boundaries are not documented
+- the tier manifest is missing or not reproducible

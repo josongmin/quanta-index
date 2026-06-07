@@ -26,6 +26,7 @@ quality signals where they matter.
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/bench_support.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -47,6 +48,14 @@ quality signals where they matter.
 2. Keep p50 blocking but add explicit p95 / p99 thresholds where justified.
 3. Emit enough per-row metadata to explain tail regressions.
 4. Keep advisory and blocking tail signals separate.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-tail`
+- canonical artifacts:
+  - `artifacts/search-quality/tail/latest/summary.json`
+  - `artifacts/search-quality/tail/latest/route_budgets.json`
 
 ## First Increment
 
@@ -86,3 +95,4 @@ rg -n "p50|p95|p99|tail|latency" crates/quanta-index-searchd-harness crates/quan
 
 - p95 / p99 still have no documented meaning
 - tail regressions remain unactionable
+- the tail artifact lacks route-local diagnostic fields

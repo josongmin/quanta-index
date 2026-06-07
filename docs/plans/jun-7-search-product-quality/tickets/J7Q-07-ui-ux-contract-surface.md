@@ -28,6 +28,7 @@ without inventing search semantics themselves.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract/src/results/explanation.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/src/search.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchctl/src/lib.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -49,6 +50,14 @@ without inventing search semantics themselves.
 2. Define route/provenance fields useful to consumers.
 3. Keep payloads deterministic and typed.
 4. Add contract tests and rendering proofs.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-ui`
+- canonical artifacts:
+  - `artifacts/search-quality/ui/latest/summary.json`
+  - `artifacts/search-quality/ui/latest/contract_snapshots.json`
 
 ## First Increment
 
@@ -89,3 +98,4 @@ sed -n '1,260p' crates/quanta-index-searchctl/src/lib.rs
 
 - UI-relevant fields remain implicit in snippets and summaries only
 - contract changes ship without wire and consumer proof
+- consumer-facing contract snapshots are missing

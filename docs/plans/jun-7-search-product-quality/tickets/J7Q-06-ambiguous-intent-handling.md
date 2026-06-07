@@ -26,6 +26,7 @@ repair.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-bridge/src/errors.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchctl/src/lib.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/src/error.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -46,6 +47,14 @@ repair.
 2. Surface supported alternative shapes when safe.
 3. Keep ambiguous, unsupported, and wrong-route errors distinct.
 4. Avoid any silent rewrite or best-effort fallback.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-ambiguity`
+- canonical artifacts:
+  - `artifacts/search-quality/ambiguity/latest/summary.json`
+  - `artifacts/search-quality/ambiguity/latest/error_payloads.json`
 
 ## First Increment
 
@@ -87,3 +96,4 @@ sed -n '1,260p' crates/quanta-index-searchctl/src/lib.rs
 
 - ambiguity is still only understandable by reading source
 - repair hints silently rewrite semantics
+- typed repair payload snapshots are missing

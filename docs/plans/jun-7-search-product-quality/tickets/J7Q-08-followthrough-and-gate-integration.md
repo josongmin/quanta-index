@@ -26,6 +26,8 @@ them back into correctness-only packets.
 - `/Users/songmin/Documents/code-new/quanta-index/tools/benchmark/README.md`
 - `/Users/songmin/Documents/code-new/quanta-index/docs/analysis/jun-4-dsl-capabilty.md`
 - `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-verification-hellgates/rfc.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/MEASUREMENT_MATRIX.md`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -45,6 +47,20 @@ them back into correctness-only packets.
 2. Document blocking vs advisory status per command.
 3. Keep verification and product-quality packets distinct.
 4. Keep final closeout wording precise.
+
+## Required Outputs
+
+- stable commands:
+  - `just rust-verify-quality-relevance`
+  - `just rust-verify-quality-snippet`
+  - `just rust-verify-quality-scale`
+  - `just rust-verify-quality-tail`
+  - `just rust-verify-quality-ops`
+  - `just rust-verify-quality-ambiguity`
+  - `just rust-verify-quality-ui`
+  - `just rust-verify-quality-all`
+- canonical artifact:
+  - `artifacts/search-quality/integration/latest/summary.json`
 
 ## First Increment
 
@@ -84,3 +100,4 @@ sed -n '1,220p' docs/plans/jun-7-verification-hellgates/rfc.md
 
 - users still cannot tell which command proves which quality dimension
 - docs or commands collapse correctness and product-quality states again
+- stable command names still drift by worker or ticket

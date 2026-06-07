@@ -28,6 +28,7 @@ broad daemon reruns.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/query_dispatcher.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness/src/scenarios.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -62,6 +63,15 @@ broad daemon reruns.
 5. Add a Sourcegraph lexical overlap subset for shipped overlapping query
    families.
 6. Keep deterministic tie-break proof separate from relevance quality proof.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-relevance`
+- canonical artifacts:
+  - `artifacts/search-quality/relevance/latest/summary.json`
+  - `artifacts/search-quality/relevance/latest/sourcegraph-overlap.json`
+  - `artifacts/search-quality/relevance/latest/query_judgments.json`
 
 ## First Increment
 
@@ -109,3 +119,4 @@ sed -n '1,260p' crates/quanta-index-searchd-harness/src/scenarios.rs
 
 - top result drift can still pass all blocking gates
 - lexical and symbol or structural relevance are not measured separately
+- the overlap subset exists only in prose or chat and not in persisted artifacts

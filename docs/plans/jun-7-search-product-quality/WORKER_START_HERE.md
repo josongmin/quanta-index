@@ -21,8 +21,10 @@ Do first:
    - `python3 tools/benchmark/sourcegraph_parity.py --check`
    - `python3 tools/ci/lint/check-dsl-capability-truth.py`
 2. read [SOURCE_TRUTH_MAP.md](SOURCE_TRUTH_MAP.md)
-3. pick exactly one `J7Q-*` ticket
-4. add the smallest blocking quality rail before changing behavior
+3. read [MEASUREMENT_MATRIX.md](MEASUREMENT_MATRIX.md)
+4. read [COMMAND_AND_ARTIFACT_CONTRACT.md](COMMAND_AND_ARTIFACT_CONTRACT.md)
+5. pick exactly one `J7Q-*` ticket
+6. add the smallest blocking quality rail before changing behavior
 
 Current packet facts:
 

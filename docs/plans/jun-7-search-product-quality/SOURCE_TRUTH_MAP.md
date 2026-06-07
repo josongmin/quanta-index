@@ -76,6 +76,13 @@ code-search surfaces.
 - perf compare:
   - `just rust-bench-dsl-compare`
 
+## Measurement And Output Contract
+
+- claim matrix:
+  - `docs/plans/jun-7-search-product-quality/MEASUREMENT_MATRIX.md`
+- stable command and artifact names:
+  - `docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
+
 ## Current Packet Truth
 
 - remaining gaps are mostly product-quality and operator-quality gaps

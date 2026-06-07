@@ -29,6 +29,7 @@ internally consistent”.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/query_dispatcher.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/explain.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -53,6 +54,14 @@ internally consistent”.
    rows.
 3. Assert route-specific explanation rationale, not just non-empty summaries.
 4. Keep snippet and explanation quality separate from relevance metrics.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-snippet`
+- canonical artifacts:
+  - `artifacts/search-quality/snippet/latest/summary.json`
+  - `artifacts/search-quality/snippet/latest/golden_windows.json`
 
 ## First Increment
 
@@ -94,3 +103,4 @@ sed -n '1660,1795p' crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs
 
 - snippets are still only loosely asserted
 - explanation quality is still mostly “string not empty”
+- no persisted golden-window artifact exists

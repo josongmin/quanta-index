@@ -26,6 +26,7 @@ or test code.
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchctl/src/lib.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/src/search.rs`
 - `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/query_dispatcher.rs`
+- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
 
 ## Preferred Implementation Direction
 
@@ -47,6 +48,14 @@ or test code.
 3. Add generation and authority inspection surfaces.
 4. Add explain and perf-tail inspection commands.
 5. Improve typed remote error rendering.
+
+## Required Outputs
+
+- stable command:
+  - `just rust-verify-quality-ops`
+- canonical artifacts:
+  - `artifacts/search-quality/ops/latest/summary.json`
+  - `artifacts/search-quality/ops/latest/cli_snapshots.json`
 
 ## First Increment
 
@@ -85,3 +94,4 @@ rg -n "usage|output|snippet|explain|history|structural" crates/quanta-index-sear
 
 - operators still need repo-internal code reading for basic runtime state
 - diagnosis commands are missing or heuristic
+- no JSON snapshot artifact exists for CLI diagnosis surfaces
