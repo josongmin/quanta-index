@@ -2060,10 +2060,11 @@ impl<'de> Deserialize<'de> for RepoTopicIngestBatch {
     }
 }
 
-/// One producer-published repo description, keyed by source repo. The producer
-/// is the sole authority for the description string (e.g. the code-host repo
-/// description); the search plane stores it verbatim and matches it as a regex
-/// at `repo:has.description(<pattern>)` query time. Distinct from
+/// One producer-published repo description, keyed by source repo.
+///
+/// The producer is the sole authority for the description string (e.g. the
+/// code-host repo description); the search plane stores it verbatim and matches
+/// it as a regex at `repo:has.description(<pattern>)` query time. Distinct from
 /// [`RepoMetaEntry`] (key/value tags) and [`RepoTopicEntry`] (topic set) — the
 /// description is a single free-text string per repo.
 #[derive(Clone, Debug, Eq, PartialEq)]

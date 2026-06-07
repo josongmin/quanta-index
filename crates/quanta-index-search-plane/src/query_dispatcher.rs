@@ -1204,7 +1204,11 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 /// The alternative shapes are intentionally the small set verified to exist in
 /// this plane (`repo:` / `file:` / `path:` / `lang:` / `rev:`); the anchor is the
 /// authority for the full list.
-fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
+///
+/// `pub` so the J7Q-06 ambiguity rail can snapshot the exact payloads the wire
+/// boundary emits without re-deriving the policy.
+#[must_use]
+pub fn repair_for_code(code: &str) -> Option<QueryErrorRepair> {
     const DOCS_ANCHOR: &str = "docs/analysis/jun-4-dsl-capabilty.md";
     let (class, alternatives): (RepairClass, &[&str]) = match code {
         c if c == LexicalErrorCode::BridgeAmbiguousFilter.as_code_str() => (
@@ -1375,11 +1379,6 @@ impl ExecutableTextPlanePolicy {
                 )),
             },
             Self::RuntimeMetadata => match filter {
-                LqFilter::Dirty { mode } => {
-                    state.saw_runtime_authority_filter = true;
-                    let _ = mode;
-                    Ok(())
-                }
                 LqFilter::Changed { scope } => {
                     state.saw_runtime_authority_filter = true;
                     let _: u64 = parse_runtime_changed_scope_ms(scope)?;
@@ -1390,7 +1389,11 @@ impl ExecutableTextPlanePolicy {
                     let _: u64 = parse_runtime_stale_scope_ms(scope)?;
                     Ok(())
                 }
-                LqFilter::Snapshot { .. }
+                // `Dirty` carries a yes/no/only mode but, like the snapshot /
+                // meta / edge authority filters, only needs to record that a
+                // runtime-authority filter was seen at planning time.
+                LqFilter::Dirty { .. }
+                | LqFilter::Snapshot { .. }
                 | LqFilter::MetaOwner { .. }
                 | LqFilter::MetaService { .. }
                 | LqFilter::MetaLayer { .. }
@@ -3140,12 +3143,10 @@ fn runtime_chunk_matches(
                             return Ok(false);
                         }
                     }
-                    LqYesNoOnly::Yes => {
-                        if !in_dirty {
-                            return Ok(false);
-                        }
-                    }
-                    LqYesNoOnly::Only => {
+                    // `Yes` (is-dirty) and `Only` (dirty-only) share the same
+                    // membership requirement for this predicate: the chunk must
+                    // be in the dirty set, else it is filtered out.
+                    LqYesNoOnly::Yes | LqYesNoOnly::Only => {
                         if !in_dirty {
                             return Ok(false);
                         }
@@ -3302,7 +3303,9 @@ fn runtime_seed_ids(
     for filter in &query.filters {
         let next = match filter {
             LqFilter::Dirty { mode } => match mode {
-                LqYesNoOnly::Yes => Some(
+                // `Yes` (is-dirty) and `Only` (dirty-only) both seed from the
+                // dirty-doc set; only `No` inverts against the full generation.
+                LqYesNoOnly::Yes | LqYesNoOnly::Only => Some(
                     runtime_state
                         .dirty_docs()
                         .keys()
@@ -3313,13 +3316,6 @@ fn runtime_seed_ids(
                     full_generation
                         .iter()
                         .filter(|chunk_id| !runtime_state.dirty_docs().contains_key(*chunk_id))
-                        .cloned()
-                        .collect::<BTreeSet<_>>(),
-                ),
-                LqYesNoOnly::Only => Some(
-                    runtime_state
-                        .dirty_docs()
-                        .keys()
                         .cloned()
                         .collect::<BTreeSet<_>>(),
                 ),

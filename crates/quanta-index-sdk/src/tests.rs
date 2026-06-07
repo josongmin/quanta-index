@@ -1369,10 +1369,20 @@ fn history_publish_file_contributor_routes_through_ingest_transport() {
     };
     assert_eq!(entry_a.source_repo_id.as_str(), "corp-a");
     assert_eq!(entry_a.repo_relative_path.as_str(), "src/gate-a.rs");
-    assert_eq!(entry_a.contributors, vec!["alice", "carol"]);
+    let canon_a: Vec<&str> = entry_a
+        .contributors
+        .iter()
+        .map(|c| c.canonical.as_str())
+        .collect();
+    assert_eq!(canon_a, vec!["alice", "carol"]);
     assert_eq!(entry_b.source_repo_id.as_str(), "corp-b");
     assert_eq!(entry_b.repo_relative_path.as_str(), "src/gate-b.rs");
-    assert_eq!(entry_b.contributors, vec!["bob"]);
+    let canon_b: Vec<&str> = entry_b
+        .contributors
+        .iter()
+        .map(|c| c.canonical.as_str())
+        .collect();
+    assert_eq!(canon_b, vec!["bob"]);
 }
 
 #[test]

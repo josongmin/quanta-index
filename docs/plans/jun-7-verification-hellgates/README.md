@@ -31,7 +31,7 @@ Current shipped gates:
 - full aggregate:
   - `just rust-verify-hellgate-all`
 
-Current verified snapshot on `2026-06-07`:
+Current verified snapshot on `2026-06-08`:
 
 - `just rust-bench-dsl-truth`
   - green (`2 passed`)
@@ -40,12 +40,15 @@ Current verified snapshot on `2026-06-07`:
 - `just rust-verify-hellgate-broad`
   - green
 - `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo`
-  - green
+  - red in this snapshot
+  - external `semantica-codegraph-v2` boundary guard failure:
+    `quanta-sdk.runtime-facade-boundary.v1`
 - `just rust-bench-dsl-compare`
   - green
 - `just rust-verify-hellgate-all`
-  - aggregate target exists, but this final snapshot was revalidated via the
-    individual component gates above instead of one monolithic rerun
+  - aggregate target exists
+  - this snapshot is recorded from the component reruns above, not from one
+    completed monolithic aggregate rerun
 
 Preflight:
 

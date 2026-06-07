@@ -11,9 +11,12 @@ Status summary:
   - `rust-bench-dsl-truth` green
   - `rust-verify-hellgate-fast` green
   - `rust-verify-hellgate-broad` green
-  - `rust-verify-hellgate-cross-repo` green
+  - `rust-verify-hellgate-cross-repo` red in the current snapshot
+    - external `semantica-codegraph-v2` boundary guard failure:
+      `quanta-sdk.runtime-facade-boundary.v1`
   - `rust-bench-dsl-compare` green
-  - `rust-verify-hellgate-all` exists but was not rerun as one aggregate command in the final snapshot
+  - `rust-verify-hellgate-all` exists but this snapshot is recorded from
+    component reruns instead of one completed aggregate rerun
 
 | ticket | status | scope |
 | --- | --- | --- |

@@ -306,6 +306,28 @@ rust-verify-quality-relevance:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
 
+# Ambiguity / repairability rail (J7Q-06). Blocking dimension: ambiguity.
+# Proves: typed repair-payload invariants — repairable bridge codes carry
+# non-empty supported alternatives + a docs anchor; the internal invariant-break
+# code carries none; classes stay distinct families; payloads round-trip the
+# wire codec. No silent rewrite: repair is advisory metadata on a failing code.
+# Artifacts: artifacts/search-quality/ambiguity/latest/{summary,error_payloads}.json
+rust-verify-quality-ambiguity:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ambiguity:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/ambiguity/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ambiguity_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ambiguity_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ambiguity/latest"'
+
+# Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails and
+# records an integration summary WITHOUT erasing dimension boundaries. This is
+# not a substitute for per-dimension closeout. Dimensions not yet implemented
+# (snippet, scale, tail, ops, ui) are recorded as `pending`, never as passing.
+rust-verify-quality-all:
+    @just rust-verify-quality-relevance
+    @just rust-verify-quality-ambiguity
+    mkdir -p artifacts/search-quality/integration/latest
+    python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
+
 rust-machete:
     env QUANTA_INDEX_BUILD_LANE=machete-lane bash -lc 'source scripts/quanta-index-env.sh && cargo machete --with-metadata'
 

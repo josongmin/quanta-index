@@ -28,20 +28,21 @@ Current packet facts:
   `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/e2e_text_route_hellgate.rs`
 - structural-route hellgate lives in
   `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/e2e_structural_hellgate.rs`
-- cross-repo ingress target is live and verified against the targeted semantica
-  contributor roundtrip rail
+- cross-repo ingress target exists as a separate external proof lane
 - SG structural direct lexical `Phrase` / `Regex` sibling remains explicit
   unsupported; the owner witness stays in search-plane lowering tests
 
-Current verified snapshot on `2026-06-07`:
+Current verified snapshot on `2026-06-08`:
 
 - `just rust-bench-dsl-truth` green
 - `just rust-verify-hellgate-fast` green
 - `just rust-verify-hellgate-broad` green
-- `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo` green
+- `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo` red
+  - external `semantica-codegraph-v2` boundary guard failure:
+    `quanta-sdk.runtime-facade-boundary.v1`
 - `just rust-bench-dsl-compare` green
 - `just rust-verify-hellgate-all` was not rerun as one aggregate command in
-  this final snapshot; the component gates above were rerun instead
+  this snapshot; the component gates above were rerun instead
 
 Preflight truth:
 

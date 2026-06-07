@@ -1,7 +1,7 @@
 # Jun 7 Verification Hellgates RFC
 
 Status: `landed`
-Date: `2026-06-07`
+Date: `2026-06-08`
 
 This packet is verification architecture only.
 
@@ -58,15 +58,17 @@ It follows the landed feature packets:
 - `J7-06` landed
 - `J7-07` landed
 
-Current verified snapshot on `2026-06-07`:
+Current verified snapshot on `2026-06-08`:
 
 - `just rust-bench-dsl-truth`: green (`2 passed`)
 - `just rust-verify-hellgate-fast`: green
 - `just rust-verify-hellgate-broad`: green
-- `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo`: green
+- `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo`: red in this snapshot
+  - external `semantica-codegraph-v2` boundary guard failure:
+    `quanta-sdk.runtime-facade-boundary.v1`
 - `just rust-bench-dsl-compare`: green
-- `just rust-verify-hellgate-all`: aggregate target exists, but this final
-  snapshot was revalidated via the component gates above instead of one
+- `just rust-verify-hellgate-all`: aggregate target exists, but this snapshot
+  is recorded from the component gates above instead of one completed
   monolithic rerun
 
 Preflight:

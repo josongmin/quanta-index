@@ -107,14 +107,12 @@
 ## 최신 검증 스냅샷
 
 - 재실행 일시:
-  - 2026-06-07 Asia/Seoul
+  - 2026-06-08 Asia/Seoul
 - exact rail:
   - `./scripts/cargow test -p quanta-index-search-plane --lib -- --nocapture`
-    - status: `108 passed`
+    - status: `111 passed`
   - `./scripts/cargow test -p quanta-index-searchd-runtime --test sdk_frontdoor -- --nocapture`
     - status: `13 passed`
-  - `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_dual_syntax_lowering_parity -- --nocapture`
-    - status: `4 passed`
   - `./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture`
     - status: `4 passed`
   - `python3 tools/benchmark/sourcegraph_parity.py --check`
@@ -129,11 +127,12 @@
   - `just rust-verify-hellgate-broad`
     - status: `green`
   - `env QUANTA_INDEX_SEARCHD_BIN=/Users/songmin/Library/Caches/quanta-index/target/daemon-lane/debug/quanta-index-searchd just rust-verify-hellgate-cross-repo`
-    - status: `green`
+    - status: `red in this snapshot`
+    - failure class: external `semantica-codegraph-v2` boundary guard `quanta-sdk.runtime-facade-boundary.v1`
   - `just rust-bench-dsl-compare`
     - status: `green`
   - `just rust-verify-hellgate-all`
-    - status: aggregate target exists, but this snapshot was revalidated via the component gates above instead of one monolithic rerun
+    - status: aggregate target exists, but this snapshot is recorded from the component gates above instead of one completed monolithic rerun
 - preflight:
   - `./scripts/check-persona-target-policy.sh --expect-agent`
   - `./scripts/cg-agent-session`
@@ -224,5 +223,5 @@
     - `rust-bench-dsl-truth` green
     - `rust-verify-hellgate-fast` green
     - `rust-verify-hellgate-broad` green
-    - `rust-verify-hellgate-cross-repo` green
+    - `rust-verify-hellgate-cross-repo` red in the current snapshot due external `semantica-codegraph-v2` boundary guard failure
     - `rust-bench-dsl-compare` green
