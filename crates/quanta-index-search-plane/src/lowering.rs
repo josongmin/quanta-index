@@ -690,6 +690,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "terminal `assert!` invariant checks in a Result-returning test; a failed assertion is the intended test failure"
+    )]
     fn sourcegraph_structural_route_does_not_preserve_quoted_phrase_as_lexical_sibling()
     -> TestResult {
         let lowered = lower_sourcegraph_structural_query_text(
@@ -720,7 +724,11 @@ mod tests {
                     )
                     .into());
                 }
-                other => {
+                other @ (LqExpr::Empty
+                | LqExpr::Leaf(_)
+                | LqExpr::Not(_)
+                | LqExpr::All(_)
+                | LqExpr::Any(_)) => {
                     return Err(format!(
                         "unexpected SG structural phrase ambiguity child: {other:?}"
                     )
@@ -740,9 +748,13 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "terminal `assert!` invariant checks in a Result-returning test; a failed assertion is the intended test failure"
+    )]
     fn sourcegraph_structural_route_does_not_preserve_regex_as_lexical_sibling() -> TestResult {
         let lowered = lower_sourcegraph_structural_query_text(
-            r#"patterntype:structural /^literal.*phrase$/ AND parity_needle_alpha"#,
+            r"patterntype:structural /^literal.*phrase$/ AND parity_needle_alpha",
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             format!("expected SG structural regex ambiguity lowering, got {err:?}").into()
@@ -769,7 +781,11 @@ mod tests {
                     )
                     .into());
                 }
-                other => {
+                other @ (LqExpr::Empty
+                | LqExpr::Leaf(_)
+                | LqExpr::Not(_)
+                | LqExpr::All(_)
+                | LqExpr::Any(_)) => {
                     return Err(format!(
                         "unexpected SG structural regex ambiguity child: {other:?}"
                     )

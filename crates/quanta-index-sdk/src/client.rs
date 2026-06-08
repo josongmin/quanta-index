@@ -12,9 +12,9 @@ use quanta_index_contract::{
 
 use crate::{
     ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace, QueryTransport,
-    RepoMapNamespace, RuntimeNamespace, SdkError, SearchNamespace, SemanticNamespace,
-    StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
-    UdsQueryTransport,
+    RepoMapNamespace, RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace,
+    SemanticNamespace, StructuralNamespace, SymbolNamespace, UdsControlTransport,
+    UdsIngestTransport, UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -43,6 +43,11 @@ impl QuantaIndex {
     #[must_use]
     pub fn lexical(&self) -> LexicalNamespace<'_> {
         LexicalNamespace::new(self)
+    }
+
+    #[must_use]
+    pub fn search_corpus(&self) -> SearchCorpusNamespace<'_> {
+        SearchCorpusNamespace::new(self)
     }
 
     #[must_use]
@@ -200,7 +205,7 @@ impl QuantaIndex {
                 message: error.message,
                 repair: error.repair,
             }),
-            payload @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            payload @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
@@ -266,7 +271,7 @@ impl QuantaIndex {
         response: &SearchPlaneIngestIpcResponse,
     ) -> &'static str {
         match response {
-            SearchPlaneIngestIpcResponse::LexicalReceipt(_) => "lexical_receipt",
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
             SearchPlaneIngestIpcResponse::RepoMapReceipt(_) => "repomap_receipt",
             SearchPlaneIngestIpcResponse::HistoryReceipt(_) => "history_receipt",
             SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_) => {
@@ -443,16 +448,16 @@ impl<'a> ProducerClient<'a> {
         Self { client }
     }
 
-    pub fn publish_lexical<const SEALED: bool>(
+    pub fn publish_search_corpus<const SEALED: bool>(
         &self,
-        batch: &crate::LexicalBatch<SEALED>,
+        batch: &crate::SearchCorpusBatch<SEALED>,
     ) -> Result<crate::BatchReceipt, SdkError> {
-        self.client.lexical().publish(batch)
+        self.client.search_corpus().publish(batch)
     }
 
-    pub fn publish_lexical_and_activate(
+    pub fn publish_search_corpus_and_activate(
         &self,
-        batch: &crate::LexicalBatch,
+        batch: &crate::SearchCorpusBatch,
     ) -> Result<
         (
             crate::BatchReceipt,
@@ -460,7 +465,7 @@ impl<'a> ProducerClient<'a> {
         ),
         SdkError,
     > {
-        self.client.lexical().publish_and_activate(batch)
+        self.client.search_corpus().publish_and_activate(batch)
     }
 
     pub fn publish_history(

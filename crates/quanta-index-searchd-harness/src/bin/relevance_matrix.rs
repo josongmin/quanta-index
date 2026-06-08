@@ -13,7 +13,10 @@ use std::process::ExitCode;
 use quanta_index_searchd_harness::relevance::report::{run_relevance_report, write_artifacts};
 
 fn git_rev() -> String {
-    std::env::var("DSL_BENCH_GIT_REV").unwrap_or_else(|_| "unknown".to_string())
+    if let Ok(rev) = std::env::var("DSL_BENCH_GIT_REV") {
+        return rev;
+    }
+    "unknown".to_string()
 }
 
 fn parse_out_dir() -> PathBuf {

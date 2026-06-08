@@ -26,8 +26,8 @@ ARTIFACT_ROOT = ROOT / "artifacts" / "search-quality"
 DIMENSIONS = [
     ("relevance", "J7Q-01A", True, "live"),
     ("ambiguity", "J7Q-06", True, "live"),
-    ("snippet_explain", "J7Q-02", True, "pending"),
-    ("scale", "J7Q-03", True, "pending"),
+    ("snippet", "J7Q-02", True, "live"),
+    ("scale", "J7Q-03", True, "live"),
     ("tail", "J7Q-04", True, "pending"),
     ("ops", "J7Q-05", True, "pending"),
     ("ui_contract", "J7Q-07", True, "pending"),

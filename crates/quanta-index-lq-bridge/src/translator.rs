@@ -805,6 +805,12 @@ fn parse_timeout_ms(value: &str) -> Result<u64, BridgeError> {
     })
 }
 
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "scaled is validated finite, > 0.0, and <= u32::MAX immediately above and is an integer-valued round(); f64 has no TryFrom<u32>, so the bounded cast is exact and cannot truncate or lose sign"
+)]
 fn parse_boost_millis(value: &str) -> Result<u32, BridgeError> {
     let parsed: f64 = value.parse().map_err(|err| {
         BridgeError::translate_fail(format!("bridge: invalid boost `{value}`: {err}"))

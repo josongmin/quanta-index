@@ -6,9 +6,9 @@ mod service;
 
 pub use inbound::LexicalQueryPort;
 pub use outbound::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalIngestPort, LexicalReadiness,
-    LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, LexicalReadiness, LexicalSearcher, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
+    SearchCorpusIngestPort,
 };
 pub use service::LexicalPolicy;

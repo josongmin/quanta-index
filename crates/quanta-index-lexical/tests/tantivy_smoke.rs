@@ -3123,7 +3123,7 @@ fn tantivy_applies_query_boost_to_scores() -> TestResult {
         .first()
         .ok_or("baseline boost test returned no hits")?;
 
-    let mut boosted_query = baseline_query.clone();
+    let mut boosted_query = baseline_query;
     boosted_query.options.boost_millis = Some(5_000);
     let boosted_hits = searcher.search(&boosted_query, 10)?;
     let boosted_first = boosted_hits

@@ -1,68 +1,68 @@
 
-[2m[0m[38;5;68mcrate[0m quanta_index_core
-[2m├── [0m[38;5;68mmod[0m domains[2m:[0m [38;5;107mpub[0m
-[2m│   ├── [0m[38;5;68mmod[0m hybrid[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m ExplainQueryPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m HybridQueryPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       ├── [0m[38;5;68mstruct[0m FuseAccumulator[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       └── [0m[38;5;68mstruct[0m HybridOrchestratorPolicy[2m:[0m [38;5;107mpub[0m
-[2m│   ├── [0m[38;5;68mmod[0m lexical[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m LexicalQueryPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m FileContributorIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m FileOwnershipIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalBatchBuildPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexBuildPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIndexOpenPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mstruct[0m LexicalReadiness[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m LexicalSearcher[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoCommitRecencyIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoDescriptionIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoMetaIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoTopicIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       └── [0m[38;5;68mstruct[0m LexicalPolicy[2m:[0m [38;5;107mpub[0m
-[2m│   ├── [0m[38;5;68mmod[0m repomap[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoMapQueryPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m RepoMapBundleIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m RepoMapGenerationActivatePort[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m policy[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mstruct[0m RepoMapPolicy[2m:[0m [38;5;107mpub[0m
-[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       └── [0m[38;5;68mstruct[0m RepoMapService[2m:[0m [38;5;107mpub[0m
-[2m│   ├── [0m[38;5;68mmod[0m semantic[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m SemanticQueryPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticBatchBuildPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticIndexOpenPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mtrait[0m SemanticIngestPort[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   ├── [0m[38;5;68mstruct[0m SemanticReadiness[2m:[0m [38;5;107mpub[0m
-[2m│   │   │   └── [0m[38;5;68mtrait[0m SemanticSearcher[2m:[0m [38;5;107mpub[0m
-[2m│   │   └── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
-[2m│   │       └── [0m[38;5;68mstruct[0m SemanticPolicy[2m:[0m [38;5;107mpub[0m
-[2m│   └── [0m[38;5;68mmod[0m structural[2m:[0m [38;5;107mpub[0m
-[2m│       ├── [0m[38;5;68mmod[0m inbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│       │   ├── [0m[38;5;68mstruct[0m StructuralQueryRequest[2m:[0m [38;5;107mpub[0m
-[2m│       │   └── [0m[38;5;68mstruct[0m StructuralQueryResponse[2m:[0m [38;5;107mpub[0m
-[2m│       ├── [0m[38;5;68mmod[0m outbound[2m:[0m [38;5;167mpub(self)[0m
-[2m│       │   ├── [0m[38;5;68menum[0m StructuralError[2m:[0m [38;5;107mpub[0m
-[2m│       │   ├── [0m[38;5;68mtrait[0m StructuralProducerPort[2m:[0m [38;5;107mpub[0m
-[2m│       │   └── [0m[38;5;68menum[0m StructuralReadiness[2m:[0m [38;5;107mpub[0m
-[2m│       ├── [0m[38;5;68mmod[0m policy[2m:[0m [38;5;167mpub(self)[0m
-[2m│       │   └── [0m[38;5;68mstruct[0m StructuralPolicy[2m:[0m [38;5;107mpub[0m
-[2m│       ├── [0m[38;5;68mmod[0m service[2m:[0m [38;5;167mpub(self)[0m
-[2m│       │   └── [0m[38;5;68mstruct[0m StructuralService[2m:[0m [38;5;107mpub[0m
-[2m│       └── [0m[38;5;68mmod[0m types[2m:[0m [38;5;167mpub(self)[0m
-[2m│           ├── [0m[38;5;68menum[0m StructuralExecutableFilter[2m:[0m [38;5;107mpub[0m
-[2m│           ├── [0m[38;5;68mstruct[0m StructuralMatchBinding[2m:[0m [38;5;107mpub[0m
-[2m│           └── [0m[38;5;68mstruct[0m StructuralMatchCandidate[2m:[0m [38;5;107mpub[0m
-[2m├── [0m[38;5;68mmod[0m error[2m:[0m [38;5;107mpub[0m
-[2m│   └── [0m[38;5;68menum[0m CoreError[2m:[0m [38;5;107mpub[0m
-[2m└── [0m[38;5;68mmod[0m timeref[2m:[0m [38;5;107mpub[0m
+crate quanta_index_core
+├── mod domains: pub
+│   ├── mod hybrid: pub
+│   │   ├── mod inbound: pub(self)
+│   │   │   ├── trait ExplainQueryPort: pub
+│   │   │   └── trait HybridQueryPort: pub
+│   │   └── mod service: pub(self)
+│   │       ├── struct FuseAccumulator: pub(self)
+│   │       └── struct HybridOrchestratorPolicy: pub
+│   ├── mod lexical: pub
+│   │   ├── mod inbound: pub(self)
+│   │   │   └── trait LexicalQueryPort: pub
+│   │   ├── mod outbound: pub(self)
+│   │   │   ├── trait FileContributorIngestPort: pub
+│   │   │   ├── trait FileOwnershipIngestPort: pub
+│   │   │   ├── trait LexicalIndexBuildPort: pub
+│   │   │   ├── trait LexicalIndexOpenPort: pub
+│   │   │   ├── struct LexicalReadiness: pub
+│   │   │   ├── trait LexicalSearcher: pub
+│   │   │   ├── trait RepoCommitRecencyIngestPort: pub
+│   │   │   ├── trait RepoDescriptionIngestPort: pub
+│   │   │   ├── trait RepoMetaIngestPort: pub
+│   │   │   ├── trait RepoTopicIngestPort: pub
+│   │   │   ├── trait SearchCorpusBatchBuildPort: pub
+│   │   │   └── trait SearchCorpusIngestPort: pub
+│   │   └── mod service: pub(self)
+│   │       └── struct LexicalPolicy: pub
+│   ├── mod repomap: pub
+│   │   ├── mod inbound: pub(self)
+│   │   │   └── trait RepoMapQueryPort: pub
+│   │   ├── mod outbound: pub(self)
+│   │   │   ├── trait RepoMapBundleIngestPort: pub
+│   │   │   └── trait RepoMapGenerationActivatePort: pub
+│   │   ├── mod policy: pub(self)
+│   │   │   └── struct RepoMapPolicy: pub
+│   │   └── mod service: pub(self)
+│   │       └── struct RepoMapService: pub
+│   ├── mod semantic: pub
+│   │   ├── mod inbound: pub(self)
+│   │   │   └── trait SemanticQueryPort: pub
+│   │   ├── mod outbound: pub(self)
+│   │   │   ├── trait SemanticBatchBuildPort: pub
+│   │   │   ├── trait SemanticIndexOpenPort: pub
+│   │   │   ├── trait SemanticIngestPort: pub
+│   │   │   ├── struct SemanticReadiness: pub
+│   │   │   └── trait SemanticSearcher: pub
+│   │   └── mod service: pub(self)
+│   │       └── struct SemanticPolicy: pub
+│   └── mod structural: pub
+│       ├── mod inbound: pub(self)
+│       │   ├── struct StructuralQueryRequest: pub
+│       │   └── struct StructuralQueryResponse: pub
+│       ├── mod outbound: pub(self)
+│       │   ├── enum StructuralError: pub
+│       │   ├── trait StructuralProducerPort: pub
+│       │   └── enum StructuralReadiness: pub
+│       ├── mod policy: pub(self)
+│       │   └── struct StructuralPolicy: pub
+│       ├── mod service: pub(self)
+│       │   └── struct StructuralService: pub
+│       └── mod types: pub(self)
+│           ├── enum StructuralExecutableFilter: pub
+│           ├── struct StructuralMatchBinding: pub
+│           └── struct StructuralMatchCandidate: pub
+├── mod error: pub
+│   └── enum CoreError: pub
+└── mod timeref: pub

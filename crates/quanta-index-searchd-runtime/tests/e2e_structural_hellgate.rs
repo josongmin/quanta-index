@@ -6,9 +6,9 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LexicalIngestBatch, LexicalReplaceScope, SearchScopeKey,
-    SearchScopeSurface, StructuralIngestBatch, StructuralReplaceScope, StructuralTreeRecord,
-    SymbolId, TextQuerySyntax,
+    BatchIngestMode, ChunkId, ChunkRecord, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchScopeKey, SearchScopeSurface, StructuralIngestBatch, StructuralReplaceScope,
+    StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
 use quanta_index_searchd_harness::bench_support::{
@@ -149,7 +149,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         container_qualified_name: Some("crate".to_string().into_boxed_str()),
         relationship: SymbolRelationship::Def,
     };
-    rt.publish_lexical_batch(LexicalIngestBatch {
+    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
         generation: rt.current_generation(),
@@ -158,7 +158,7 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         batch_digest: "structural-symbol-hellgate-lex-batch".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
-        replace_scopes: vec![LexicalReplaceScope {
+        replace_scopes: vec![SearchCorpusReplaceScope {
             scope: scope_key(path),
             scope_digest: "structural-symbol-hellgate-scope".to_string(),
             chunks: vec![chunk_a.clone(), chunk_b.clone()],
@@ -181,11 +181,11 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
             scope_digest: "structural-symbol-hellgate-struct-scope".to_string(),
             trees: vec![
                 StructuralTreeRecord {
-                    chunk_id: chunk_a.chunk_id.clone(),
+                    chunk_id: chunk_a.chunk_id,
                     record: tree.clone(),
                 },
                 StructuralTreeRecord {
-                    chunk_id: chunk_b.chunk_id.clone(),
+                    chunk_id: chunk_b.chunk_id,
                     record: tree,
                 },
             ],
@@ -309,13 +309,12 @@ fn sourcegraph_structural_direct_phrase_and_regex_demote_into_structural_bodies(
         phrase_binding.metavariable == "name"
             && phrase_binding.start_byte == 3
             && phrase_binding.end_byte == 7,
-        "quoted SG structural body must bind identifier span, got {:?}",
-        phrase_binding,
+        "quoted SG structural body must bind identifier span, got {phrase_binding:?}",
     );
 
     let direct_regex = rt.query_structural(
         TextQuerySyntax::Sourcegraph,
-        r#"patterntype:structural /^main$/"#,
+        r"patterntype:structural /^main$/",
         10,
     );
     ensure!(
@@ -337,13 +336,12 @@ fn sourcegraph_structural_direct_phrase_and_regex_demote_into_structural_bodies(
         regex_binding.metavariable.starts_with("__sg_regex_")
             && regex_binding.start_byte == 3
             && regex_binding.end_byte == 7,
-        "slash-delimited SG structural regex body must bind synthetic regex capture over `main`, got {:?}",
-        regex_binding,
+        "slash-delimited SG structural regex body must bind synthetic regex capture over `main`, got {regex_binding:?}",
     );
 
     let regex_miss = rt.query_structural(
         TextQuerySyntax::Sourcegraph,
-        r#"patterntype:structural /^missing$/"#,
+        r"patterntype:structural /^missing$/",
         10,
     );
     ensure!(

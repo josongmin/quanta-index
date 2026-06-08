@@ -4,11 +4,12 @@ use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
     FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, GenerationPin,
-    HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert, LexicalIngestBatch,
-    LexicalReplaceScope, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchPlaneTrackKind,
-    SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
+    HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert, ManifestGeneration,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    TextQuerySyntax,
     lex::{CommitSha, LanguageCode},
 };
 use quanta_index_searchd_harness as e2e_harness;
@@ -318,7 +319,7 @@ fn publish_revision_text_generation(
     content: &str,
 ) -> AnyResult<GenerationPin> {
     let manifest_digest = format!("hellgate-lex:{path}:{}", generation.get());
-    rt.publish_lexical_batch(LexicalIngestBatch {
+    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
         repo_id: rt.repo(),
         revision_id: revision_id.clone(),
         generation,
@@ -327,7 +328,7 @@ fn publish_revision_text_generation(
         batch_digest: format!("hellgate-lex-batch:{path}:{}", generation.get()),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
-        replace_scopes: vec![LexicalReplaceScope {
+        replace_scopes: vec![SearchCorpusReplaceScope {
             scope: revision_scope_key(path),
             scope_digest: format!("hellgate-scope:{path}:1-chunk"),
             chunks: vec![ChunkRecord {
@@ -786,7 +787,7 @@ fn sourcegraph_file_owner_contributor_and_projection_hellgate() -> AnyResult<()>
 
     let email_regex = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        r#"file:has.contributor(/alice@example\.com/) shared_oracle_needle"#,
+        r"file:has.contributor(/alice@example\.com/) shared_oracle_needle",
         10,
     );
     ensure!(
@@ -797,7 +798,7 @@ fn sourcegraph_file_owner_contributor_and_projection_hellgate() -> AnyResult<()>
 
     let no_canonical_fallback = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        r#"file:has.contributor(/^alice$/) shared_oracle_needle"#,
+        r"file:has.contributor(/^alice$/) shared_oracle_needle",
         10,
     );
     ensure!(
@@ -808,7 +809,7 @@ fn sourcegraph_file_owner_contributor_and_projection_hellgate() -> AnyResult<()>
 
     let invalid_contributor_regex = rt.query_text(
         TextQuerySyntax::Sourcegraph,
-        r#"file:has.contributor(/alice(/) shared_oracle_needle"#,
+        r"file:has.contributor(/alice(/) shared_oracle_needle",
         10,
     );
     let Some(contributor_error) = invalid_contributor_regex.typed_error else {

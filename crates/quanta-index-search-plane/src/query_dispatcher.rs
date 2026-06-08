@@ -6197,6 +6197,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "`assert!`/`assert_eq!` invariant checks in a Result-returning test; a failed assertion is the intended test failure"
+    )]
     fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
     -> Result<(), Box<dyn std::error::Error>> {
         let structural_state = structural_state_for_test_chunks(&[
@@ -6394,6 +6398,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "test seeds distinct metric sample values from a small loop counter; usize->f64 is exact at these magnitudes"
+    )]
     fn bounded_obs_store_evicts_oldest_samples_at_capacity() -> TestResult {
         let store = BoundedQueryObsStore::default();
         for i in 0..(MAX_OBS_SAMPLES + 8) {
@@ -6596,7 +6605,7 @@ mod tests {
         let candidate_ids = response
             .results
             .into_iter()
-            .map(|candidate| candidate.candidate_id.to_string())
+            .map(|candidate| candidate.candidate_id)
             .collect::<Vec<_>>();
         if candidate_ids != ["chunk-dirty"] {
             return Err(format!("expected [\"chunk-dirty\"], got {candidate_ids:?}").into());

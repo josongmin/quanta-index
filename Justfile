@@ -318,13 +318,43 @@ rust-verify-quality-ambiguity:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ambiguity_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ambiguity_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ambiguity/latest"'
 
-# Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails and
-# records an integration summary WITHOUT erasing dimension boundaries. This is
-# not a substitute for per-dimension closeout. Dimensions not yet implemented
-# (snippet, scale, tail, ops, ui) are recorded as `pending`, never as passing.
+# Snippet quality rail (J7Q-02). Blocking dimension: snippet.
+# Proves: pure window-oracle unit tests + adversarial gate tests (the gate can go
+# RED), then seeds the phrase/regex/multi-hit/long-line fixture and grades the
+# engine's emitted snippet against hit-centered-window + bounded-length +
+# deterministic-truncation (NOT substring presence). The snippet is graded
+# as-emitted; the rail never post-processes engine output to force a pass.
+# Artifacts: artifacts/search-quality/snippet/latest/{summary,golden_windows}.json
+rust-verify-quality-snippet:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib snippet:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/snippet/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin snippet_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/snippet_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/snippet/latest"'
+
+# Scale-tier rail (J7Q-03). Blocking dimension: scale.
+# Proves: deterministic seeded-corpus generator + tier-manifest invariants, then
+# measures the SMALL tier end to end (ingest -> seal -> activate -> query),
+# capturing ingest/open/query wall-times. Medium/large/xlarge are emitted as
+# `declared-advisory`: their blocking latency is owned by the canonical Linux
+# perf runner, not this host. An empty/typed-error small-tier query is a non-zero
+# exit, never a fabricated zero-latency pass.
+# Artifacts: artifacts/search-quality/scale/latest/{summary,tier_manifest}.json
+rust-verify-quality-scale:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib scale:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/scale/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/scale/latest"'
+
+# Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
+# (relevance, ambiguity, snippet, scale) and records an integration summary
+# WITHOUT erasing dimension boundaries. This is not a substitute for per-dimension
+# closeout. Dimensions not yet implemented (tail, ops, ui) are recorded as
+# `pending`, never as passing.
 rust-verify-quality-all:
     @just rust-verify-quality-relevance
     @just rust-verify-quality-ambiguity
+    @just rust-verify-quality-snippet
+    @just rust-verify-quality-scale
     mkdir -p artifacts/search-quality/integration/latest
     python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 

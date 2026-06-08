@@ -23,8 +23,8 @@ use quanta_index_contract::{
 };
 
 use crate::{
-    ConnectOptions, ControlTransport, DirtyBatch, HistoryBatch, IngestTransport, LexicalBatch,
-    QuantaIndex, QueryTransport, StructuralBatch, Track,
+    ConnectOptions, ControlTransport, DirtyBatch, HistoryBatch, IngestTransport, QuantaIndex,
+    QueryTransport, SearchCorpusBatch, StructuralBatch, Track,
 };
 
 /// QI-SDK-01: small helper to unwrap a `Result` inside a `#[test]` with
@@ -432,7 +432,7 @@ fn unused_control() -> Arc<StubControlTransport> {
 
 fn unused_ingest() -> Arc<StubIngestTransport> {
     Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt::default()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default()),
     ))
 }
 
@@ -844,7 +844,7 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
 }
 
 #[test]
-fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
+fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
         manifest_digest: "sha256:feed".to_string(),
@@ -853,12 +853,12 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::LexicalReceipt(receipt.clone()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let chunk = sample_chunk();
     let symbol = sample_symbol();
-    let batch = LexicalBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(1),
@@ -871,18 +871,18 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
         vec![chunk.clone()],
         vec![symbol.clone()],
     );
-    let observed = ok_or_fail!(client.lexical().publish(&batch));
+    let observed = ok_or_fail!(client.search_corpus().publish(&batch));
     assert_eq!(observed, receipt);
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
             &captured.payload,
-            SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
         ),
-        "expected PublishLexicalBatch, got {:?}",
+        "expected PublishSearchCorpusBatch, got {:?}",
         captured.payload
     );
-    let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
+    let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = &captured.payload else {
         return;
     };
     assert_eq!(wire.repo_id, repo_id());
@@ -894,7 +894,7 @@ fn lexical_publish_routes_through_ingest_transport_and_carries_typed_records() {
     assert_eq!(
         wire.replace_scopes.len(),
         1,
-        "expected one lexical replace scope"
+        "expected one search corpus replace scope"
     );
     let Some(first_scope) = wire.replace_scopes.first() else {
         return;
@@ -941,12 +941,12 @@ fn reader_client_routes_lexical_query_surface() {
 }
 
 #[test]
-fn producer_client_publish_lexical_accepts_unsealed_batches() {
+fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt::default()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
-    let batch = LexicalBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(2),
@@ -954,17 +954,17 @@ fn producer_client_publish_lexical_accepts_unsealed_batches() {
         "batch:unsealed",
     )
     .without_seal();
-    let _receipt = ok_or_fail!(client.producer().publish_lexical(&batch));
+    let _receipt = ok_or_fail!(client.producer().publish_search_corpus(&batch));
     let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(
         matches!(
             captured.payload,
-            SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
         ),
-        "expected lexical ingest request, got {:?}",
+        "expected search corpus ingest request, got {:?}",
         captured.payload
     );
-    let SearchPlaneIngestIpcRequest::PublishLexicalBatch(wire) = &captured.payload else {
+    let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = &captured.payload else {
         return;
     };
     assert!(
@@ -974,7 +974,7 @@ fn producer_client_publish_lexical_accepts_unsealed_batches() {
 }
 
 #[test]
-fn producer_client_publish_lexical_and_activate_routes_ingest_then_control() {
+fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(7),
         manifest_digest: "manifest:activate".to_string(),
@@ -993,10 +993,10 @@ fn producer_client_publish_lexical_and_activate_routes_ingest_then_control() {
         quanta_index_contract::SearchPlaneControlIpcResponse::ActivationAck(ack.clone()),
     ));
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::LexicalReceipt(receipt.clone()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.clone()),
     ));
     let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
-    let batch = LexicalBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(7),
@@ -1004,14 +1004,14 @@ fn producer_client_publish_lexical_and_activate_routes_ingest_then_control() {
         "batch:activate",
     );
     let (observed_receipt, observed_ack) =
-        ok_or_fail!(client.producer().publish_lexical_and_activate(&batch));
+        ok_or_fail!(client.producer().publish_search_corpus_and_activate(&batch));
     assert_eq!(observed_receipt, receipt);
     assert_eq!(observed_ack, ack);
 
     let ingest_request = ok_or_fail!(only_ingest_request(ingest.as_ref()));
     assert!(matches!(
         ingest_request.payload,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
     ));
     let control_request = ok_or_fail!(only_control_request(control.as_ref()));
     let quanta_index_contract::SearchPlaneControlIpcRequest::ActivateGeneration(request) =
@@ -1940,14 +1940,14 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         }),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest);
-    let batch = LexicalBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:feed",
         "batch:feed",
     );
-    let err = client.lexical().publish(&batch).err();
+    let err = client.search_corpus().publish(&batch).err();
     assert!(
         matches!(err, Some(crate::SdkError::Remote { .. })),
         "expected Remote error, got {err:?}"
@@ -2069,4 +2069,51 @@ fn generations_status_returns_empty_tracks_when_nothing_activated() {
         observed.tracks.is_empty(),
         "QI-ACT-01: empty tracks is legitimate state, distinct from NOT_READY"
     );
+}
+
+#[test]
+fn search_corpus_public_surface_keeps_legacy_lexical_ingest_names_out_v1() {
+    let sdk_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lexical_source =
+        std::fs::read_to_string(sdk_root.join("src/lexical.rs")).expect("read lexical.rs");
+    let client_source =
+        std::fs::read_to_string(sdk_root.join("src/client.rs")).expect("read client.rs");
+    let public_surface = std::fs::read_to_string(sdk_root.join("src/lib.rs")).expect("read lib.rs");
+    let contract_ingest =
+        std::fs::read_to_string(sdk_root.join("../quanta-index-contract/src/ipc/ingest.rs"))
+            .expect("read contract ingest.rs");
+
+    for forbidden in [
+        "LexicalIngestBatch",
+        "LexicalReplaceScope",
+        "LexicalTombstoneScope",
+        "PublishLexicalBatch",
+        "publish_lexical",
+        "DirectLexicalMaterializer",
+        "LexicalIngestPort",
+    ] {
+        assert!(
+            !lexical_source.contains(forbidden)
+                && !client_source.contains(forbidden)
+                && !public_surface.contains(forbidden)
+                && !contract_ingest.contains(forbidden),
+            "legacy lexical-ingest symbol must stay deleted from public ingest surfaces: {forbidden}",
+        );
+    }
+
+    for required in [
+        "SearchCorpusBatch",
+        "publish_search_corpus",
+        "publish_search_corpus_and_activate",
+        "PublishSearchCorpusBatch",
+        "SearchCorpusIngestBatch",
+    ] {
+        assert!(
+            lexical_source.contains(required)
+                || client_source.contains(required)
+                || public_surface.contains(required)
+                || contract_ingest.contains(required),
+            "search-corpus ingest owner surface must keep `{required}` wired",
+        );
+    }
 }

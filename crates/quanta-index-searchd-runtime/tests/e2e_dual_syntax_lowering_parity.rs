@@ -1726,8 +1726,8 @@ const AUTHORITY_SCENARIOS: &[ParityScenario] = &[
     ParityScenario {
         route: QueryRoute::Text,
         id: "file_has_contributor_regex_predicate_parity",
-        sg_query: r#"file:has.contributor(/alice@example\.com/) parity_needle_alpha"#,
-        lq_query: r#"file.has.contributor(/alice@example\.com/) parity_needle_alpha"#,
+        sg_query: r"file:has.contributor(/alice@example\.com/) parity_needle_alpha",
+        lq_query: r"file.has.contributor(/alice@example\.com/) parity_needle_alpha",
         top_k: 10,
         expected: ExpectedOutcome::Candidates {
             ids: &["repo_commit_after_alpha"],

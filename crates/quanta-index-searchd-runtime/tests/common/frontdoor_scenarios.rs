@@ -276,7 +276,7 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         name: "sourcegraph_file_has_contributor_regex_positive",
         surface: SdkFrontdoorSurface::Lexical,
         syntax: TextQuerySyntax::Sourcegraph,
-        query_text: r#"file:has.contributor(/alice@example\.com/) shared_oracle_needle"#,
+        query_text: r"file:has.contributor(/alice@example\.com/) shared_oracle_needle",
         expected: SdkFrontdoorExpectation::CandidateIds(&[
             "chunk-recency-a",
             "chunk-recency-a-gate",
@@ -304,7 +304,7 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         name: "sourcegraph_structural_direct_regex_demotes_to_body",
         surface: SdkFrontdoorSurface::Structural,
         syntax: TextQuerySyntax::Sourcegraph,
-        query_text: r#"patterntype:structural /^main$/"#,
+        query_text: r"patterntype:structural /^main$/",
         expected: SdkFrontdoorExpectation::CandidateIds(&["chunk-tree"]),
     },
     SdkFrontdoorScenario {

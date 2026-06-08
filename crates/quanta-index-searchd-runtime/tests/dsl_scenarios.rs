@@ -20,8 +20,8 @@ use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin,
-    HybridQueryRequest, LexicalCandidate, LexicalIngestBatch, LexicalReplaceScope, LqVisibility,
-    ManifestGeneration, PlannerStage, RepoId, RepoRelativePath, RevisionId,
+    HybridQueryRequest, LexicalCandidate, LqVisibility, ManifestGeneration, PlannerStage, RepoId,
+    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -239,7 +239,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     }
 }
 
-fn publish_lexical_chunks(
+fn publish_search_corpus_chunks(
     socket: &Path,
     chunks: Vec<ChunkRecord>,
     bundle_payload: Option<Vec<u8>>,
@@ -253,7 +253,7 @@ fn publish_lexical_chunks(
     }
     let replace_scopes = chunks_by_path
         .into_iter()
-        .map(|(path, chunks)| LexicalReplaceScope {
+        .map(|(path, chunks)| SearchCorpusReplaceScope {
             scope: scope_key(&path),
             scope_digest: format!("dsl-lex-scope:{path}"),
             chunks,
@@ -262,7 +262,7 @@ fn publish_lexical_chunks(
         .collect();
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -284,7 +284,7 @@ fn publish_lexical_chunks(
 fn seal_lexical(socket: &Path) -> TestResult {
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -347,7 +347,7 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-sg-metadata-filters")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 10, 14, "needle rust alpha")?,
@@ -458,7 +458,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-determinism")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "sphinx alpha needle")?,
@@ -528,7 +528,7 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-sg-repo-has-file")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 1, 2, "needle alpha")?,
@@ -593,7 +593,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-sg-phrase-regex")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "sphinx of quartz")?,
@@ -700,7 +700,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "dsl-lq-phrase-regex")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "sphinx of quartz")?,
@@ -784,7 +784,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-semantic-complex-scope")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "scope alpha keep")?,
@@ -897,7 +897,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-complex-scope")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "scope alpha keep")?,
@@ -1012,7 +1012,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "dsl-hybrid-count-reached")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "scope alpha keep")?,

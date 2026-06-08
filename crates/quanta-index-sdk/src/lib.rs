@@ -31,7 +31,9 @@ pub use history::{
     RepoCommitRecencyBatch, RepoCommitRecencyMutation, RepoDescriptionBatch,
     RepoDescriptionMutation, RepoMetaBatch, RepoMetaMutation, RepoTopicBatch, RepoTopicMutation,
 };
-pub use lexical::{LexicalBatch, LexicalNamespace, LexicalQueryBuilder};
+pub use lexical::{
+    LexicalNamespace, LexicalQueryBuilder, SearchCorpusBatch, SearchCorpusNamespace,
+};
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};
@@ -54,13 +56,13 @@ pub use quanta_index_contract::{
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     GenerationSelector, GenerationSnapshot, GenerationStatusReport, HybridSeedCandidate,
     HybridSeedLane, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, OwnerDocKind, RepoId,
-    RepoMapActivateGenerationRequest, RepoMapCallEdge, RepoMapChunkNode, RepoMapContainsEdge,
-    RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode, RepoMapGraphCoverage, RepoMapImportEdge,
-    RepoMapModuleId, RepoMapModuleNode, RepoMapMutationAck, RepoMapNode, RepoMapNodeRef,
-    RepoMapOwnsChunkEdge, RepoMapQueryRequest, RepoMapQueryResponse, RepoMapSourceBundle,
-    RepoMapSymbolNode, RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneActivationAck,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    ManifestGeneration, OwnerDocKind, RepoId, RepoMapActivateGenerationRequest, RepoMapCallEdge,
+    RepoMapChunkNode, RepoMapContainsEdge, RepoMapDependsOnEdge, RepoMapEdge, RepoMapFileNode,
+    RepoMapGraphCoverage, RepoMapImportEdge, RepoMapModuleId, RepoMapModuleNode,
+    RepoMapMutationAck, RepoMapNode, RepoMapNodeRef, RepoMapOwnsChunkEdge, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
     StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,

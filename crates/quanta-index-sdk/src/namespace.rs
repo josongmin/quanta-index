@@ -11,11 +11,12 @@
 //! - [`NamespaceIngest`] for publish-style namespace operations
 //! - [`NamespaceQuery`] for query-builder namespace operations
 //!
-//! Built-in namespaces such as lexical, semantic, and repo-map implement
-//! these traits directly. Production code uses the typed `client.lexical()`,
-//! `client.semantic()`, and sibling namespace surfaces. The generic
-//! [`NamespaceHandle`] below is test-only and exists only to prove that the
-//! trait split remains open for internal namespace conformance tests.
+//! Built-in namespaces such as lexical query, search-corpus ingest, semantic,
+//! and repo-map implement these traits directly. Production code uses typed
+//! namespace surfaces such as `client.lexical()`, `client.search_corpus()`,
+//! and siblings. The generic [`NamespaceHandle`] below is test-only and exists
+//! only to prove that the trait split remains open for internal namespace
+//! conformance tests.
 
 #[cfg(test)]
 use std::marker::PhantomData;
@@ -25,8 +26,9 @@ use crate::{QuantaIndex, SdkError};
 /// Marker capability: a namespace exposes a typed publish path.
 ///
 /// The marker `Self` is a zero-sized type used purely for type-level
-/// dispatch (e.g. [`crate::LexicalNs`]). `publish` consumes a reference to the
-/// SDK-side batch DTO and returns the namespace's receipt shape.
+/// dispatch (e.g. [`crate::lexical::SearchCorpusNs`]). `publish` consumes a
+/// reference to the SDK-side batch DTO and returns the namespace's receipt
+/// shape.
 ///
 /// Implementations route through `QuantaIndex::dispatch_ingest` and are
 /// responsible for:
@@ -38,7 +40,7 @@ use crate::{QuantaIndex, SdkError};
 ///   rules).
 pub(crate) trait NamespaceIngest {
     /// SDK-side batch shape. Typically an idiomatic builder type
-    /// (`LexicalBatch`, `HistoryBatch`, etc.).
+    /// (`SearchCorpusBatch`, `HistoryBatch`, etc.).
     type Batch;
     /// Receipt shape returned on a successful publish. Typically
     /// [`quanta_index_contract::BatchPublishReceipt`] for stream
@@ -148,21 +150,26 @@ mod tests {
     };
 
     use super::*;
-    use crate::{BatchReceipt, ControlTransport, IngestTransport, LexicalBatch, QueryTransport};
+    use crate::{
+        BatchReceipt, ControlTransport, IngestTransport, QueryTransport, SearchCorpusBatch,
+    };
 
     type TestRes = Result<(), String>;
 
     /// Test-local marker used only in this module.
-    struct DownstreamLexicalNs;
+    struct DownstreamSearchCorpusNs;
 
-    impl NamespaceIngest for DownstreamLexicalNs {
-        type Batch = LexicalBatch;
+    impl NamespaceIngest for DownstreamSearchCorpusNs {
+        type Batch = SearchCorpusBatch;
         type Receipt = BatchReceipt;
 
-        fn publish(client: &QuantaIndex, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
-            // Reuse the LexicalNs implementation so the wire path is
+        fn publish(
+            client: &QuantaIndex,
+            batch: &SearchCorpusBatch,
+        ) -> Result<BatchReceipt, SdkError> {
+            // Reuse the SearchCorpusNs implementation so the wire path is
             // exercised exactly once.
-            <crate::lexical::LexicalNs as NamespaceIngest>::publish(client, batch)
+            <crate::lexical::SearchCorpusNs as NamespaceIngest>::publish(client, batch)
         }
     }
 
@@ -246,10 +253,10 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
     }
 
-    fn fixture_batch() -> Result<LexicalBatch, String> {
+    fn fixture_batch() -> Result<SearchCorpusBatch, String> {
         let language = LanguageCode::new("rust")
             .map_err(|err| format!("valid language code fixture required: {err}"))?;
-        Ok(LexicalBatch::replace_generation(
+        Ok(SearchCorpusBatch::replace_generation(
             RepoId::new("repo"),
             RevisionId::new("rev"),
             ManifestGeneration::new(1),
@@ -301,21 +308,21 @@ mod tests {
         let result = (|| -> TestRes {
             let ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
-                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                     fixture_receipt(),
                 ))),
             });
             let client = make_client(Arc::clone(&ingest));
             let batch = fixture_batch()?;
             let receipt = client
-                .ns::<DownstreamLexicalNs>()
+                .ns::<DownstreamSearchCorpusNs>()
                 .publish(&batch)
                 .map_err(|err| format!("test-local publish must succeed: {err}"))?;
             assert_eq!(receipt.generation, ManifestGeneration::new(1));
             let first = only_ingest_request(ingest.as_ref())?;
             assert!(matches!(
                 first.payload,
-                SearchPlaneIngestIpcRequest::PublishLexicalBatch(_)
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
             ));
             Ok(())
         })();
@@ -323,34 +330,34 @@ mod tests {
     }
 
     #[test]
-    fn sugar_lexical_and_ns_lexical_produce_equivalent_wire() {
+    fn sugar_search_corpus_and_ns_search_corpus_produce_equivalent_wire() {
         let result = (|| -> TestRes {
-            // QI-NS-01: `client.lexical().publish(batch)` is sugar for
-            // `client.ns::<LexicalNs>().publish(batch)`. Wire output must be
-            // identical apart from request_id allocation.
+            // QI-NS-01: `client.search_corpus().publish(batch)` is sugar for
+            // `client.ns::<SearchCorpusNs>().publish(batch)`. Wire output must
+            // be identical apart from request_id allocation.
             let batch = fixture_batch()?;
 
             let sugar_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
-                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                     fixture_receipt(),
                 ))),
             });
             let sugar_client = make_client(Arc::clone(&sugar_ingest));
             let _sugar_receipt = sugar_client
-                .lexical()
+                .search_corpus()
                 .publish(&batch)
                 .map_err(|err| format!("sugar publish must succeed: {err}"))?;
 
             let ns_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
-                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::LexicalReceipt(
+                response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                     fixture_receipt(),
                 ))),
             });
             let ns_client = make_client(Arc::clone(&ns_ingest));
             let _ns_receipt = ns_client
-                .ns::<crate::lexical::LexicalNs>()
+                .ns::<crate::lexical::SearchCorpusNs>()
                 .publish(&batch)
                 .map_err(|err| format!("ns publish must succeed: {err}"))?;
 

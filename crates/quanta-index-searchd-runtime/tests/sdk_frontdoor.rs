@@ -38,9 +38,9 @@ use quanta_index_contract::{
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
     CommitRecord, CommitSha, ConnectOptions, DiffHunkRecord, DirtyBatch, DirtyRecord,
-    FileContributorBatch, FileOwnershipBatch, LexicalBatch, ParseNode, ParseRoleTag,
-    ParseTreeRecord, QuantaIndex, RepoCommitRecencyBatch, RepoDescriptionBatch, RepoMetaBatch,
-    RepoRelativePath, RepoTopicBatch, SdkError, SearchScopeKey, SearchScopeSurface,
+    FileContributorBatch, FileOwnershipBatch, ParseNode, ParseRoleTag, ParseTreeRecord,
+    QuantaIndex, RepoCommitRecencyBatch, RepoDescriptionBatch, RepoMetaBatch, RepoRelativePath,
+    RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
 use quanta_index_searchd::app::SearchdConfig;
@@ -211,7 +211,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         SearchPlaneIngestIpcResponse::Error(err) => {
             Err(format!("ingest failed code={} message={}", err.code, err.message).into())
         }
-        SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -314,8 +314,8 @@ fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
     })
 }
 
-fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
-    Ok(LexicalBatch::replace_generation(
+fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    Ok(SearchCorpusBatch::replace_generation(
         repo(),
         revision(),
         generation(),
@@ -382,7 +382,7 @@ fn lexical_batch() -> Result<LexicalBatch, Box<dyn Error>> {
     ))
 }
 
-fn lexical_frontdoor_matrix_batch() -> Result<LexicalBatch, Box<dyn Error>> {
+fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
     Ok(lexical_batch()?
         .replace_scope(
             SearchScopeKey {
@@ -453,8 +453,8 @@ fn lexical_frontdoor_matrix_batch() -> Result<LexicalBatch, Box<dyn Error>> {
         ))
 }
 
-fn lexical_batch_two() -> Result<LexicalBatch, Box<dyn Error>> {
-    Ok(LexicalBatch::replace_generation(
+fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    Ok(SearchCorpusBatch::replace_generation(
         repo(),
         revision(),
         generation_two(),
@@ -698,8 +698,8 @@ fn rev_at_time_lexical_batch(
     path: &str,
     candidate_id: &str,
     snippet: &str,
-) -> Result<LexicalBatch, Box<dyn Error>> {
-    Ok(LexicalBatch::replace_generation(
+) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    Ok(SearchCorpusBatch::replace_generation(
         repo(),
         revision_id,
         generation,
@@ -1167,7 +1167,7 @@ fn expect_sdk_error<T>(
 }
 
 fn publish_sdk_lexical_and_structural_ready(client: &QuantaIndex) -> TestResult {
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
@@ -1414,7 +1414,7 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let history_receipt = client.history().publish(&history_batch())?;
     let dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -1425,7 +1425,7 @@ fn sdk_publish_frontdoor_routes_ingest_batches() -> TestResult {
         || lexical_receipt.accepted_tombstone_scopes != 0
     {
         stop_runtime(&shutdown, join)?;
-        return Err(format!("unexpected lexical receipt: {lexical_receipt:?}").into());
+        return Err(format!("unexpected search-corpus receipt: {lexical_receipt:?}").into());
     }
     if history_receipt.generation != generation()
         || history_receipt.accepted_replace_scopes != 4
@@ -1486,7 +1486,7 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_explain_and_repomap_truth
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let repo_map_receipt = client.repomap().publish(&repo_map_bundle()?)?;
     if repo_map_receipt.manifest_generation != generation() {
         stop_runtime(&shutdown, join)?;
@@ -1762,7 +1762,7 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
             .with_ingest_socket(ingest_socket),
     )?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -2620,7 +2620,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
         start_sdk_frontdoor_runtime_with_ingest("sdk-frontdoor-widened-query-matrix")?;
 
     let _lexical_receipt = client
-        .lexical()
+        .search_corpus()
         .publish(&lexical_frontdoor_matrix_batch()?)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -2965,14 +2965,14 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
 fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
     let (_dir, client, shutdown, join) = start_sdk_frontdoor_runtime("sdk-frontdoor-rev-at-time")?;
 
-    let _ancestor_receipt = client.lexical().publish(&rev_at_time_lexical_batch(
+    let _ancestor_receipt = client.search_corpus().publish(&rev_at_time_lexical_batch(
         rev_at_time_ancestor_revision(),
         rev_at_time_ancestor_generation(),
         "src/legacy.rs",
         "chunk-rev-at-time-ancestor",
         "needle_token legacy_choice",
     )?)?;
-    let _head_receipt = client.lexical().publish(&rev_at_time_lexical_batch(
+    let _head_receipt = client.search_corpus().publish(&rev_at_time_lexical_batch(
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
         "src/head.rs",
@@ -3142,7 +3142,7 @@ fn sdk_history_query_frontdoor_surfaces_typed_absent_and_shard_errors() -> TestR
     )?;
     expect_remote_code(generation_not_ready, "HISTORY_GENERATION_NOT_READY")?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let producer_unavailable = expect_sdk_error(
         client
             .history()
@@ -3536,7 +3536,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-contract-exact")?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let _history_receipt = client.history().publish(&history_batch())?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
@@ -3779,7 +3779,7 @@ fn sdk_generations_frontdoor_routes_commit_current_status_and_builder_activation
     )?;
     expect_remote_code(direct_activation_not_ready, "NOT_READY")?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let _structural_receipt = client.structural().publish(&structural_batch()?)?;
 
     let direct_activation = client
@@ -3876,7 +3876,7 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-builder-variants")?;
 
-    let _lexical_receipt = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt = client.search_corpus().publish(&lexical_batch()?)?;
     let _dirty_receipt = client.runtime().publish_dirty(&dirty_batch())?;
     let _activation = wait_for_sdk_ready(SOCKET_TIMEOUT, || {
         client
@@ -4012,7 +4012,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
     let (client, shutdown, join) =
         start_sdk_frontdoor_runtime_at_state_root(&state_root, "sdk-frontdoor-multigen-v1")?;
 
-    let _lexical_receipt_v1 = client.lexical().publish(&lexical_batch()?)?;
+    let _lexical_receipt_v1 = client.search_corpus().publish(&lexical_batch()?)?;
     let _structural_receipt_v1 = client.structural().publish(&structural_batch()?)?;
     let _activation_v1 = wait_for_sdk_ready(complex_timeout, || {
         client
@@ -4050,7 +4050,7 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         return Err(format!("unexpected active v1 lexical response: {lexical_active_v1:?}").into());
     }
 
-    let _lexical_receipt_v2 = client.lexical().publish(&lexical_batch_two()?)?;
+    let _lexical_receipt_v2 = client.search_corpus().publish(&lexical_batch_two()?)?;
     let _structural_receipt_v2 = client.structural().publish(&structural_batch_two()?)?;
 
     let lexical_pinned_v2 = wait_for_sdk_observation(

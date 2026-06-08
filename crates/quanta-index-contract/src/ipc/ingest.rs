@@ -245,21 +245,21 @@ impl<'de> Deserialize<'de> for SearchScopeKey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalReplaceScope {
+pub struct SearchCorpusReplaceScope {
     pub scope: SearchScopeKey,
     pub scope_digest: String,
     pub chunks: Vec<ChunkRecord>,
     pub symbols: Vec<SymbolRecord>,
 }
 
-const LEXICAL_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "chunks", "symbols"];
+const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "chunks", "symbols"];
 
-impl Serialize for LexicalReplaceScope {
+impl Serialize for SearchCorpusReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalReplaceScope", 4)?;
+        let mut state = serializer.serialize_struct("SearchCorpusReplaceScope", 4)?;
         state.serialize_field("scope", &self.scope)?;
         state.serialize_field("scope_digest", &self.scope_digest)?;
         state.serialize_field("chunks", &self.chunks)?;
@@ -268,13 +268,13 @@ impl Serialize for LexicalReplaceScope {
     }
 }
 
-struct LexicalReplaceScopeVisitor;
+struct SearchCorpusReplaceScopeVisitor;
 
-impl<'de> Visitor<'de> for LexicalReplaceScopeVisitor {
-    type Value = LexicalReplaceScope;
+impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
+    type Value = SearchCorpusReplaceScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalReplaceScope map")
+        formatter.write_str("a SearchCorpusReplaceScope map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -314,12 +314,12 @@ impl<'de> Visitor<'de> for LexicalReplaceScopeVisitor {
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        LEXICAL_REPLACE_SCOPE_FIELDS,
+                        SEARCH_CORPUS_REPLACE_SCOPE_FIELDS,
                     ));
                 }
             }
         }
-        Ok(LexicalReplaceScope {
+        Ok(SearchCorpusReplaceScope {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
             scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
             chunks: chunks.ok_or_else(|| de::Error::missing_field("chunks"))?,
@@ -328,44 +328,44 @@ impl<'de> Visitor<'de> for LexicalReplaceScopeVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalReplaceScope {
+impl<'de> Deserialize<'de> for SearchCorpusReplaceScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalReplaceScope",
-            LEXICAL_REPLACE_SCOPE_FIELDS,
-            LexicalReplaceScopeVisitor,
+            "SearchCorpusReplaceScope",
+            SEARCH_CORPUS_REPLACE_SCOPE_FIELDS,
+            SearchCorpusReplaceScopeVisitor,
         )
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalTombstoneScope {
+pub struct SearchCorpusTombstoneScope {
     pub scope: SearchScopeKey,
 }
 
-const LEXICAL_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
+const SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
 
-impl Serialize for LexicalTombstoneScope {
+impl Serialize for SearchCorpusTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalTombstoneScope", 1)?;
+        let mut state = serializer.serialize_struct("SearchCorpusTombstoneScope", 1)?;
         state.serialize_field("scope", &self.scope)?;
         state.end()
     }
 }
 
-struct LexicalTombstoneScopeVisitor;
+struct SearchCorpusTombstoneScopeVisitor;
 
-impl<'de> Visitor<'de> for LexicalTombstoneScopeVisitor {
-    type Value = LexicalTombstoneScope;
+impl<'de> Visitor<'de> for SearchCorpusTombstoneScopeVisitor {
+    type Value = SearchCorpusTombstoneScope;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalTombstoneScope map")
+        formatter.write_str("a SearchCorpusTombstoneScope map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -384,32 +384,32 @@ impl<'de> Visitor<'de> for LexicalTombstoneScopeVisitor {
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        LEXICAL_TOMBSTONE_SCOPE_FIELDS,
+                        SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS,
                     ));
                 }
             }
         }
-        Ok(LexicalTombstoneScope {
+        Ok(SearchCorpusTombstoneScope {
             scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalTombstoneScope {
+impl<'de> Deserialize<'de> for SearchCorpusTombstoneScope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalTombstoneScope",
-            LEXICAL_TOMBSTONE_SCOPE_FIELDS,
-            LexicalTombstoneScopeVisitor,
+            "SearchCorpusTombstoneScope",
+            SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS,
+            SearchCorpusTombstoneScopeVisitor,
         )
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalIngestBatch {
+pub struct SearchCorpusIngestBatch {
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
@@ -418,12 +418,12 @@ pub struct LexicalIngestBatch {
     pub batch_digest: String,
     pub mode: BatchIngestMode,
     pub bundle_payload: Option<Vec<u8>>,
-    pub replace_scopes: Vec<LexicalReplaceScope>,
-    pub tombstone_scopes: Vec<LexicalTombstoneScope>,
+    pub replace_scopes: Vec<SearchCorpusReplaceScope>,
+    pub tombstone_scopes: Vec<SearchCorpusTombstoneScope>,
     pub seal: bool,
 }
 
-const LEXICAL_INGEST_BATCH_FIELDS: &[&str] = &[
+const SEARCH_CORPUS_INGEST_BATCH_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
     "generation",
@@ -437,12 +437,12 @@ const LEXICAL_INGEST_BATCH_FIELDS: &[&str] = &[
     "seal",
 ];
 
-impl Serialize for LexicalIngestBatch {
+impl Serialize for SearchCorpusIngestBatch {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalIngestBatch", 11)?;
+        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 11)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -458,13 +458,13 @@ impl Serialize for LexicalIngestBatch {
     }
 }
 
-struct LexicalIngestBatchVisitor;
+struct SearchCorpusIngestBatchVisitor;
 
-impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
-    type Value = LexicalIngestBatch;
+impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
+    type Value = SearchCorpusIngestBatch;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a LexicalIngestBatch map")
+        formatter.write_str("a SearchCorpusIngestBatch map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -479,8 +479,8 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
         let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
         let mut bundle_payload: Option<Option<Vec<u8>>> = None;
-        let mut replace_scopes: Option<Vec<LexicalReplaceScope>> = None;
-        let mut tombstone_scopes: Option<Vec<LexicalTombstoneScope>> = None;
+        let mut replace_scopes: Option<Vec<SearchCorpusReplaceScope>> = None;
+        let mut tombstone_scopes: Option<Vec<SearchCorpusTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -551,11 +551,14 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
                     seal = Some(map.next_value()?);
                 }
                 other => {
-                    return Err(de::Error::unknown_field(other, LEXICAL_INGEST_BATCH_FIELDS));
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_CORPUS_INGEST_BATCH_FIELDS,
+                    ));
                 }
             }
         }
-        Ok(LexicalIngestBatch {
+        Ok(SearchCorpusIngestBatch {
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
@@ -575,15 +578,15 @@ impl<'de> Visitor<'de> for LexicalIngestBatchVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for LexicalIngestBatch {
+impl<'de> Deserialize<'de> for SearchCorpusIngestBatch {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "LexicalIngestBatch",
-            LEXICAL_INGEST_BATCH_FIELDS,
-            LexicalIngestBatchVisitor,
+            "SearchCorpusIngestBatch",
+            SEARCH_CORPUS_INGEST_BATCH_FIELDS,
+            SearchCorpusIngestBatchVisitor,
         )
     }
 }
@@ -3800,7 +3803,7 @@ impl Default for BatchPublishReceipt {
     reason = "wire protocol keeps explicit publish prefixes for request-kind clarity"
 )]
 pub enum SearchPlaneIngestIpcRequest {
-    PublishLexicalBatch(LexicalIngestBatch),
+    PublishSearchCorpusBatch(SearchCorpusIngestBatch),
     PublishHistoryBatch(HistoryIngestBatch),
     PublishRepoCommitRecencyBatch(RepoCommitRecencyIngestBatch),
     PublishRepoTopicBatch(RepoTopicIngestBatch),
@@ -3815,7 +3818,7 @@ pub enum SearchPlaneIngestIpcRequest {
 }
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
-    "PublishLexicalBatch",
+    "PublishSearchCorpusBatch",
     "PublishHistoryBatch",
     "PublishRepoCommitRecencyBatch",
     "PublishRepoTopicBatch",
@@ -3835,10 +3838,10 @@ impl Serialize for SearchPlaneIngestIpcRequest {
         S: Serializer,
     {
         match self {
-            Self::PublishLexicalBatch(payload) => serializer.serialize_newtype_variant(
+            Self::PublishSearchCorpusBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 0,
-                "PublishLexicalBatch",
+                "PublishSearchCorpusBatch",
                 payload,
             ),
             Self::PublishHistoryBatch(payload) => serializer.serialize_newtype_variant(
@@ -3926,9 +3929,9 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
     {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
-            "PublishLexicalBatch" => Ok(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-                variant.newtype_variant()?,
-            )),
+            "PublishSearchCorpusBatch" => Ok(
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(variant.newtype_variant()?),
+            ),
             "PublishHistoryBatch" => Ok(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
                 variant.newtype_variant()?,
             )),
@@ -3992,7 +3995,7 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 /// Typed ingest response payload returned by `ingest.sock`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneIngestIpcResponse {
-    LexicalReceipt(BatchPublishReceipt),
+    SearchCorpusReceipt(BatchPublishReceipt),
     HistoryReceipt(BatchPublishReceipt),
     RepoCommitRecencyReceipt(BatchPublishReceipt),
     RepoTopicReceipt(BatchPublishReceipt),
@@ -4008,7 +4011,7 @@ pub enum SearchPlaneIngestIpcResponse {
 }
 
 const SEARCH_PLANE_INGEST_RESPONSE_VARIANTS: &[&str] = &[
-    "LexicalReceipt",
+    "SearchCorpusReceipt",
     "HistoryReceipt",
     "RepoCommitRecencyReceipt",
     "RepoTopicReceipt",
@@ -4029,10 +4032,10 @@ impl Serialize for SearchPlaneIngestIpcResponse {
         S: Serializer,
     {
         match self {
-            Self::LexicalReceipt(payload) => serializer.serialize_newtype_variant(
+            Self::SearchCorpusReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 0,
-                "LexicalReceipt",
+                "SearchCorpusReceipt",
                 payload,
             ),
             Self::HistoryReceipt(payload) => serializer.serialize_newtype_variant(
@@ -4126,7 +4129,7 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
     {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
-            "LexicalReceipt" => Ok(SearchPlaneIngestIpcResponse::LexicalReceipt(
+            "SearchCorpusReceipt" => Ok(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 variant.newtype_variant()?,
             )),
             "HistoryReceipt" => Ok(SearchPlaneIngestIpcResponse::HistoryReceipt(
@@ -4525,8 +4528,8 @@ mod tests {
         }
     }
 
-    fn fixture_lexical_batch() -> LexicalIngestBatch {
-        LexicalIngestBatch {
+    fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
+        SearchCorpusIngestBatch {
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
@@ -4535,13 +4538,13 @@ mod tests {
             batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
-            replace_scopes: vec![LexicalReplaceScope {
+            replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),
                 chunks: vec![fixture_chunk_record()],
                 symbols: vec![],
             }],
-            tombstone_scopes: vec![LexicalTombstoneScope {
+            tombstone_scopes: vec![SearchCorpusTombstoneScope {
                 scope: SearchScopeKey {
                     doc_surface: SearchScopeSurface::Symbol,
                     repo_relative_path: RepoRelativePath::new("src/main.rs"),
@@ -4768,10 +4771,10 @@ mod tests {
     }
 
     #[test]
-    fn lexical_ingest_batch_round_trip() -> TestRes {
-        let batch = fixture_lexical_batch();
+    fn search_corpus_ingest_batch_round_trip() -> TestRes {
+        let batch = fixture_search_corpus_batch();
         let bytes = encode(&batch)?;
-        let decoded: LexicalIngestBatch = decode(&bytes)?;
+        let decoded: SearchCorpusIngestBatch = decode(&bytes)?;
         assert_eq!(decoded, batch);
         Ok(())
     }
@@ -4868,10 +4871,12 @@ mod tests {
     }
 
     #[test]
-    fn search_plane_ingest_request_envelope_round_trip_lexical() -> TestRes {
+    fn search_plane_ingest_request_envelope_round_trip_search_corpus() -> TestRes {
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
             request_id: 1,
-            payload: SearchPlaneIngestIpcRequest::PublishLexicalBatch(fixture_lexical_batch()),
+            payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+                fixture_search_corpus_batch(),
+            ),
         };
         let bytes = encode(&envelope)?;
         let decoded: SearchPlaneIngestIpcRequestEnvelope = decode(&bytes)?;
@@ -4985,7 +4990,7 @@ mod tests {
     fn search_plane_ingest_response_envelope_round_trip_receipt() -> TestRes {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 3,
-            payload: SearchPlaneIngestIpcResponse::LexicalReceipt(BatchPublishReceipt {
+            payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
                 generation: ManifestGeneration::new(1),
                 manifest_digest: "digest-lex".to_string(),
                 accepted_replace_scopes: 1,

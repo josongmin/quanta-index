@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, LexicalIngestBatch,
-    LexicalReplaceScope, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, LexicalCandidate, ManifestGeneration,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
@@ -204,7 +204,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
 fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -216,7 +216,7 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
             ),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
-            replace_scopes: vec![LexicalReplaceScope {
+            replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: scope_key(chunk.repo_relative_path.as_str()),
                 scope_digest: "explain-scope".to_string(),
                 chunks: vec![chunk],
@@ -231,7 +231,7 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
 fn seal_lexical(socket: &Path) -> TestResult {
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),

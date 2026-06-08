@@ -18,7 +18,7 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, LexicalIngestBatch,
+    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, SearchCorpusIngestBatch,
     RepoMapQueryRequest,
     RepoMapSourceBundle, SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
     SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
     // Structural batches are in-flight wire shapes (QI-LXB-01); the
     // fuzz target exercises them now so the fail-closed deserializer
     // invariant holds before runtime wiring lands.
-    let _ = ciborium::de::from_reader::<LexicalIngestBatch, _>(data);
+    let _ = ciborium::de::from_reader::<SearchCorpusIngestBatch, _>(data);
     let _ = ciborium::de::from_reader::<SemanticIngestBatch, _>(data);
     let _ = ciborium::de::from_reader::<HistoryIngestBatch, _>(data);
     let _ = ciborium::de::from_reader::<DirtyIngestBatch, _>(data);

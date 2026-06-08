@@ -14,7 +14,7 @@ impl<'a> SemanticNamespace<'a> {
     }
 
     /// Public semantic surface is query-only. Corpus authority is derived
-    /// inside `searchd` from lexical ingest; SDK callers do not publish
+    /// inside `searchd` from search-corpus ingest; SDK callers do not publish
     /// semantic batches directly.
     #[must_use]
     pub fn query(&self) -> SemanticQueryBuilder<'a> {

@@ -15,8 +15,8 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     ChunkId, DirtyIngestBatch, DirtyMutation, GenerationPin, HistoryIngestBatch,
-    HistoryRefMutation, LexicalIngestBatch, ManifestGeneration, RepoId, RevisionId,
-    RuntimeCatalogIngestBatch, SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
+    HistoryRefMutation, ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch,
+    SearchCorpusIngestBatch, SearchPlaneActivateGenerationRequest, SearchPlaneTrackKind,
     StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
@@ -657,7 +657,7 @@ impl Ledger {
             .request_seal();
     }
 
-    pub fn apply_lexical_batch(&mut self, batch: &LexicalIngestBatch) {
+    pub fn apply_search_corpus_batch(&mut self, batch: &SearchCorpusIngestBatch) {
         let state = self.structural_state_mut(&batch.repo_id, &batch.revision_id, batch.generation);
         for scope in &batch.replace_scopes {
             state.chunks.retain(|_chunk_id, chunk| {
@@ -1189,7 +1189,7 @@ fn decode_lexical_replace_scope(
     (
         quanta_index_contract::BatchIngestMode,
         Option<ManifestGeneration>,
-        quanta_index_contract::LexicalReplaceScope,
+        quanta_index_contract::SearchCorpusReplaceScope,
     ),
     CoreError,
 > {
@@ -1202,7 +1202,7 @@ fn decode_lexical_tombstone_scope(
     (
         quanta_index_contract::BatchIngestMode,
         Option<ManifestGeneration>,
-        quanta_index_contract::LexicalTombstoneScope,
+        quanta_index_contract::SearchCorpusTombstoneScope,
     ),
     CoreError,
 > {
@@ -2119,10 +2119,10 @@ mod tests {
         LanguageCode, ParseNode, ParseTreeRecord, compute_parse_tree_source_hash,
     };
     use quanta_index_contract::{
-        BatchIngestMode, ChunkId, ChunkRecord, LexicalReplaceScope, ManifestGeneration,
-        ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId,
-        RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
-        RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord, SearchPlaneActivateGenerationRequest,
+        BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, ReplaceLexicalScope,
+        ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId, RuntimeCatalogIngestBatch,
+        RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
+        RuntimeSnapshotRecord, SearchCorpusReplaceScope, SearchPlaneActivateGenerationRequest,
         SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, StructuralReplaceScope,
         StructuralTreeRecord, UpsertParseTree,
     };
@@ -2224,7 +2224,7 @@ mod tests {
             payload: encode_cbor(&(
                 BatchIngestMode::ReplaceGeneration,
                 None::<ManifestGeneration>,
-                LexicalReplaceScope {
+                SearchCorpusReplaceScope {
                     scope: scope(path),
                     scope_digest: "scope:lex".to_string(),
                     chunks: vec![{

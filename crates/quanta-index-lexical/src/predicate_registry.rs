@@ -461,9 +461,11 @@ pub(crate) struct RepoTopicArg {
     pub topic: String,
 }
 
-/// A validated `repo.has.description(pattern)` argument. The pattern is the
-/// verbatim regex source supplied by the caller; it is compiled and matched
-/// against the repo description authority at execution time, not here.
+/// A validated `repo.has.description(pattern)` argument.
+///
+/// The pattern is the verbatim regex source supplied by the caller; it is
+/// compiled and matched against the repo description authority at execution
+/// time, not here.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepoDescriptionArg {
     pub pattern: String,
@@ -535,30 +537,28 @@ pub(crate) enum RepoMetaArgError {
     EmptyKey,
 }
 
-/// Whether a token is wrapped in `/.../ ` regex delimiters (a leading AND
-/// trailing slash).
+/// Parse a metadata token into an exact or regex pattern.
 ///
-/// A token that merely contains a slash (e.g. a path-like `/usr/bin`, or a
-/// single leading `/x`) is not delimited and keeps exact-string semantics.
+/// A token wrapped in `/.../ ` delimiters (a leading AND trailing slash) is a
+/// regex; the delimiters are stripped via `strip_prefix`/`strip_suffix` (UTF-8
+/// safe, arithmetic-free) and `None` — a missing delimiter — is exactly the
+/// exact-string case. Behaviour matches the prior `token[1..len-1]` slice
+/// (e.g. `//` -> `Regex("")`).
 ///
-/// Trade-off: a slash-terminated value such as `/usr/` is treated as regex
-/// syntax and fails closed, even though it could be an exact path. This is the
-/// deliberate fail-closed choice — on an exact-string substrate we refuse
-/// ambiguous regex-shaped input rather than silently matching the literal
-/// slashes, which would misrepresent regex support. Metadata keys/values and
-/// contributor identities are not slash-wrapped in practice.
-fn is_regex_delimited(token: &str) -> bool {
-    let token = token.trim();
-    token.len() >= 2 && token.starts_with('/') && token.ends_with('/')
-}
-
+/// Fail-closed trade-off: a slash-terminated value such as `/usr/` is treated as
+/// regex syntax even though it could be an exact path. On an exact-string
+/// substrate we refuse ambiguous regex-shaped input rather than silently matching
+/// the literal slashes. Metadata keys/values and contributor identities are not
+/// slash-wrapped in practice.
 fn parse_meta_pattern(token: &str) -> MetaPattern {
     let token = token.trim();
-    if is_regex_delimited(token) {
-        MetaPattern::Regex(token[1..token.len() - 1].to_string())
-    } else {
-        MetaPattern::Exact(token.to_string())
-    }
+    token
+        .strip_prefix('/')
+        .and_then(|inner| inner.strip_suffix('/'))
+        .map_or_else(
+            || MetaPattern::Exact(token.to_string()),
+            |inner| MetaPattern::Regex(inner.to_string()),
+        )
 }
 
 /// Parse a `repo.has.meta(key:value)` argument.
@@ -711,12 +711,17 @@ pub(crate) fn parse_file_contributor_arg(
                 return Err(FileContributorArgError::EmptyContributor);
             }
             Ok(FileContributorArg {
-                contributor: if is_regex_delimited(value) {
-                    let trimmed = value.trim();
-                    ContributorPattern::Regex(trimmed[1..trimmed.len() - 1].to_string())
-                } else {
-                    ContributorPattern::Exact(value.clone())
-                },
+                // Strip surrounding `/.../` without byte-slicing; `None` (a missing
+                // delimiter) is the exact-match case, preserving the prior
+                // `trimmed[1..len-1]` behaviour UTF-8-safely and arithmetic-free.
+                contributor: value
+                    .trim()
+                    .strip_prefix('/')
+                    .and_then(|i| i.strip_suffix('/'))
+                    .map_or_else(
+                        || ContributorPattern::Exact(value.clone()),
+                        |inner| ContributorPattern::Regex(inner.to_string()),
+                    ),
             })
         }
         LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {

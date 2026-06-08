@@ -95,7 +95,7 @@ impl crate::NamespaceIngest for RepoMapNs {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMapReceipt(ack) => Ok(ack),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)

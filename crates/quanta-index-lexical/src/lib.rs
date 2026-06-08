@@ -45,16 +45,16 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, ChunkRecord, FileContributorIdentityEntry, FileContributorIngestBatch,
     FileOwnerProjectionRow, FileOwnershipIngestBatch, LexicalCandidate, LexicalFullBundle,
-    LexicalIngestBatch, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
-    ManifestGeneration, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
-    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicIngestBatch, RevisionId, SymbolCandidate, TombstoneLexicalScope,
+    LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
+    LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
+    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
+    RepoRelativePath, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
+    TombstoneLexicalScope,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexBuildPort,
+    LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -452,7 +452,7 @@ fn decode_replace_scope_payload(
     (
         BatchIngestMode,
         Option<ManifestGeneration>,
-        quanta_index_contract::LexicalReplaceScope,
+        quanta_index_contract::SearchCorpusReplaceScope,
     ),
     CoreError,
 > {
@@ -460,7 +460,7 @@ fn decode_replace_scope_payload(
         (
             BatchIngestMode,
             Option<ManifestGeneration>,
-            quanta_index_contract::LexicalReplaceScope,
+            quanta_index_contract::SearchCorpusReplaceScope,
         ),
         _,
     >(bytes)
@@ -475,7 +475,7 @@ fn decode_tombstone_scope_payload(
     (
         BatchIngestMode,
         Option<ManifestGeneration>,
-        quanta_index_contract::LexicalTombstoneScope,
+        quanta_index_contract::SearchCorpusTombstoneScope,
     ),
     CoreError,
 > {
@@ -483,7 +483,7 @@ fn decode_tombstone_scope_payload(
         (
             BatchIngestMode,
             Option<ManifestGeneration>,
-            quanta_index_contract::LexicalTombstoneScope,
+            quanta_index_contract::SearchCorpusTombstoneScope,
         ),
         _,
     >(bytes)
@@ -1304,11 +1304,12 @@ fn load_repo_topic_snapshot(path: &Path) -> Result<Option<RepoTopicShard>, CoreE
         })
 }
 
-/// Validate a producer-published repo description. Unlike topics, the
-/// description is stored verbatim (case and internal whitespace preserved) so
-/// regex matching at query time is faithful; only a non-empty constraint is
-/// enforced. Returns the original string when it carries a non-whitespace
-/// character, `None` otherwise.
+/// Validate a producer-published repo description.
+///
+/// Unlike topics, the description is stored verbatim (case and internal
+/// whitespace preserved) so regex matching at query time is faithful; only a
+/// non-empty constraint is enforced. Returns the original string when it carries
+/// a non-whitespace character, `None` otherwise.
 fn validate_repo_description_value(value: &str) -> Option<String> {
     if value.trim().is_empty() {
         None
@@ -2087,6 +2088,14 @@ fn normalize_contributor_identity_entry(
     })
 }
 
+// Fail-closed CBOR decode: every wildcard arm below rejects any value that is
+// not the explicitly admitted shape (Text/Null per field, Text/Map per entry).
+// `wildcard_enum_match_arm` is expected at the function level because the lint is
+// emitted against the arm *pattern*, which an arm-local attribute does not cover.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "fail-closed decode: any CBOR variant outside the admitted shapes is a contract violation, caught by the wildcard arms"
+)]
 fn decode_file_contributor_identity_entry(
     value: &CborValue,
 ) -> Result<FileContributorIdentityEntry, CoreError> {
@@ -2328,11 +2337,12 @@ struct RepoTopicShard {
     topics_by_repo_id: BTreeMap<String, BTreeSet<String>>,
 }
 
-/// Source-repo keyed repo-description authority. One verbatim description string
-/// per `source_repo_id`, matched as a regex at `repo:has.description(<pattern>)`
-/// query time. Distinct substrate from [`RepoTopicShard`] (topic set) and the
-/// repo-meta key/value store so description support never silently piggybacks
-/// on unrelated authority.
+/// Source-repo keyed repo-description authority.
+///
+/// One verbatim description string per `source_repo_id`, matched as a regex at
+/// `repo:has.description(<pattern>)` query time. Distinct substrate from
+/// [`RepoTopicShard`] (topic set) and the repo-meta key/value store so
+/// description support never silently piggybacks on unrelated authority.
 struct RepoDescriptionShard {
     descriptions_by_repo_id: BTreeMap<String, String>,
 }
@@ -2825,11 +2835,10 @@ impl LexicalAdapter {
     }
 
     fn invalidate_regex_match_cache_generation(&self, key: &GenKey) -> Result<(), CoreError> {
-        let mut guard = self
-            .regex_match_cache
+        self.regex_match_cache
             .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?;
-        guard.invalidate_generation(key);
+            .map_err(|err| CoreError::Storage(format!("lexical regex cache poisoned: {err}")))?
+            .invalidate_generation(key);
         Ok(())
     }
 
@@ -3148,7 +3157,7 @@ fn op_touches_text_authority(op: &LexicalChannelOp) -> bool {
 }
 
 fn legacy_ops_for_batch(
-    batch: &LexicalIngestBatch,
+    batch: &SearchCorpusIngestBatch,
     include_seal: bool,
 ) -> Result<Vec<LexicalChannelOp>, CoreError> {
     let op_capacity = batch
@@ -3205,8 +3214,8 @@ fn legacy_ops_for_batch(
     Ok(ops)
 }
 
-impl LexicalBatchBuildPort for LexicalAdapter {
-    fn build_batch(&self, batch: &LexicalIngestBatch) -> Result<(), CoreError> {
+impl SearchCorpusBatchBuildPort for LexicalAdapter {
+    fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
         self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)
     }
@@ -3788,11 +3797,15 @@ impl TantivySearcher {
         matches!(options.index_mode, Some(LqYesNoOnly::No))
     }
 
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "boost_millis is a small score multiplier in milli-units; the u32->f32 widen then /1000.0 scales it back into a score factor with negligible precision impact for real boost magnitudes"
+    )]
     fn boost_factor(options: &LqOptions) -> f32 {
         options
             .boost_millis
-            .map(|millis| millis as f32 / 1_000.0)
-            .unwrap_or(1.0)
+            .map_or(1.0, |millis| millis as f32 / 1_000.0)
     }
 
     fn apply_query_boost_score(score: f32, options: &LqOptions) -> f32 {
@@ -3869,8 +3882,7 @@ impl TantivySearcher {
             RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
                 code: format!("LEX_REGEX_{}", err.code.as_code_str()),
                 message: format!(
-                    "lexical: regex {:?} failed to compile on unindexed scan route: {err}",
-                    source
+                    "lexical: regex {source:?} failed to compile on unindexed scan route: {err}"
                 ),
             })?;
         Ok(executor.verify(haystack.as_bytes()))
@@ -3907,7 +3919,7 @@ impl TantivySearcher {
         true
     }
 
-    fn manual_repo_gate_matches(&self, repo_ids: BTreeSet<String>, repo_id: &str) -> bool {
+    fn manual_repo_gate_matches(&self, repo_ids: &BTreeSet<String>, repo_id: &str) -> bool {
         repo_ids.contains(repo_id)
     }
 
@@ -3953,8 +3965,7 @@ impl TantivySearcher {
                 let executor = RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
                     code: format!("LEX_REGEX_{}", err.code.as_code_str()),
                     message: format!(
-                        "lexical: file.has.contributor regex {:?} failed to compile: {err}",
-                        source
+                        "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
                     ),
                 })?;
                 Ok(contributors.iter().any(|identity| {
@@ -4050,14 +4061,14 @@ impl TantivySearcher {
             Some(PredicateKind::RepoFileGate) => {
                 let constraint = self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_file(&constraint, options)?,
+                    &self.collect_repo_ids_for_repo_has_file(&constraint, options)?,
                     source_repo_id,
                 ))
             }
             Some(PredicateKind::RepoContentGate) => {
                 let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_content(&leaf, options)?,
+                    &self.collect_repo_ids_for_repo_has_content(&leaf, options)?,
                     source_repo_id,
                 ))
             }
@@ -4065,28 +4076,28 @@ impl TantivySearcher {
                 let timeref =
                     self.repo_commit_after_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_commit_after(&timeref)?,
+                    &self.collect_repo_ids_for_repo_has_commit_after(&timeref)?,
                     source_repo_id,
                 ))
             }
             Some(PredicateKind::RepoMetaGate) => {
                 let arg = self.repo_meta_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_meta(&arg)?,
+                    &self.collect_repo_ids_for_repo_has_meta(&arg)?,
                     source_repo_id,
                 ))
             }
             Some(PredicateKind::RepoTopicGate) => {
                 let arg = self.repo_topic_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_topic(&arg)?,
+                    &self.collect_repo_ids_for_repo_has_topic(&arg)?,
                     source_repo_id,
                 ))
             }
             Some(PredicateKind::RepoDescriptionGate) => {
                 let arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
                 Ok(self.manual_repo_gate_matches(
-                    self.collect_repo_ids_for_repo_has_description(&arg)?,
+                    &self.collect_repo_ids_for_repo_has_description(&arg)?,
                     source_repo_id,
                 ))
             }
@@ -4348,6 +4359,7 @@ impl TantivySearcher {
         let include_path_terms =
             Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
+        let center_terms = snippet_center_terms(query);
         let mut out: Vec<LexicalCandidate> = Vec::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -4402,7 +4414,7 @@ impl TantivySearcher {
             if !allowed {
                 continue;
             }
-            out.push(self.document_to_candidate(&doc, boosted_score)?);
+            out.push(self.document_to_candidate(&doc, boosted_score, &center_terms)?);
         }
         let out = if apply_select_projection {
             Self::collapse_select_projection(query, out)
@@ -4433,6 +4445,7 @@ impl TantivySearcher {
         let include_path_terms =
             Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
+        let center_terms = snippet_center_terms(query);
         let mut out: Vec<SymbolCandidate> = Vec::new();
         for (_score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -4487,7 +4500,7 @@ impl TantivySearcher {
             if !allowed {
                 continue;
             }
-            out.push(self.document_to_symbol_candidate(&doc, boosted_score)?);
+            out.push(self.document_to_symbol_candidate(&doc, boosted_score, &center_terms)?);
         }
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
     }
@@ -5175,8 +5188,7 @@ impl TantivySearcher {
             .map_err(|err| CoreError::Typed {
                 code: format!("LEX_REGEX_{}", err.code.as_code_str()),
                 message: format!(
-                    "lexical: repo.has.meta {field_name} regex {:?} failed to compile: {err}",
-                    source
+                    "lexical: repo.has.meta {field_name} regex {source:?} failed to compile: {err}"
                 ),
             })
     }
@@ -5212,7 +5224,7 @@ impl TantivySearcher {
             .filter(|(_, by_key)| {
                 by_key.iter().any(|(key, value)| {
                     self.repo_meta_pattern_matches(&arg.key, key_executor.as_ref(), key)
-                        && arg.value.as_ref().map_or(true, |pattern| {
+                        && arg.value.as_ref().is_none_or(|pattern| {
                             self.repo_meta_pattern_matches(pattern, value_executor.as_ref(), value)
                         })
                 })
@@ -5442,8 +5454,7 @@ impl TantivySearcher {
                 |err| CoreError::Typed {
                     code: format!("LEX_REGEX_{}", err.code.as_code_str()),
                     message: format!(
-                        "lexical: file.has.contributor regex {:?} failed to compile: {err}",
-                        source
+                        "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
                     ),
                 },
             )?),
@@ -5483,7 +5494,12 @@ impl TantivySearcher {
                     .iter()
                     .any(|identity| identity.canonical == *contributor),
                 ContributorPattern::Regex(_) => {
-                    let executor = contributor_regex.as_ref().expect("regex compiled once");
+                    let Some(executor) = contributor_regex.as_ref() else {
+                        return Err(CoreError::Storage(
+                            "lexical: contributor regex executor missing for a compiled regex pattern"
+                                .to_string(),
+                        ));
+                    };
                     contributors.iter().any(|identity| {
                         identity
                             .name
@@ -6850,13 +6866,17 @@ impl TantivySearcher {
         &self,
         doc: &TantivyDocument,
         score: f32,
+        center_terms: &[String],
     ) -> Result<LexicalCandidate, CoreError> {
         let candidate_id = stored_text(doc, self.fields.candidate_id).ok_or_else(|| {
             CoreError::Storage("lexical: stored doc missing candidate_id field".to_string())
         })?;
-        let snippet = stored_text(doc, self.fields.snippet)
+        let stored_snippet = stored_text(doc, self.fields.snippet)
             .or_else(|| stored_text(doc, self.fields.chunk_text))
             .unwrap_or_default();
+        // J7Q-02: emit a hit-centered, deterministically-bounded window so a long
+        // source line never streams an unbounded blob at the head of the result.
+        let snippet = window_snippet(&stored_snippet, center_terms);
         let repo_relative_path =
             stored_text(doc, self.fields.repo_relative_path).unwrap_or_default();
         let start_line = stored_u32(doc, self.fields.start_line)?.unwrap_or(0);
@@ -6878,8 +6898,9 @@ impl TantivySearcher {
         &self,
         doc: &TantivyDocument,
         score: f32,
+        center_terms: &[String],
     ) -> Result<SymbolCandidate, CoreError> {
-        let candidate = self.document_to_candidate(doc, score)?;
+        let candidate = self.document_to_candidate(doc, score, center_terms)?;
         let symbol_kind = stored_text(doc, self.fields.symbol_kind)
             .ok_or_else(|| {
                 CoreError::Storage(
@@ -6915,6 +6936,88 @@ impl TantivySearcher {
             symbol_kind_family,
         })
     }
+}
+
+/// Maximum emitted lexical snippet length in bytes.
+///
+/// A snippet at or below this length is emitted whole; a longer one is truncated
+/// to a hit-centered window of at most this many bytes. This MUST agree with the
+/// snippet-quality gate's `MAX_SNIPPET_LEN` in
+/// `quanta-index-searchd-harness::snippet`, so a snippet the engine emits passes
+/// the rail's bounded-window check (J7Q-02).
+const SNIPPET_WINDOW_BYTES: usize = 240;
+
+/// Leading-context budget when centering a window on a hit.
+///
+/// Equals `SNIPPET_WINDOW_BYTES / 2`, precomputed to avoid integer division; the
+/// trailing side takes the remainder, so a centered hit always carries leading
+/// context.
+const SNIPPET_LEAD_BYTES: usize = 120;
+
+/// Collect the literal substrings a snippet may be centered on, in query order.
+///
+/// Only literal-bearing leaves contribute (`Keyword` / `Phrase` / `RawString`);
+/// regex, structural, and predicate leaves carry no single literal to center on.
+fn collect_snippet_center_terms(expr: &LqExpr, out: &mut Vec<String>) {
+    match expr {
+        LqExpr::Leaf(LqLeaf::Keyword(text) | LqLeaf::Phrase(text) | LqLeaf::RawString(text)) => {
+            if !text.is_empty() {
+                out.push(text.clone());
+            }
+        }
+        LqExpr::Leaf(LqLeaf::Regex(_) | LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. })
+        | LqExpr::Empty => {}
+        LqExpr::Not(inner) => collect_snippet_center_terms(inner, out),
+        LqExpr::All(children) | LqExpr::Any(children) => {
+            for child in children {
+                collect_snippet_center_terms(child, out);
+            }
+        }
+    }
+}
+
+/// The center terms for a query, in query order.
+fn snippet_center_terms(query: &LqQuery) -> Vec<String> {
+    let mut terms = Vec::new();
+    collect_snippet_center_terms(&query.expr, &mut terms);
+    terms
+}
+
+/// Step `index` down to the nearest UTF-8 char boundary at or below it.
+///
+/// `str::floor_char_boundary` is unstable, so this is a stable hand-rolled
+/// equivalent. `index` is always clamped into `0..=len` by callers.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut i = index.min(text.len());
+    while i > 0 && !text.is_char_boundary(i) {
+        i = i.saturating_sub(1);
+    }
+    i
+}
+
+/// Produce the emitted snippet for a stored chunk.
+///
+/// The whole text is returned when it already fits [`SNIPPET_WINDOW_BYTES`].
+/// Otherwise a window of at most that many bytes is taken, centered on the first
+/// present center term (so the hit keeps leading and trailing context) and
+/// clamped to UTF-8 char boundaries. When no center term is present in an
+/// over-long snippet, the leading window is kept so the result is still bounded —
+/// never an unbounded blob. Fully determined by `(stored, center_terms)`, so two
+/// runs over identical inputs emit byte-identical windows.
+fn window_snippet(stored: &str, center_terms: &[String]) -> String {
+    if stored.len() <= SNIPPET_WINDOW_BYTES {
+        return stored.to_string();
+    }
+    let first_hit = center_terms
+        .iter()
+        .filter_map(|term| stored.find(term.as_str()))
+        .min();
+    let start = first_hit.map_or(0, |hit| {
+        floor_char_boundary(stored, hit.saturating_sub(SNIPPET_LEAD_BYTES))
+    });
+    let raw_end = start.saturating_add(SNIPPET_WINDOW_BYTES).min(stored.len());
+    let end = floor_char_boundary(stored, raw_end);
+    stored.get(start..end).unwrap_or(stored).to_string()
 }
 
 fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {
@@ -7098,53 +7201,6 @@ fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
     }
 }
 
-#[cfg(test)]
-mod regex_match_cache_tests {
-    use super::*;
-
-    fn sample_generation(generation: u64) -> GenKey {
-        GenKey {
-            repo_id: RepoId::new("repo-alpha"),
-            revision_id: RevisionId::new("rev-alpha"),
-            generation: ManifestGeneration::new(generation),
-        }
-    }
-
-    fn sample_matches(candidate_id: &str) -> BTreeSet<String> {
-        std::iter::once(candidate_id.to_string()).collect()
-    }
-
-    #[test]
-    fn regex_match_cache_invalidates_only_target_generation() {
-        let generation_one = sample_generation(7);
-        let generation_two = sample_generation(8);
-        let key_one = RegexMatchCacheKey {
-            generation: generation_one.clone(),
-            normalized_source: "foo".to_string(),
-        };
-        let key_two = RegexMatchCacheKey {
-            generation: generation_one.clone(),
-            normalized_source: "bar".to_string(),
-        };
-        let key_three = RegexMatchCacheKey {
-            generation: generation_two.clone(),
-            normalized_source: "foo".to_string(),
-        };
-        let mut cache = RegexMatchCache::new();
-        cache.insert(key_one.clone(), sample_matches("cand-1"));
-        cache.insert(key_two.clone(), sample_matches("cand-2"));
-        cache.insert(key_three.clone(), sample_matches("cand-3"));
-        assert_eq!(cache.len(), 3);
-
-        cache.invalidate_generation(&generation_one);
-
-        assert_eq!(cache.len(), 1);
-        assert!(cache.get(&key_one).is_none());
-        assert!(cache.get(&key_two).is_none());
-        assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
-    }
-}
-
 impl LexicalSearcher for TantivySearcher {
     fn search(&self, query: &LqQuery, top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError> {
         // Validation ordering: `LexicalPolicy::validate_query` runs FIRST so
@@ -7197,6 +7253,7 @@ impl LexicalSearcher for TantivySearcher {
                 .search(&*compiled, &TopDocs::with_limit(full_recall_limit))
                 .map_err(|err| CoreError::Storage(format!("lexical: search full recall: {err}")))?;
         }
+        let center_terms = snippet_center_terms(&effective_query);
         let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7205,6 +7262,7 @@ impl LexicalSearcher for TantivySearcher {
             out.push(self.document_to_candidate(
                 &doc,
                 Self::apply_query_boost_score(score, boosted_options),
+                &center_terms,
             )?);
         }
         let projected = Self::collapse_select_projection(&effective_query, out);
@@ -7324,6 +7382,7 @@ impl LexicalSearcher for TantivySearcher {
                     CoreError::Storage(format!("lexical: symbol search full recall: {err}"))
                 })?;
         }
+        let center_terms = snippet_center_terms(&effective_query);
         let mut out: Vec<SymbolCandidate> = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7332,6 +7391,7 @@ impl LexicalSearcher for TantivySearcher {
             out.push(self.document_to_symbol_candidate(
                 &doc,
                 Self::apply_query_boost_score(score, boosted_options),
+                &center_terms,
             )?);
         }
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
@@ -7377,6 +7437,7 @@ impl LexicalSearcher for TantivySearcher {
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
             .map_err(|err| CoreError::Storage(format!("lexical: search_symbols_all: {err}")))?;
+        let center_terms = snippet_center_terms(&effective_query);
         let mut out: Vec<SymbolCandidate> = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7385,6 +7446,7 @@ impl LexicalSearcher for TantivySearcher {
             out.push(self.document_to_symbol_candidate(
                 &doc,
                 Self::apply_query_boost_score(score, &effective_query.options),
+                &center_terms,
             )?);
         }
         Ok(Self::stabilize_and_cap_symbol_hits(out, limit))
@@ -7427,6 +7489,7 @@ impl LexicalSearcher for TantivySearcher {
         let hits = searcher
             .search(&*compiled, &TopDocs::with_limit(collect_limit))
             .map_err(|err| CoreError::Storage(format!("lexical: search_all: {err}")))?;
+        let center_terms = snippet_center_terms(query);
         let mut out: Vec<LexicalCandidate> = Vec::with_capacity(hits.len());
         for (score, doc_address) in hits {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
@@ -7435,6 +7498,7 @@ impl LexicalSearcher for TantivySearcher {
             out.push(self.document_to_candidate(
                 &doc,
                 Self::apply_query_boost_score(score, &query.options),
+                &center_terms,
             )?);
         }
         Ok(Self::collapse_repo_projection(
@@ -7443,3 +7507,51 @@ impl LexicalSearcher for TantivySearcher {
         ))
     }
 }
+
+#[cfg(test)]
+mod regex_match_cache_tests {
+    use super::*;
+
+    fn sample_generation(generation: u64) -> GenKey {
+        GenKey {
+            repo_id: RepoId::new("repo-alpha"),
+            revision_id: RevisionId::new("rev-alpha"),
+            generation: ManifestGeneration::new(generation),
+        }
+    }
+
+    fn sample_matches(candidate_id: &str) -> BTreeSet<String> {
+        std::iter::once(candidate_id.to_string()).collect()
+    }
+
+    #[test]
+    fn regex_match_cache_invalidates_only_target_generation() {
+        let generation_one = sample_generation(7);
+        let generation_two = sample_generation(8);
+        let key_one = RegexMatchCacheKey {
+            generation: generation_one.clone(),
+            normalized_source: "foo".to_string(),
+        };
+        let key_two = RegexMatchCacheKey {
+            generation: generation_one.clone(),
+            normalized_source: "bar".to_string(),
+        };
+        let key_three = RegexMatchCacheKey {
+            generation: generation_two,
+            normalized_source: "foo".to_string(),
+        };
+        let mut cache = RegexMatchCache::new();
+        cache.insert(key_one.clone(), sample_matches("cand-1"));
+        cache.insert(key_two.clone(), sample_matches("cand-2"));
+        cache.insert(key_three.clone(), sample_matches("cand-3"));
+        assert_eq!(cache.len(), 3);
+
+        cache.invalidate_generation(&generation_one);
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(&key_one).is_none());
+        assert!(cache.get(&key_two).is_none());
+        assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
+    }
+}
+

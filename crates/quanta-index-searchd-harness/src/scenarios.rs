@@ -86,6 +86,10 @@ pub enum HellgateLane {
 
 /// Verification metadata carried by each scenario row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "scenario verification is a flag bag of independent per-row capability requirements; one bool per capability keeps the const scenario table readable"
+)]
 pub struct ScenarioVerification {
     pub bench_truth: bool,
     pub perf_compare: bool,
@@ -96,6 +100,10 @@ pub struct ScenarioVerification {
     pub requires_cross_repo: bool,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "const constructor mirrors the ScenarioVerification flag bag one-to-one; a builder would defeat the const scenario-table construction"
+)]
 const fn verification(
     fast_hellgate_lane: Option<HellgateLane>,
     requires_frontdoor: bool,
@@ -151,7 +159,10 @@ const fn ok_scenario(
         verification: verification(
             Some(match route_family {
                 RouteFamily::Structural => HellgateLane::StructuralRoute,
-                _ => HellgateLane::TextRoute,
+                RouteFamily::Lexical
+                | RouteFamily::History
+                | RouteFamily::RuntimeCatalog
+                | RouteFamily::Adversarial => HellgateLane::TextRoute,
             }),
             false,
             matches!(route_family, RouteFamily::History),
@@ -184,7 +195,10 @@ const fn ok_scenario_warm_override(
         verification: verification(
             Some(match route_family {
                 RouteFamily::Structural => HellgateLane::StructuralRoute,
-                _ => HellgateLane::TextRoute,
+                RouteFamily::Lexical
+                | RouteFamily::History
+                | RouteFamily::RuntimeCatalog
+                | RouteFamily::Adversarial => HellgateLane::TextRoute,
             }),
             false,
             matches!(route_family, RouteFamily::History),
@@ -544,7 +558,6 @@ pub fn scenario_by_id(id: &str) -> Option<&'static DslBenchScenario> {
     SCENARIOS.iter().find(|s| s.id == id)
 }
 
-#[must_use]
 pub fn hellgate_scenarios(lane: HellgateLane) -> impl Iterator<Item = &'static DslBenchScenario> {
     SCENARIOS.iter().filter(move |scenario| {
         scenario.verification.bench_truth && scenario.verification.fast_hellgate_lane == Some(lane)
@@ -621,7 +634,10 @@ mod tests {
                         scenario.id
                     );
                 }
-                _ => {
+                ResultShape::Candidates
+                | ResultShape::Commits
+                | ResultShape::DiffPaths
+                | ResultShape::Empty => {
                     assert!(
                         scenario.expected_count.is_some(),
                         "{} missing expected_count",

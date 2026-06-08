@@ -18,10 +18,10 @@ use quanta_index_core::domains::structural::{
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexOpenPort, LexicalIngestPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
-    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SemanticBatchBuildPort,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexOpenPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
     SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
     StructuralMatchCandidate, StructuralReadiness,
 };
@@ -35,7 +35,7 @@ use quanta_index_lq_structural::{
 };
 use quanta_index_search_plane::{
     ActivationCatalog, AuxiliaryAuthorityStore, BoundedQueryObsStore, DirectHistoryMaterializer,
-    DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer, DirectSemanticMaterializer,
+    DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
     LegacySemanticJournalStore, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
@@ -55,7 +55,7 @@ use crate::app::server::{
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
 pub struct SearchdRuntimeParts {
-    pub lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
+    pub search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
     pub repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync>,
@@ -474,7 +474,7 @@ impl SearchdRuntime {
     /// Assemble the runtime from externally-supplied ports.
     pub fn assemble(config: SearchdConfig, parts: SearchdRuntimeParts) -> Result<Self> {
         let SearchdRuntimeParts {
-            lex_build_port,
+            search_corpus_build_port,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
@@ -522,13 +522,15 @@ impl SearchdRuntime {
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
         );
-        let direct_lex_ingest_port: Arc<dyn LexicalIngestPort + Send + Sync> =
-            Arc::new(DirectLexicalMaterializer::new_with_search_owned_semantics(
-                Arc::clone(&lex_build_port),
-                Arc::clone(&ledger),
-                Arc::clone(&direct_sem_ingest_port),
-                SEARCH_OWNED_SEMANTIC_DIMENSION,
-            ));
+        let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
+            Arc::new(
+                DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+                    Arc::clone(&search_corpus_build_port),
+                    Arc::clone(&ledger),
+                    Arc::clone(&direct_sem_ingest_port),
+                    SEARCH_OWNED_SEMANTIC_DIMENSION,
+                ),
+            );
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
             DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),
         );
@@ -564,7 +566,7 @@ impl SearchdRuntime {
             Arc::clone(&ledger),
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
-            direct_lex_ingest_port,
+            direct_search_corpus_ingest_port,
             direct_history_ingest_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,

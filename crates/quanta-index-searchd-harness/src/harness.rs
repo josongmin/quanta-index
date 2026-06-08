@@ -26,9 +26,9 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, FileOwnerProjectionRow, GenerationPin,
-    HistoryQueryRequest, HybridQueryRequest, LexicalCandidate, LexicalIngestBatch,
-    LexicalReplaceScope, LexicalTombstoneScope, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    HistoryQueryRequest, HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateGenerationRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
@@ -423,8 +423,8 @@ impl E2eRuntime {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-            LexicalIngestBatch {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            SearchCorpusIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
@@ -436,7 +436,7 @@ impl E2eRuntime {
                 ),
                 mode,
                 bundle_payload: None,
-                replace_scopes: vec![LexicalReplaceScope {
+                replace_scopes: vec![SearchCorpusReplaceScope {
                     scope: scope_key(path),
                     scope_digest: format!("scope:{path}:{}-chunks", records.len()),
                     chunks: records.clone(),
@@ -465,8 +465,8 @@ impl E2eRuntime {
 
     pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
         let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-            LexicalIngestBatch {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            SearchCorpusIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
@@ -486,8 +486,8 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub fn publish_lexical_batch(&mut self, batch: LexicalIngestBatch) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(batch))
+    pub fn publish_search_corpus_batch(&mut self, batch: SearchCorpusIngestBatch) -> AnyResult<()> {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))
     }
 
     pub fn ingest_structural_function_tree(
@@ -925,8 +925,8 @@ impl E2eRuntime {
 
     pub fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
         let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-            LexicalIngestBatch {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            SearchCorpusIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
@@ -939,7 +939,7 @@ impl E2eRuntime {
                 mode,
                 bundle_payload: None,
                 replace_scopes: Vec::new(),
-                tombstone_scopes: vec![LexicalTombstoneScope {
+                tombstone_scopes: vec![SearchCorpusTombstoneScope {
                     scope: scope_key(path),
                 }],
                 seal: false,
@@ -987,8 +987,8 @@ impl E2eRuntime {
             .into_iter()
             .collect::<Vec<_>>();
         let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-            LexicalIngestBatch {
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            SearchCorpusIngestBatch {
                 repo_id: self.repo(),
                 revision_id: self.revision(),
                 generation: self.current_generation(),
@@ -997,7 +997,7 @@ impl E2eRuntime {
                 batch_digest: format!("lex-symbol-batch:{path}:{symbol_id}"),
                 mode,
                 bundle_payload: None,
-                replace_scopes: vec![LexicalReplaceScope {
+                replace_scopes: vec![SearchCorpusReplaceScope {
                     scope: scope_key(path),
                     scope_digest: format!("scope-symbol:{path}:{symbol_id}"),
                     chunks,
@@ -1017,7 +1017,7 @@ impl E2eRuntime {
         self.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])
     }
 
-    /// Seal the current generation through the lexical ingest surface.
+    /// Seal the current generation through the search-corpus ingest surface.
     ///
     /// There is no separate structural or semantic seal IPC. Those tracks
     /// become ready only after their authority has been ingested and the
@@ -1039,8 +1039,8 @@ impl E2eRuntime {
         }
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {
             let (mode, base_generation) = self.lexical_batch_contract();
-            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-                LexicalIngestBatch {
+            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+                SearchCorpusIngestBatch {
                     repo_id: self.repo(),
                     revision_id: self.revision(),
                     generation: sealed,
@@ -1736,7 +1736,7 @@ impl E2eRuntime {
                 err.code,
                 err.message
             )),
-            SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)

@@ -266,7 +266,7 @@ fn publish_structural_batch<const SEALED: bool>(
     ))?;
     match response {
         SearchPlaneIngestIpcResponse::StructuralReceipt(receipt) => Ok(receipt),
-        other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)

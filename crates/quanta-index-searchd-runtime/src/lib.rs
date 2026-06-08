@@ -14,10 +14,10 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 use quanta_index_core::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexOpenPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_repomap::RepoMapGenerationStore;
@@ -48,7 +48,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         state_root.join("semantic"),
     )?);
 
-    let lex_build_port: Arc<dyn LexicalBatchBuildPort + Send + Sync> = lex_adapter.clone();
+    let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
+        lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter.clone();
     let repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync> =
         lex_adapter.clone();
@@ -71,7 +72,7 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     SearchdRuntime::assemble(
         config,
         SearchdRuntimeParts {
-            lex_build_port,
+            search_corpus_build_port,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,

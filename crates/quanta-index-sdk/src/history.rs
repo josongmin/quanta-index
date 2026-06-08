@@ -455,7 +455,7 @@ impl<'a> HistoryNamespace<'a> {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
             | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
@@ -494,7 +494,7 @@ impl<'a> HistoryNamespace<'a> {
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::RepoMetaReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -532,7 +532,7 @@ impl<'a> HistoryNamespace<'a> {
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::RepoTopicReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
@@ -573,7 +573,7 @@ impl<'a> HistoryNamespace<'a> {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -615,7 +615,7 @@ impl<'a> HistoryNamespace<'a> {
             .dispatch_ingest(SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::FileOwnershipReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -657,7 +657,7 @@ impl<'a> HistoryNamespace<'a> {
         )?;
         match response {
             SearchPlaneIngestIpcResponse::FileContributorReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -715,7 +715,7 @@ impl crate::NamespaceIngest for HistoryNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::HistoryReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
             | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)

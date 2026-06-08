@@ -8,7 +8,7 @@ use quanta_index_contract::{
 use crate::error::CoreError;
 
 /// Ingest a typed semantic batch into the direct authority path. QI-RT-01
-/// counterpart to [`crate::LexicalIngestPort`].
+/// counterpart to [`crate::SearchCorpusIngestPort`].
 pub trait SemanticIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }

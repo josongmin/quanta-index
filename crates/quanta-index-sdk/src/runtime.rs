@@ -113,7 +113,7 @@ impl crate::NamespaceIngest for RuntimeNs {
             client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishDirtyBatch(wire))?;
         match response {
             SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
-            other @ (SearchPlaneIngestIpcResponse::LexicalReceipt(_)
+            other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)

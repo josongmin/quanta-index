@@ -18,7 +18,7 @@ pub mod readiness;
 
 pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
-    DirectHistoryMaterializer, DirectLexicalMaterializer, DirectRuntimeMetadataMaterializer,
+    DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
     LegacySemanticJournalStore, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
     SearchPlaneIngestDispatcher, StructuralIngestPort,

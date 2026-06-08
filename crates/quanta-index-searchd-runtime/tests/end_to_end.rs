@@ -32,10 +32,10 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationPin, HistoryIngestBatch, HistoryQueryRequest,
-    HybridQueryRequest, LexicalIngestBatch, LexicalReplaceScope, LexicalTombstoneScope,
-    LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    HybridQueryRequest, LqVisibility, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
     RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -261,7 +261,7 @@ fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
 }
 
 fn publish_structural_ready_fixture(socket: &Path) -> TestResult {
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         socket,
         vec![chunk_record_with_metadata(
             "chunk-tree",
@@ -412,7 +412,7 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
     }
 }
 
-fn publish_lexical_chunks(
+fn publish_search_corpus_chunks(
     socket: &Path,
     chunks: Vec<ChunkRecord>,
     bundle_payload: Option<Vec<u8>>,
@@ -426,7 +426,7 @@ fn publish_lexical_chunks(
     }
     let replace_scopes = chunks_by_path
         .into_iter()
-        .map(|(path, chunks)| LexicalReplaceScope {
+        .map(|(path, chunks)| SearchCorpusReplaceScope {
             scope: scope_key(&path),
             scope_digest: format!("e2e-lex-scope:{path}"),
             chunks,
@@ -435,7 +435,7 @@ fn publish_lexical_chunks(
         .collect();
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -457,7 +457,7 @@ fn publish_lexical_chunks(
 fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -472,7 +472,7 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
             replace_scopes: Vec::new(),
             tombstone_scopes: paths
                 .iter()
-                .map(|path| LexicalTombstoneScope {
+                .map(|path| SearchCorpusTombstoneScope {
                     scope: scope_key(path),
                 })
                 .collect(),
@@ -484,7 +484,7 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
 fn seal_lexical(socket: &Path) -> TestResult {
     dispatch_ingest(
         socket,
-        SearchPlaneIngestIpcRequest::PublishLexicalBatch(LexicalIngestBatch {
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
             repo_id: repo(),
             revision_id: revision(),
             generation: generation(),
@@ -760,7 +760,7 @@ fn publish_dispatch_query_lexical_roundtrip() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("c1", "hello world")?,
@@ -821,7 +821,7 @@ fn publish_dispatch_query_sourcegraph_roundtrip() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-query-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("c1", "hello world")?,
@@ -888,7 +888,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-metadata-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 3, 8, "needle alpha")?,
@@ -996,7 +996,7 @@ fn history_query_returns_typed_producer_unavailable_without_lexical_fallback() -
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-history-producer-unavailable-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record(
             "history-fallback",
@@ -1040,7 +1040,7 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-history-shard-unavailable-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("history-lex", "history shard lexical proof")?],
         Some(b"manifest".to_vec()),
@@ -1082,7 +1082,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-frontdoor-history-runtime-matrix")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("history-lex", "history lexical proof")?,
@@ -1408,10 +1408,10 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let (socket, ingest_socket, shutdown, join) = start_runtime(state_root, "searchd-test-driver")?;
     let alpha = chunk_record("alpha", "sphinx quartz")?;
     let beta = chunk_record("beta", "sphinx riddles")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
     seal_lexical(&ingest_socket)?;
     let pin = GenerationPin::new(repo(), revision(), generation());
-    // Wait for joint lexical/semantic materialization from lexical ingest.
+    // Wait for joint lexical/semantic materialization from search-corpus ingest.
     if !wait_until(READINESS_TIMEOUT, || {
         let req = SearchPlaneQueryIpcRequestEnvelope {
             request_id: 0,
@@ -1560,7 +1560,7 @@ fn sourcegraph_context_filter_executes_against_repo_metadata_surface() -> TestRe
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sourcegraph-context-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("alpha", "needle")?],
         Some(repo_metadata_payload(
@@ -1630,7 +1630,7 @@ fn hybrid_query_visibility_filter_executes_against_repo_metadata_surface() -> Te
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-hybrid-lowering-error-test")?;
     let alpha = chunk_record("alpha", "needle")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![alpha],
         Some(repo_metadata_payload(
@@ -1765,7 +1765,7 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
         start_runtime(state_root, "searchd-semantic-no-scope-success-test")?;
     let alpha = chunk_record("alpha", "semantic alpha")?;
     let beta = chunk_record("beta", "semantic beta")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
@@ -1843,7 +1843,7 @@ fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
         return Err("semantic default-derivation sockets never appeared".into());
     }
 
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![
             chunk_record("alpha", "parser pipeline typed semantic search")?,
@@ -1975,7 +1975,7 @@ fn semantic_query_executes_scoped_unindexed_lexical_scope() -> TestResult {
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-semantic-unindexed-scope-test")?;
     let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
@@ -2045,7 +2045,7 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let alpha = chunk_record("alpha", "scope needle")?;
     let beta = chunk_record("beta", "scope miss")?;
     let gamma = chunk_record("gamma", "outside needle")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -2107,7 +2107,7 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -2165,7 +2165,7 @@ fn semantic_query_rejects_empty_text_with_typed_code() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-sem-empty-query-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record("alpha", "semantic alpha")?],
         None,
@@ -2240,7 +2240,7 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     }
 
     let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
     seal_lexical(&ingest_socket)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -2354,7 +2354,7 @@ fn hybrid_query_excludes_semantic_outsider_from_lexical_universe() -> TestResult
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
@@ -2420,7 +2420,7 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
         start_runtime(state_root, "searchd-hybrid-tie-determinism-test")?;
     let alpha = chunk_record("alpha", "scope tie")?;
     let beta = chunk_record("beta", "scope tie")?;
-    publish_lexical_chunks(&ingest_socket, vec![alpha, beta], None)?;
+    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
     seal_lexical(&ingest_socket)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
@@ -2553,7 +2553,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
     let state_root = dir.path();
     let (socket, ingest_socket, shutdown, join) =
         start_runtime(state_root, "searchd-structural-shard-unavailable-test")?;
-    publish_lexical_chunks(
+    publish_search_corpus_chunks(
         &ingest_socket,
         vec![chunk_record_with_metadata(
             "chunk-tree",

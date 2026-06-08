@@ -1,9 +1,9 @@
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchPublishReceipt, FileContributorIngestBatch, FileOwnerProjectionRow,
-    FileOwnershipIngestBatch, LexicalCandidate, LexicalIngestBatch, LqQuery, ManifestGeneration,
+    FileOwnershipIngestBatch, LexicalCandidate, LqQuery, ManifestGeneration,
     RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
-    RepoTopicIngestBatch, RevisionId, SymbolCandidate,
+    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
 };
 
 use crate::error::CoreError;
@@ -31,14 +31,14 @@ pub trait LexicalIndexBuildPort: Send + Sync {
     ) -> Result<(), CoreError>;
 }
 
-/// Build / replay a typed lexical ingest batch into a lexical index for a
+/// Build / replay a typed search-corpus ingest batch into a lexical index for a
 /// given generation.
 ///
 /// This is the batch-native authority surface used by the direct ingest path.
 /// Implementations may internally lower into legacy op handlers, but callers
 /// do not construct or route channel ops on the hot path.
-pub trait LexicalBatchBuildPort: Send + Sync {
-    fn build_batch(&self, batch: &LexicalIngestBatch) -> Result<(), CoreError>;
+pub trait SearchCorpusBatchBuildPort: Send + Sync {
+    fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
 }
 
 /// Open an existing lexical index for query.
@@ -51,14 +51,17 @@ pub trait LexicalIndexOpenPort: Send + Sync {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
 }
 
-/// Ingest a typed lexical batch into the direct authority path.
+/// Ingest a typed search-corpus batch into the direct authority path.
 ///
 /// QI-RT-01 splits the producer-facing surface from transport details so the
 /// SDK can route batches over typed ingest IPC while runtime ownership stays
 /// batch-native. Implementations commit the batch and return the accepted
 /// surface in [`BatchPublishReceipt`].
-pub trait LexicalIngestPort: Send + Sync {
-    fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
+pub trait SearchCorpusIngestPort: Send + Sync {
+    fn publish_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError>;
 }
 
 /// Ingest a source-repo keyed commit-recency authority snapshot for one lexical

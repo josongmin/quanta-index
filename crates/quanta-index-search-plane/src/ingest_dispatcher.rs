@@ -18,16 +18,15 @@ use std::sync::{Arc, RwLock};
 use quanta_index_contract::{
     BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, EmbeddingDistanceMetric, EmbeddingId,
     EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, HistoryIngestBatch,
-    HistoryRefMutation, LexicalIngestBatch, OwnerDocKind, RepoMapMutationAck,
-    RuntimeCatalogIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
+    HistoryRefMutation, OwnerDocKind, RepoMapMutationAck, RuntimeCatalogIngestBatch,
+    SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
     SearchPlaneIpcError, SearchPlaneTrackKind, SemanticIngestBatch, SemanticReplaceScope,
     StructuralIngestBatch,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalBatchBuildPort,
-    LexicalIngestPort, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SemanticBatchBuildPort,
-    SemanticIngestPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
@@ -227,20 +226,20 @@ impl LegacySemanticJournalStore {
     }
 }
 
-/// Direct lexical batch materializer that updates the builder + readiness
+/// Direct search-corpus batch materializer that updates the builder + readiness
 /// ledger immediately and keeps the supplied ingest port only as a durability
 /// mirror.
-pub struct DirectLexicalMaterializer {
-    builder: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
+pub struct DirectSearchCorpusMaterializer {
+    builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     semantic_ingest: Option<Arc<dyn SemanticIngestPort + Send + Sync>>,
     semantic_embedding_dimension: usize,
 }
 
-impl DirectLexicalMaterializer {
+impl DirectSearchCorpusMaterializer {
     #[must_use]
     pub fn new(
-        builder: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
+        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
     ) -> Self {
         Self {
@@ -253,7 +252,7 @@ impl DirectLexicalMaterializer {
 
     #[must_use]
     pub fn new_with_search_owned_semantics(
-        builder: Arc<dyn LexicalBatchBuildPort + Send + Sync>,
+        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
         semantic_embedding_dimension: usize,
@@ -267,22 +266,28 @@ impl DirectLexicalMaterializer {
     }
 }
 
-impl LexicalIngestPort for DirectLexicalMaterializer {
-    fn publish_batch(&self, batch: &LexicalIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
+    fn publish_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
         let derived_semantic_batch = self
             .semantic_ingest
             .as_ref()
             .map(|_semantic_ingest| {
-                derive_semantic_batch_from_lexical_batch(batch, self.semantic_embedding_dimension)
+                derive_semantic_batch_from_search_corpus_batch(
+                    batch,
+                    self.semantic_embedding_dimension,
+                )
             })
             .transpose()?;
         self.builder.build_batch(batch)?;
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
-                "direct lexical materialize: ledger poisoned: {err}"
+                "direct search-corpus materialize: ledger poisoned: {err}"
             ))
         })?;
-        guard.apply_lexical_batch(batch);
+        guard.apply_search_corpus_batch(batch);
         guard.materialize_track(
             &batch.repo_id,
             &batch.revision_id,
@@ -315,8 +320,8 @@ impl LexicalIngestPort for DirectLexicalMaterializer {
             (&self.semantic_ingest, derived_semantic_batch.as_ref())
         {
             // Search-owned semantic derivation is explicit follow-on work from
-            // the accepted lexical batch. Failure is surfaced to the caller;
-            // no silent downgrade to lexical-only semantics occurs.
+            // the accepted search-corpus batch. Failure is surfaced to the
+            // caller; no silent downgrade to search-corpus-only indexing occurs.
             drop(semantic_ingest.publish_batch(semantic_batch)?);
         }
         Ok(receipt)
@@ -344,8 +349,8 @@ fn search_owned_semantic_model_contract() -> Result<EmbeddingModelContract, Core
     })
 }
 
-fn derive_semantic_batch_from_lexical_batch(
-    batch: &LexicalIngestBatch,
+fn derive_semantic_batch_from_search_corpus_batch(
+    batch: &SearchCorpusIngestBatch,
     dimension: usize,
 ) -> Result<SemanticIngestBatch, CoreError> {
     if dimension == 0 {
@@ -673,7 +678,7 @@ impl StructuralIngestPort for DirectStructuralMaterializer {
 /// shape of [`crate::SearchPlaneControlDispatcher`] / [`crate::SearchPlaneDispatcher`]
 /// for the new ingest surface (QI-RT-01).
 pub struct SearchPlaneIngestDispatcher {
-    lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
+    lexical: Arc<dyn SearchCorpusIngestPort + Send + Sync>,
     history: Arc<dyn HistoryIngestPort + Send + Sync>,
     repo_commit_recency: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
     repo_topic: Arc<dyn RepoTopicIngestPort + Send + Sync>,
@@ -693,7 +698,7 @@ impl SearchPlaneIngestDispatcher {
         reason = "composition-root wiring of one Arc<dyn ...Port> per ingest authority; bundling into a struct is a separate refactor"
     )]
     pub fn new(
-        lexical: Arc<dyn LexicalIngestPort + Send + Sync>,
+        lexical: Arc<dyn SearchCorpusIngestPort + Send + Sync>,
         history: Arc<dyn HistoryIngestPort + Send + Sync>,
         repo_commit_recency: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
         repo_topic: Arc<dyn RepoTopicIngestPort + Send + Sync>,
@@ -723,9 +728,9 @@ impl SearchPlaneIngestDispatcher {
     #[must_use]
     pub fn dispatch(&self, request: SearchPlaneIngestIpcRequest) -> SearchPlaneIngestIpcResponse {
         match request {
-            SearchPlaneIngestIpcRequest::PublishLexicalBatch(batch) => {
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
                 match self.lexical.publish_batch(&batch) {
-                    Ok(receipt) => SearchPlaneIngestIpcResponse::LexicalReceipt(receipt),
+                    Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
@@ -858,10 +863,10 @@ mod tests {
     use super::*;
     use quanta_index_contract::{
         BatchIngestMode, ChunkId, ChunkRecord, EmbeddingDistanceMetric, EmbeddingId,
-        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, LexicalIngestBatch,
-        LexicalReplaceScope, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath,
-        RevisionId, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-        SemanticReplaceScope,
+        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
+        OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+        SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+        SemanticIngestBatch, SemanticReplaceScope,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -894,15 +899,17 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeLexicalBuilder {
-        batches: Mutex<Vec<LexicalIngestBatch>>,
+    struct FakeSearchCorpusBuilder {
+        batches: Mutex<Vec<SearchCorpusIngestBatch>>,
     }
 
-    impl quanta_index_core::LexicalBatchBuildPort for FakeLexicalBuilder {
-        fn build_batch(&self, batch: &LexicalIngestBatch) -> Result<(), CoreError> {
+    impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
+        fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
             self.batches
                 .lock()
-                .map_err(|err| CoreError::Storage(format!("fake lexical builder poisoned: {err}")))?
+                .map_err(|err| {
+                    CoreError::Storage(format!("fake search-corpus builder poisoned: {err}"))
+                })?
                 .push(batch.clone());
             Ok(())
         }
@@ -986,8 +993,9 @@ mod tests {
         })
     }
 
-    fn fixture_lexical_batch() -> Result<LexicalIngestBatch, Box<dyn std::error::Error>> {
-        Ok(LexicalIngestBatch {
+    fn fixture_search_corpus_batch() -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>>
+    {
+        Ok(SearchCorpusIngestBatch {
             repo_id: RepoId::new("r"),
             revision_id: RevisionId::new("rev"),
             generation: ManifestGeneration::new(7),
@@ -996,7 +1004,7 @@ mod tests {
             batch_digest: "batch:lex".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             bundle_payload: None,
-            replace_scopes: vec![LexicalReplaceScope {
+            replace_scopes: vec![SearchCorpusReplaceScope {
                 scope: fixture_scope(),
                 scope_digest: "scope:lex".to_string(),
                 chunks: vec![fixture_chunk_record()?],
@@ -1069,24 +1077,24 @@ mod tests {
     }
 
     #[test]
-    fn lexical_materializer_derives_search_owned_semantic_batch() -> TestRes {
+    fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
         let semantic_builder = Arc::new(FakeSemanticBuilder::default());
         let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
         let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(semantic_builder.clone(), Arc::clone(&semantic_ledger)),
         );
-        let lexical_builder = Arc::new(FakeLexicalBuilder::default());
+        let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
         let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-        let materializer = DirectLexicalMaterializer::new_with_search_owned_semantics(
-            lexical_builder,
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            search_corpus_builder,
             Arc::clone(&lexical_ledger),
             semantic_materializer,
             SEARCH_OWNED_SEMANTIC_DIMENSION,
         );
-        let batch = fixture_lexical_batch()?;
+        let batch = fixture_search_corpus_batch()?;
         let receipt = materializer.publish_batch(&batch)?;
         if !receipt.sealed {
-            return Err("derived semantic lexical receipt must preserve seal".into());
+            return Err("derived semantic search-corpus receipt must preserve seal".into());
         }
         let semantic_batches = semantic_builder.take()?;
         let derived = semantic_batches
@@ -1096,7 +1104,9 @@ mod tests {
             return Err("derived semantic batch lost generation/seal truth".into());
         }
         if derived.replace_scopes.len() != 1 {
-            return Err("derived semantic batch did not mirror lexical scope/chunk count".into());
+            return Err(
+                "derived semantic batch did not mirror search-corpus scope/chunk count".into(),
+            );
         }
         let scope = derived
             .replace_scopes

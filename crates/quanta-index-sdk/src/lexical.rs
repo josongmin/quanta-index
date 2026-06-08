@@ -5,8 +5,8 @@
 
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
-    ChunkRecord, GenerationSelector, LexicalIngestBatch, LexicalReplaceScope,
-    LexicalTombstoneScope, ManifestGeneration, RepoId, RevisionId,
+    ChunkRecord, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
     SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneTrackKind, SearchScopeKey, TextQueryRequest,
     TextQueryResponse, TextQuerySyntax,
@@ -16,7 +16,7 @@ use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LexicalBatch<const SEALED: bool = true> {
+pub struct SearchCorpusBatch<const SEALED: bool = true> {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
@@ -24,11 +24,11 @@ pub struct LexicalBatch<const SEALED: bool = true> {
     manifest_digest: String,
     batch_digest: String,
     mode: BatchMode,
-    replace_scopes: Vec<LexicalReplaceScope>,
-    tombstone_scopes: Vec<LexicalTombstoneScope>,
+    replace_scopes: Vec<SearchCorpusReplaceScope>,
+    tombstone_scopes: Vec<SearchCorpusTombstoneScope>,
 }
 
-impl LexicalBatch {
+impl SearchCorpusBatch {
     #[must_use]
     pub fn replace_generation(
         repo_id: RepoId,
@@ -73,7 +73,7 @@ impl LexicalBatch {
     }
 }
 
-impl<const SEALED: bool> LexicalBatch<SEALED> {
+impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     #[must_use]
     pub fn replace_scope(
         mut self,
@@ -82,7 +82,7 @@ impl<const SEALED: bool> LexicalBatch<SEALED> {
         chunks: Vec<ChunkRecord>,
         symbols: Vec<SymbolRecord>,
     ) -> Self {
-        self.replace_scopes.push(LexicalReplaceScope {
+        self.replace_scopes.push(SearchCorpusReplaceScope {
             scope,
             scope_digest: scope_digest.into(),
             chunks,
@@ -93,13 +93,14 @@ impl<const SEALED: bool> LexicalBatch<SEALED> {
 
     #[must_use]
     pub fn tombstone_scope(mut self, scope: SearchScopeKey) -> Self {
-        self.tombstone_scopes.push(LexicalTombstoneScope { scope });
+        self.tombstone_scopes
+            .push(SearchCorpusTombstoneScope { scope });
         self
     }
 
     #[must_use]
-    pub fn without_seal(self) -> LexicalBatch<false> {
-        LexicalBatch {
+    pub fn without_seal(self) -> SearchCorpusBatch<false> {
+        SearchCorpusBatch {
             repo_id: self.repo_id,
             revision_id: self.revision_id,
             generation: self.generation,
@@ -148,12 +149,12 @@ impl<const SEALED: bool> LexicalBatch<SEALED> {
     }
 
     #[must_use]
-    pub fn replace_scopes(&self) -> &[LexicalReplaceScope] {
+    pub fn replace_scopes(&self) -> &[SearchCorpusReplaceScope] {
         &self.replace_scopes
     }
 
     #[must_use]
-    pub fn tombstone_scopes(&self) -> &[LexicalTombstoneScope] {
+    pub fn tombstone_scopes(&self) -> &[SearchCorpusTombstoneScope] {
         &self.tombstone_scopes
     }
 
@@ -162,8 +163,8 @@ impl<const SEALED: bool> LexicalBatch<SEALED> {
         SEALED
     }
 
-    fn to_wire_batch(&self) -> LexicalIngestBatch {
-        LexicalIngestBatch {
+    fn to_wire_batch(&self) -> SearchCorpusIngestBatch {
+        SearchCorpusIngestBatch {
             repo_id: self.repo_id.clone(),
             revision_id: self.revision_id.clone(),
             generation: self.generation,
@@ -195,27 +196,43 @@ impl<'a> LexicalNamespace<'a> {
         <LexicalNs as crate::NamespaceQuery>::query(self.client)
     }
 
-    /// Typed lexical publish entry point backed by the crate-private
+    /// Contract-exact query replay surface. Accepts the shared wire DTO
+    /// unchanged and routes it through the query transport.
+    pub fn query_request(&self, request: TextQueryRequest) -> Result<TextQueryResponse, SdkError> {
+        dispatch_text_query_request_v1(self.client, request)
+    }
+}
+
+pub struct SearchCorpusNamespace<'a> {
+    client: &'a QuantaIndex,
+}
+
+impl<'a> SearchCorpusNamespace<'a> {
+    pub(super) const fn new(client: &'a QuantaIndex) -> Self {
+        Self { client }
+    }
+
+    /// Typed search-corpus publish entry point backed by the crate-private
     /// namespace trait owner. See QI-NS-01.
     pub fn publish<const SEALED: bool>(
         &self,
-        batch: &LexicalBatch<SEALED>,
+        batch: &SearchCorpusBatch<SEALED>,
     ) -> Result<BatchReceipt, SdkError> {
-        publish_lexical_batch(self.client, batch)
+        dispatch_search_corpus_publish_v1(self.client, batch)
     }
 
-    /// Publishes a sealed lexical batch and activates the accepted
+    /// Publishes a sealed search-corpus batch and activates the accepted
     /// generation on the lexical track. If activation fails, the batch was
     /// still ingested successfully and callers must reconcile that partial
     /// state explicitly.
     pub fn publish_and_activate(
         &self,
-        batch: &LexicalBatch,
+        batch: &SearchCorpusBatch,
     ) -> Result<(BatchReceipt, SearchPlaneActivationAck), SdkError> {
         let receipt = self.publish(batch)?;
         if !receipt.sealed {
             return Err(SdkError::Protocol(
-                "lexical publish_and_activate requires a sealed receipt".to_string(),
+                "search corpus publish_and_activate requires a sealed receipt".to_string(),
             ));
         }
         let activation =
@@ -230,38 +247,41 @@ impl<'a> LexicalNamespace<'a> {
                 })?;
         Ok((receipt, activation))
     }
-
-    /// Contract-exact query replay surface. Accepts the shared wire DTO
-    /// unchanged and routes it through the query transport.
-    pub fn query_request(&self, request: TextQueryRequest) -> Result<TextQueryResponse, SdkError> {
-        dispatch_text_query_request_v1(self.client, request)
-    }
 }
 
-/// QI-NS-01 marker type for the built-in lexical namespace.
+/// QI-NS-01 marker type for the built-in lexical query namespace.
 ///
 /// The `client.lexical()` surface delegates here through
-/// [`crate::NamespaceIngest`] and [`crate::NamespaceQuery`].
+/// [`crate::NamespaceQuery`].
 pub(crate) struct LexicalNs;
 
-impl crate::NamespaceIngest for LexicalNs {
-    type Batch = LexicalBatch;
+/// QI-NS-01 test-local marker type for the built-in search-corpus ingest namespace.
+///
+/// Production `client.search_corpus()` publishes directly so sealed and
+/// unsealed batches share one entry point; the trait marker stays test-only
+/// for namespace-conformance coverage.
+#[cfg(test)]
+pub(crate) struct SearchCorpusNs;
+
+#[cfg(test)]
+impl crate::NamespaceIngest for SearchCorpusNs {
+    type Batch = SearchCorpusBatch;
     type Receipt = BatchReceipt;
 
-    fn publish(client: &QuantaIndex, batch: &LexicalBatch) -> Result<BatchReceipt, SdkError> {
-        publish_lexical_batch(client, batch)
+    fn publish(client: &QuantaIndex, batch: &SearchCorpusBatch) -> Result<BatchReceipt, SdkError> {
+        dispatch_search_corpus_publish_v1(client, batch)
     }
 }
 
-fn publish_lexical_batch<const SEALED: bool>(
+fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     client: &QuantaIndex,
-    batch: &LexicalBatch<SEALED>,
+    batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
-    let response = client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishLexicalBatch(
-        batch.to_wire_batch(),
-    ))?;
+    let response = client.dispatch_ingest(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.to_wire_batch()),
+    )?;
     match response {
-        SearchPlaneIngestIpcResponse::LexicalReceipt(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => Ok(receipt),
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
@@ -274,7 +294,7 @@ fn publish_lexical_batch<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
-            "lexical receipt",
+            "search corpus receipt",
             QuantaIndex::ingest_response_kind(&other),
         )),
     }

@@ -19,6 +19,7 @@ use quanta_index_contract::{
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
     SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    ipc::GenerationStatusReport,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -64,6 +65,24 @@ where
         request,
     } = ParsedCommand::parse(args)?;
     let client = QuantaIndex::connect(connect_options).map_err(map_sdk_error)?;
+    // J7Q-05: readiness dispatches via the CONTROL plane, not the query plane.
+    // Branch here so the query path (`dispatch_query_request` ->
+    // `validate_response_kind` -> `render_response`) stays untouched.
+    if let CliRequest::Readiness {
+        repo_id,
+        revision_id,
+    } = request
+    {
+        let report = client
+            .generations()
+            .status(repo_id, revision_id)
+            .map_err(map_sdk_error)?;
+        let rendered = render_readiness(&report, output)?;
+        stdout
+            .write_all(rendered.as_bytes())
+            .map_err(|err| CliError::transport(format!("failed writing stdout: {err}")))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let response = dispatch_query_request(&client, request)?;
     validate_response_kind(kind, &response)?;
     render_response(output, &response, stdout)?;
@@ -99,6 +118,7 @@ enum CommandKind {
     RuntimeMetadata,
     History,
     Structural,
+    Readiness,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +188,10 @@ enum CliRequest {
     RuntimeMetadata(RuntimeMetadataQueryRequest),
     History(HistoryQueryRequest),
     Structural(StructuralQueryRequest),
+    Readiness {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -228,9 +252,13 @@ impl ParsedCommand {
                 CommandKind::Structural,
                 parse_structural(&mut common, &mut rest)?,
             ),
+            "readiness" => (
+                CommandKind::Readiness,
+                parse_readiness(&mut common, &mut rest)?,
+            ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness"
                 )));
             }
         };
@@ -487,6 +515,45 @@ fn parse_structural(
     Ok(CliRequest::Structural(StructuralQueryRequest {
         text_query,
     }))
+}
+
+/// J7Q-05: parse `readiness --repo-id <ID> --revision-id <REV>`.
+///
+/// Mirrors [`parse_history`]'s flag-loop shape but resolves to a
+/// `(repo, revision)` pair only — readiness has no generation pin, syntax, or
+/// `top-k` because it queries the activation catalog, not a sealed generation.
+/// Missing `--repo-id` / `--revision-id` are rejected fail-closed (`EXIT_USAGE`),
+/// never defaulted.
+fn parse_readiness(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let mut repo_id: Option<String> = None;
+    let mut revision_id: Option<String> = None;
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        match current.as_str() {
+            "--repo-id" => {
+                repo_id = Some(take_value(rest, "--repo-id")?);
+            }
+            "--revision-id" => {
+                revision_id = Some(take_value(rest, "--revision-id")?);
+            }
+            other => {
+                return Err(CliError::usage(format!("unknown readiness flag `{other}`")));
+            }
+        }
+    }
+    Ok(CliRequest::Readiness {
+        repo_id: RepoId::new(
+            repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?,
+        ),
+        revision_id: RevisionId::new(
+            revision_id.ok_or_else(|| CliError::usage("missing --revision-id".to_string()))?,
+        ),
+    })
 }
 
 fn parse_semantic(
@@ -788,6 +855,15 @@ fn dispatch_query_request(
                 .query_request(structural)
                 .map_err(map_sdk_error)?,
         ),
+        // Readiness is a control-plane command; `run_inner` branches it before
+        // reaching the query dispatcher. Reaching here is a routing bug, so
+        // fail-closed with a typed protocol error rather than fabricate a query.
+        CliRequest::Readiness { .. } => {
+            return Err(CliError::protocol(
+                "readiness is a control-plane command and must not reach the query dispatcher"
+                    .to_string(),
+            ));
+        }
     };
     Ok(SearchPlaneQueryIpcResponseEnvelope {
         request_id: REQUEST_ID,
@@ -929,6 +1005,54 @@ fn render_response(
                 .write_all(rendered.as_bytes())
                 .map_err(|err| CliError::transport(format!("failed writing stdout: {err}")))?;
             Ok(())
+        }
+    }
+}
+
+/// J7Q-05: render a control-plane [`GenerationStatusReport`] to a string.
+///
+/// `json` mode serializes the report directly (the DTO carries a manual
+/// `Serialize`), so the machine surface is the wire shape verbatim. `pretty`
+/// mode emits a stable, line-oriented form: a header line plus one line per
+/// activated track in `tracks` declaration order. An empty `tracks` vec renders
+/// an explicit `tracks: 0 (none activated)` line — never a silent blank — to
+/// keep "nothing activated" distinct from a malformed report.
+fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(report)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: readiness"))?;
+            fmt_ok(writeln!(
+                rendered,
+                "generation_status: repo_id={} revision_id={}",
+                report.repo_id.as_str(),
+                report.revision_id.as_str()
+            ))?;
+            if report.tracks.is_empty() {
+                fmt_ok(writeln!(rendered, "tracks: 0 (none activated)"))?;
+                return Ok(rendered);
+            }
+            fmt_ok(writeln!(rendered, "tracks: {}", report.tracks.len()))?;
+            for (index, record) in report.tracks.iter().enumerate() {
+                let display_index = index.checked_add(1).ok_or_else(|| {
+                    CliError::protocol("readiness track index overflow".to_string())
+                })?;
+                fmt_ok(writeln!(
+                    rendered,
+                    "{}. track={} manifest_generation={} manifest_digest={}",
+                    display_index,
+                    record.track.as_code_str(),
+                    record.manifest_generation.get(),
+                    record.manifest_digest
+                ))?;
+            }
+            Ok(rendered)
         }
     }
 }
@@ -1353,6 +1477,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::RuntimeMetadata => "runtime-metadata",
         CommandKind::History => "history",
         CommandKind::Structural => "structural",
+        CommandKind::Readiness => "readiness",
     }
 }
 
@@ -1460,6 +1585,7 @@ Read-only subcommands:
   runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
+  readiness        --repo-id ID --revision-id REV
 "
 }
 
@@ -2145,6 +2271,124 @@ mod tests {
             assert!(text.contains("path=src/lib.rs"));
             assert!(text.contains("side=after"));
         }
+    }
+
+    #[test]
+    fn parses_readiness_request() {
+        let parsed =
+            ParsedCommand::parse(["readiness", "--repo-id", "repo-1", "--revision-id", "rev-1"]);
+        assert!(parsed.is_ok());
+        let Ok(parsed) = parsed else {
+            return;
+        };
+        assert_eq!(parsed.kind, CommandKind::Readiness);
+        let CliRequest::Readiness {
+            repo_id,
+            revision_id,
+        } = parsed.request
+        else {
+            panic!("expected readiness payload");
+        };
+        assert_eq!(repo_id.as_str(), "repo-1");
+        assert_eq!(revision_id.as_str(), "rev-1");
+    }
+
+    #[test]
+    fn rejects_readiness_missing_repo_id() {
+        let parsed = ParsedCommand::parse(["readiness", "--revision-id", "rev-1"]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--repo-id"));
+    }
+
+    #[test]
+    fn rejects_readiness_missing_revision_id() {
+        let parsed = ParsedCommand::parse(["readiness", "--repo-id", "repo-1"]);
+        assert!(parsed.is_err());
+        let Err(error) = parsed else {
+            return;
+        };
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        assert!(error.message.contains("--revision-id"));
+    }
+
+    #[test]
+    fn render_readiness_json_emits_report_shape() {
+        use quanta_index_contract::ipc::{
+            GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
+        };
+        let report = GenerationStatusReport {
+            repo_id: RepoId::new("repo-1"),
+            revision_id: RevisionId::new("rev-1"),
+            tracks: vec![TrackReadinessRecord {
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(11),
+                manifest_digest: "digest-11".to_string(),
+            }],
+        };
+        let rendered = render_readiness(&report, OutputMode::Json);
+        assert!(rendered.is_ok());
+        let Ok(text) = rendered else {
+            return;
+        };
+        let parsed = serde_json::from_str::<serde_json::Value>(&text);
+        assert!(parsed.is_ok(), "json output must parse: {text}");
+        assert!(text.contains("\"repo_id\": \"repo-1\""));
+        assert!(text.contains("\"revision_id\": \"rev-1\""));
+        assert!(text.contains("\"track\": \"Lexical\""));
+        assert!(text.contains("\"manifest_digest\": \"digest-11\""));
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn render_readiness_pretty_marks_empty_tracks() {
+        use quanta_index_contract::ipc::GenerationStatusReport;
+        let report = GenerationStatusReport {
+            repo_id: RepoId::new("repo-1"),
+            revision_id: RevisionId::new("rev-1"),
+            tracks: vec![],
+        };
+        let rendered = render_readiness(&report, OutputMode::Pretty);
+        assert!(rendered.is_ok());
+        let Ok(text) = rendered else {
+            return;
+        };
+        assert!(text.contains("kind: readiness"));
+        assert!(text.contains("tracks: 0 (none activated)"));
+    }
+
+    #[test]
+    fn render_readiness_pretty_lists_tracks() {
+        use quanta_index_contract::ipc::{
+            GenerationStatusReport, SearchPlaneTrackKind, TrackReadinessRecord,
+        };
+        let report = GenerationStatusReport {
+            repo_id: RepoId::new("repo-1"),
+            revision_id: RevisionId::new("rev-1"),
+            tracks: vec![
+                TrackReadinessRecord {
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: ManifestGeneration::new(11),
+                    manifest_digest: "lex".to_string(),
+                },
+                TrackReadinessRecord {
+                    track: SearchPlaneTrackKind::Semantic,
+                    manifest_generation: ManifestGeneration::new(12),
+                    manifest_digest: "sem".to_string(),
+                },
+            ],
+        };
+        let rendered = render_readiness(&report, OutputMode::Pretty);
+        assert!(rendered.is_ok());
+        let Ok(text) = rendered else {
+            return;
+        };
+        assert!(text.contains("tracks: 2"));
+        assert!(text.contains("1. track=Lexical manifest_generation=11 manifest_digest=lex"));
+        assert!(text.contains("2. track=Semantic manifest_generation=12 manifest_digest=sem"));
     }
 
     #[test]
