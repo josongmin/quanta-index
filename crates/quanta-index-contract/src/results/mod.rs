@@ -5,6 +5,7 @@ mod query_responses;
 pub use commit_candidate::*;
 pub use explanation::*;
 pub use quanta_index_contract_base::results::{
-    DiffCandidate, DiffHunkSide, LexicalCandidate, StructuralBinding, StructuralCandidate,
+    DiffCandidate, DiffHunkSide, HighlightSpan, LexicalCandidate, StructuralBinding,
+    StructuralCandidate,
 };
 pub use query_responses::*;

@@ -25,6 +25,7 @@ fn candidate(id: &str) -> LexicalCandidate {
         score: 0.0,
         snippet: String::new(),
         snippet_hit_offset: None,
+        highlights: Vec::new(),
     }
 }
 

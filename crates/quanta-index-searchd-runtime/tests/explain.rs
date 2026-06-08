@@ -362,6 +362,7 @@ fn explain_rejects_generation_mismatch() -> TestResult {
         score: 1.0,
         snippet: "alpha bravo charlie".to_string(),
         snippet_hit_offset: None,
+        highlights: Vec::new(),
     };
     let resp = send_query_request(&socket, &explain_request(pin, stale_candidate))?;
     let err = match resp.payload {

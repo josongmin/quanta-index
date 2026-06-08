@@ -8,6 +8,79 @@ use serde::{
 
 use crate::{ManifestGeneration, RepoId, RepoRelativePath, RevisionId};
 
+/// A byte range within an emitted snippet that a UI should highlight.
+///
+/// `start` is the byte offset of a matched hit within `LexicalCandidate::snippet`
+/// and `len` its byte length; both are UTF-8 char-boundary aligned. Spans are
+/// typed so a consumer renders highlights without regex-parsing the snippet text
+/// (J7Q-07).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HighlightSpan {
+    pub start: u32,
+    pub len: u32,
+}
+
+const HIGHLIGHT_SPAN_FIELDS: &[&str] = &["start", "len"];
+
+impl Serialize for HighlightSpan {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("HighlightSpan", 2)?;
+        state.serialize_field("start", &self.start)?;
+        state.serialize_field("len", &self.len)?;
+        state.end()
+    }
+}
+
+struct HighlightSpanVisitor;
+
+impl<'de> Visitor<'de> for HighlightSpanVisitor {
+    type Value = HighlightSpan;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a HighlightSpan map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut start: Option<u32> = None;
+        let mut len: Option<u32> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "start" => {
+                    if start.is_some() {
+                        return Err(de::Error::duplicate_field("start"));
+                    }
+                    start = Some(map.next_value()?);
+                }
+                "len" => {
+                    if len.is_some() {
+                        return Err(de::Error::duplicate_field("len"));
+                    }
+                    len = Some(map.next_value()?);
+                }
+                other => return Err(de::Error::unknown_field(other, HIGHLIGHT_SPAN_FIELDS)),
+            }
+        }
+        let start = start.ok_or_else(|| de::Error::missing_field("start"))?;
+        let len = len.ok_or_else(|| de::Error::missing_field("len"))?;
+        Ok(HighlightSpan { start, len })
+    }
+}
+
+impl<'de> Deserialize<'de> for HighlightSpan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("HighlightSpan", HIGHLIGHT_SPAN_FIELDS, HighlightSpanVisitor)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LexicalCandidate {
     pub candidate_id: String,
@@ -23,8 +96,13 @@ pub struct LexicalCandidate {
     /// highlight anchoring. `Some(off)` lets a consumer place a highlight without
     /// re-deriving the match from the raw snippet text (J7Q-07); `None` when the
     /// producing route carries no single lexical hit anchor (e.g. a symbol or
-    /// projected candidate).
+    /// projected candidate). Equals the first [`Self::highlights`] span's `start`.
     pub snippet_hit_offset: Option<u32>,
+    /// Every matched-hit byte range within [`Self::snippet`], in ascending start
+    /// order, for multi-hit UI highlighting (J7Q-07). Empty when the producing
+    /// route carries no lexical hit spans; a consumer renders each span verbatim
+    /// without regex-parsing the snippet.
+    pub highlights: Vec<HighlightSpan>,
 }
 
 const LEXICAL_CANDIDATE_FIELDS: &[&str] = &[
@@ -38,6 +116,7 @@ const LEXICAL_CANDIDATE_FIELDS: &[&str] = &[
     "score",
     "snippet",
     "snippet_hit_offset",
+    "highlights",
 ];
 
 impl Serialize for LexicalCandidate {
@@ -45,7 +124,7 @@ impl Serialize for LexicalCandidate {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalCandidate", 10)?;
+        let mut state = serializer.serialize_struct("LexicalCandidate", 11)?;
         state.serialize_field("candidate_id", &self.candidate_id)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
@@ -56,6 +135,7 @@ impl Serialize for LexicalCandidate {
         state.serialize_field("score", &self.score)?;
         state.serialize_field("snippet", &self.snippet)?;
         state.serialize_field("snippet_hit_offset", &self.snippet_hit_offset)?;
+        state.serialize_field("highlights", &self.highlights)?;
         state.end()
     }
 }
@@ -83,6 +163,7 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
         let mut score: Option<f32> = None;
         let mut snippet: Option<String> = None;
         let mut snippet_hit_offset: Option<Option<u32>> = None;
+        let mut highlights: Option<Vec<HighlightSpan>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "candidate_id" => {
@@ -145,6 +226,12 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
                     }
                     snippet_hit_offset = Some(map.next_value()?);
                 }
+                "highlights" => {
+                    if highlights.is_some() {
+                        return Err(de::Error::duplicate_field("highlights"));
+                    }
+                    highlights = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, LEXICAL_CANDIDATE_FIELDS)),
             }
         }
@@ -161,6 +248,7 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
         let snippet = snippet.ok_or_else(|| de::Error::missing_field("snippet"))?;
         let snippet_hit_offset =
             snippet_hit_offset.ok_or_else(|| de::Error::missing_field("snippet_hit_offset"))?;
+        let highlights = highlights.ok_or_else(|| de::Error::missing_field("highlights"))?;
         Ok(LexicalCandidate {
             candidate_id,
             repo_id,
@@ -172,6 +260,7 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
             score,
             snippet,
             snippet_hit_offset,
+            highlights,
         })
     }
 }

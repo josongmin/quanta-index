@@ -21,7 +21,7 @@
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
+use quanta_index_contract::{HighlightSpan, TextQuerySyntax};
 use serde_json::{Value, json};
 
 use crate::harness::E2eRuntime;
@@ -69,6 +69,13 @@ pub const UI_PROBES: &[UiProbe] = &[
         query: "ui_anchor_marker_zzz",
         needle: "ui_anchor_marker_zzz",
     },
+    UiProbe {
+        id: "ui.multihit.spans",
+        path: "src/ui/multi.rs",
+        content: "fn ui_multi_marker() { ui_multi_marker(); ui_multi_marker(); }\n",
+        query: "ui_multi_marker",
+        needle: "ui_multi_marker",
+    },
 ];
 
 /// `u32` snippet offset to `usize` for slicing.
@@ -92,8 +99,10 @@ pub struct UiScore {
     pub path: &'static str,
     /// The exact emitted snippet (the consumer-visible text).
     pub snippet: Option<String>,
-    /// The typed highlight anchor the candidate carried.
+    /// The typed primary highlight anchor the candidate carried.
     pub snippet_hit_offset: Option<u32>,
+    /// Every typed highlight span the candidate carried.
+    pub highlights: Vec<HighlightSpan>,
     pub failures: Vec<String>,
 }
 
@@ -138,6 +147,7 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
             path: probe.path,
             snippet: None,
             snippet_hit_offset: None,
+            highlights: Vec::new(),
             failures,
         };
     }
@@ -157,11 +167,13 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
             path: probe.path,
             snippet: None,
             snippet_hit_offset: None,
+            highlights: Vec::new(),
             failures,
         };
     };
     let snippet = candidate.snippet.clone();
     let snippet_hit_offset = candidate.snippet_hit_offset;
+    let highlights = candidate.highlights.clone();
     // 1. Anchor present — the typed field must be populated, not implicit.
     match snippet_hit_offset {
         None => failures.push(format!(
@@ -185,6 +197,36 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
             }
         }
     }
+    // 3. Highlight spans present — the typed span set must not be empty when the
+    //    needle is in the emitted snippet.
+    let expected_hits = snippet.matches(probe.needle).count();
+    if expected_hits > 0 && highlights.is_empty() {
+        failures.push(format!(
+            "{}: snippet contains the needle but carries no highlight spans (consumer must re-find)",
+            probe.id
+        ));
+    }
+    // 4. Every span correct — each span covers the needle exactly.
+    for span in &highlights {
+        let start = usize_from_offset(span.start);
+        let end = start.saturating_add(usize_from_offset(span.len));
+        match snippet.get(start..end) {
+            Some(text) if text == probe.needle => {}
+            _ => failures.push(format!(
+                "{}: highlight span (start {}, len {}) does not cover `{}` exactly",
+                probe.id, span.start, span.len, probe.needle
+            )),
+        }
+    }
+    // 5. Multi-hit coverage — the span set covers every needle occurrence.
+    if highlights.len() != expected_hits {
+        failures.push(format!(
+            "{}: {} highlight spans for {} needle occurrences in the snippet",
+            probe.id,
+            highlights.len(),
+            expected_hits
+        ));
+    }
     UiScore {
         id: probe.id,
         query: probe.query,
@@ -192,6 +234,7 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
         path: probe.path,
         snippet: Some(snippet),
         snippet_hit_offset,
+        highlights,
         failures,
     }
 }
@@ -219,6 +262,11 @@ fn score_json(score: &UiScore) -> Value {
         "path": score.path,
         "snippet": score.snippet,
         "snippet_hit_offset": score.snippet_hit_offset,
+        "highlights": score
+            .highlights
+            .iter()
+            .map(|span| json!({ "start": span.start, "len": span.len }))
+            .collect::<Vec<_>>(),
         "failures": score.failures,
         "passed": score.passed(),
     })
@@ -230,8 +278,8 @@ pub fn contract_snapshots_json(report: &UiReport) -> Value {
     json!({
         "schema_version": 1,
         "dimension": "ui",
-        "fields_under_test": ["snippet", "snippet_hit_offset"],
-        "snapshot_note": "snippet_hit_offset is the typed UI highlight anchor (J7Q-07); a consumer slices snippet at the offset to land on the hit, with no regex parsing of raw text",
+        "fields_under_test": ["snippet", "snippet_hit_offset", "highlights"],
+        "snapshot_note": "snippet_hit_offset + highlights are the typed UI anchors (J7Q-07); a consumer slices snippet at offset/spans to land on hits, with no regex parsing of raw text",
         "snapshots": report.scores.iter().map(score_json).collect::<Vec<_>>(),
     })
 }
@@ -300,6 +348,7 @@ mod tests {
                 path: "src/x.rs",
                 snippet: Some("a marker b".to_string()),
                 snippet_hit_offset: Some(2),
+                highlights: vec![HighlightSpan { start: 2, len: 6 }],
                 failures: Vec::new(),
             }],
             passed: true,
@@ -308,8 +357,11 @@ mod tests {
         assert_eq!(value["dimension"], "ui");
         assert_eq!(value["passed"], true);
         assert_eq!(value["scores"][0]["snippet_hit_offset"], 2);
+        assert_eq!(value["scores"][0]["highlights"][0]["start"], 2);
+        assert_eq!(value["scores"][0]["highlights"][0]["len"], 6);
         let snaps = contract_snapshots_json(&report);
         assert_eq!(snaps["fields_under_test"][1], "snippet_hit_offset");
+        assert_eq!(snaps["fields_under_test"][2], "highlights");
     }
 
     #[test]
@@ -340,6 +392,27 @@ mod tests {
                 "probe {}: offset {offset} must point at `{}` in snippet {snippet:?}",
                 score.id,
                 score.needle
+            );
+            // Every highlight span must cover the needle exactly, and the span
+            // set must cover every occurrence (multi-hit coverage).
+            assert!(!score.highlights.is_empty(), "{}: no highlight spans", score.id);
+            for span in &score.highlights {
+                let start = usize_from_offset(span.start);
+                let end = start.saturating_add(usize_from_offset(span.len));
+                assert_eq!(
+                    snippet.get(start..end),
+                    Some(score.needle),
+                    "probe {}: span (start {}, len {}) must cover the needle exactly",
+                    score.id,
+                    span.start,
+                    span.len
+                );
+            }
+            assert_eq!(
+                score.highlights.len(),
+                snippet.matches(score.needle).count(),
+                "probe {}: highlight spans must cover every needle occurrence",
+                score.id
             );
         }
     }

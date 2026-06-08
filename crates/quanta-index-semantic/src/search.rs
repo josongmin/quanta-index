@@ -238,6 +238,7 @@ fn extract_candidates(
             snippet,
             // Semantic results carry no single lexical hit anchor.
             snippet_hit_offset: None,
+            highlights: Vec::new(),
         });
     }
     Ok(())

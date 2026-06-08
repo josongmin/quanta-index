@@ -5,8 +5,9 @@ use quanta_index_contract::results::{
     EngineTouched, PlannerStage, PlannerTraceEntry, SearchExplanation,
 };
 use quanta_index_contract::{
-    DiffCandidate, DiffHunkSide, GenerationPin, HybridQueryRequest, HybridQueryResponse,
-    LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    DiffCandidate, DiffHunkSide, GenerationPin, HighlightSpan, HybridQueryRequest,
+    HybridQueryResponse, LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate,
     TextQueryRequest, TextQuerySyntax,
@@ -168,9 +169,10 @@ fn lexical_candidate() -> LexicalCandidate {
         end_line: 18,
         score: 0.875,
         snippet: "fn search_plane() {}".to_owned(),
-        // J7Q-07: a concrete hit offset so the wire round-trip proves the new
-        // UI highlight-anchor field survives serialize -> deserialize.
+        // J7Q-07: a concrete hit offset + span so the wire round-trip proves the
+        // new UI highlight-anchor fields survive serialize -> deserialize.
         snippet_hit_offset: Some(3),
+        highlights: vec![HighlightSpan { start: 3, len: 4 }],
     }
 }
 

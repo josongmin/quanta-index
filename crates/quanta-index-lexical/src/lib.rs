@@ -44,8 +44,9 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkRecord, FileContributorIdentityEntry, FileContributorIngestBatch,
-    FileOwnerProjectionRow, FileOwnershipIngestBatch, LexicalCandidate, LexicalFullBundle,
-    LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
+    FileOwnerProjectionRow, FileOwnershipIngestBatch, HighlightSpan, LexicalCandidate,
+    LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
+    LqPredicateArg,
     LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
     RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
     RepoRelativePath, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
@@ -6876,9 +6877,11 @@ impl TantivySearcher {
             .unwrap_or_default();
         // J7Q-02: emit a hit-centered, deterministically-bounded window so a long
         // source line never streams an unbounded blob at the head of the result.
-        // J7Q-07: the window also reports the hit's byte offset for UI highlight
-        // anchoring, so a consumer never re-derives the match from raw text.
-        let (snippet, snippet_hit_offset) = window_snippet(&stored_snippet, center_terms);
+        // J7Q-07: the window also reports the primary hit's byte offset plus every
+        // matched-hit span for UI highlighting, so a consumer never re-derives the
+        // matches from raw text.
+        let (snippet, snippet_hit_offset, highlights) =
+            window_snippet(&stored_snippet, center_terms);
         let repo_relative_path =
             stored_text(doc, self.fields.repo_relative_path).unwrap_or_default();
         let start_line = stored_u32(doc, self.fields.start_line)?.unwrap_or(0);
@@ -6894,6 +6897,7 @@ impl TantivySearcher {
             score,
             snippet,
             snippet_hit_offset,
+            highlights,
         })
     }
 
@@ -7012,36 +7016,60 @@ fn snippet_offset_u32(within: usize) -> u32 {
     within as u32
 }
 
-/// Produce the emitted snippet for a stored chunk, plus the byte offset of the
-/// primary hit within it (for UI highlight anchoring, J7Q-07).
+/// Collect every center-term occurrence within `emitted` as a highlight span,
+/// in ascending start order with exact duplicates removed.
+///
+/// Spans are computed over the *emitted* text (post-windowing), so their offsets
+/// are valid against the snippet a consumer actually receives (J7Q-07).
+fn collect_highlights(emitted: &str, center_terms: &[String]) -> Vec<HighlightSpan> {
+    let mut spans: Vec<HighlightSpan> = Vec::new();
+    for term in center_terms {
+        if term.is_empty() {
+            continue;
+        }
+        for (pos, matched) in emitted.match_indices(term.as_str()) {
+            spans.push(HighlightSpan {
+                start: snippet_offset_u32(pos),
+                len: snippet_offset_u32(matched.len()),
+            });
+        }
+    }
+    spans.sort_by_key(|span| span.start);
+    spans.dedup();
+    spans
+}
+
+/// Produce the emitted snippet for a stored chunk, plus the primary hit offset
+/// and every matched-hit span within it (for UI highlight anchoring, J7Q-02 +
+/// J7Q-07).
 ///
 /// The whole text is returned when it already fits [`SNIPPET_WINDOW_BYTES`].
 /// Otherwise a window of at most that many bytes is taken, centered on the first
 /// present center term (so the hit keeps leading and trailing context) and
 /// clamped to UTF-8 char boundaries. When no center term is present in an
 /// over-long snippet, the leading window is kept so the result is still bounded —
-/// never an unbounded blob. The returned offset is the position of the first
-/// center term *within the emitted text* (`None` when no center term is present
-/// or it falls outside the window). Fully determined by `(stored, center_terms)`,
-/// so two runs over identical inputs emit byte-identical windows + offsets.
-fn window_snippet(stored: &str, center_terms: &[String]) -> (String, Option<u32>) {
-    let first_hit = center_terms
-        .iter()
-        .filter_map(|term| stored.find(term.as_str()))
-        .min();
-    if stored.len() <= SNIPPET_WINDOW_BYTES {
-        return (stored.to_string(), first_hit.map(snippet_offset_u32));
-    }
-    let start = first_hit.map_or(0, |hit| {
-        floor_char_boundary(stored, hit.saturating_sub(SNIPPET_LEAD_BYTES))
-    });
-    let raw_end = start.saturating_add(SNIPPET_WINDOW_BYTES).min(stored.len());
-    let end = floor_char_boundary(stored, raw_end);
-    let text = stored.get(start..end).unwrap_or(stored).to_string();
-    let hit_offset = first_hit
-        .filter(|&hit| hit >= start && hit < end)
-        .map(|hit| snippet_offset_u32(hit.saturating_sub(start)));
-    (text, hit_offset)
+/// never an unbounded blob. Highlight spans and the primary offset are computed
+/// over the emitted text, so the primary offset equals the first span's `start`.
+/// Fully determined by `(stored, center_terms)`, so two runs over identical
+/// inputs emit byte-identical windows, offsets, and spans.
+fn window_snippet(stored: &str, center_terms: &[String]) -> (String, Option<u32>, Vec<HighlightSpan>) {
+    let text = if stored.len() <= SNIPPET_WINDOW_BYTES {
+        stored.to_string()
+    } else {
+        let first_hit = center_terms
+            .iter()
+            .filter_map(|term| stored.find(term.as_str()))
+            .min();
+        let start = first_hit.map_or(0, |hit| {
+            floor_char_boundary(stored, hit.saturating_sub(SNIPPET_LEAD_BYTES))
+        });
+        let raw_end = start.saturating_add(SNIPPET_WINDOW_BYTES).min(stored.len());
+        let end = floor_char_boundary(stored, raw_end);
+        stored.get(start..end).unwrap_or(stored).to_string()
+    };
+    let highlights = collect_highlights(&text, center_terms);
+    let primary = highlights.first().map(|span| span.start);
+    (text, primary, highlights)
 }
 
 fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {

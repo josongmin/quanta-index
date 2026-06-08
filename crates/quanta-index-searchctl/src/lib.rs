@@ -2057,6 +2057,7 @@ mod tests {
                         score: 0.3,
                         snippet: "runtime body".to_string(),
                         snippet_hit_offset: None,
+                        highlights: Vec::new(),
                     }],
                 },
             ),
@@ -2093,6 +2094,7 @@ mod tests {
                     score: 0.5,
                     snippet: "fn sample() {}".to_string(),
                     snippet_hit_offset: None,
+                    highlights: Vec::new(),
                 }],
                 file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
                     candidate_id: "cand-1".to_string(),

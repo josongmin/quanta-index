@@ -176,6 +176,7 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
         score: 1.0,
         snippet: "fn sample() {}".to_string(),
         snippet_hit_offset: None,
+        highlights: Vec::new(),
     }
 }
 
