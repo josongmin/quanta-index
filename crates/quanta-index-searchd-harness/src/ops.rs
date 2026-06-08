@@ -10,14 +10,13 @@
 //! any mutating workflow). It boots one [`E2eRuntime`], seeds a single seeded
 //! document, and captures four surfaces into `cli_snapshots.json`:
 //!
-//! - **route_provenance** — a served query's `engines_touched` labels + serving
-//!   generation, asserting the serving generation matches the active one;
-//! - **typed_error** — a rejected (empty) query's typed error *code*, asserting
-//!   the typed failure is surfaced verbatim, never collapsed to a generic string;
-//! - **perf_metrics** — the registered metric names from the obs snapshot, the
+//! - `result_provenance` — a served query's `engines_touched` labels plus the
+//!   repo / revision / serving-generation stamp the candidate carries;
+//! - `typed_error` — a rejected (empty) query's typed error code, asserting the
+//!   typed failure is surfaced verbatim, never collapsed to a generic string;
+//! - `perf_metrics` — the registered metric names from the obs snapshot, the
 //!   surface an operator reads for tail/latency diagnosis;
-//! - **generation_state** — the active generation + pin, the serving-head
-//!   provenance.
+//! - `generation_state` — the runtime's current generation plus its pin.
 //!
 //! Fail-closed posture: a surface that swallows its provenance (empty engine
 //! set, a generation mismatch, a blank typed-error code, or no metrics) is a rail
@@ -124,10 +123,9 @@ fn capture_result_provenance(rt: &mut E2eRuntime) -> OpsSnapshot {
 /// Capture the typed-error surface from a rejected (empty) query.
 fn capture_typed_error(rt: &mut E2eRuntime) -> OpsSnapshot {
     let result = rt.query_text(TextQuerySyntax::Native, "", OPS_TOP_K);
-    let (code, message) = match &result.typed_error {
-        Some(error) => (Some(error.code.clone()), Some(error.message.clone())),
-        None => (None, None),
-    };
+    let (code, message) = result.typed_error.as_ref().map_or((None, None), |error| {
+        (Some(error.code.clone()), Some(error.message.clone()))
+    });
     // Provenance is preserved when the rejection carries a non-empty TYPED code,
     // not a generic human string (the ticket No-Go).
     let provenance_ok = code.as_ref().is_some_and(|code| !code.is_empty());
