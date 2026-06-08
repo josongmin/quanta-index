@@ -28,5 +28,6 @@ pub mod scale;
 pub mod scenarios;
 pub mod snippet;
 pub mod tail;
+pub mod ui;
 
 pub use harness::*;

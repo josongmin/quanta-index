@@ -236,6 +236,8 @@ fn extract_candidates(
             end_line,
             score,
             snippet,
+            // Semantic results carry no single lexical hit anchor.
+            snippet_hit_offset: None,
         });
     }
     Ok(())

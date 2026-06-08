@@ -3585,6 +3585,8 @@ fn lexical_candidate_from_chunk(
         end_line: chunk.end_line,
         score: 1.0,
         snippet: chunk.derived_snippet().to_string(),
+        // A projected chunk carries no single lexical hit anchor.
+        snippet_hit_offset: None,
     }
 }
 
@@ -4949,6 +4951,7 @@ mod tests {
             end_line: 1,
             score,
             snippet: String::new(),
+            snippet_hit_offset: None,
         }
     }
 
@@ -5365,6 +5368,7 @@ mod tests {
             end_line: start_line,
             score,
             snippet: String::new(),
+            snippet_hit_offset: None,
         };
         let dispatcher = SearchPlaneDispatcher::new(
             Arc::new(StubLexicalOpener {
@@ -6176,6 +6180,7 @@ mod tests {
             end_line: 1,
             score: 1.0,
             snippet: candidate_id.to_string(),
+            snippet_hit_offset: None,
         }
     }
 

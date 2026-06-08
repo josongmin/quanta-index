@@ -168,6 +168,9 @@ fn lexical_candidate() -> LexicalCandidate {
         end_line: 18,
         score: 0.875,
         snippet: "fn search_plane() {}".to_owned(),
+        // J7Q-07: a concrete hit offset so the wire round-trip proves the new
+        // UI highlight-anchor field survives serialize -> deserialize.
+        snippet_hit_offset: Some(3),
     }
 }
 

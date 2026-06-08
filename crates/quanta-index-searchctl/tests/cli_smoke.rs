@@ -639,6 +639,7 @@ fn stub_candidate(generation: GenerationPin) -> LexicalCandidate {
         end_line: 14,
         score: 0.91,
         snippet: "fn main() {\n    println!(\"hi\");\n}".to_string(),
+        snippet_hit_offset: None,
     }
 }
 

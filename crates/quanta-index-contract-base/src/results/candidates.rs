@@ -19,6 +19,12 @@ pub struct LexicalCandidate {
     pub end_line: u32,
     pub score: f32,
     pub snippet: String,
+    /// Byte offset of the primary matched hit within [`Self::snippet`], for UI
+    /// highlight anchoring. `Some(off)` lets a consumer place a highlight without
+    /// re-deriving the match from the raw snippet text (J7Q-07); `None` when the
+    /// producing route carries no single lexical hit anchor (e.g. a symbol or
+    /// projected candidate).
+    pub snippet_hit_offset: Option<u32>,
 }
 
 const LEXICAL_CANDIDATE_FIELDS: &[&str] = &[
@@ -31,6 +37,7 @@ const LEXICAL_CANDIDATE_FIELDS: &[&str] = &[
     "end_line",
     "score",
     "snippet",
+    "snippet_hit_offset",
 ];
 
 impl Serialize for LexicalCandidate {
@@ -38,7 +45,7 @@ impl Serialize for LexicalCandidate {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LexicalCandidate", 9)?;
+        let mut state = serializer.serialize_struct("LexicalCandidate", 10)?;
         state.serialize_field("candidate_id", &self.candidate_id)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
@@ -48,6 +55,7 @@ impl Serialize for LexicalCandidate {
         state.serialize_field("end_line", &self.end_line)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("snippet", &self.snippet)?;
+        state.serialize_field("snippet_hit_offset", &self.snippet_hit_offset)?;
         state.end()
     }
 }
@@ -74,6 +82,7 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
         let mut finish_line: Option<u32> = None;
         let mut score: Option<f32> = None;
         let mut snippet: Option<String> = None;
+        let mut snippet_hit_offset: Option<Option<u32>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "candidate_id" => {
@@ -130,6 +139,12 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
                     }
                     snippet = Some(map.next_value()?);
                 }
+                "snippet_hit_offset" => {
+                    if snippet_hit_offset.is_some() {
+                        return Err(de::Error::duplicate_field("snippet_hit_offset"));
+                    }
+                    snippet_hit_offset = Some(map.next_value()?);
+                }
                 other => return Err(de::Error::unknown_field(other, LEXICAL_CANDIDATE_FIELDS)),
             }
         }
@@ -144,6 +159,8 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
         let end_line = finish_line.ok_or_else(|| de::Error::missing_field("end_line"))?;
         let score = score.ok_or_else(|| de::Error::missing_field("score"))?;
         let snippet = snippet.ok_or_else(|| de::Error::missing_field("snippet"))?;
+        let snippet_hit_offset =
+            snippet_hit_offset.ok_or_else(|| de::Error::missing_field("snippet_hit_offset"))?;
         Ok(LexicalCandidate {
             candidate_id,
             repo_id,
@@ -154,6 +171,7 @@ impl<'de> Visitor<'de> for LexicalCandidateVisitor {
             end_line,
             score,
             snippet,
+            snippet_hit_offset,
         })
     }
 }

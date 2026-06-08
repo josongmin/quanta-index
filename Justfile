@@ -373,11 +373,24 @@ rust-verify-quality-ops:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ops_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ops_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ops/latest"'
 
+# UI/UX contract rail (J7Q-07). Blocking dimension: ui.
+# Proves: the typed `LexicalCandidate::snippet_hit_offset` highlight anchor is
+# present and points exactly at the matched needle on each probe (short + long
+# line), so a downstream UI renders highlights without regex-parsing raw snippets.
+# Proven across engine + contract layers (the field round-trips on the wire in
+# the contract IPC test). A missing/out-of-range/wrong anchor fails the rail.
+# Artifacts: artifacts/search-quality/ui/latest/{summary,contract_snapshots}.json
+rust-verify-quality-ui:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ui:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/ui/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ui_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ui_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ui/latest"'
+
 # Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
-# (relevance, ambiguity, snippet, scale, tail, ops) and records an integration
-# summary WITHOUT erasing dimension boundaries. This is not a substitute for
-# per-dimension closeout. Dimensions not yet implemented (ui) are recorded as
-# `pending`, never as passing.
+# (relevance, ambiguity, snippet, scale, tail, ops, ui) and records an
+# integration summary WITHOUT erasing dimension boundaries. This is not a
+# substitute for per-dimension closeout. All seven J7Q quality dimensions are now
+# live; a future dimension would be added as `pending` until its rail lands.
 rust-verify-quality-all:
     @just rust-verify-quality-relevance
     @just rust-verify-quality-ambiguity
@@ -385,6 +398,7 @@ rust-verify-quality-all:
     @just rust-verify-quality-scale
     @just rust-verify-quality-tail
     @just rust-verify-quality-ops
+    @just rust-verify-quality-ui
     mkdir -p artifacts/search-quality/integration/latest
     python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 

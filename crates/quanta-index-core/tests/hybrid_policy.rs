@@ -24,6 +24,7 @@ fn candidate(id: &str) -> LexicalCandidate {
         end_line: 0,
         score: 0.0,
         snippet: String::new(),
+        snippet_hit_offset: None,
     }
 }
 

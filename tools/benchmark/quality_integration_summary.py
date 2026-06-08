@@ -30,7 +30,7 @@ DIMENSIONS = [
     ("scale", "J7Q-03", True, "live"),
     ("tail", "J7Q-04", True, "live"),
     ("ops", "J7Q-05", True, "live"),
-    ("ui_contract", "J7Q-07", True, "pending"),
+    ("ui", "J7Q-07", True, "live"),
 ]
 
 

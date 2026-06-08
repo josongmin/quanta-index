@@ -175,6 +175,7 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
         end_line: 20,
         score: 1.0,
         snippet: "fn sample() {}".to_string(),
+        snippet_hit_offset: None,
     }
 }
 
