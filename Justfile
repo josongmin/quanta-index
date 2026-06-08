@@ -345,16 +345,46 @@ rust-verify-quality-scale:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/scale/latest"'
 
+# Latency-tail rail (J7Q-04). Blocking dimension: tail (correctness-gated).
+# Proves: route-aware p50/p95/p99 budget manifest + percentile invariants, then
+# boots one warm runtime and times each budgeted route's representative query
+# TAIL_SAMPLES times. Correctness (golden-validated shape/count/error before
+# timing) is the blocking signal; per-route latency budgets are explicit but
+# advisory on this host this increment (canonical blocking is the Linux perf
+# runner). No single global threshold; verdicts carry route-local diagnostics.
+# Artifacts: artifacts/search-quality/tail/latest/{summary,route_budgets}.json
+rust-verify-quality-tail:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib tail:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/tail/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin tail_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/tail_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/tail/latest"'
+
+# Operator-ergonomics rail (J7Q-05). Blocking dimension: ops.
+# Proves: read-only operator-diagnosis surfaces are machine-readable and preserve
+# provenance — route (engines_touched) + serving generation, the typed-error code
+# for a rejected query, queryable perf/tail metrics, and the active generation +
+# pin. A surface that swallows its provenance (empty engines, generation
+# mismatch, blank typed-error code, no metrics) fails the rail. Read-only first
+# increment; no mutating workflow.
+# Artifacts: artifacts/search-quality/ops/latest/{summary,cli_snapshots}.json
+rust-verify-quality-ops:
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ops:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/ops/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ops_matrix --all-features --locked
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ops_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ops/latest"'
+
 # Aggregate quality gate (J7Q-08). Orchestrates the LIVE per-dimension rails
-# (relevance, ambiguity, snippet, scale) and records an integration summary
-# WITHOUT erasing dimension boundaries. This is not a substitute for per-dimension
-# closeout. Dimensions not yet implemented (tail, ops, ui) are recorded as
+# (relevance, ambiguity, snippet, scale, tail, ops) and records an integration
+# summary WITHOUT erasing dimension boundaries. This is not a substitute for
+# per-dimension closeout. Dimensions not yet implemented (ui) are recorded as
 # `pending`, never as passing.
 rust-verify-quality-all:
     @just rust-verify-quality-relevance
     @just rust-verify-quality-ambiguity
     @just rust-verify-quality-snippet
     @just rust-verify-quality-scale
+    @just rust-verify-quality-tail
+    @just rust-verify-quality-ops
     mkdir -p artifacts/search-quality/integration/latest
     python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 

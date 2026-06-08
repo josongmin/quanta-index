@@ -22,9 +22,11 @@ mod harness;
 pub mod ambiguity;
 pub mod artifact;
 pub mod bench_support;
+pub mod ops;
 pub mod relevance;
 pub mod scale;
 pub mod scenarios;
 pub mod snippet;
+pub mod tail;
 
 pub use harness::*;

@@ -28,8 +28,8 @@ DIMENSIONS = [
     ("ambiguity", "J7Q-06", True, "live"),
     ("snippet", "J7Q-02", True, "live"),
     ("scale", "J7Q-03", True, "live"),
-    ("tail", "J7Q-04", True, "pending"),
-    ("ops", "J7Q-05", True, "pending"),
+    ("tail", "J7Q-04", True, "live"),
+    ("ops", "J7Q-05", True, "live"),
     ("ui_contract", "J7Q-07", True, "pending"),
 ]
 
