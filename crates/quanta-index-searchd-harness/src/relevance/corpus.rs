@@ -226,3 +226,83 @@ pub const JUDGED_QUERIES: &[JudgedQuery] = &[
         },
     },
 ];
+
+// ---------------------------------------------------------------------------
+// Sourcegraph lexical overlap suite (J7Q-01B).
+// ---------------------------------------------------------------------------
+
+/// One Sourcegraph lexical overlap bucket.
+///
+/// The overlap suite compares quanta-index against Sourcegraph lexical ONLY on
+/// shipped, non-semantic query families (the `COMMAND_AND_ARTIFACT_CONTRACT`
+/// minimum-bucket set). Each bucket pins the exact query text, its syntax
+/// dialect, and the Sourcegraph surface the comparison would use. The
+/// quanta-index ordering is captured live against the seeded relevance corpus;
+/// the Sourcegraph ordering stays `unprovisioned` until a local instance exists,
+/// so the per-bucket verdict is `unprovisioned` — an external comparison cannot
+/// be claimed without the external system, and no "beats Sourcegraph" claim can
+/// be derived from a half-captured row.
+#[derive(Clone, Copy, Debug)]
+pub struct SourcegraphOverlapBucket {
+    /// Canonical overlap-bucket name (the contract's minimum set).
+    pub bucket: &'static str,
+    /// Human query-family label.
+    pub query_family: &'static str,
+    /// Exact query text issued to both surfaces.
+    pub query: &'static str,
+    /// Query syntax dialect.
+    pub syntax: BenchSyntax,
+    /// The Sourcegraph search surface the comparison would use.
+    pub sourcegraph_surface: &'static str,
+}
+
+/// The six minimum overlap buckets (`COMMAND_AND_ARTIFACT_CONTRACT`).
+///
+/// Each is pinned to a query that exercises the seeded relevance corpus so the
+/// quanta-index half is a real captured ordering rather than prose. The
+/// Sourcegraph syntax forms (`"phrase"`, `/regex/`, `repo:`, `path:`) are the
+/// dialects the live lexical route already executes.
+pub const SOURCEGRAPH_OVERLAP_BUCKETS: &[SourcegraphOverlapBucket] = &[
+    SourcegraphOverlapBucket {
+        bucket: "keyword",
+        query_family: "literal keyword match",
+        query: "parse_config",
+        syntax: BenchSyntax::Native,
+        sourcegraph_surface: "sourcegraph lexical (literal pattern)",
+    },
+    SourcegraphOverlapBucket {
+        bucket: "phrase",
+        query_family: "contiguous multi-token phrase",
+        query: "\"Parse the on-disk config\"",
+        syntax: BenchSyntax::Sourcegraph,
+        sourcegraph_surface: "sourcegraph lexical (literal phrase)",
+    },
+    SourcegraphOverlapBucket {
+        bucket: "regex",
+        query_family: "regex pattern",
+        query: "patterntype:regexp conn[a-z]+",
+        syntax: BenchSyntax::Sourcegraph,
+        sourcegraph_surface: "sourcegraph lexical (patterntype:regexp)",
+    },
+    SourcegraphOverlapBucket {
+        bucket: "path-constrained content",
+        query_family: "path-scoped content match",
+        query: "path:src/config/parser.rs parse_config",
+        syntax: BenchSyntax::Sourcegraph,
+        sourcegraph_surface: "sourcegraph lexical (path: + content)",
+    },
+    SourcegraphOverlapBucket {
+        bucket: "repo metadata",
+        query_family: "repo-scoped content match",
+        query: "repo:repo-relevance connect",
+        syntax: BenchSyntax::Sourcegraph,
+        sourcegraph_surface: "sourcegraph lexical (repo: predicate)",
+    },
+    SourcegraphOverlapBucket {
+        bucket: "symbol name",
+        query_family: "symbol-name identifier (lexical surface stands in until a seeded symbol-route corpus exists)",
+        query: "connect",
+        syntax: BenchSyntax::Sourcegraph,
+        sourcegraph_surface: "sourcegraph lexical (symbol-name token)",
+    },
+];

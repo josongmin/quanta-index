@@ -19,6 +19,18 @@ fn git_rev() -> String {
     "unknown".to_string()
 }
 
+/// Capture date stamped on the Sourcegraph overlap rows (J7Q-01B).
+///
+/// Injected via env so the recipe controls it and emission stays reproducible;
+/// absent the env it reads `unprovisioned-capture-date` (honest: no external
+/// capture happened).
+fn capture_date() -> String {
+    if let Ok(date) = std::env::var("QUANTA_QUALITY_CAPTURE_DATE") {
+        return date;
+    }
+    "unprovisioned-capture-date".to_string()
+}
+
 fn parse_out_dir() -> PathBuf {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
@@ -35,6 +47,7 @@ fn parse_out_dir() -> PathBuf {
 fn main() -> ExitCode {
     let out_dir = parse_out_dir();
     let rev = git_rev();
+    let capture_date = capture_date();
 
     let report = match run_relevance_report() {
         Ok(report) => report,
@@ -44,7 +57,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(err) = write_artifacts(&report, &out_dir, &rev) {
+    if let Err(err) = write_artifacts(&report, &out_dir, &rev, &capture_date) {
         eprintln!(
             "relevance_matrix: failed to write artifacts under {}: {err:#}",
             out_dir.display()

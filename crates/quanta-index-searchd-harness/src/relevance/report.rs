@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 use crate::artifact::BenchSyntax;
 use crate::harness::E2eRuntime;
 use crate::relevance::corpus::{
-    JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute, TOP_K,
+    JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
+    SOURCEGRAPH_OVERLAP_BUCKETS, SourcegraphOverlapBucket, TOP_K,
 };
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,
@@ -95,11 +96,32 @@ pub struct RouteSummary {
     pub passed: bool,
 }
 
+/// One captured Sourcegraph overlap bucket (J7Q-01B).
+///
+/// The quanta-index half is captured live; the Sourcegraph half is
+/// `unprovisioned`, so `verdict` is always `unprovisioned` until a local
+/// instance fills the Sourcegraph ordering. A capture error on the quanta side
+/// is recorded as-is (never hidden) but does NOT gate the relevance rail — the
+/// overlap is a tracked external side lane, not a blocking metric.
+#[derive(Clone, Debug)]
+pub struct OverlapCapture {
+    pub bucket: &'static str,
+    pub query_family: &'static str,
+    pub query: &'static str,
+    pub syntax: BenchSyntax,
+    pub sourcegraph_surface: &'static str,
+    /// Live quanta-index ordering (doc-id list, top-first); empty on capture error.
+    pub quanta_ordering: Vec<String>,
+    /// The typed error the quanta query produced, if any (recorded, not hidden).
+    pub quanta_capture_error: Option<String>,
+}
+
 /// The full relevance report.
 #[derive(Clone, Debug)]
 pub struct RelevanceReport {
     pub queries: Vec<QueryScore>,
     pub routes: Vec<RouteSummary>,
+    pub overlap: Vec<OverlapCapture>,
     pub passed: bool,
 }
 
@@ -266,6 +288,40 @@ fn aggregate_routes(queries: &[QueryScore]) -> Vec<RouteSummary> {
         .collect()
 }
 
+/// Capture the live quanta-index ordering for one Sourcegraph overlap bucket.
+///
+/// Fail-soft (NOT fail-closed-as-abort): a typed query error is recorded in
+/// `quanta_capture_error` and the ordering is left empty, because the overlap is
+/// an external side lane whose verdict is `unprovisioned` regardless — a capture
+/// error must not turn the whole relevance rail red over an absent dependency.
+/// The error is surfaced verbatim in the artifact, never swallowed.
+fn capture_overlap_bucket(rt: &mut E2eRuntime, bucket: &SourcegraphOverlapBucket) -> OverlapCapture {
+    let result = rt.query_text(to_text_syntax(bucket.syntax), bucket.query, TOP_K);
+    let (quanta_ordering, quanta_capture_error) = match result.typed_error {
+        Some(error) => (
+            Vec::new(),
+            Some(format!("{}: {}", error.code, error.message)),
+        ),
+        None => (
+            result
+                .candidates
+                .iter()
+                .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+                .collect(),
+            None,
+        ),
+    };
+    OverlapCapture {
+        bucket: bucket.bucket,
+        query_family: bucket.query_family,
+        query: bucket.query,
+        syntax: bucket.syntax,
+        sourcegraph_surface: bucket.sourcegraph_surface,
+        quanta_ordering,
+        quanta_capture_error,
+    }
+}
+
 /// Run the full relevance rail against a freshly seeded runtime.
 pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     let mut rt = prepare_relevance_runtime()?;
@@ -275,10 +331,17 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
         queries.push(score_query(query, order)?);
     }
     let routes = aggregate_routes(&queries);
+    // J7Q-01B: capture the quanta-index half of every overlap bucket live. The
+    // Sourcegraph half stays unprovisioned, so this never gates `passed`.
+    let overlap = SOURCEGRAPH_OVERLAP_BUCKETS
+        .iter()
+        .map(|bucket| capture_overlap_bucket(&mut rt, bucket))
+        .collect();
     let passed = queries.iter().all(QueryScore::passed) && routes.iter().all(|r| r.passed);
     Ok(RelevanceReport {
         queries,
         routes,
+        overlap,
         passed,
     })
 }
@@ -374,25 +437,66 @@ fn summary_json(report: &RelevanceReport, git_rev: &str) -> Value {
     })
 }
 
-/// The Sourcegraph lexical overlap stub.
+/// One comparison row in the Sourcegraph overlap artifact.
 ///
-/// Emitted as `unprovisioned` (J7Q-01B side lane). Recording it as a real,
-/// non-passing artifact keeps the external floor honest instead of letting its
-/// absence read as success.
-fn sourcegraph_overlap_json() -> Value {
+/// Carries every field the `COMMAND_AND_ARTIFACT_CONTRACT` requires per overlap
+/// row: query family, exact query text, capture date, Sourcegraph surface, the
+/// quanta-index ordering (live), the Sourcegraph ordering (`unprovisioned`), and
+/// a pass/fail-or-gap note. `verdict` is `unprovisioned` because the Sourcegraph
+/// side is absent — a half-captured row can never read as a pass.
+fn overlap_comparison_json(capture: &OverlapCapture, capture_date: &str) -> Value {
+    json!({
+        "bucket": capture.bucket,
+        "query_family": capture.query_family,
+        "query": capture.query,
+        "syntax": to_text_syntax(capture.syntax).as_str(),
+        "capture_date": capture_date,
+        "sourcegraph_surface": capture.sourcegraph_surface,
+        "quanta_index_ordering": capture.quanta_ordering,
+        "quanta_capture_error": capture.quanta_capture_error,
+        "sourcegraph_ordering": "unprovisioned",
+        "verdict": "unprovisioned",
+        "gap_note": "external comparison pending local Sourcegraph provisioning; quanta-index ordering captured, Sourcegraph ordering absent",
+    })
+}
+
+/// The Sourcegraph lexical overlap artifact (J7Q-01B).
+///
+/// The quanta-index half of every bucket is captured live and persisted; the
+/// Sourcegraph half is `unprovisioned`. Recording it as a real, non-passing
+/// artifact keeps the external floor honest instead of letting its absence read
+/// as success — `external_floor_met` is `false` and every bucket verdict is
+/// `unprovisioned`, so no competitive claim can be derived. When a local
+/// Sourcegraph instance lands, only the Sourcegraph ordering + verdict need
+/// filling; the buckets, query text, and quanta orderings are already proven.
+fn sourcegraph_overlap_json(report: &RelevanceReport, capture_date: &str) -> Value {
     json!({
         "schema_version": 1,
         "status": "unprovisioned",
         "owner_ticket": "J7Q-01B",
         "external_floor_met": false,
-        "note": "local Sourcegraph provisioning + ordering capture not yet implemented",
-        "overlap_buckets": ["keyword", "phrase", "regex", "path-constrained content", "repo metadata", "symbol name"],
-        "comparisons": [],
+        "capture_date": capture_date,
+        "note": "quanta-index ordering captured live per bucket; local Sourcegraph instance not provisioned, so each bucket verdict stays unprovisioned and the external lexical floor is NOT met",
+        "overlap_buckets": SOURCEGRAPH_OVERLAP_BUCKETS.iter().map(|bucket| bucket.bucket).collect::<Vec<_>>(),
+        "comparisons": report
+            .overlap
+            .iter()
+            .map(|capture| overlap_comparison_json(capture, capture_date))
+            .collect::<Vec<_>>(),
     })
 }
 
 /// Write the three canonical relevance artifacts under `dir`.
-pub fn write_artifacts(report: &RelevanceReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
+///
+/// `capture_date` stamps the Sourcegraph overlap rows (when the quanta-index
+/// half was captured); it is injected by the caller so artifact emission stays
+/// deterministic under test.
+pub fn write_artifacts(
+    report: &RelevanceReport,
+    dir: &Path,
+    git_rev: &str,
+    capture_date: &str,
+) -> AnyResult<()> {
     crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
     crate::artifact::write_json_pretty(
         &dir.join("query_judgments.json"),
@@ -400,7 +504,7 @@ pub fn write_artifacts(report: &RelevanceReport, dir: &Path, git_rev: &str) -> A
     )?;
     crate::artifact::write_json_pretty(
         &dir.join("sourcegraph-overlap.json"),
-        &sourcegraph_overlap_json(),
+        &sourcegraph_overlap_json(report, capture_date),
     )?;
     Ok(())
 }
@@ -492,5 +596,44 @@ mod tests {
         assert!(!score.passed());
         // every relevant doc missing -> recall 0, top1 empty.
         assert!(score.failures.iter().any(|f| f.contains("top1 invariant")));
+    }
+
+    #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test indexes the overlap JSON shape this module constructs; an out-of-range index is a legitimate test failure"
+    )]
+    fn sourcegraph_overlap_artifact_is_unprovisioned_with_captured_quanta_half() {
+        // J7Q-01B contract shape: the quanta half is captured + persisted, the
+        // Sourcegraph half is unprovisioned, and the floor is explicitly NOT met
+        // — no row can read as a competitive pass.
+        let report = RelevanceReport {
+            queries: Vec::new(),
+            routes: Vec::new(),
+            overlap: vec![OverlapCapture {
+                bucket: "keyword",
+                query_family: "literal keyword match",
+                query: "parse_config",
+                syntax: BenchSyntax::Native,
+                sourcegraph_surface: "sourcegraph lexical (literal pattern)",
+                quanta_ordering: order(&["src/config/parser.rs", "src/config/loader.rs"]),
+                quanta_capture_error: None,
+            }],
+            passed: true,
+        };
+        let value = sourcegraph_overlap_json(&report, "2026-06-09");
+        assert_eq!(value["status"], "unprovisioned");
+        assert_eq!(value["external_floor_met"], false);
+        assert_eq!(value["capture_date"], "2026-06-09");
+        assert_eq!(value["overlap_buckets"].as_array().map(Vec::len), Some(6));
+        let row = &value["comparisons"][0];
+        assert_eq!(row["bucket"], "keyword");
+        assert_eq!(row["query"], "parse_config");
+        assert_eq!(row["syntax"], "native");
+        assert_eq!(row["capture_date"], "2026-06-09");
+        // The quanta half is real; the Sourcegraph half + verdict stay unprovisioned.
+        assert_eq!(row["quanta_index_ordering"][0], "src/config/parser.rs");
+        assert_eq!(row["sourcegraph_ordering"], "unprovisioned");
+        assert_eq!(row["verdict"], "unprovisioned");
     }
 }

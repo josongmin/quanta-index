@@ -304,7 +304,7 @@ rust-verify-quality-relevance:
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/relevance/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
 
 # Ambiguity / repairability rail (J7Q-06). Blocking dimension: ambiguity.
 # Proves: typed repair-payload invariants — repairable bridge codes carry
