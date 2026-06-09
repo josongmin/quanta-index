@@ -130,9 +130,14 @@ pub fn compute_snippet_window(source: &str, needle: &str, max_len: usize) -> Opt
     let start = floor_char_boundary(source, raw_start);
     let raw_end = start.saturating_add(max_len).min(source.len());
     let end = floor_char_boundary(source, raw_end);
-    // `end` may have stepped back below `hit + needle.len()` only if the needle
-    // itself exceeds the budget; clamp the window to always include the hit
-    // start so `hit_offset` stays valid.
+    // `start..end` is always a valid, in-bounds slice: `start` and `end` are both
+    // `floor_char_boundary` results (hence char boundaries) with `start <=
+    // raw_start <= hit <= source.len()`, `raw_end = min(start + max_len,
+    // source.len()) >= start`, and stepping `raw_end` down to a boundary cannot
+    // cross below the boundary `start`, so `start <= end <= source.len()`. Thus
+    // `source.get(start..end)` is always `Some`; the `unwrap_or("")` is
+    // unreachable-by-construction, kept as a typed-safe floor in place of a slice
+    // index (string slicing is banned in production paths).
     let text = source.get(start..end).unwrap_or("").to_string();
     let hit_offset = hit.saturating_sub(start);
     Some(SnippetWindow { text, hit_offset })
@@ -576,21 +581,11 @@ fn golden_window_json(score: &SnippetScore) -> Value {
     })
 }
 
-fn write_json(path: &Path, value: &Value) -> AnyResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
 /// Write the two canonical snippet artifacts under `dir`.
 pub fn write_artifacts(report: &SnippetReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
     let scores: Vec<Value> = report.scores.iter().map(score_json).collect();
     let golden: Vec<Value> = report.scores.iter().map(golden_window_json).collect();
-    write_json(
+    crate::artifact::write_json_pretty(
         &dir.join("summary.json"),
         &json!({
             "schema_version": 1,
@@ -603,7 +598,7 @@ pub fn write_artifacts(report: &SnippetReport, dir: &Path, git_rev: &str) -> Any
             "gate_note": "snippet quality is hit-centered window + bounded length + deterministic truncation, NOT substring presence; the engine snippet is graded as-emitted, never post-processed to pass",
         }),
     )?;
-    write_json(
+    crate::artifact::write_json_pretty(
         &dir.join("golden_windows.json"),
         &json!({
             "schema_version": 1,

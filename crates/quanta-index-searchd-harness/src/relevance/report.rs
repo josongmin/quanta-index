@@ -391,21 +391,14 @@ fn sourcegraph_overlap_json() -> Value {
     })
 }
 
-fn write_json(path: &Path, value: &Value) -> AnyResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
 /// Write the three canonical relevance artifacts under `dir`.
 pub fn write_artifacts(report: &RelevanceReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
-    write_json(&dir.join("summary.json"), &summary_json(report, git_rev))?;
-    write_json(&dir.join("query_judgments.json"), &judgments_json(report))?;
-    write_json(
+    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+    crate::artifact::write_json_pretty(
+        &dir.join("query_judgments.json"),
+        &judgments_json(report),
+    )?;
+    crate::artifact::write_json_pretty(
         &dir.join("sourcegraph-overlap.json"),
         &sourcegraph_overlap_json(),
     )?;

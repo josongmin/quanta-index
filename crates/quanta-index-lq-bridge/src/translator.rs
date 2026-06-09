@@ -805,11 +805,15 @@ fn parse_timeout_ms(value: &str) -> Result<u64, BridgeError> {
     })
 }
 
+// The `scaled as u32` cast at the end of this fn is guarded by the
+// `if !scaled.is_finite() || scaled <= 0.0 || scaled > f64::from(u32::MAX) { return Err(...) }`
+// check below: any out-of-range value returns before the cast. Combined with the
+// integer-valued `round()`, the surviving f64 lands exactly in 1..=u32::MAX.
 #[expect(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "scaled is validated finite, > 0.0, and <= u32::MAX immediately above and is an integer-valued round(); f64 has no TryFrom<u32>, so the bounded cast is exact and cannot truncate or lose sign"
+    reason = "the is_finite/positive/<=u32::MAX guard preceding the cast bounds scaled to an integer-valued 1..=u32::MAX, so this f64-to-u32 cast (f64 has no TryFrom<u32>) is exact and cannot truncate or lose sign"
 )]
 fn parse_boost_millis(value: &str) -> Result<u32, BridgeError> {
     let parsed: f64 = value.parse().map_err(|err| {

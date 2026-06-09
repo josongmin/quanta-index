@@ -290,6 +290,19 @@ impl BenchArtifact {
     }
 }
 
+/// Serialize `value` as pretty-printed JSON with a trailing newline to `path`,
+/// creating the parent directory if present. Shared rail-artifact writer used
+/// by every harness dimension (scale/snippet/tail/ops/ui/ambiguity/relevance).
+pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut text = serde_json::to_string_pretty(value)?;
+    text.push('\n');
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6874,7 +6874,11 @@ impl TantivySearcher {
         })?;
         let stored_snippet = stored_text(doc, self.fields.snippet)
             .or_else(|| stored_text(doc, self.fields.chunk_text))
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                CoreError::Storage(
+                    "lexical: stored doc missing snippet/chunk_text field".to_string(),
+                )
+            })?;
         // J7Q-02: emit a hit-centered, deterministically-bounded window so a long
         // source line never streams an unbounded blob at the head of the result.
         // J7Q-07: the window also reports the primary hit's byte offset plus every
@@ -6883,9 +6887,17 @@ impl TantivySearcher {
         let (snippet, snippet_hit_offset, highlights) =
             window_snippet(&stored_snippet, center_terms);
         let repo_relative_path =
-            stored_text(doc, self.fields.repo_relative_path).unwrap_or_default();
-        let start_line = stored_u32(doc, self.fields.start_line)?.unwrap_or(0);
-        let end_line = stored_u32(doc, self.fields.end_line)?.unwrap_or(0);
+            stored_text(doc, self.fields.repo_relative_path).ok_or_else(|| {
+                CoreError::Storage(
+                    "lexical: stored doc missing repo_relative_path field".to_string(),
+                )
+            })?;
+        let start_line = stored_u32(doc, self.fields.start_line)?.ok_or_else(|| {
+            CoreError::Storage("lexical: stored doc missing start_line field".to_string())
+        })?;
+        let end_line = stored_u32(doc, self.fields.end_line)?.ok_or_else(|| {
+            CoreError::Storage("lexical: stored doc missing end_line field".to_string())
+        })?;
         Ok(LexicalCandidate {
             candidate_id,
             repo_id: self.repo_id.clone(),
@@ -7010,7 +7022,7 @@ fn floor_char_boundary(text: &str, index: usize) -> usize {
 #[expect(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
-    reason = "snippet hit offset is bounded by SNIPPET_WINDOW_BYTES (<= 240) or the bounded snippet length, far below u32::MAX"
+    reason = "the offset is always into the emitted text, which is at most SNIPPET_WINDOW_BYTES (240) bytes — the full stored snippet when it is <= 240 bytes, otherwise a windowed excerpt — so the usize->u32 narrowing is exact"
 )]
 fn snippet_offset_u32(within: usize) -> u32 {
     within as u32
@@ -7065,7 +7077,8 @@ fn window_snippet(stored: &str, center_terms: &[String]) -> (String, Option<u32>
         });
         let raw_end = start.saturating_add(SNIPPET_WINDOW_BYTES).min(stored.len());
         let end = floor_char_boundary(stored, raw_end);
-        stored.get(start..end).unwrap_or(stored).to_string()
+        // start <= end <= stored.len(), both floor_char_boundary results, so this is unreachable; "" keeps the fallback bounded.
+        stored.get(start..end).unwrap_or("").to_string()
     };
     let highlights = collect_highlights(&text, center_terms);
     let primary = highlights.first().map(|span| span.start);

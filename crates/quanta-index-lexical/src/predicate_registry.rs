@@ -710,16 +710,21 @@ pub(crate) fn parse_file_contributor_arg(
             if value.trim().is_empty() {
                 return Err(FileContributorArgError::EmptyContributor);
             }
+            // Trim once first so delimiter detection works on whitespace-padded
+            // input, then bind the trimmed value for use in BOTH arms — the
+            // exact-match fallback and the regex path must trim symmetrically.
+            let trimmed = value.trim();
             Ok(FileContributorArg {
                 // Strip surrounding `/.../` without byte-slicing; `None` (a missing
                 // delimiter) is the exact-match case, preserving the prior
                 // `trimmed[1..len-1]` behaviour UTF-8-safely and arithmetic-free.
-                contributor: value
-                    .trim()
+                // Downstream re-trims, so emitting the already-trimmed value here
+                // is behaviour-preserving for both arms.
+                contributor: trimmed
                     .strip_prefix('/')
                     .and_then(|i| i.strip_suffix('/'))
                     .map_or_else(
-                        || ContributorPattern::Exact(value.clone()),
+                        || ContributorPattern::Exact(trimmed.to_string()),
                         |inner| ContributorPattern::Regex(inner.to_string()),
                     ),
             })

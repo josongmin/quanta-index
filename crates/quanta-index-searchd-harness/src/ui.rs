@@ -297,21 +297,11 @@ pub fn summary_json(report: &UiReport, git_rev: &str) -> Value {
     })
 }
 
-fn write_json(path: &Path, value: &Value) -> AnyResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
 /// Write the two canonical UI artifacts under `dir`:
 /// `summary.json` and `contract_snapshots.json`.
 pub fn write_artifacts(report: &UiReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
-    write_json(&dir.join("summary.json"), &summary_json(report, git_rev))?;
-    write_json(
+    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+    crate::artifact::write_json_pretty(
         &dir.join("contract_snapshots.json"),
         &contract_snapshots_json(report),
     )?;

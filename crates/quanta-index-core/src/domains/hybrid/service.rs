@@ -74,8 +74,7 @@ impl HybridOrchestratorPolicy {
         let mut fused: Vec<FuseAccumulator> = accs.into_values().collect();
         fused.sort_by(|a, b| {
             b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.score)
                 .then(b.in_lex.cmp(&a.in_lex))
                 .then_with(|| {
                     a.candidate

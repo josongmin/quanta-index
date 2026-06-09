@@ -175,24 +175,14 @@ fn audit_json(audit: &CodeAudit) -> Value {
     })
 }
 
-fn write_json(path: &Path, value: &Value) -> AnyResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
 /// Write the two canonical ambiguity artifacts under `dir`.
 pub fn write_artifacts(report: &AmbiguityReport, dir: &Path, git_rev: &str) -> AnyResult<()> {
     let payloads: Vec<Value> = report.audits.iter().map(audit_json).collect();
-    write_json(
+    crate::artifact::write_json_pretty(
         &dir.join("error_payloads.json"),
         &json!({ "schema_version": 1, "payloads": payloads }),
     )?;
-    write_json(
+    crate::artifact::write_json_pretty(
         &dir.join("summary.json"),
         &json!({
             "schema_version": 1,

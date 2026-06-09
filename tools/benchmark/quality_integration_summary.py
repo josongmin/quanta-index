@@ -63,11 +63,17 @@ def build() -> tuple[dict, bool]:
                 row["error"] = "declared live but summary artifact missing"
                 all_live_passed = False
             else:
-                passed = bool(summary.get("passed", False))
-                row["passed"] = passed
                 row["artifact"] = str(
                     (ARTIFACT_ROOT / dimension / "latest" / "summary.json").relative_to(ROOT)
                 )
+                if "passed" not in summary:
+                    # A parsed artifact without a 'passed' key is malformed: surface
+                    # it as a flagged failure rather than silently scoring it FAIL.
+                    passed = False
+                    row["error"] = "artifact present but missing 'passed' key"
+                else:
+                    passed = bool(summary["passed"])
+                row["passed"] = passed
                 if not passed:
                     all_live_passed = False
         else:

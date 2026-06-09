@@ -84,6 +84,38 @@ fn duplicate_text_field(
     Ok(())
 }
 
+fn first_candidate_fields_mut(
+    results: &mut ciborium::Value,
+) -> Result<&mut Vec<(ciborium::Value, ciborium::Value)>, Box<dyn std::error::Error>> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "ciborium::Value is non_exhaustive; keep a future-variant rejection arm"
+    )]
+    let array = match results {
+        ciborium::Value::Array(values) => values,
+        other @ (ciborium::Value::Integer(_)
+        | ciborium::Value::Bytes(_)
+        | ciborium::Value::Float(_)
+        | ciborium::Value::Text(_)
+        | ciborium::Value::Bool(_)
+        | ciborium::Value::Null
+        | ciborium::Value::Tag(_, _)
+        | ciborium::Value::Map(_)) => {
+            return Err(format!("expected results array, got {other:?}").into());
+        }
+        other => {
+            return Err(format!(
+                "expected results array, got future/non-exhaustive value {other:?}"
+            )
+            .into());
+        }
+    };
+    let first = array
+        .first_mut()
+        .ok_or_else(|| "expected first lexical result".to_string())?;
+    map_fields_mut(first)
+}
+
 fn mutate_ipc_request_wire<F>(
     request: &SearchPlaneQueryIpcRequest,
     mutate: F,
@@ -900,4 +932,76 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
     })?;
 
     expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "explanation")
+}
+
+fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
+    SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        generation: generation_pin(),
+        results: vec![lexical_candidate()],
+        file_owner_rows: None,
+    })
+}
+
+#[test]
+fn search_plane_ipc_response_v2_lexical_rejects_duplicate_snippet_hit_offset() -> TestRes {
+    let bytes = mutate_ipc_response_wire(&text_response_with_lexical_candidate(), |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let results = field_value_mut(payload_fields, "results")?;
+        let candidate_fields = first_candidate_fields_mut(results)?;
+        duplicate_text_field(candidate_fields, "snippet_hit_offset")?;
+        Ok(())
+    })?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "snippet_hit_offset")
+}
+
+#[test]
+fn search_plane_ipc_response_v2_lexical_rejects_missing_snippet_hit_offset() -> TestRes {
+    let bytes = mutate_ipc_response_wire(&text_response_with_lexical_candidate(), |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let results = field_value_mut(payload_fields, "results")?;
+        let candidate_fields = first_candidate_fields_mut(results)?;
+        candidate_fields.retain(
+            |(key, _value)| !matches!(key, ciborium::Value::Text(text) if text == "snippet_hit_offset"),
+        );
+        Ok(())
+    })?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "snippet_hit_offset")
+}
+
+#[test]
+fn search_plane_ipc_response_v2_lexical_rejects_duplicate_highlights() -> TestRes {
+    let bytes = mutate_ipc_response_wire(&text_response_with_lexical_candidate(), |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let results = field_value_mut(payload_fields, "results")?;
+        let candidate_fields = first_candidate_fields_mut(results)?;
+        duplicate_text_field(candidate_fields, "highlights")?;
+        Ok(())
+    })?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "highlights")
+}
+
+#[test]
+fn search_plane_ipc_response_v2_lexical_rejects_missing_highlights() -> TestRes {
+    let bytes = mutate_ipc_response_wire(&text_response_with_lexical_candidate(), |wire| {
+        let response_fields = map_fields_mut(wire)?;
+        let payload = field_value_mut(response_fields, "payload")?;
+        let payload_fields = map_fields_mut(payload)?;
+        let results = field_value_mut(payload_fields, "results")?;
+        let candidate_fields = first_candidate_fields_mut(results)?;
+        candidate_fields.retain(
+            |(key, _value)| !matches!(key, ciborium::Value::Text(text) if text == "highlights"),
+        );
+        Ok(())
+    })?;
+
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(&bytes, "highlights")
 }

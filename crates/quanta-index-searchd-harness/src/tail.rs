@@ -317,21 +317,11 @@ pub fn summary_json(report: &TailReport, git_rev: &str) -> Value {
     })
 }
 
-fn write_json(path: &std::path::Path, value: &Value) -> AnyResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
 /// Write the two canonical tail artifacts under `dir`:
 /// `route_budgets.json` and `summary.json`.
 pub fn write_artifacts(report: &TailReport, dir: &std::path::Path, git_rev: &str) -> AnyResult<()> {
-    write_json(&dir.join("route_budgets.json"), &route_budgets_json())?;
-    write_json(&dir.join("summary.json"), &summary_json(report, git_rev))?;
+    crate::artifact::write_json_pretty(&dir.join("route_budgets.json"), &route_budgets_json())?;
+    crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
     Ok(())
 }
 
