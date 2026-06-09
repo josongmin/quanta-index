@@ -1,3 +1,8 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "doctor tests index serde_json::Value by key/position to assert the stable JSON contract this crate constructs; an out-of-range index is a legitimate test failure"
+)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
@@ -15,6 +20,12 @@ use quanta_index_contract::{
     SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
     TextQueryResponse, TextQuerySyntax,
+};
+use quanta_index_contract::ipc::{
+    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
+    TrackReadinessRecord,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
@@ -403,6 +414,312 @@ fn semantic_with_scope_query_and_scope_top_k_parses_successfully_impl()
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// J7Q-05: control-plane `doctor` smoke. `doctor` fuses the activation-catalog
+// listing (`GenerationStatus`) with per-track serve-time resolution
+// (`CurrentGeneration`) over the CONTROL socket. The mock below drives each
+// classification arm of `build_doctor_report`: resolved, divergent, NOT_READY,
+// and the benign empty-catalog case.
+// ---------------------------------------------------------------------------
+
+const DOCTOR_REPO: &str = "repo-doctor";
+const DOCTOR_REV: &str = "rev-doctor";
+const DOCTOR_DIGEST: &str = "lex-digest-11";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControlScenario {
+    ResolvedLexicalTrack,
+    DivergentResolver,
+    NotReadyResolver,
+    EmptyTracks,
+}
+
+struct ControlScenarioDispatcher {
+    scenario: ControlScenario,
+}
+
+impl ControlScenarioDispatcher {
+    fn listed_track(&self) -> Option<TrackReadinessRecord> {
+        match self.scenario {
+            ControlScenario::EmptyTracks => None,
+            ControlScenario::ResolvedLexicalTrack
+            | ControlScenario::DivergentResolver
+            | ControlScenario::NotReadyResolver => Some(TrackReadinessRecord {
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(11),
+                manifest_digest: DOCTOR_DIGEST.to_string(),
+            }),
+        }
+    }
+
+    fn generation_status(&self, req: &GenerationStatusRequest) -> SearchPlaneControlIpcResponse {
+        if req.repo_id != RepoId::new(DOCTOR_REPO) || req.revision_id != RevisionId::new(DOCTOR_REV)
+        {
+            return control_error_response(
+                "TEST_BAD_REPO_REV",
+                format!("unexpected status request: {req:?}"),
+            );
+        }
+        SearchPlaneControlIpcResponse::GenerationStatusReport(GenerationStatusReport {
+            repo_id: req.repo_id.clone(),
+            revision_id: req.revision_id.clone(),
+            tracks: self.listed_track().into_iter().collect(),
+        })
+    }
+
+    fn current_generation(&self, req: &CurrentGenerationRequest) -> SearchPlaneControlIpcResponse {
+        match self.scenario {
+            ControlScenario::ResolvedLexicalTrack => {
+                SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(GenerationSnapshot {
+                    repo_id: req.repo_id.clone(),
+                    revision_id: req.revision_id.clone(),
+                    track: req.track,
+                    manifest_generation: ManifestGeneration::new(11),
+                    manifest_digest: DOCTOR_DIGEST.to_string(),
+                })
+            }
+            ControlScenario::DivergentResolver => {
+                SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(GenerationSnapshot {
+                    repo_id: req.repo_id.clone(),
+                    revision_id: req.revision_id.clone(),
+                    track: req.track,
+                    manifest_generation: ManifestGeneration::new(11),
+                    manifest_digest: "DIVERGENT-digest".to_string(),
+                })
+            }
+            ControlScenario::NotReadyResolver => {
+                control_error_response("NOT_READY", "resolver not ready for the listed track")
+            }
+            ControlScenario::EmptyTracks => {
+                control_error_response("NOT_READY", "no activated generation")
+            }
+        }
+    }
+}
+
+impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
+    for ControlScenarioDispatcher
+{
+    fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
+        match request {
+            SearchPlaneControlIpcRequest::GenerationStatus(req) => self.generation_status(&req),
+            SearchPlaneControlIpcRequest::CurrentGeneration(req) => self.current_generation(&req),
+            other @ (SearchPlaneControlIpcRequest::ActivateGeneration(_)
+            | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
+                "TEST_UNEXPECTED_CONTROL_REQUEST",
+                format!("doctor mock received unexpected control request: {other:?}"),
+            ),
+        }
+    }
+}
+
+fn control_error_response(
+    code: &str,
+    message: impl Into<String>,
+) -> SearchPlaneControlIpcResponse {
+    SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
+        code: code.to_string(),
+        message: message.into(),
+        repair: None,
+    })
+}
+
+fn start_control_server(
+    socket_path: &std::path::Path,
+    scenario: ControlScenario,
+) -> Result<quanta_index_ipc::ShutdownHandle, Box<dyn std::error::Error>> {
+    let server = UdsServer::bind(socket_path)?;
+    let shutdown = server.shutdown_handle();
+    let dispatcher = Arc::new(ControlScenarioDispatcher { scenario });
+    let _server_thread = std::thread::spawn(move || {
+        match server.run::<
+            SearchPlaneControlIpcRequestEnvelope,
+            SearchPlaneControlIpcRequest,
+            SearchPlaneControlIpcResponseEnvelope,
+            SearchPlaneControlIpcResponse,
+            ControlScenarioDispatcher,
+        >(&dispatcher, Duration::from_millis(5))
+        {
+            Ok(()) | Err(_) => {}
+        }
+    });
+    for _attempt in 0..20 {
+        if socket_path.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(shutdown)
+}
+
+/// Run `doctor --output json` against a control mock and return the decoded JSON.
+///
+/// `--socket <dir>/query.sock` makes the SDK derive the control socket as the
+/// sibling `<dir>/control.sock`, which is where the mock binds; the query socket
+/// is never connected (doctor is control-plane only).
+fn run_doctor_json(scenario: ControlScenario) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let query_socket = dir.path().join("query.sock");
+    let control_socket = dir.path().join("control.sock");
+    let shutdown = start_control_server(&control_socket, scenario)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("doctor")
+        .arg("--socket")
+        .arg(&query_socket)
+        .arg("--output")
+        .arg("json")
+        .arg("--repo-id")
+        .arg(DOCTOR_REPO)
+        .arg("--revision-id")
+        .arg(DOCTOR_REV)
+        .output()?;
+    shutdown.trigger();
+    if !output.status.success() {
+        return Err(format!(
+            "doctor exited non-zero ({:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(serde_json::from_str::<serde_json::Value>(&stdout)?)
+}
+
+#[test]
+fn doctor_json_reports_resolved_track() {
+    let result = doctor_json_reports_resolved_track_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn doctor_json_reports_resolved_track_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let value = run_doctor_json(ControlScenario::ResolvedLexicalTrack)?;
+    if value["kind"].as_str() != Some("doctor") {
+        return Err(format!("missing doctor kind: {value}").into());
+    }
+    if value["serve_ready"].as_bool() != Some(true) {
+        return Err(format!("expected serve_ready=true: {value}").into());
+    }
+    if value["all_resolvable"].as_bool() != Some(true) {
+        return Err(format!("expected all_resolvable=true: {value}").into());
+    }
+    if value["track_count"].as_u64() != Some(1) {
+        return Err(format!("expected track_count=1: {value}").into());
+    }
+    let track = &value["tracks"][0];
+    if track["track"].as_str() != Some("Lexical") {
+        return Err(format!("expected Lexical track: {value}").into());
+    }
+    if track["manifest_digest"].as_str() != Some(DOCTOR_DIGEST) {
+        return Err(format!("expected catalog digest: {value}").into());
+    }
+    if track["resolver_ok"].as_bool() != Some(true) {
+        return Err(format!("expected resolver_ok=true: {value}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn doctor_flags_resolver_divergence() {
+    let result = doctor_flags_resolver_divergence_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn doctor_flags_resolver_divergence_impl() -> Result<(), Box<dyn std::error::Error>> {
+    // A divergent serve-time digest is a recorded finding, NOT an abort: doctor
+    // still exits 0 (the diagnosis completed) and surfaces the inconsistency.
+    let value = run_doctor_json(ControlScenario::DivergentResolver)?;
+    if value["all_resolvable"].as_bool() != Some(false) {
+        return Err(format!("expected all_resolvable=false on divergence: {value}").into());
+    }
+    if value["serve_ready"].as_bool() != Some(false) {
+        return Err(format!("expected serve_ready=false on divergence: {value}").into());
+    }
+    let track = &value["tracks"][0];
+    if track["resolver_ok"].as_bool() != Some(false) {
+        return Err(format!("expected resolver_ok=false on divergence: {value}").into());
+    }
+    match track["resolver_note"].as_str() {
+        Some(note) if note.contains("divergence") => Ok(()),
+        _ => Err(format!("expected divergence note: {value}").into()),
+    }
+}
+
+#[test]
+fn doctor_flags_not_ready_resolver() {
+    let result = doctor_flags_not_ready_resolver_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn doctor_flags_not_ready_resolver_impl() -> Result<(), Box<dyn std::error::Error>> {
+    // A typed NOT_READY for a *listed* track is a finding, not a fatal remote
+    // error: doctor exits 0 and marks the track unresolvable.
+    let value = run_doctor_json(ControlScenario::NotReadyResolver)?;
+    if value["track_count"].as_u64() != Some(1) {
+        return Err(format!("expected track_count=1: {value}").into());
+    }
+    if value["all_resolvable"].as_bool() != Some(false) {
+        return Err(format!("expected all_resolvable=false on NOT_READY: {value}").into());
+    }
+    let track = &value["tracks"][0];
+    if track["resolver_ok"].as_bool() != Some(false) {
+        return Err(format!("expected resolver_ok=false on NOT_READY: {value}").into());
+    }
+    match track["resolver_note"].as_str() {
+        Some(note) if note.contains("NOT_READY") => Ok(()),
+        _ => Err(format!("expected NOT_READY note: {value}").into()),
+    }
+}
+
+#[test]
+fn doctor_empty_catalog_is_benign() {
+    let result = doctor_empty_catalog_is_benign_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn doctor_empty_catalog_is_benign_impl() -> Result<(), Box<dyn std::error::Error>> {
+    // Nothing activated yet is a legitimate state: serve_ready=false (nothing to
+    // serve) but all_resolvable=true (no inconsistency). doctor exits 0.
+    let value = run_doctor_json(ControlScenario::EmptyTracks)?;
+    if value["track_count"].as_u64() != Some(0) {
+        return Err(format!("expected track_count=0: {value}").into());
+    }
+    if value["serve_ready"].as_bool() != Some(false) {
+        return Err(format!("expected serve_ready=false on empty catalog: {value}").into());
+    }
+    if value["all_resolvable"].as_bool() != Some(true) {
+        return Err(format!("expected all_resolvable=true on empty catalog: {value}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn doctor_missing_repo_id_is_usage_error() {
+    let result = doctor_missing_repo_id_is_usage_error_impl();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+fn doctor_missing_repo_id_is_usage_error_impl() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("doctor")
+        .arg("--revision-id")
+        .arg("rev-doctor")
+        .output()?;
+    if output.status.code() != Some(2) {
+        return Err(format!(
+            "expected usage exit code 2, got {:?} (stderr: {})",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    if !stderr.contains("--repo-id") {
+        return Err(format!("missing --repo-id in stderr: {stderr}").into());
     }
     Ok(())
 }

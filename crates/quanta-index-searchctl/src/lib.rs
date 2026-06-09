@@ -19,7 +19,7 @@ use quanta_index_contract::{
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
     SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
-    ipc::GenerationStatusReport,
+    ipc::{GenerationStatusReport, SearchPlaneTrackKind},
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
 
@@ -65,28 +65,54 @@ where
         request,
     } = ParsedCommand::parse(args)?;
     let client = QuantaIndex::connect(connect_options).map_err(map_sdk_error)?;
-    // J7Q-05: readiness dispatches via the CONTROL plane, not the query plane.
-    // Branch here so the query path (`dispatch_query_request` ->
-    // `validate_response_kind` -> `render_response`) stays untouched.
-    if let CliRequest::Readiness {
-        repo_id,
-        revision_id,
-    } = request
-    {
-        let report = client
-            .generations()
-            .status(repo_id, revision_id)
-            .map_err(map_sdk_error)?;
-        let rendered = render_readiness(&report, output)?;
-        stdout
-            .write_all(rendered.as_bytes())
-            .map_err(|err| CliError::transport(format!("failed writing stdout: {err}")))?;
-        return Ok(ExitCode::SUCCESS);
+    // J7Q-05: `readiness` and `doctor` dispatch via the CONTROL plane, not the
+    // query plane. Branch them here so the query path (`dispatch_query_request`
+    // -> `validate_response_kind` -> `render_response`) stays untouched.
+    match request {
+        CliRequest::Readiness {
+            repo_id,
+            revision_id,
+        } => {
+            let report = client
+                .generations()
+                .status(repo_id, revision_id)
+                .map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_readiness(&report, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        CliRequest::Doctor {
+            repo_id,
+            revision_id,
+        } => {
+            let report = build_doctor_report(&client, repo_id, revision_id)?;
+            write_stdout(stdout, &render_doctor(&report, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        query_request @ (CliRequest::Lexical(_)
+        | CliRequest::Symbol(_)
+        | CliRequest::Semantic(_)
+        | CliRequest::HybridSeed(_)
+        | CliRequest::Explain { .. }
+        | CliRequest::RepoMap(_)
+        | CliRequest::RuntimeMetadata(_)
+        | CliRequest::History(_)
+        | CliRequest::Structural(_)) => {
+            let response = dispatch_query_request(&client, query_request)?;
+            validate_response_kind(kind, &response)?;
+            render_response(output, &response, stdout)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
-    let response = dispatch_query_request(&client, request)?;
-    validate_response_kind(kind, &response)?;
-    render_response(output, &response, stdout)?;
-    Ok(ExitCode::SUCCESS)
+}
+
+/// Write a fully-rendered CLI string to stdout.
+///
+/// Maps any I/O failure to a typed transport error. Shared by the control-plane
+/// renderers (`readiness` / `doctor`) so the failure shape cannot drift.
+fn write_stdout(stdout: &mut dyn Write, rendered: &str) -> CliResult<()> {
+    stdout
+        .write_all(rendered.as_bytes())
+        .map_err(|err| CliError::transport(format!("failed writing stdout: {err}")))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +145,7 @@ enum CommandKind {
     History,
     Structural,
     Readiness,
+    Doctor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,6 +219,10 @@ enum CliRequest {
         repo_id: RepoId,
         revision_id: RevisionId,
     },
+    Doctor {
+        repo_id: RepoId,
+        revision_id: RevisionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -256,9 +287,10 @@ impl ParsedCommand {
                 CommandKind::Readiness,
                 parse_readiness(&mut common, &mut rest)?,
             ),
+            "doctor" => (CommandKind::Doctor, parse_doctor(&mut common, &mut rest)?),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|doctor"
                 )));
             }
         };
@@ -517,17 +549,18 @@ fn parse_structural(
     }))
 }
 
-/// J7Q-05: parse `readiness --repo-id <ID> --revision-id <REV>`.
+/// J7Q-05: parse the `--repo-id <ID> --revision-id <REV>` pair shared by the
+/// control-plane commands (`readiness`, `doctor`).
 ///
-/// Mirrors [`parse_history`]'s flag-loop shape but resolves to a
-/// `(repo, revision)` pair only — readiness has no generation pin, syntax, or
-/// `top-k` because it queries the activation catalog, not a sealed generation.
-/// Missing `--repo-id` / `--revision-id` are rejected fail-closed (`EXIT_USAGE`),
-/// never defaulted.
-fn parse_readiness(
+/// These commands query the activation catalog, not a sealed generation, so
+/// they carry no generation pin, syntax, or `top-k`. Missing `--repo-id` /
+/// `--revision-id` are rejected fail-closed (`EXIT_USAGE`), never defaulted.
+/// `command` names the subcommand only so the unknown-flag error is precise.
+fn parse_repo_revision(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
-) -> CliResult<CliRequest> {
+    command: &str,
+) -> CliResult<(RepoId, RevisionId)> {
     let mut repo_id: Option<String> = None;
     let mut revision_id: Option<String> = None;
     while let Some(current) = rest.pop_front() {
@@ -542,17 +575,40 @@ fn parse_readiness(
                 revision_id = Some(take_value(rest, "--revision-id")?);
             }
             other => {
-                return Err(CliError::usage(format!("unknown readiness flag `{other}`")));
+                return Err(CliError::usage(format!("unknown {command} flag `{other}`")));
             }
         }
     }
-    Ok(CliRequest::Readiness {
-        repo_id: RepoId::new(
-            repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?,
-        ),
-        revision_id: RevisionId::new(
+    Ok((
+        RepoId::new(repo_id.ok_or_else(|| CliError::usage("missing --repo-id".to_string()))?),
+        RevisionId::new(
             revision_id.ok_or_else(|| CliError::usage("missing --revision-id".to_string()))?,
         ),
+    ))
+}
+
+/// J7Q-05: parse `readiness --repo-id <ID> --revision-id <REV>`.
+fn parse_readiness(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let (repo_id, revision_id) = parse_repo_revision(common, rest, "readiness")?;
+    Ok(CliRequest::Readiness {
+        repo_id,
+        revision_id,
+    })
+}
+
+/// J7Q-05: parse `doctor --repo-id <ID> --revision-id <REV>`.
+///
+/// `doctor` is the composite read-only diagnosis: it fuses the activation
+/// catalog listing with per-track serve-time resolution into one operator
+/// answer. It takes the same `(repo, revision)` pair as `readiness` and no more.
+fn parse_doctor(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
+    let (repo_id, revision_id) = parse_repo_revision(common, rest, "doctor")?;
+    Ok(CliRequest::Doctor {
+        repo_id,
+        revision_id,
     })
 }
 
@@ -855,12 +911,13 @@ fn dispatch_query_request(
                 .query_request(structural)
                 .map_err(map_sdk_error)?,
         ),
-        // Readiness is a control-plane command; `run_inner` branches it before
-        // reaching the query dispatcher. Reaching here is a routing bug, so
-        // fail-closed with a typed protocol error rather than fabricate a query.
-        CliRequest::Readiness { .. } => {
+        // `readiness` / `doctor` are control-plane commands; `run_inner` branches
+        // them before reaching the query dispatcher. Reaching here is a routing
+        // bug, so fail-closed with a typed protocol error rather than fabricate a
+        // query.
+        CliRequest::Readiness { .. } | CliRequest::Doctor { .. } => {
             return Err(CliError::protocol(
-                "readiness is a control-plane command and must not reach the query dispatcher"
+                "readiness/doctor are control-plane commands and must not reach the query dispatcher"
                     .to_string(),
             ));
         }
@@ -1055,6 +1112,207 @@ fn render_readiness(report: &GenerationStatusReport, output: OutputMode) -> CliR
             Ok(rendered)
         }
     }
+}
+
+/// J7Q-05: one activated track's slot in the composite [`DoctorReport`].
+///
+/// `manifest_generation` / `manifest_digest` come from the activation-catalog
+/// listing (`generations().status`). `resolver_ok` records whether the
+/// serve-time per-track resolver (`generations().current`) corroborated that
+/// listing for this track — the cross-check `readiness` does not perform.
+#[derive(Clone, Debug)]
+struct DoctorTrack {
+    track: SearchPlaneTrackKind,
+    manifest_generation: u64,
+    manifest_digest: String,
+    resolver_ok: bool,
+    resolver_note: String,
+}
+
+/// J7Q-05: composite read-only diagnosis for one `(repo, revision)` pair.
+///
+/// Fuses the activation-catalog listing with per-track serve-time resolution
+/// into one operator answer. `serve_ready` is true only when at least one track
+/// is activated AND every activated track resolved consistently. `all_resolvable`
+/// isolates the resolver-corroboration verdict from the "is anything activated
+/// at all" question, so an empty repo reads `serve_ready=false`,
+/// `all_resolvable=true` (benign) — distinct from `serve_ready=false`,
+/// `all_resolvable=false` (a real listing-vs-resolver inconsistency).
+#[derive(Clone, Debug)]
+struct DoctorReport {
+    repo_id: String,
+    revision_id: String,
+    tracks: Vec<DoctorTrack>,
+    serve_ready: bool,
+    all_resolvable: bool,
+}
+
+/// J7Q-05: build the composite [`DoctorReport`] from two distinct control reads.
+///
+/// The catalog listing (`status`) and per-track serve-time resolution (`current`)
+/// read the same activation catalog through different code, so corroborating them
+/// catches a listing-vs-resolver divergence that `readiness` (listing only) cannot
+/// see.
+fn build_doctor_report(
+    client: &QuantaIndex,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+) -> CliResult<DoctorReport> {
+    // Authoritative listing: which tracks the activation catalog serves for this
+    // pair, each with its (generation, manifest_digest). Any transport / protocol
+    // / remote failure here propagates fail-closed (the daemon is unreachable or
+    // the catalog read failed — never a fabricated "healthy" verdict).
+    let status = client
+        .generations()
+        .status(repo_id, revision_id)
+        .map_err(map_sdk_error)?;
+    let mut tracks = Vec::with_capacity(status.tracks.len());
+    let mut all_resolvable = true;
+    for record in &status.tracks {
+        let resolution = client.generations().current(
+            status.repo_id.clone(),
+            status.revision_id.clone(),
+            record.track,
+        );
+        // Classify the resolver's answer. A divergent snapshot or a typed
+        // NOT_READY for a *listed* track is a recorded diagnosis finding
+        // (`resolver_ok=false`), not a default — the failure is surfaced, never
+        // masked. Every other error propagates fail-closed.
+        let (resolver_ok, resolver_note) = match resolution {
+            Ok(snapshot)
+                if snapshot.manifest_generation == record.manifest_generation
+                    && snapshot.manifest_digest == record.manifest_digest =>
+            {
+                (
+                    true,
+                    "resolved: catalog listing and serve-time resolver agree".to_string(),
+                )
+            }
+            Ok(snapshot) => (
+                false,
+                format!(
+                    "divergence: catalog lists generation={} digest={} but serve-time resolver returned generation={} digest={}",
+                    record.manifest_generation.get(),
+                    record.manifest_digest,
+                    snapshot.manifest_generation.get(),
+                    snapshot.manifest_digest
+                ),
+            ),
+            Err(error) if is_not_ready(&error) => (
+                false,
+                "serve-time resolver returned NOT_READY for a track the catalog lists as active"
+                    .to_string(),
+            ),
+            Err(error) => return Err(map_sdk_error(error)),
+        };
+        if !resolver_ok {
+            all_resolvable = false;
+        }
+        tracks.push(DoctorTrack {
+            track: record.track,
+            manifest_generation: record.manifest_generation.get(),
+            manifest_digest: record.manifest_digest.clone(),
+            resolver_ok,
+            resolver_note,
+        });
+    }
+    let serve_ready = !tracks.is_empty() && all_resolvable;
+    Ok(DoctorReport {
+        repo_id: status.repo_id.as_str().to_string(),
+        revision_id: status.revision_id.as_str().to_string(),
+        tracks,
+        serve_ready,
+        all_resolvable,
+    })
+}
+
+/// Whether a resolver error is the typed `NOT_READY` diagnosis state.
+///
+/// A `NOT_READY` for a *listed* track is a finding (the catalog listed it but the
+/// resolver will not serve it), not a transport failure to abort on. Match the
+/// typed code exactly; every other `SdkError` (including other remote codes) stays
+/// an abort in [`build_doctor_report`].
+fn is_not_ready(error: &SdkError) -> bool {
+    matches!(error, SdkError::Remote { code, .. } if code.as_str() == "NOT_READY")
+}
+
+/// J7Q-05: render a [`DoctorReport`].
+///
+/// `json` mode emits a stable machine-readable object (the field names are the
+/// scriptable contract). `pretty` mode emits a line-oriented form. Both carry
+/// the same verdict so automation and humans never reach different conclusions.
+fn render_doctor(report: &DoctorReport, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(&doctor_report_to_json(report))
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|err| CliError::protocol(format!("failed to encode json output: {err}"))),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: doctor"))?;
+            fmt_ok(writeln!(
+                rendered,
+                "generation_status: repo_id={} revision_id={}",
+                report.repo_id, report.revision_id
+            ))?;
+            fmt_ok(writeln!(rendered, "serve_ready: {}", report.serve_ready))?;
+            fmt_ok(writeln!(rendered, "all_resolvable: {}", report.all_resolvable))?;
+            if report.tracks.is_empty() {
+                fmt_ok(writeln!(rendered, "tracks: 0 (none activated)"))?;
+                return Ok(rendered);
+            }
+            fmt_ok(writeln!(rendered, "tracks: {}", report.tracks.len()))?;
+            for (index, track) in report.tracks.iter().enumerate() {
+                let display_index = index
+                    .checked_add(1)
+                    .ok_or_else(|| CliError::protocol("doctor track index overflow".to_string()))?;
+                fmt_ok(writeln!(
+                    rendered,
+                    "{}. track={} manifest_generation={} manifest_digest={} resolver_ok={}",
+                    display_index,
+                    track.track.as_code_str(),
+                    track.manifest_generation,
+                    track.manifest_digest,
+                    track.resolver_ok
+                ))?;
+                fmt_ok(writeln!(rendered, "   resolver: {}", track.resolver_note))?;
+            }
+            Ok(rendered)
+        }
+    }
+}
+
+/// Stable JSON shape for [`DoctorReport`].
+///
+/// Field names here are the scriptable contract — automation reads `serve_ready`
+/// / `all_resolvable` / per-track `resolver_ok` directly. Built as a value (not a
+/// serde-derived DTO) because it is a CLI-side composite of two wire DTOs, not
+/// itself a wire DTO.
+fn doctor_report_to_json(report: &DoctorReport) -> serde_json::Value {
+    let tracks = report
+        .tracks
+        .iter()
+        .map(|track| {
+            serde_json::json!({
+                "track": track.track.as_code_str(),
+                "manifest_generation": track.manifest_generation,
+                "manifest_digest": track.manifest_digest,
+                "resolver_ok": track.resolver_ok,
+                "resolver_note": track.resolver_note,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "kind": "doctor",
+        "repo_id": report.repo_id,
+        "revision_id": report.revision_id,
+        "serve_ready": report.serve_ready,
+        "all_resolvable": report.all_resolvable,
+        "track_count": report.tracks.len(),
+        "tracks": tracks,
+    })
 }
 
 fn render_pretty(
@@ -1478,6 +1736,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::History => "history",
         CommandKind::Structural => "structural",
         CommandKind::Readiness => "readiness",
+        CommandKind::Doctor => "doctor",
     }
 }
 
@@ -1586,6 +1845,14 @@ Read-only subcommands:
   history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N
   readiness        --repo-id ID --revision-id REV
+  doctor           --repo-id ID --revision-id REV
+
+`doctor` is the composite read-only diagnosis: it fuses the activation-catalog
+listing with per-track serve-time resolution and reports a machine-readable
+verdict (serve_ready, all_resolvable, per-track resolver_ok). It exits 0 when the
+diagnosis completes (read the JSON verdict fields for the health conclusion) and
+uses the standard transport/usage/remote/protocol exit codes only for failures
+to *reach* a verdict.
 "
 }
 
