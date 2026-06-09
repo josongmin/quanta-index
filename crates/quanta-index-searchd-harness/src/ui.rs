@@ -12,16 +12,26 @@
 //!    a consumer that slices at the offset lands exactly on the hit (no semantic
 //!    guesswork, no re-derivation from raw text).
 //!
-//! Fail-closed posture: a missing anchor, an out-of-range offset, or an offset
-//! that does not point at the needle is a rail failure recorded per probe — the
-//! rail never fabricates an anchor to make the gate pass. It grades the emitted
-//! contract as-is, proving the new typed field across the engine + contract
-//! layers (not a single layer).
+//! It also proves the **explanation sections** are consumer-renderable: a served
+//! candidate is run back through the `explain` route and the returned
+//! `SearchExplanation` is graded for TYPED, route-specific sectioned provenance —
+//! the planner-trace stages (`plan`, `merge`, …), the engines touched, and the
+//! strategy tag — so a UI can render the explanation section by section without
+//! regex-parsing the free-form `summary`. The assertion is route-specific (the
+//! exact stages / engine / strategy the explain route emits), not merely
+//! "non-empty".
+//!
+//! Fail-closed posture: a missing anchor, an out-of-range offset, an offset that
+//! does not point at the needle, or an explanation missing its typed sections is
+//! a rail failure recorded as-is — the rail never fabricates an anchor or a
+//! section to make the gate pass. It grades the emitted contract as-is, proving
+//! the new typed fields across the engine + contract layers (not a single
+//! layer).
 
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::{HighlightSpan, TextQuerySyntax};
+use quanta_index_contract::{EarlyStopReason, HighlightSpan, TextQuerySyntax};
 use serde_json::{Value, json};
 
 use crate::harness::E2eRuntime;
@@ -113,10 +123,59 @@ impl UiScore {
     }
 }
 
+/// The typed explanation sections captured for one served candidate.
+///
+/// These are the consumer-facing "sections" of a `SearchExplanation`: a UI maps
+/// each typed field to a rendered section (planner stages → "Planning", engines →
+/// "Engines", strategy → "Strategy") with no regex parsing of the free-form
+/// summary. `contributions_count` is recorded as-is — this search-plane's native
+/// routes leave ranking contributions to the Semantica rerank surface, so it is
+/// informational here, not a gating signal.
+#[derive(Clone, Debug)]
+pub struct ExplanationSectionsCapture {
+    pub probe_path: &'static str,
+    /// Typed planner-trace stage tags, in emission order (e.g. `plan`, `merge`).
+    pub planner_stages: Vec<&'static str>,
+    /// Typed engine identifiers the route touched (e.g. `lexical`).
+    pub engines_touched: Vec<&'static str>,
+    /// The route's strategy tag.
+    pub strategy: String,
+    /// Ranking-contribution row count (rerank-surface owned; informational here).
+    pub contributions_count: usize,
+    /// Whether the route emitted a non-empty human summary alongside the sections.
+    pub has_summary: bool,
+    /// Typed early-stop reason tag, if the route stopped early.
+    pub early_stop_reason: Option<&'static str>,
+    pub failures: Vec<String>,
+}
+
+impl ExplanationSectionsCapture {
+    /// A fail-closed capture: empty sections plus the recorded failure(s). Used
+    /// when the candidate could not be retrieved or explained at all.
+    fn failed(probe_path: &'static str, failures: Vec<String>) -> Self {
+        Self {
+            probe_path,
+            planner_stages: Vec::new(),
+            engines_touched: Vec::new(),
+            strategy: String::new(),
+            contributions_count: 0,
+            has_summary: false,
+            early_stop_reason: None,
+            failures,
+        }
+    }
+
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
 /// The full UI-contract report.
 #[derive(Clone, Debug)]
 pub struct UiReport {
     pub scores: Vec<UiScore>,
+    pub explanation: ExplanationSectionsCapture,
     pub passed: bool,
 }
 
@@ -239,6 +298,97 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
     }
 }
 
+/// Capture and grade the typed explanation sections for one probe's candidate.
+///
+/// Runs the served candidate back through the `explain` route and grades the
+/// returned explanation for route-specific TYPED sections (not just non-empty):
+/// the explain route must surface the `plan` and `merge` planner stages, touch
+/// exactly the lexical engine, carry the `presence_probe` strategy tag, and emit
+/// a non-empty summary. Anything missing is a fail-closed rail failure.
+fn capture_explanation_sections(rt: &mut E2eRuntime, probe: &UiProbe) -> ExplanationSectionsCapture {
+    let result = rt.query_text(TextQuerySyntax::Native, probe.query, TOP_K);
+    let candidate = result
+        .candidates
+        .iter()
+        .find(|candidate| candidate.repo_relative_path.as_str() == probe.path)
+        .cloned();
+    let Some(candidate) = candidate else {
+        return ExplanationSectionsCapture::failed(
+            probe.path,
+            vec![format!(
+                "explanation: no candidate for `{}` to explain (sections ungradable)",
+                probe.path
+            )],
+        );
+    };
+    let explain = rt.explain_candidate(candidate);
+    if let Some(error) = explain.typed_error {
+        return ExplanationSectionsCapture::failed(
+            probe.path,
+            vec![format!(
+                "explanation: explain route returned typed error {}: {}",
+                error.code, error.message
+            )],
+        );
+    }
+    let Some(explanation) = explain.explanation else {
+        return ExplanationSectionsCapture::failed(
+            probe.path,
+            vec!["explanation: explain route produced no explanation".to_string()],
+        );
+    };
+    let planner_stages: Vec<&'static str> = explanation
+        .planner_trace
+        .iter()
+        .map(|entry| entry.stage.as_str())
+        .collect();
+    let engines_touched: Vec<&'static str> = explanation
+        .engines_touched
+        .iter()
+        .map(|engine| engine.as_str())
+        .collect();
+    let early_stop_reason = explanation.early_stop_reason.map(EarlyStopReason::as_str);
+    let strategy = explanation.strategy;
+    let contributions_count = explanation.contributions.len();
+    let has_summary = !explanation.summary.is_empty();
+    // Route-specific section assertions — a consumer renders these typed sections
+    // without parsing the summary string, so each must be present and correct.
+    let mut failures = Vec::new();
+    if !planner_stages.contains(&"plan") {
+        failures.push(format!(
+            "explanation: planner sections missing the `plan` stage (got {planner_stages:?})"
+        ));
+    }
+    if !planner_stages.contains(&"merge") {
+        failures.push(format!(
+            "explanation: planner sections missing the `merge` stage (got {planner_stages:?})"
+        ));
+    }
+    if engines_touched != ["lexical"] {
+        failures.push(format!(
+            "explanation: explain route must touch exactly the lexical engine (got {engines_touched:?})"
+        ));
+    }
+    if strategy != "presence_probe" {
+        failures.push(format!(
+            "explanation: explain route strategy section must be `presence_probe` (got `{strategy}`)"
+        ));
+    }
+    if !has_summary {
+        failures.push("explanation: summary section is empty".to_string());
+    }
+    ExplanationSectionsCapture {
+        probe_path: probe.path,
+        planner_stages,
+        engines_touched,
+        strategy,
+        contributions_count,
+        has_summary,
+        early_stop_reason,
+        failures,
+    }
+}
+
 /// Run the full UI-contract rail against a freshly seeded runtime.
 pub fn run_ui_report() -> AnyResult<UiReport> {
     let mut rt = prepare_ui_runtime()?;
@@ -246,8 +396,23 @@ pub fn run_ui_report() -> AnyResult<UiReport> {
     for probe in UI_PROBES {
         scores.push(score_probe(&mut rt, probe));
     }
-    let passed = scores.iter().all(UiScore::passed);
-    Ok(UiReport { scores, passed })
+    // Explanation sections: prove the typed sectioned provenance is consumer-
+    // renderable. Use the first (deterministic short-symbol) probe's candidate.
+    let explanation = UI_PROBES.first().map_or_else(
+        || {
+            ExplanationSectionsCapture::failed(
+                "<none>",
+                vec!["explanation: UI_PROBES is empty".to_string()],
+            )
+        },
+        |probe| capture_explanation_sections(&mut rt, probe),
+    );
+    let passed = scores.iter().all(UiScore::passed) && explanation.passed();
+    Ok(UiReport {
+        scores,
+        explanation,
+        passed,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -272,15 +437,31 @@ fn score_json(score: &UiScore) -> Value {
     })
 }
 
+/// The typed explanation-sections snapshot for the report's graded candidate.
+fn explanation_sections_json(capture: &ExplanationSectionsCapture) -> Value {
+    json!({
+        "probe_path": capture.probe_path,
+        "planner_stages": capture.planner_stages,
+        "engines_touched": capture.engines_touched,
+        "strategy": capture.strategy,
+        "contributions_count": capture.contributions_count,
+        "has_summary": capture.has_summary,
+        "early_stop_reason": capture.early_stop_reason,
+        "failures": capture.failures,
+        "passed": capture.passed(),
+    })
+}
+
 /// The consumer-facing contract snapshot: the typed UI fields per probe.
 #[must_use]
 pub fn contract_snapshots_json(report: &UiReport) -> Value {
     json!({
         "schema_version": 1,
         "dimension": "ui",
-        "fields_under_test": ["snippet", "snippet_hit_offset", "highlights"],
-        "snapshot_note": "snippet_hit_offset + highlights are the typed UI anchors (J7Q-07); a consumer slices snippet at offset/spans to land on hits, with no regex parsing of raw text",
+        "fields_under_test": ["snippet", "snippet_hit_offset", "highlights", "explanation_sections"],
+        "snapshot_note": "snippet_hit_offset + highlights are the typed UI anchors (J7Q-07); a consumer slices snippet at offset/spans to land on hits, with no regex parsing of raw text. explanation_sections exposes the typed planner stages / engines / strategy a consumer renders as sections without parsing the summary string",
         "snapshots": report.scores.iter().map(score_json).collect::<Vec<_>>(),
+        "explanation_sections": explanation_sections_json(&report.explanation),
     })
 }
 
@@ -292,8 +473,9 @@ pub fn summary_json(report: &UiReport, git_rev: &str) -> Value {
         "dimension": "ui",
         "git_rev": git_rev,
         "passed": report.passed,
-        "blocking_signal": "every served candidate must carry a typed snippet_hit_offset that points exactly at the matched needle; a missing/wrong anchor fails the rail",
+        "blocking_signal": "every served candidate must carry a typed snippet_hit_offset that points exactly at the matched needle (a missing/wrong anchor fails the rail), AND the explain route must surface its typed explanation sections (planner stages / engines / strategy) route-specifically",
         "scores": report.scores.iter().map(score_json).collect::<Vec<_>>(),
+        "explanation_sections": explanation_sections_json(&report.explanation),
     })
 }
 
@@ -341,6 +523,16 @@ mod tests {
                 highlights: vec![HighlightSpan { start: 2, len: 6 }],
                 failures: Vec::new(),
             }],
+            explanation: ExplanationSectionsCapture {
+                probe_path: "src/x.rs",
+                planner_stages: vec!["plan", "merge"],
+                engines_touched: vec!["lexical"],
+                strategy: "presence_probe".to_string(),
+                contributions_count: 0,
+                has_summary: true,
+                early_stop_reason: None,
+                failures: Vec::new(),
+            },
             passed: true,
         };
         let value = summary_json(&report, "deadbeef");
@@ -349,9 +541,17 @@ mod tests {
         assert_eq!(value["scores"][0]["snippet_hit_offset"], 2);
         assert_eq!(value["scores"][0]["highlights"][0]["start"], 2);
         assert_eq!(value["scores"][0]["highlights"][0]["len"], 6);
+        assert_eq!(value["explanation_sections"]["planner_stages"][0], "plan");
+        assert_eq!(value["explanation_sections"]["strategy"], "presence_probe");
         let snaps = contract_snapshots_json(&report);
         assert_eq!(snaps["fields_under_test"][1], "snippet_hit_offset");
         assert_eq!(snaps["fields_under_test"][2], "highlights");
+        assert_eq!(snaps["fields_under_test"][3], "explanation_sections");
+        assert_eq!(
+            snaps["explanation_sections"]["engines_touched"][0],
+            "lexical"
+        );
+        assert_eq!(snaps["explanation_sections"]["passed"], true);
     }
 
     #[test]
@@ -405,5 +605,24 @@ mod tests {
                 score.id
             );
         }
+        // The explain route must surface its typed sections route-specifically.
+        let explanation = &report.explanation;
+        assert!(
+            explanation.passed(),
+            "explanation sections failed: {:?}",
+            explanation.failures
+        );
+        assert!(
+            explanation.planner_stages.contains(&"plan")
+                && explanation.planner_stages.contains(&"merge"),
+            "explanation must surface the plan + merge planner stages, got {:?}",
+            explanation.planner_stages
+        );
+        assert_eq!(
+            explanation.engines_touched,
+            vec!["lexical"],
+            "explain route must touch exactly the lexical engine"
+        );
+        assert_eq!(explanation.strategy, "presence_probe");
     }
 }
