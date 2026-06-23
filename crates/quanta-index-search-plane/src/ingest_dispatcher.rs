@@ -33,6 +33,7 @@ use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 use crate::{AuxiliaryAuthorityStore, Ledger};
 
@@ -393,7 +394,14 @@ fn derive_semantic_batch_from_search_corpus_batch(
                 .chunks
                 .iter()
                 .zip(vectors)
-                .map(|(chunk, vector)| embedding_record_for(chunk, vector, dimension))
+                .map(|(chunk, vector)| {
+                    embedding_record_for(
+                        chunk,
+                        semantic_embedding_input_text(chunk),
+                        vector,
+                        &model_contract,
+                    )
+                })
                 .collect::<Result<Vec<_>, CoreError>>()?;
             Ok(SemanticReplaceScope {
                 scope: scope.scope.clone(),
@@ -425,14 +433,22 @@ fn derive_semantic_batch_from_search_corpus_batch(
 
 fn embedding_record_for(
     chunk: &quanta_index_contract::ChunkRecord,
+    embedding_input_text: &str,
     vector: Vec<f32>,
-    dimension: usize,
+    model_contract: &EmbeddingModelContract,
 ) -> Result<EmbeddingRecord, CoreError> {
+    let dimension = usize::try_from(model_contract.dimension).map_err(|_err| {
+        CoreError::InvalidContract(format!(
+            "semantic derivation: model contract dimension {} does not fit usize",
+            model_contract.dimension
+        ))
+    })?;
     if vector.len() != dimension {
         return Err(CoreError::InvalidContract(format!(
-            "semantic derivation: embedder returned dim {} for chunk {}, expected {dimension}",
+            "semantic derivation: embedder returned dim {} for chunk {}, expected {}",
             vector.len(),
-            chunk.chunk_id.as_str()
+            chunk.chunk_id.as_str(),
+            model_contract.dimension
         )));
     }
     Ok(EmbeddingRecord {
@@ -448,13 +464,72 @@ fn embedding_record_for(
         start_line: chunk.start_line,
         end_line: chunk.end_line,
         snippet: chunk.derived_snippet().to_string().into_boxed_str(),
-        embedding_input_digest: format!("search-owned-in:{}", chunk.chunk_id.as_str())
-            .into_boxed_str(),
-        vector_digest: format!("search-owned-vec:{}:{}", chunk.chunk_id.as_str(), dimension)
-            .into_boxed_str(),
+        embedding_input_digest: semantic_embedding_input_digest(
+            model_contract,
+            "chunk.text",
+            embedding_input_text,
+        )
+        .into_boxed_str(),
+        vector_digest: semantic_vector_digest(model_contract, &vector).into_boxed_str(),
         view_kind: "chunk.text".to_string().into_boxed_str(),
         vector,
     })
+}
+
+fn semantic_embedding_input_text(chunk: &quanta_index_contract::ChunkRecord) -> &str {
+    chunk.text.as_ref()
+}
+
+fn semantic_embedding_input_digest(
+    model_contract: &EmbeddingModelContract,
+    view_kind: &str,
+    embedding_input_text: &str,
+) -> String {
+    let digest = sha256_hex(&[
+        model_contract.model_id.as_bytes(),
+        model_contract
+            .model_version
+            .as_deref()
+            .unwrap_or("")
+            .as_bytes(),
+        &model_contract.dimension.to_le_bytes(),
+        view_kind.as_bytes(),
+        embedding_input_text.as_bytes(),
+    ]);
+    format!("search-owned-in:sha256:{digest}")
+}
+
+fn semantic_vector_digest(model_contract: &EmbeddingModelContract, vector: &[f32]) -> String {
+    let mut vector_bytes = Vec::with_capacity(vector.len().saturating_mul(4));
+    for value in vector {
+        vector_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let digest = sha256_hex(&[
+        model_contract.model_id.as_bytes(),
+        model_contract
+            .model_version
+            .as_deref()
+            .unwrap_or("")
+            .as_bytes(),
+        &model_contract.dimension.to_le_bytes(),
+        &vector_bytes,
+    ]);
+    format!("search-owned-vec:sha256:{digest}")
+}
+
+fn sha256_hex(parts: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+        hasher.update([0x1f]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len().saturating_mul(2));
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// Direct semantic batch materializer.
@@ -1158,6 +1233,26 @@ mod tests {
         if embedding.embedding_id.as_str() != "chunk-1" {
             return Err("derived semantic embedding_id must equal chunk_id".into());
         }
+        if !embedding
+            .embedding_input_digest
+            .starts_with("search-owned-in:sha256:")
+        {
+            return Err(format!(
+                "input digest must be content-hash based, got {}",
+                embedding.embedding_input_digest
+            )
+            .into());
+        }
+        if !embedding
+            .vector_digest
+            .starts_with("search-owned-vec:sha256:")
+        {
+            return Err(format!(
+                "vector digest must be vector-hash based, got {}",
+                embedding.vector_digest
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -1240,6 +1335,41 @@ mod tests {
                 }
             }
             other => return Err(format!("dim mismatch must fail closed, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_digests_change_when_input_or_vector_changes() -> TestRes {
+        let model = fixture_model_contract();
+        let chunk_a = fixture_chunk_record()?;
+        let mut chunk_b = fixture_chunk_record()?;
+        chunk_b.text = "typed semantic parser with different body"
+            .to_string()
+            .into_boxed_str();
+        let input_a = semantic_embedding_input_digest(
+            &model,
+            "chunk.text",
+            semantic_embedding_input_text(&chunk_a),
+        );
+        let input_b = semantic_embedding_input_digest(
+            &model,
+            "chunk.text",
+            semantic_embedding_input_text(&chunk_b),
+        );
+        if input_a == input_b {
+            return Err("input digest must change when embedding input text changes".into());
+        }
+        let vec_a = semantic_vector_digest(&model, &[0.1, 0.2, 0.3]);
+        let vec_b = semantic_vector_digest(&model, &[0.1, 0.2, 0.4]);
+        if vec_a == vec_b {
+            return Err("vector digest must change when vector contents change".into());
+        }
+        if !input_a.starts_with("search-owned-in:sha256:") {
+            return Err(format!("unexpected input digest format: {input_a}").into());
+        }
+        if !vec_a.starts_with("search-owned-vec:sha256:") {
+            return Err(format!("unexpected vector digest format: {vec_a}").into());
         }
         Ok(())
     }

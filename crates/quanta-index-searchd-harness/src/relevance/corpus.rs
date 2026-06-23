@@ -301,6 +301,85 @@ pub const SEMANTIC_RELEVANCE_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Additional deterministic distractors for the semantic fixture.
+///
+/// These are not individually judged rows; they exist to make `top_k` metrics
+/// less vacuous by pushing the semantic fixture above 20 files while keeping the
+/// corpus stable and cheap to seed locally.
+pub const SEMANTIC_DISTRACTOR_CORPUS: &[(&str, &str)] = &[
+    (
+        "build/feature_flags.rs",
+        "pub fn rollout_enabled(flag: &str) -> bool { !flag.is_empty() }\n",
+    ),
+    (
+        "cli/arg_parse.rs",
+        "pub fn parse_args(raw: &[String]) -> usize { raw.len() }\n",
+    ),
+    (
+        "config/source_paths.rs",
+        "pub fn source_paths(root: &str) -> Vec<String> { vec![root.to_string()] }\n",
+    ),
+    (
+        "fmt/render_width.rs",
+        "pub fn render_width(line: &str) -> usize { line.len() }\n",
+    ),
+    (
+        "git/head_state.rs",
+        "pub fn head_state(branch: &str) -> String { branch.to_string() }\n",
+    ),
+    (
+        "graph/node_count.rs",
+        "pub fn node_count(nodes: &[u32]) -> usize { nodes.len() }\n",
+    ),
+    (
+        "history/recent_commits.rs",
+        "pub fn recent_commits(limit: usize) -> usize { limit }\n",
+    ),
+    (
+        "http/router.rs",
+        "pub fn route(path: &str) -> &str { if path.starts_with('/') { \"ok\" } else { \"bad\" } }\n",
+    ),
+    (
+        "index/bloom.rs",
+        "pub fn bloom_bits(size: usize) -> usize { size.saturating_mul(8) }\n",
+    ),
+    (
+        "json/pretty.rs",
+        "pub fn pretty(input: &str) -> String { input.to_string() }\n",
+    ),
+    (
+        "lint/rule_names.rs",
+        "pub fn rule_names() -> Vec<&'static str> { vec![\"unused\", \"dead_code\"] }\n",
+    ),
+    (
+        "metrics/counters.rs",
+        "pub fn counters_total(values: &[u64]) -> u64 { values.iter().copied().sum() }\n",
+    ),
+    (
+        "parser/token_span.rs",
+        "pub fn token_span(start: u32, end: u32) -> (u32, u32) { (start, end) }\n",
+    ),
+    (
+        "query/selector.rs",
+        "pub fn selector_name(raw: &str) -> String { raw.trim().to_string() }\n",
+    ),
+    (
+        "runtime/thread_pool.rs",
+        "pub fn worker_count(count: usize) -> usize { count.max(1) }\n",
+    ),
+    (
+        "symbols/qualified_name.rs",
+        "pub fn qualified_name(ns: &str, name: &str) -> String { format!(\"{ns}::{name}\") }\n",
+    ),
+];
+
+#[must_use]
+pub fn semantic_fixture_docs() -> Vec<(&'static str, &'static str)> {
+    let mut docs = SEMANTIC_RELEVANCE_CORPUS.to_vec();
+    docs.extend(SEMANTIC_DISTRACTOR_CORPUS.iter().copied());
+    docs
+}
+
 /// How a judged semantic query is expected to behave on the deterministic hash
 /// embedder, separating the two RFC layers as a code-level label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -6,6 +6,8 @@ use std::sync::Mutex;
 use quanta_index_core::{CoreError, TextEmbeddingProvider};
 use sha2::{Digest, Sha256};
 
+use crate::telemetry;
+
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
 const FLOAT_BYTES: usize = 4;
 
@@ -40,6 +42,7 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         let model_id = self.inner.model_id();
         let dimension = self.inner.dimension();
         let mut slots: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
+        let mut cache_hit_count = 0_usize;
         // Misses deduped BY CONTENT: each distinct uncached text is embedded once
         // and its vector is fanned out to every position that requested it, so a
         // batch with N copies of one text costs one inner embedding, not N.
@@ -50,6 +53,7 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         for (position, &text) in texts.iter().enumerate() {
             let key = cache_key(model_id, dimension, text);
             if let Some(vector) = self.cache.get(&key) {
+                cache_hit_count = cache_hit_count.saturating_add(1);
                 slots.push(Some(vector));
                 continue;
             }
@@ -66,6 +70,7 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
                 waiters.push(vec![position]);
             }
         }
+        telemetry::record_cache_observation(texts.len(), cache_hit_count, distinct_texts.len());
         if !distinct_texts.is_empty() {
             let fresh = self.inner.embed_batch(&distinct_texts)?;
             if fresh.len() != distinct_texts.len() {
@@ -217,8 +222,8 @@ fn decode_vector(bytes: &[u8]) -> Option<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Counts how many texts it was asked to embed, so a cache hit can be proven
     /// to avoid the inner provider.
@@ -273,7 +278,11 @@ mod tests {
         let out = provider.embed_batch(&["a", "a", "bb"]).expect("dedup ok");
         assert_eq!(out.len(), 3);
         // The two "a" positions share the same vector...
-        assert_eq!(out.first(), out.get(1), "duplicate positions must share a vector");
+        assert_eq!(
+            out.first(),
+            out.get(1),
+            "duplicate positions must share a vector"
+        );
         // ...and "bb" differs.
         assert_ne!(out.first(), out.get(2));
         // Distinct misses = {"a","bb"} = 2 inner embeds, NOT 3.
@@ -302,10 +311,8 @@ mod tests {
     fn partial_hit_only_embeds_the_misses() {
         let embedded = Arc::new(AtomicUsize::new(0));
         let cache = Box::new(InMemoryEmbeddingCache::default());
-        let provider = CachingEmbeddingProvider::new(
-            Box::new(counting("m-1", Arc::clone(&embedded))),
-            cache,
-        );
+        let provider =
+            CachingEmbeddingProvider::new(Box::new(counting("m-1", Arc::clone(&embedded))), cache);
         let _warm = provider.embed_batch(&["a"]).expect("warm ok");
         // "a" is cached; only "bb" is a miss on the second call.
         let out = provider.embed_batch(&["a", "bb"]).expect("mixed ok");
@@ -334,7 +341,11 @@ mod tests {
             Box::new(SharedCache(Arc::clone(&cache))),
         );
         let _b = provider_b.embed_batch(&["a"]).expect("b ok");
-        assert_eq!(embedded_b.load(Ordering::SeqCst), 1, "model change must recompute, not reuse m-1's vector");
+        assert_eq!(
+            embedded_b.load(Ordering::SeqCst),
+            1,
+            "model change must recompute, not reuse m-1's vector"
+        );
     }
 
     struct SharedCache(Arc<InMemoryEmbeddingCache>);
@@ -375,6 +386,10 @@ mod tests {
         let second = make(Arc::clone(&embedded2));
         let b = second.embed_batch(&["a", "bb"]).expect("second ok");
         assert_eq!(a, b);
-        assert_eq!(embedded2.load(Ordering::SeqCst), 0, "persisted cache must avoid all re-embedding");
+        assert_eq!(
+            embedded2.load(Ordering::SeqCst),
+            0,
+            "persisted cache must avoid all re-embedding"
+        );
     }
 }

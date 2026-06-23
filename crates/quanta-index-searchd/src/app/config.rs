@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quanta_index_embed::{
-    DEFAULT_MAX_BATCH, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
+    DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST, DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT, OpenAiProviderConfig,
 };
 use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 
@@ -20,6 +21,9 @@ const DEFAULT_OPENAI_DIMENSION: usize = 1536;
 pub struct OpenAiEmbedderTuning {
     /// Max inputs per `/v1/embeddings` request (`QUANTA_INDEX_EMBED_BATCH`).
     pub max_batch: usize,
+    /// Conservative estimated-token budget per request
+    /// (`QUANTA_INDEX_EMBED_MAX_EST_TOKENS`).
+    pub max_estimated_tokens_per_request: usize,
     /// Bounded retry count for transient failures (`QUANTA_INDEX_EMBED_MAX_RETRIES`).
     pub max_retries: u32,
     /// Per-request HTTP timeout (`QUANTA_INDEX_EMBED_TIMEOUT_SECS`).
@@ -32,6 +36,7 @@ impl Default for OpenAiEmbedderTuning {
     fn default() -> Self {
         Self {
             max_batch: DEFAULT_MAX_BATCH,
+            max_estimated_tokens_per_request: DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
             max_retries: DEFAULT_MAX_RETRIES,
             timeout: DEFAULT_TIMEOUT,
             cache_enabled: true,
@@ -54,6 +59,7 @@ impl OpenAiEmbedderTuning {
     ) -> OpenAiProviderConfig {
         OpenAiProviderConfig::new(api_key, model, dimension)
             .with_max_batch(self.max_batch)
+            .with_max_estimated_tokens_per_request(self.max_estimated_tokens_per_request)
             .with_max_retries(self.max_retries)
             .with_timeout(self.timeout)
     }
@@ -84,9 +90,10 @@ pub enum SemanticEmbedderProfile {
 impl std::fmt::Debug for SemanticEmbedderProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Hash { dimension } => {
-                f.debug_struct("Hash").field("dimension", dimension).finish()
-            }
+            Self::Hash { dimension } => f
+                .debug_struct("Hash")
+                .field("dimension", dimension)
+                .finish(),
             Self::OpenAi {
                 model,
                 dimension,
@@ -256,7 +263,10 @@ pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderPro
 }
 
 fn embed_dim_from_env(default: usize) -> Result<usize> {
-    parse_embed_dim(std::env::var("QUANTA_INDEX_EMBED_DIM").ok().as_deref(), default)
+    parse_embed_dim(
+        std::env::var("QUANTA_INDEX_EMBED_DIM").ok().as_deref(),
+        default,
+    )
 }
 
 /// Resolve the `OpenAI` embedder operational knobs from env, falling back to the
@@ -265,8 +275,15 @@ fn embed_dim_from_env(default: usize) -> Result<usize> {
 fn openai_tuning_from_env() -> Result<OpenAiEmbedderTuning> {
     openai_tuning_from_raw(
         std::env::var("QUANTA_INDEX_EMBED_BATCH").ok().as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_MAX_RETRIES").ok().as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_TIMEOUT_SECS").ok().as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_MAX_EST_TOKENS")
+            .ok()
+            .as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_MAX_RETRIES")
+            .ok()
+            .as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
         std::env::var("QUANTA_INDEX_EMBED_CACHE").ok().as_deref(),
     )
 }
@@ -278,6 +295,7 @@ fn openai_tuning_from_env() -> Result<OpenAiEmbedderTuning> {
 /// cross-wired field or typo'd binding fails the test instead of shipping green.
 fn openai_tuning_from_raw(
     batch: Option<&str>,
+    max_estimated_tokens: Option<&str>,
     max_retries: Option<&str>,
     timeout_secs: Option<&str>,
     cache: Option<&str>,
@@ -285,6 +303,10 @@ fn openai_tuning_from_raw(
     let defaults = OpenAiEmbedderTuning::default();
     Ok(OpenAiEmbedderTuning {
         max_batch: parse_embed_batch(batch, defaults.max_batch)?,
+        max_estimated_tokens_per_request: parse_embed_max_estimated_tokens(
+            max_estimated_tokens,
+            defaults.max_estimated_tokens_per_request,
+        )?,
         max_retries: parse_embed_max_retries(max_retries, defaults.max_retries)?,
         timeout: parse_embed_timeout(timeout_secs, defaults.timeout)?,
         cache_enabled: parse_embed_cache_enabled(cache, defaults.cache_enabled)?,
@@ -294,9 +316,10 @@ fn openai_tuning_from_raw(
 fn parse_embed_dim(raw: Option<&str>, default: usize) -> Result<usize> {
     match raw {
         None => Ok(default),
-        Some(value) => value.trim().parse::<usize>().map_err(|err| {
-            anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{value}': {err}")
-        }),
+        Some(value) => value
+            .trim()
+            .parse::<usize>()
+            .map_err(|err| anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{value}': {err}")),
     }
 }
 
@@ -310,6 +333,23 @@ fn parse_embed_batch(raw: Option<&str>, default: usize) -> Result<usize> {
             if parsed == 0 {
                 return Err(anyhow::anyhow!(
                     "QUANTA_INDEX_EMBED_BATCH must be >= 1, got 0"
+                ));
+            }
+            Ok(parsed)
+        }
+    }
+}
+
+fn parse_embed_max_estimated_tokens(raw: Option<&str>, default: usize) -> Result<usize> {
+    match raw {
+        None | Some("") => Ok(default),
+        Some(value) => {
+            let parsed = value.trim().parse::<usize>().map_err(|err| {
+                anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_MAX_EST_TOKENS '{value}': {err}")
+            })?;
+            if parsed == 0 {
+                return Err(anyhow::anyhow!(
+                    "QUANTA_INDEX_EMBED_MAX_EST_TOKENS must be >= 1, got 0"
                 ));
             }
             Ok(parsed)
@@ -399,14 +439,39 @@ mod tests {
         assert!(parse_embed_cache_enabled(None, true).expect("ok"));
         // Empty string is treated as unset, not an error.
         assert_eq!(parse_embed_batch(Some(""), 256).expect("ok"), 256);
+        assert_eq!(
+            parse_embed_max_estimated_tokens(None, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST)
+                .expect("ok"),
+            DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST
+        );
     }
 
     #[test]
     fn batch_knob_parses_and_rejects_zero_and_garbage() {
         assert_eq!(parse_embed_batch(Some("32"), 256).expect("ok"), 32);
         assert_eq!(parse_embed_batch(Some("  8 "), 256).expect("trim"), 8);
-        assert!(parse_embed_batch(Some("0"), 256).is_err(), "0 batch rejected");
-        assert!(parse_embed_batch(Some("nope"), 256).is_err(), "garbage rejected");
+        assert!(
+            parse_embed_batch(Some("0"), 256).is_err(),
+            "0 batch rejected"
+        );
+        assert!(
+            parse_embed_batch(Some("nope"), 256).is_err(),
+            "garbage rejected"
+        );
+    }
+
+    #[test]
+    fn estimated_token_knob_parses_and_rejects_zero_and_garbage() {
+        assert_eq!(
+            parse_embed_max_estimated_tokens(Some("2048"), 4096).expect("ok"),
+            2048
+        );
+        assert_eq!(
+            parse_embed_max_estimated_tokens(Some("  512 "), 4096).expect("trim"),
+            512
+        );
+        assert!(parse_embed_max_estimated_tokens(Some("0"), 4096).is_err());
+        assert!(parse_embed_max_estimated_tokens(Some("x"), 4096).is_err());
     }
 
     #[test]
@@ -424,17 +489,43 @@ mod tests {
             parse_embed_timeout(Some("10"), DEFAULT_TIMEOUT).expect("ok"),
             Duration::from_secs(10)
         );
-        assert!(parse_embed_timeout(Some("0"), DEFAULT_TIMEOUT).is_err(), "0s rejected");
+        assert!(
+            parse_embed_timeout(Some("0"), DEFAULT_TIMEOUT).is_err(),
+            "0s rejected"
+        );
         assert!(parse_embed_timeout(Some("abc"), DEFAULT_TIMEOUT).is_err());
+    }
+
+    #[test]
+    fn tuning_raw_mapper_threads_estimated_token_budget_into_tuning() {
+        let tuning = openai_tuning_from_raw(
+            Some("8"),
+            Some("1024"),
+            Some("5"),
+            Some("10"),
+            Some("false"),
+        )
+        .expect("raw tuning parses");
+        assert_eq!(tuning.max_batch, 8);
+        assert_eq!(tuning.max_estimated_tokens_per_request, 1024);
+        assert_eq!(tuning.max_retries, 5);
+        assert_eq!(tuning.timeout, Duration::from_secs(10));
+        assert!(!tuning.cache_enabled);
     }
 
     #[test]
     fn cache_knob_parses_truthy_and_falsy_forms() {
         for truthy in ["1", "true", "TRUE", "on", "yes"] {
-            assert!(parse_embed_cache_enabled(Some(truthy), false).expect("ok"), "{truthy}");
+            assert!(
+                parse_embed_cache_enabled(Some(truthy), false).expect("ok"),
+                "{truthy}"
+            );
         }
         for falsy in ["0", "false", "OFF", "no"] {
-            assert!(!parse_embed_cache_enabled(Some(falsy), true).expect("ok"), "{falsy}");
+            assert!(
+                !parse_embed_cache_enabled(Some(falsy), true).expect("ok"),
+                "{falsy}"
+            );
         }
         assert!(parse_embed_cache_enabled(Some("maybe"), true).is_err());
     }
@@ -450,25 +541,34 @@ mod tests {
     fn tuning_assembler_maps_each_env_knob_to_its_own_field() {
         // DISTINCT values per knob so a cross-wire (e.g. binding BATCH into
         // max_retries) cannot pass: each field must equal its own source.
-        let tuning = openai_tuning_from_raw(Some("7"), Some("2"), Some("11"), Some("off"))
-            .expect("assembles");
+        let tuning =
+            openai_tuning_from_raw(Some("7"), Some("1024"), Some("2"), Some("11"), Some("off"))
+                .expect("assembles");
         assert_eq!(tuning.max_batch, 7, "BATCH knob -> max_batch");
+        assert_eq!(
+            tuning.max_estimated_tokens_per_request, 1024,
+            "MAX_EST_TOKENS knob -> max_estimated_tokens_per_request"
+        );
         assert_eq!(tuning.max_retries, 2, "MAX_RETRIES knob -> max_retries");
-        assert_eq!(tuning.timeout, Duration::from_secs(11), "TIMEOUT_SECS knob -> timeout");
+        assert_eq!(
+            tuning.timeout,
+            Duration::from_secs(11),
+            "TIMEOUT_SECS knob -> timeout"
+        );
         assert!(!tuning.cache_enabled, "CACHE=off -> cache_enabled false");
     }
 
     #[test]
     fn tuning_assembler_unset_knobs_fall_back_to_defaults() {
-        let tuning = openai_tuning_from_raw(None, None, None, None).expect("assembles");
+        let tuning = openai_tuning_from_raw(None, None, None, None, None).expect("assembles");
         assert_eq!(tuning, OpenAiEmbedderTuning::default());
     }
 
     #[test]
     fn tuning_assembler_propagates_a_bad_knob_as_error() {
         // A single garbage knob fails closed (no silent default substitution).
-        assert!(openai_tuning_from_raw(Some("nope"), None, None, None).is_err());
-        assert!(openai_tuning_from_raw(None, None, Some("0"), None).is_err());
+        assert!(openai_tuning_from_raw(Some("nope"), None, None, None, None).is_err());
+        assert!(openai_tuning_from_raw(None, Some("0"), None, None, None).is_err());
     }
 
     #[test]
@@ -477,6 +577,7 @@ mod tests {
         // produced OpenAiProviderConfig must carry exactly this tuning.
         let tuning = OpenAiEmbedderTuning {
             max_batch: 13,
+            max_estimated_tokens_per_request: 8192,
             max_retries: 4,
             timeout: Duration::from_secs(9),
             cache_enabled: false,
@@ -487,6 +588,7 @@ mod tests {
             "sk-unit-test".to_string(),
         );
         assert_eq!(config.max_batch, 13);
+        assert_eq!(config.max_estimated_tokens_per_request, 8192);
         assert_eq!(config.max_retries, 4);
         assert_eq!(config.timeout, Duration::from_secs(9));
         assert_eq!(config.model, "text-embedding-3-large");
