@@ -14,5 +14,5 @@ pub use cache::{
 };
 pub use openai::{
     EmbeddingTransport, HttpResponse, OpenAiEmbeddingProvider, OpenAiProviderConfig,
-    ReqwestBlockingTransport,
+    ReqwestBlockingTransport, DEFAULT_MAX_BATCH, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT,
 };

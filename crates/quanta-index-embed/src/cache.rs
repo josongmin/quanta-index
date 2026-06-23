@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -8,18 +9,20 @@ use sha2::{Digest, Sha256};
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
 const FLOAT_BYTES: usize = 4;
 
-/// Persistent (or in-memory) store of `content -> embedding vector`, keyed so a
-/// model or dimension change can never reuse a stale vector. A miss returns
-/// `None`; `put` is best-effort (a write failure only forces a future recompute,
-/// never a wrong result).
+/// Store of `content -> embedding vector`, keyed by model + dimension.
+///
+/// Keying by model/dimension means a model or dimension change can never reuse a
+/// stale vector. A miss returns `None`; `put` is best-effort (a write failure
+/// only forces a future recompute, never a wrong result).
 pub trait EmbeddingCache: Send + Sync {
     fn get(&self, key: &str) -> Option<Vec<f32>>;
     fn put(&self, key: &str, vector: &[f32]);
 }
 
-/// Wraps any [`TextEmbeddingProvider`], serving cached vectors and only calling
-/// the inner provider for cache misses. Keys bind the inner provider's model id
-/// and dimension, so a model swap yields fresh keys (no stale reuse).
+/// Wraps any [`TextEmbeddingProvider`], serving cached vectors for hits.
+///
+/// Only cache misses call the inner provider. Keys bind the inner provider's
+/// model id and dimension, so a model swap yields fresh keys (no stale reuse).
 pub struct CachingEmbeddingProvider {
     inner: Box<dyn TextEmbeddingProvider>,
     cache: Box<dyn EmbeddingCache>,
@@ -42,14 +45,13 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         let mut miss_positions: Vec<usize> = Vec::new();
         for (position, &text) in texts.iter().enumerate() {
             let key = cache_key(model_id, dimension, text);
-            match self.cache.get(&key) {
-                Some(vector) => slots.push(Some(vector)),
-                None => {
-                    slots.push(None);
-                    miss_texts.push(text);
-                    miss_keys.push(key);
-                    miss_positions.push(position);
-                }
+            if let Some(vector) = self.cache.get(&key) {
+                slots.push(Some(vector));
+            } else {
+                slots.push(None);
+                miss_texts.push(text);
+                miss_keys.push(key);
+                miss_positions.push(position);
             }
         }
         if !miss_texts.is_empty() {
@@ -104,7 +106,9 @@ fn cache_key(model_id: &str, dimension: usize, text: &str) -> String {
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len().saturating_mul(2));
     for byte in digest {
-        hex.push_str(&format!("{byte:02x}"));
+        // Infallible write into a String; `write!` avoids the per-byte temporary
+        // `format!` allocation that `format_push_string`/`format_collect` flag.
+        let _written: Result<(), std::fmt::Error> = write!(hex, "{byte:02x}");
     }
     hex
 }
@@ -118,10 +122,11 @@ pub struct InMemoryEmbeddingCache {
 
 impl EmbeddingCache for InMemoryEmbeddingCache {
     fn get(&self, key: &str) -> Option<Vec<f32>> {
-        self.entries
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(key).cloned())
+        // A poisoned lock degrades to a miss (forces recompute), never a wrong hit.
+        match self.entries.lock() {
+            Ok(guard) => guard.get(key).cloned(),
+            Err(_poisoned) => None,
+        }
     }
 
     fn put(&self, key: &str, vector: &[f32]) {
@@ -158,7 +163,11 @@ impl FileEmbeddingCache {
 
 impl EmbeddingCache for FileEmbeddingCache {
     fn get(&self, key: &str) -> Option<Vec<f32>> {
-        let bytes = std::fs::read(self.path_for(key)).ok()?;
+        // A read failure (absent / unreadable) degrades to a miss, never a wrong hit.
+        let bytes = match std::fs::read(self.path_for(key)) {
+            Ok(bytes) => bytes,
+            Err(_absent) => return None,
+        };
         decode_vector(&bytes)
     }
 
@@ -184,7 +193,10 @@ fn decode_vector(bytes: &[u8]) -> Option<Vec<f32>> {
     }
     let mut out = Vec::with_capacity(bytes.len().checked_div(FLOAT_BYTES).unwrap_or(0));
     for chunk in bytes.chunks(FLOAT_BYTES) {
-        let array = <[u8; FLOAT_BYTES]>::try_from(chunk).ok()?;
+        let array = match <[u8; FLOAT_BYTES]>::try_from(chunk) {
+            Ok(array) => array,
+            Err(_malformed) => return None,
+        };
         out.push(f32::from_le_bytes(array));
     }
     Some(out)

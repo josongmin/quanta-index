@@ -158,18 +158,26 @@ fn build_semantic_embedders(
             model,
             dimension,
             api_key,
+            tuning,
         } => {
-            let openai = OpenAiEmbeddingProvider::with_reqwest(OpenAiProviderConfig::new(
-                api_key.clone(),
-                model.clone(),
-                *dimension,
-            ))?;
-            // Persistent content-hash cache (model+dim scoped) so rebuilds /
-            // incrementals avoid paid re-embedding of unchanged chunks.
-            let cache = FileEmbeddingCache::new(state_root.join("embed-cache"))?;
-            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
-                CachingEmbeddingProvider::new(Box::new(openai), Box::new(cache)),
-            );
+            // Thread the env-resolved operational knobs into the provider config.
+            let openai = OpenAiEmbeddingProvider::with_reqwest(
+                OpenAiProviderConfig::new(api_key.clone(), model.clone(), *dimension)
+                    .with_max_batch(tuning.max_batch)
+                    .with_max_retries(tuning.max_retries)
+                    .with_timeout(tuning.timeout),
+            )?;
+            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
+                // Persistent content-hash cache (model+dim scoped) so rebuilds /
+                // incrementals avoid paid re-embedding of unchanged chunks.
+                let cache = FileEmbeddingCache::new(state_root.join("embed-cache"))?;
+                Arc::new(CachingEmbeddingProvider::new(
+                    Box::new(openai),
+                    Box::new(cache),
+                ))
+            } else {
+                Arc::new(openai)
+            };
             Ok((
                 Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
                 provider,

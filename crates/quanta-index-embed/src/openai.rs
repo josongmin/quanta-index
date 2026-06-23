@@ -6,15 +6,21 @@ use serde::{Deserialize, Serialize};
 
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
-const DEFAULT_MAX_BATCH: usize = 256;
-const DEFAULT_MAX_RETRIES: u32 = 3;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default max inputs per `/v1/embeddings` request. Public so daemon env knobs
+/// can default to the same value without a second source of truth.
+pub const DEFAULT_MAX_BATCH: usize = 256;
+/// Default bounded retry count for transient failures.
+pub const DEFAULT_MAX_RETRIES: u32 = 3;
+/// Default per-request HTTP timeout.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
-/// Outbound transport for a single embeddings request. Returns the HTTP status
-/// code and response body, or a typed transport error. Abstracted so the
-/// provider's batching / retry / parse logic is unit-testable without network.
+/// Outbound transport for a single embeddings request.
+///
+/// Returns the HTTP status code and response body, or a typed transport error.
+/// Abstracted so the provider's batching / retry / parse logic is unit-testable
+/// without network.
 pub trait EmbeddingTransport: Send + Sync {
     fn post_embeddings(
         &self,
@@ -31,18 +37,25 @@ pub struct HttpResponse {
     pub body: String,
 }
 
-/// Construction parameters for the OpenAI embedding provider. `api_key` is held
-/// only inside the provider and is never logged.
+/// Construction parameters for the `OpenAI` embedding provider.
+///
+/// `api_key` is held only inside the provider and is never logged. Tuning (batch
+/// / retries / timeout) defaults to the constants and is overridable so the
+/// daemon can wire it from env knobs.
 #[derive(Clone)]
 pub struct OpenAiProviderConfig {
     pub api_key: String,
     pub model: String,
     pub dimension: usize,
     pub base_url: String,
+    pub max_batch: usize,
+    pub max_retries: u32,
+    pub timeout: Duration,
 }
 
 impl OpenAiProviderConfig {
-    /// Config for `model` at `dimension` against the public OpenAI endpoint.
+    /// Config for `model` at `dimension` against the public `OpenAI` endpoint, with
+    /// default tuning.
     #[must_use]
     pub fn new(api_key: String, model: String, dimension: usize) -> Self {
         Self {
@@ -50,6 +63,9 @@ impl OpenAiProviderConfig {
             model,
             dimension,
             base_url: DEFAULT_BASE_URL.to_string(),
+            max_batch: DEFAULT_MAX_BATCH,
+            max_retries: DEFAULT_MAX_RETRIES,
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -59,12 +75,34 @@ impl OpenAiProviderConfig {
         self.base_url = base_url;
         self
     }
+
+    /// Max inputs per `/v1/embeddings` request (clamped to >= 1).
+    #[must_use]
+    pub fn with_max_batch(mut self, max_batch: usize) -> Self {
+        self.max_batch = max_batch.max(1);
+        self
+    }
+
+    /// Bounded retry count for transient (429 / 5xx / transport) failures.
+    #[must_use]
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Per-request HTTP timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
 }
 
-/// OpenAI-backed [`TextEmbeddingProvider`]. Embeds via batched `/v1/embeddings`
-/// calls behind a blocking transport, failing closed on auth / transport / shape
-/// errors and retrying transient (429 / 5xx / network) failures with bounded
-/// exponential backoff.
+/// `OpenAI`-backed [`TextEmbeddingProvider`].
+///
+/// Embeds via batched `/v1/embeddings` calls behind a blocking transport, failing
+/// closed on auth / transport / shape errors and retrying transient (429 / 5xx /
+/// network) failures with bounded exponential backoff.
 pub struct OpenAiEmbeddingProvider {
     transport: Box<dyn EmbeddingTransport>,
     api_key: String,
@@ -102,29 +140,16 @@ impl OpenAiEmbeddingProvider {
             model_id,
             dimension: config.dimension,
             base_url: config.base_url,
-            max_batch: DEFAULT_MAX_BATCH,
-            max_retries: DEFAULT_MAX_RETRIES,
+            max_batch: config.max_batch.max(1),
+            max_retries: config.max_retries,
         })
     }
 
-    /// Build a provider over the real in-process blocking reqwest transport.
+    /// Build a provider over the real in-process blocking reqwest transport,
+    /// honoring the config's timeout / batch / retry tuning.
     pub fn with_reqwest(config: OpenAiProviderConfig) -> Result<Self, CoreError> {
-        let transport = ReqwestBlockingTransport::new(DEFAULT_TIMEOUT)?;
+        let transport = ReqwestBlockingTransport::new(config.timeout)?;
         Self::new(config, Box::new(transport))
-    }
-
-    /// Override the per-request input batch size (test/tuning hook).
-    #[must_use]
-    pub fn with_max_batch(mut self, max_batch: usize) -> Self {
-        self.max_batch = max_batch.max(1);
-        self
-    }
-
-    /// Override the bounded retry count for transient failures (test/tuning hook).
-    #[must_use]
-    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
-        self.max_retries = max_retries;
-        self
     }
 
     fn embed_one_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
@@ -314,8 +339,7 @@ fn classify_status(status: u16) -> StatusClass {
     match status {
         200..=299 => StatusClass::Success,
         401 | 403 => StatusClass::Auth,
-        408 | 429 => StatusClass::Retryable,
-        500..=599 => StatusClass::Retryable,
+        408 | 429 | 500..=599 => StatusClass::Retryable,
         _ => StatusClass::Fatal,
     }
 }
@@ -342,18 +366,28 @@ fn invalid(message: &str) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    /// Replays a fixed sequence of canned transport results, one per call.
+    /// Replays a fixed sequence of canned transport results and counts calls, so
+    /// batch / retry knobs can be proven by the number of HTTP requests issued.
     struct ScriptedTransport {
         responses: Mutex<Vec<Result<HttpResponse, CoreError>>>,
+        calls: Arc<AtomicUsize>,
     }
 
     impl ScriptedTransport {
         fn new(responses: Vec<Result<HttpResponse, CoreError>>) -> Self {
             Self {
                 responses: Mutex::new(responses),
+                calls: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// Shared call counter (clone out before the transport is boxed into the
+        /// provider, then read after `embed_batch`).
+        fn calls_handle(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.calls)
         }
     }
 
@@ -364,6 +398,7 @@ mod tests {
             _api_key: &str,
             _body: &str,
         ) -> Result<HttpResponse, CoreError> {
+            let _prior = self.calls.fetch_add(1, Ordering::SeqCst);
             let mut responses = self.responses.lock().expect("test mutex");
             if responses.is_empty() {
                 return Err(typed(
@@ -389,12 +424,20 @@ mod tests {
         }
     }
 
-    fn provider(transport: ScriptedTransport, dimension: usize) -> OpenAiEmbeddingProvider {
-        OpenAiEmbeddingProvider::new(
-            OpenAiProviderConfig::new("test-key".to_string(), "text-embedding-3-small".to_string(), dimension),
-            Box::new(transport),
+    fn cfg(dimension: usize) -> OpenAiProviderConfig {
+        OpenAiProviderConfig::new(
+            "test-key".to_string(),
+            "text-embedding-3-small".to_string(),
+            dimension,
         )
-        .expect("provider builds with a non-empty key/model/dim")
+    }
+
+    fn provider_with(
+        config: OpenAiProviderConfig,
+        transport: ScriptedTransport,
+    ) -> OpenAiEmbeddingProvider {
+        OpenAiEmbeddingProvider::new(config, Box::new(transport))
+            .expect("provider builds with a non-empty key/model/dim")
     }
 
     #[test]
@@ -404,7 +447,7 @@ mod tests {
             (1, vec![0.0, 1.0]),
             (0, vec![1.0, 0.0]),
         ]))]);
-        let provider = provider(transport, 2);
+        let provider = provider_with(cfg(2), transport);
         let vectors = provider.embed_batch(&["a", "b"]).expect("embed ok");
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
         assert_eq!(provider.model_id(), "openai:text-embedding-3-small");
@@ -414,24 +457,29 @@ mod tests {
     #[test]
     fn empty_input_makes_no_calls() {
         let transport = ScriptedTransport::new(Vec::new());
-        let provider = provider(transport, 2);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2), transport);
         let vectors = provider.embed_batch(&[]).expect("empty ok");
         assert!(vectors.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "empty input must make no HTTP calls");
     }
 
     #[test]
     fn auth_failure_fails_closed_without_retry() {
+        // max_retries=3, but 401 must NOT retry -> exactly one transport call.
         let transport = ScriptedTransport::new(vec![Ok(HttpResponse {
             status: 401,
             body: "{\"error\":\"bad key\"}".to_string(),
         })]);
-        let provider = provider(transport, 2).with_max_retries(3);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_retries(3), transport);
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Typed { code, .. }) => {
                 assert_eq!(code, LexicalErrorCode::SemProviderAuth.as_code_str());
             }
             other => panic!("auth must fail closed with SEM_PROVIDER_AUTH, got {other:?}"),
         }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "auth must not retry");
     }
 
     #[test]
@@ -443,31 +491,52 @@ mod tests {
             }),
             Ok(ok_body(&[(0, vec![0.5, 0.5])])),
         ]);
-        // Zero base delay path is fine; the retry loop sleeps a tiny backoff.
-        let provider = provider(transport, 2).with_max_retries(2);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_retries(2), transport);
         let vectors = provider.embed_batch(&["a"]).expect("recovers after one 429");
         assert_eq!(vectors, vec![vec![0.5, 0.5]]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one 429 then success = two calls");
     }
 
     #[test]
     fn exhausted_retries_fail_closed_as_transport() {
+        // KNOB PROOF: max_retries=1 -> exactly 2 transport attempts (1 + 1 retry).
         let transport = ScriptedTransport::new(vec![
             Ok(HttpResponse { status: 503, body: "x".to_string() }),
             Ok(HttpResponse { status: 503, body: "x".to_string() }),
         ]);
-        let provider = provider(transport, 2).with_max_retries(1);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_retries(1), transport);
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Typed { code, .. }) => {
                 assert_eq!(code, LexicalErrorCode::SemProviderTransport.as_code_str());
             }
             other => panic!("exhausted retries must be SEM_PROVIDER_TRANSPORT, got {other:?}"),
         }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "max_retries=1 must attempt exactly 1 + 1 retry"
+        );
+    }
+
+    #[test]
+    fn max_retries_zero_disables_retry() {
+        // KNOB PROOF: max_retries=0 -> exactly one attempt, no retry.
+        let transport = ScriptedTransport::new(vec![Ok(HttpResponse {
+            status: 503,
+            body: "x".to_string(),
+        })]);
+        let calls = transport.calls_handle();
+        let provider = provider_with(cfg(2).with_max_retries(0), transport);
+        assert!(provider.embed_batch(&["a"]).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "max_retries=0 must not retry");
     }
 
     #[test]
     fn dimension_mismatch_in_response_fails_closed() {
         let transport = ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![1.0, 2.0, 3.0])]))]);
-        let provider = provider(transport, 2); // configured dim 2, response dim 3
+        let provider = provider_with(cfg(2), transport); // configured dim 2, response dim 3
         match provider.embed_batch(&["a"]) {
             Err(CoreError::Storage(message)) => assert!(message.contains("embedding dim")),
             other => panic!("dim mismatch must fail closed, got {other:?}"),
@@ -475,15 +544,44 @@ mod tests {
     }
 
     #[test]
-    fn batching_splits_inputs_across_requests() {
-        // max_batch=1 -> two single-input requests for two inputs.
-        let transport = ScriptedTransport::new(vec![
+    fn max_batch_knob_controls_request_splitting() {
+        // KNOB PROOF: max_batch=1 over 2 inputs -> exactly 2 HTTP requests; the
+        // same inputs with the default (256) batch -> 1 request.
+        let split_transport = ScriptedTransport::new(vec![
             Ok(ok_body(&[(0, vec![1.0, 0.0])])),
             Ok(ok_body(&[(0, vec![0.0, 1.0])])),
         ]);
-        let provider = provider(transport, 2).with_max_batch(1);
-        let vectors = provider.embed_batch(&["a", "b"]).expect("batched ok");
+        let split_calls = split_transport.calls_handle();
+        let split = provider_with(cfg(2).with_max_batch(1), split_transport);
+        let vectors = split.embed_batch(&["a", "b"]).expect("batched ok");
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+        assert_eq!(split_calls.load(Ordering::SeqCst), 2, "max_batch=1 -> 2 requests");
+
+        let one_transport = ScriptedTransport::new(vec![Ok(ok_body(&[
+            (0, vec![1.0, 0.0]),
+            (1, vec![0.0, 1.0]),
+        ]))]);
+        let one_calls = one_transport.calls_handle();
+        let one = provider_with(cfg(2), one_transport); // default max_batch (256)
+        let _vectors = one.embed_batch(&["a", "b"]).expect("single batch ok");
+        assert_eq!(one_calls.load(Ordering::SeqCst), 1, "default batch -> 1 request");
+    }
+
+    #[test]
+    fn config_defaults_and_overrides_thread_into_provider() {
+        // Defaults from OpenAiProviderConfig::new are what the provider uses, and
+        // builder overrides replace them (clamped where applicable).
+        let defaults = cfg(8);
+        assert_eq!(defaults.max_batch, DEFAULT_MAX_BATCH);
+        assert_eq!(defaults.max_retries, DEFAULT_MAX_RETRIES);
+        assert_eq!(defaults.timeout, DEFAULT_TIMEOUT);
+        let tuned = cfg(8)
+            .with_max_batch(0) // clamped to >= 1
+            .with_max_retries(7)
+            .with_timeout(Duration::from_secs(5));
+        assert_eq!(tuned.max_batch, 1);
+        assert_eq!(tuned.max_retries, 7);
+        assert_eq!(tuned.timeout, Duration::from_secs(5));
     }
 
     fn dot(a: &[f32], b: &[f32]) -> f32 {

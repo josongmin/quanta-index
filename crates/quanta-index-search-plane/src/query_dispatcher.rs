@@ -4430,10 +4430,11 @@ fn build_probe_query(probe_text: &str) -> LqQuery {
     }
 }
 
-/// Reject a query whose embedder model identity differs from the indexed
-/// generation's model, even at equal dimension — query vectors from a different
-/// model are not cosine-comparable, so a same-dimension model swap would
-/// otherwise produce silent garbage rankings. Fails closed (SEM_MODEL_MISMATCH).
+/// Reject a query whose embedder model identity differs from the indexed model.
+///
+/// Even at equal dimension, query vectors from a different model are not
+/// cosine-comparable, so a same-dimension model swap would otherwise produce
+/// silent garbage rankings. Fails closed (`SEM_MODEL_MISMATCH`).
 fn ensure_query_model_matches_index_v1(
     embedder_model_id: &str,
     embedder_model_version: Option<&str>,

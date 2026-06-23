@@ -13,10 +13,12 @@ pub trait SemanticIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }
 
-/// Produces embedding vectors for text. This is the single embedder seam shared
-/// by BOTH the query path and corpus derivation, so the two can never disagree
-/// on model identity (the query-time model-identity gate compares
-/// [`Self::model_id`]/[`Self::model_version`] against the indexed generation's).
+/// Produces embedding vectors for text.
+///
+/// This is the single embedder seam shared by BOTH the query path and corpus
+/// derivation, so the two can never disagree on model identity (the query-time
+/// model-identity gate compares [`Self::model_id`]/[`Self::model_version`]
+/// against the indexed generation's).
 ///
 /// Vectors are unit-normalized (cosine-comparable). `embed_batch` returns exactly
 /// one vector per input, in input order, and fails the whole batch closed on any

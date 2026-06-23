@@ -328,10 +328,12 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
 
 pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
 
-/// SSOT for the search-owned hash embedder's model identity. Both the corpus
-/// derivation contract (here) and the query-time `HashingQueryTextEmbedder`
-/// (`query_embedder.rs`) read this so the two sides cannot silently disagree on
-/// model identity; query-time enforcement rejects a mismatch (SEM_MODEL_MISMATCH).
+/// SSOT for the search-owned hash embedder's model identity.
+///
+/// Both the corpus derivation contract (here) and the query-time
+/// `HashingQueryTextEmbedder` (`query_embedder.rs`) read this so the two sides
+/// cannot silently disagree on model identity; query-time enforcement rejects a
+/// mismatch (`SEM_MODEL_MISMATCH`).
 pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
 
 fn embedding_model_contract_for(

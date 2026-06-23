@@ -7,7 +7,7 @@ pub trait QueryTextEmbedderPort {
     /// Stable identity of the model this embedder produces query vectors for.
     /// Query vectors are only comparable (cosine) against a corpus indexed by the
     /// SAME model; the query path enforces this against the indexed generation's
-    /// persisted model identity and fails closed (SEM_MODEL_MISMATCH) on drift.
+    /// persisted model identity and fails closed (`SEM_MODEL_MISMATCH`) on drift.
     fn model_id(&self) -> &str;
 
     /// Optional model version, compared alongside [`Self::model_id`].
