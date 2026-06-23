@@ -527,6 +527,11 @@ pub struct SemanticCaseMetrics {
     pub recall_at_20: f64,
     pub top1_is_on_topic: bool,
     pub hard_negative_rank: Option<usize>,
+    /// 1-based rank of the on-topic file in the produced order (`None` if absent).
+    /// This is the discriminative A/B signal: `recall@20` saturates to 1.0 once
+    /// the corpus has <= 20 docs (every doc is always retrieved), so the rank of
+    /// the on-topic file — not recall — is what separates neural from hash.
+    pub on_topic_rank: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -570,6 +575,10 @@ fn score_semantic_case(
         hard_negative_rank: produced_order
             .iter()
             .position(|doc| doc == query.hard_negative_path)
+            .map(|index| index.saturating_add(1)),
+        on_topic_rank: produced_order
+            .iter()
+            .position(|doc| doc == query.on_topic_path)
             .map(|index| index.saturating_add(1)),
         produced_order,
     })
@@ -807,6 +816,7 @@ fn semantic_case_metrics_json(metrics: &SemanticCaseMetrics) -> Value {
         "recall_at_20": metrics.recall_at_20,
         "top1_is_on_topic": metrics.top1_is_on_topic,
         "hard_negative_rank": metrics.hard_negative_rank,
+        "on_topic_rank": metrics.on_topic_rank,
     })
 }
 
@@ -815,6 +825,15 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
         .cases
         .iter()
         .map(|case| {
+            // The discriminative comparison is the on-topic RANK, not recall:
+            // openai ranking the on-topic file strictly higher (or retrieving it
+            // when hash dropped it) is the real win.
+            let openai_ranks_on_topic_higher =
+                match (case.openai.on_topic_rank, case.hash.on_topic_rank) {
+                    (Some(openai_rank), Some(hash_rank)) => openai_rank < hash_rank,
+                    (Some(_), None) => true,
+                    _ => false,
+                };
             json!({
                 "id": case.id,
                 "intent_kind": semantic_intent_kind_label(case.intent_kind),
@@ -827,7 +846,13 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
                 "delta": {
                     "mrr_at_10": case.openai.mrr_at_10 - case.hash.mrr_at_10,
                     "ndcg_at_10": case.openai.ndcg_at_10 - case.hash.ndcg_at_10,
+                    // recall@20 is non-discriminative on a <=20-doc corpus (always
+                    // 1.0 for both); kept for completeness, never the headline.
                     "recall_at_20": case.openai.recall_at_20 - case.hash.recall_at_20,
+                    "recall_at_20_discriminative": false,
+                    "on_topic_rank_hash": case.hash.on_topic_rank,
+                    "on_topic_rank_openai": case.openai.on_topic_rank,
+                    "openai_ranks_on_topic_higher": openai_ranks_on_topic_higher,
                     "top1_win": case.openai.top1_is_on_topic && !case.hash.top1_is_on_topic,
                 },
             })
@@ -889,6 +914,21 @@ fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Val
             case.intent_kind == SemanticIntentKind::Paraphrase && case.hash.top1_is_on_topic
         })
         .count();
+    // Rank-based aggregate (the discriminative one): paraphrase cases where openai
+    // ranks the on-topic file strictly higher than hash, or retrieves it when hash
+    // dropped it. recall@20 is NOT used here — it saturates on a small corpus.
+    let paraphrase_openai_ranks_higher = report
+        .cases
+        .iter()
+        .filter(|case| {
+            case.intent_kind == SemanticIntentKind::Paraphrase
+                && match (case.openai.on_topic_rank, case.hash.on_topic_rank) {
+                    (Some(openai_rank), Some(hash_rank)) => openai_rank < hash_rank,
+                    (Some(_), None) => true,
+                    _ => false,
+                }
+        })
+        .count();
     json!({
         "schema_version": 1,
         "dimension": "relevance-openai-ab",
@@ -898,6 +938,10 @@ fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Val
         "paraphrase_case_count": paraphrase_case_count,
         "paraphrase_hash_top1": paraphrase_hash_top1,
         "paraphrase_openai_top1": paraphrase_openai_top1,
+        "paraphrase_openai_ranks_on_topic_higher": paraphrase_openai_ranks_higher,
+        "headline_metric": "on_topic_rank",
+        "recall_at_20_discriminative": false,
+        "metrics_note": "recall@20 saturates to 1.0 on a <=20-doc corpus; the discriminative A/B signals are on_topic_rank, mrr_at_10, and ndcg_at_10",
         "provider_stats": {
             "http_request_count": report.provider_stats.http_request_count,
             "cache_hits": report.provider_stats.cache_hits,
