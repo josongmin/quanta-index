@@ -25,12 +25,11 @@ use crate::artifact::BenchSyntax;
 use crate::harness::E2eRuntime;
 use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
+    SEMANTIC_GATED_QUERIES, SEMANTIC_RELEVANCE_CORPUS, SEMANTIC_RELEVANCE_REPO,
     SOURCEGRAPH_OVERLAP_BUCKETS, SourcegraphOverlapBucket, TOP_K,
 };
 #[cfg(test)]
-use crate::relevance::corpus::{
-    SEMANTIC_JUDGED_QUERIES, SEMANTIC_RELEVANCE_CORPUS, SEMANTIC_RELEVANCE_REPO, SemanticIntentKind,
-};
+use crate::relevance::corpus::{SEMANTIC_JUDGED_QUERIES, SemanticIntentKind};
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,
 };
@@ -155,6 +154,67 @@ pub fn prepare_relevance_runtime() -> AnyResult<E2eRuntime> {
     }
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
+    Ok(rt)
+}
+
+/// Boot a HASH-embedder runtime over the SEMANTIC fixture and activate the
+/// Lexical + Semantic tracks so `query_semantic` has a live vector index.
+///
+/// Seeds ONLY the semantic corpus (the lexical corpus is intentionally absent so
+/// the semantic route's produced ids stay within the semantic fixture, never
+/// blurred by lexical-corpus paths). `auth/token_refresh.rs` is ingested as TWO
+/// chunks so the same-path-collapse rule has repeated hits to collapse. Asserting
+/// the `Hash` profile keeps the CI semantic gate deterministic and
+/// neural-quality-free (RFC §5 P1-3); the OpenAI A/B is a separate local lane.
+pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
+    use crate::harness::E2eTextChunkSpec;
+    use quanta_index_contract::SearchPlaneTrackKind;
+
+    let mut rt = E2eRuntime::boot()?;
+    if !matches!(
+        rt.embedder_profile(),
+        quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
+    ) {
+        return Err(anyhow::anyhow!(
+            "the semantic CI gate MUST run on the deterministic Hash embedder; got {:?}",
+            rt.embedder_profile()
+        ));
+    }
+    for (path, content) in SEMANTIC_RELEVANCE_CORPUS {
+        if *path == "auth/token_refresh.rs" {
+            // Two chunks, same path -> exercises same-path collapse on the rail.
+            let half = content.len() / 2;
+            let (head, tail) = content.split_at(half);
+            let _ids = rt.ingest_text_chunks(
+                SEMANTIC_RELEVANCE_REPO,
+                path,
+                &[
+                    E2eTextChunkSpec {
+                        content: head,
+                        start_line: 1,
+                        end_line: 2,
+                        source_repo_id: None,
+                    },
+                    E2eTextChunkSpec {
+                        content: tail,
+                        start_line: 3,
+                        end_line: 4,
+                        source_repo_id: None,
+                    },
+                ],
+            )?;
+        } else {
+            rt.ingest_text(SEMANTIC_RELEVANCE_REPO, path, content)?;
+        }
+    }
+    let _generation = rt.seal_lexical_generation_for_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ])?;
+    rt.activate_last_sealed_generation_with_tracks(&[
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ])?;
     Ok(rt)
 }
 
@@ -385,9 +445,19 @@ fn capture_overlap_bucket(
 /// Run the full relevance rail against a freshly seeded runtime.
 pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     let mut rt = prepare_relevance_runtime()?;
-    let mut queries = Vec::with_capacity(JUDGED_QUERIES.len());
+    let mut queries = Vec::with_capacity(JUDGED_QUERIES.len() + SEMANTIC_GATED_QUERIES.len());
     for query in JUDGED_QUERIES {
         let order = produced_order(&mut rt, query)?;
+        queries.push(score_query(query, order)?);
+    }
+    // Semantic route, gated on what the deterministic Hash embedder genuinely
+    // owns: exact-token recall (RFC §5 P1-3). Runs on a SEMANTIC-track runtime so
+    // `query_semantic` has a live vector index; paraphrase queries are NOT gated
+    // here (neural-only — covered as determinism-only unit tests). This is a real
+    // rail gate + artifact row, not a test-only probe.
+    let mut sem_rt = prepare_semantic_relevance_runtime()?;
+    for query in SEMANTIC_GATED_QUERIES {
+        let order = produced_order(&mut sem_rt, query)?;
         queries.push(score_query(query, order)?);
     }
     let routes = aggregate_routes(&queries);
@@ -447,6 +517,7 @@ fn route_summary_json(summary: &RouteSummary) -> Value {
 fn judgments_json(report: &RelevanceReport) -> Value {
     let rows: Vec<Value> = JUDGED_QUERIES
         .iter()
+        .chain(SEMANTIC_GATED_QUERIES.iter())
         .map(|q| {
             let judgments: Vec<Value> = q
                 .judgments
@@ -653,57 +724,12 @@ mod tests {
     }
 
     /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate the
-    /// Lexical + Semantic tracks. `auth/token_refresh.rs` is ingested as TWO
+    /// Lexical + Semantic tracks. Delegates to the shared production helper so the
+    /// unit coverage and the gated `run_relevance_report` rail seed the SAME way
+    /// (no test/prod divergence). `auth/token_refresh.rs` is ingested as TWO
     /// chunks so the same-path-collapse rule has repeated hits to collapse.
     fn prepare_semantic_runtime() -> AnyResult<E2eRuntime> {
-        use crate::harness::E2eTextChunkSpec;
-        use quanta_index_contract::SearchPlaneTrackKind;
-
-        // Default boot == Hash profile: prove the CI default is deterministic.
-        let mut rt = E2eRuntime::boot()?;
-        assert!(
-            matches!(
-                rt.embedder_profile(),
-                quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
-            ),
-            "the semantic CI gate MUST run on the deterministic Hash embedder by default"
-        );
-        for (path, content) in SEMANTIC_RELEVANCE_CORPUS {
-            if *path == "auth/token_refresh.rs" {
-                // Two chunks, same path -> exercises same-path collapse.
-                let half = content.len() / 2;
-                let (head, tail) = content.split_at(half);
-                let _ids = rt.ingest_text_chunks(
-                    SEMANTIC_RELEVANCE_REPO,
-                    path,
-                    &[
-                        E2eTextChunkSpec {
-                            content: head,
-                            start_line: 1,
-                            end_line: 2,
-                            source_repo_id: None,
-                        },
-                        E2eTextChunkSpec {
-                            content: tail,
-                            start_line: 3,
-                            end_line: 4,
-                            source_repo_id: None,
-                        },
-                    ],
-                )?;
-            } else {
-                rt.ingest_text(SEMANTIC_RELEVANCE_REPO, path, content)?;
-            }
-        }
-        let _generation = rt.seal_lexical_generation_for_tracks(&[
-            SearchPlaneTrackKind::Lexical,
-            SearchPlaneTrackKind::Semantic,
-        ])?;
-        rt.activate_last_sealed_generation_with_tracks(&[
-            SearchPlaneTrackKind::Lexical,
-            SearchPlaneTrackKind::Semantic,
-        ])?;
-        Ok(rt)
+        super::prepare_semantic_relevance_runtime()
     }
 
     #[test]
@@ -785,10 +811,13 @@ mod tests {
     }
 
     #[test]
-    fn semantic_exact_token_query_recalls_on_topic_file_under_hash() {
-        // RFC P1-3: the ONLY semantic-quality claim safe for hash is exact-token
-        // recall. Drive every ExactToken judged query and require its on-topic
-        // file to be retrieved; do NOT assert nDCG/MRR (not a hash property).
+    fn semantic_exact_token_query_ranks_on_topic_file_first_under_hash() {
+        // RFC P1-3: the semantic-quality claim safe for hash is exact-token rank.
+        // Non-vacuity (R-TEST-19/20): mere retrieval (`any(== on_topic)`) is NOT
+        // discriminative on a <20-doc fixture (every doc is always returned), so
+        // require the on-topic file at RANK 1 — for a single-best-match exact-token
+        // query the file with verbatim overlap deterministically outranks the
+        // ~zero-overlap rest. Still do NOT assert nDCG/MRR tie-order.
         let mut rt = prepare_semantic_runtime().expect("semantic runtime boots");
         let mut exact_token_seen = 0_usize;
         for jq in SEMANTIC_JUDGED_QUERIES {
@@ -798,9 +827,10 @@ mod tests {
             exact_token_seen = exact_token_seen.saturating_add(1);
             let q = semantic_route_query(jq.id, jq.query);
             let order = produced_order(&mut rt, &q).expect("exact-token semantic query runs");
-            assert!(
-                order.iter().any(|d| d.as_str() == jq.on_topic_path),
-                "exact-token query `{}` must recall its on-topic file `{}` under hash; got {order:?}",
+            assert_eq!(
+                order.first().map(String::as_str),
+                Some(jq.on_topic_path),
+                "exact-token query `{}` must rank its on-topic file `{}` at rank 1 under hash; got {order:?}",
                 jq.id,
                 jq.on_topic_path
             );

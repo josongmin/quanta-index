@@ -333,7 +333,45 @@ pub struct SemanticJudgedQuery {
     pub hard_negative_path: &'static str,
 }
 
-/// The judged semantic query set.
+/// The semantic queries that are GATED in the relevance rail's artifact
+/// (`run_relevance_report`), as opposed to the determinism-only unit coverage.
+///
+/// Only the `ExactToken` layer is gated: its tokens appear verbatim in the
+/// on-topic file, so the deterministic `Hash` embedder genuinely retrieves it and
+/// `Recall@20 = 1.0` is a FAIR, achievable assertion (RFC §5 P1-3). The paraphrase
+/// layer is intentionally absent here — hash cannot recall it, so gating it would
+/// be either a false-green (floored recall) or a guaranteed red; it is covered as
+/// a determinism-only unit test instead. MRR/NDCG stay floored at `0.0` in
+/// `thresholds_for(Semantic)` because head-rank ordering is not a hash property;
+/// neural-quality separation lives in the OpenAI-gated local A/B, not in CI.
+///
+/// Doc grades / negative path mirror `SEMANTIC_JUDGED_QUERIES`'s `ExactToken`
+/// entry (`auth/token_refresh.rs` on-topic, `util/string_pad.rs` off-topic).
+pub const SEMANTIC_GATED_QUERIES: &[JudgedQuery] = &[JudgedQuery {
+    id: "sem.refresh_auth_token.exact_token_recall",
+    route: RelevanceRoute::Semantic,
+    intent: "semantic route retrieves the exact-token auth-token-refresh file (hash-fair recall gate)",
+    query: "refresh auth token expires",
+    syntax: BenchSyntax::Native,
+    judgments: &[("auth/token_refresh.rs", 3), ("util/string_pad.rs", 0)],
+    ordering: OrderingInvariants {
+        // Non-vacuity (R-TEST-19/20): `Recall@20` alone is NOT discriminative on a
+        // <20-doc fixture (every doc is always retrieved), so the load-bearing
+        // gated fact is the TOP-1 rank. For a single-best-match EXACT-TOKEN query,
+        // one file carries verbatim multi-token overlap (`refresh`/`auth`/`token`/
+        // `expires`) while the rest share ~none, so the deterministic hash ranker
+        // puts it at rank 1 — a fair hash property here (distinct from the
+        // same-grade tie ordering the RFC §5 P1-3 caveat is about; MRR/NDCG stay
+        // floored at 0.0 so no tie-order claim is made). The off-topic negative,
+        // sharing zero query tokens, must stay out of rank 1.
+        top1: Some("auth/token_refresh.rs"),
+        top_k_contains: &["auth/token_refresh.rs"],
+        forbidden_within: &[("util/string_pad.rs", 2)],
+    },
+}];
+
+/// The judged semantic query set (determinism / mechanics unit coverage; the
+/// `ExactToken` subset is additionally gated via [`SEMANTIC_GATED_QUERIES`]).
 pub const SEMANTIC_JUDGED_QUERIES: &[SemanticJudgedQuery] = &[
     SemanticJudgedQuery {
         id: "sem.refresh_auth_token.exact",
