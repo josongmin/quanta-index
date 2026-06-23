@@ -27,6 +27,10 @@ use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
     SOURCEGRAPH_OVERLAP_BUCKETS, SourcegraphOverlapBucket, TOP_K,
 };
+#[cfg(test)]
+use crate::relevance::corpus::{
+    SEMANTIC_JUDGED_QUERIES, SEMANTIC_RELEVANCE_CORPUS, SEMANTIC_RELEVANCE_REPO, SemanticIntentKind,
+};
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,
 };
@@ -59,6 +63,17 @@ fn thresholds_for(route: RelevanceRoute) -> RouteThresholds {
         RelevanceRoute::Lexical => RouteThresholds {
             min_mrr_at_10: 0.99,
             min_ndcg_at_10: 0.85,
+            min_recall_at_20: 1.0,
+        },
+        // Honesty (RFC §5 P1-3 / §7): the deterministic `Hash` embedder cannot
+        // be claimed to achieve neural semantic quality, so the CI semantic
+        // route is gated only on what hash genuinely owns — exact-token recall
+        // (`Recall@20 = 1.0`). MRR/NDCG floors are 0.0 because head-rank ordering
+        // among same-grade exact-token hits is NOT a hash property; neural-quality
+        // separation lives in the OpenAI-gated discriminative subset, not here.
+        RelevanceRoute::Semantic => RouteThresholds {
+            min_mrr_at_10: 0.0,
+            min_ndcg_at_10: 0.0,
             min_recall_at_20: 1.0,
         },
     }
@@ -143,6 +158,26 @@ pub fn prepare_relevance_runtime() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
+/// Collapse repeated same-path hits to the earliest occurrence, preserving the
+/// produced order of first occurrences.
+///
+/// The semantic route is scored at file granularity, but the engine returns one
+/// candidate per CHUNK, so a single file can appear several times. Collapsing to
+/// the first occurrence (RFC §5 P1-2 / §8) keeps one file from occupying
+/// multiple head ranks and from inflating or obscuring file-level metrics. This
+/// is deterministic: given the same produced order it returns the same collapsed
+/// order.
+fn collapse_same_path(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut collapsed = Vec::with_capacity(paths.len());
+    for path in paths {
+        if seen.insert(path.clone()) {
+            collapsed.push(path);
+        }
+    }
+    collapsed
+}
+
 /// Run one judged query and return its produced doc-id ordering (top-first).
 ///
 /// Fails closed: a typed error on a relevance query is a rail failure, never an
@@ -165,6 +200,28 @@ fn produced_order(rt: &mut E2eRuntime, query: &JudgedQuery) -> AnyResult<Vec<Str
                 .iter()
                 .map(|candidate| candidate.repo_relative_path.as_str().to_string())
                 .collect())
+        }
+        RelevanceRoute::Semantic => {
+            // Pure vector ranking: no lexical scope, so the semantic searcher
+            // ranks the whole index by embedding similarity (NOT a lexical-scoped
+            // re-rank, which would blur semantic-route truth — RFC §5 P1-2).
+            let result = rt.query_semantic(query.query, TOP_K, None);
+            if let Some(error) = result.typed_error {
+                return Err(anyhow::anyhow!(
+                    "relevance query `{}` returned typed error {}: {}",
+                    query.id,
+                    error.code,
+                    error.message
+                ));
+            }
+            // Score by repo-relative path (NOT raw chunk id), then collapse
+            // repeated same-path hits to the earliest occurrence.
+            let paths = result
+                .candidates
+                .iter()
+                .map(|candidate| candidate.repo_relative_path.as_str().to_string())
+                .collect();
+            Ok(collapse_same_path(paths))
         }
     }
 }
@@ -295,7 +352,10 @@ fn aggregate_routes(queries: &[QueryScore]) -> Vec<RouteSummary> {
 /// an external side lane whose verdict is `unprovisioned` regardless — a capture
 /// error must not turn the whole relevance rail red over an absent dependency.
 /// The error is surfaced verbatim in the artifact, never swallowed.
-fn capture_overlap_bucket(rt: &mut E2eRuntime, bucket: &SourcegraphOverlapBucket) -> OverlapCapture {
+fn capture_overlap_bucket(
+    rt: &mut E2eRuntime,
+    bucket: &SourcegraphOverlapBucket,
+) -> OverlapCapture {
     let result = rt.query_text(to_text_syntax(bucket.syntax), bucket.query, TOP_K);
     let (quanta_ordering, quanta_capture_error) = match result.typed_error {
         Some(error) => (
@@ -498,10 +558,7 @@ pub fn write_artifacts(
     capture_date: &str,
 ) -> AnyResult<()> {
     crate::artifact::write_json_pretty(&dir.join("summary.json"), &summary_json(report, git_rev))?;
-    crate::artifact::write_json_pretty(
-        &dir.join("query_judgments.json"),
-        &judgments_json(report),
-    )?;
+    crate::artifact::write_json_pretty(&dir.join("query_judgments.json"), &judgments_json(report))?;
     crate::artifact::write_json_pretty(
         &dir.join("sourcegraph-overlap.json"),
         &sourcegraph_overlap_json(report, capture_date),
@@ -538,6 +595,257 @@ mod tests {
 
     fn order(ids: &[&str]) -> Vec<String> {
         ids.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    // --- pure same-path-collapse oracle (no daemon) ---------------------
+
+    #[test]
+    fn collapse_same_path_keeps_first_occurrence_only() {
+        // A file hit at ranks 1 and 3 must occupy exactly one (earliest) rank.
+        let collapsed = collapse_same_path(order(&["a.rs", "b.rs", "a.rs", "c.rs", "b.rs"]));
+        assert_eq!(
+            collapsed,
+            order(&["a.rs", "b.rs", "c.rs"]),
+            "repeated paths must collapse to their earliest occurrence, preserving order"
+        );
+    }
+
+    #[test]
+    fn collapse_same_path_is_identity_when_already_unique() {
+        let input = order(&["x.rs", "y.rs", "z.rs"]);
+        assert_eq!(
+            collapse_same_path(input.clone()),
+            input,
+            "an already-unique ordering must be returned unchanged"
+        );
+    }
+
+    #[test]
+    fn collapse_same_path_is_deterministic_across_repeated_calls() {
+        let input = order(&["p.rs", "q.rs", "p.rs", "r.rs", "q.rs", "p.rs"]);
+        let first = collapse_same_path(input.clone());
+        let second = collapse_same_path(input);
+        assert_eq!(
+            first, second,
+            "collapse is a pure function: same input must yield same output"
+        );
+    }
+
+    // --- daemon-driven semantic route (Hash embedder, RFC P1-1/P1-2/P1-3) -
+
+    /// Build a `Semantic`-route judged query so the test drives the REAL
+    /// production dispatch arm (`produced_order` -> `query_semantic(None)` ->
+    /// path projection -> `collapse_same_path`), not a parallel re-implementation.
+    fn semantic_route_query(id: &'static str, query: &'static str) -> JudgedQuery {
+        JudgedQuery {
+            id,
+            route: RelevanceRoute::Semantic,
+            intent: "semantic route mechanics probe",
+            query,
+            syntax: BenchSyntax::Native,
+            judgments: &[],
+            ordering: OrderingInvariants {
+                top1: None,
+                top_k_contains: &[],
+                forbidden_within: &[],
+            },
+        }
+    }
+
+    /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate the
+    /// Lexical + Semantic tracks. `auth/token_refresh.rs` is ingested as TWO
+    /// chunks so the same-path-collapse rule has repeated hits to collapse.
+    fn prepare_semantic_runtime() -> AnyResult<E2eRuntime> {
+        use crate::harness::E2eTextChunkSpec;
+        use quanta_index_contract::SearchPlaneTrackKind;
+
+        // Default boot == Hash profile: prove the CI default is deterministic.
+        let mut rt = E2eRuntime::boot()?;
+        assert!(
+            matches!(
+                rt.embedder_profile(),
+                quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
+            ),
+            "the semantic CI gate MUST run on the deterministic Hash embedder by default"
+        );
+        for (path, content) in SEMANTIC_RELEVANCE_CORPUS {
+            if *path == "auth/token_refresh.rs" {
+                // Two chunks, same path -> exercises same-path collapse.
+                let half = content.len() / 2;
+                let (head, tail) = content.split_at(half);
+                let _ids = rt.ingest_text_chunks(
+                    SEMANTIC_RELEVANCE_REPO,
+                    path,
+                    &[
+                        E2eTextChunkSpec {
+                            content: head,
+                            start_line: 1,
+                            end_line: 2,
+                            source_repo_id: None,
+                        },
+                        E2eTextChunkSpec {
+                            content: tail,
+                            start_line: 3,
+                            end_line: 4,
+                            source_repo_id: None,
+                        },
+                    ],
+                )?;
+            } else {
+                rt.ingest_text(SEMANTIC_RELEVANCE_REPO, path, content)?;
+            }
+        }
+        let _generation = rt.seal_lexical_generation_for_tracks(&[
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ])?;
+        rt.activate_last_sealed_generation_with_tracks(&[
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ])?;
+        Ok(rt)
+    }
+
+    #[test]
+    fn semantic_route_projects_paths_and_collapses_same_file() {
+        // RFC P1-2: the semantic route MUST score by repo_relative_path (never a
+        // raw chunk id) AND collapse repeated same-path hits to one rank.
+        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots on hash");
+        let q = semantic_route_query("sem.mechanics.path_collapse", "refresh auth token expires");
+        let order = produced_order(&mut rt, &q).expect("semantic route returns an ordering");
+
+        assert!(
+            !order.is_empty(),
+            "an exact-token semantic query must retrieve at least one path under hash"
+        );
+        // Path projection: every returned id is a corpus path, never an engine
+        // chunk id (chunk ids are `e2e-<n>-<path>` shaped).
+        let corpus_paths: std::collections::BTreeSet<&str> =
+            SEMANTIC_RELEVANCE_CORPUS.iter().map(|(p, _)| *p).collect();
+        for doc in &order {
+            assert!(
+                corpus_paths.contains(doc.as_str()),
+                "semantic route returned `{doc}`, which is not a corpus path \
+                 (raw chunk id leak / wrong projection)"
+            );
+        }
+        // Same-path collapse: even though `auth/token_refresh.rs` was ingested as
+        // two chunks, it appears at most once in the projected ordering.
+        let refresh_hits = order
+            .iter()
+            .filter(|d| d.as_str() == "auth/token_refresh.rs")
+            .count();
+        assert!(
+            refresh_hits <= 1,
+            "auth/token_refresh.rs (2 chunks) must collapse to <=1 rank, saw {refresh_hits}: {order:?}"
+        );
+        // No path may appear twice after collapse.
+        let mut unique = order.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            order.len(),
+            "collapsed semantic ordering must contain no duplicate paths: {order:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_route_is_deterministic_under_hash() {
+        // RFC P1-3 honesty: assert determinism (same input => same ranked order),
+        // NOT neural quality. Two independent runs over identical seeded input
+        // must produce byte-identical orderings AND identical metric vectors.
+        let mut rt_a = prepare_semantic_runtime().expect("run A boots");
+        let q = semantic_route_query("sem.determinism", "refresh auth token expires");
+        let order_a1 = produced_order(&mut rt_a, &q).expect("run A query 1");
+        let order_a2 = produced_order(&mut rt_a, &q).expect("run A query 2");
+        assert_eq!(
+            order_a1, order_a2,
+            "same query on the same generation must be stable within a run"
+        );
+
+        let mut rt_b = prepare_semantic_runtime().expect("run B boots");
+        let order_b = produced_order(&mut rt_b, &q).expect("run B query");
+        assert_eq!(
+            order_a1, order_b,
+            "identical seeded input must yield an identical hash ranking across runs"
+        );
+
+        // Metrics over the same ordering are likewise a pure function.
+        let judged = vec![GradedDoc {
+            doc_id: "auth/token_refresh.rs".to_string(),
+            grade: 3,
+        }];
+        let grades = grade_index(&judged).expect("grade index");
+        assert_eq!(
+            recall_at_k(&order_a1, &grades, RECALL_K),
+            recall_at_k(&order_b, &grades, RECALL_K),
+            "recall must be identical across deterministic runs"
+        );
+    }
+
+    #[test]
+    fn semantic_exact_token_query_recalls_on_topic_file_under_hash() {
+        // RFC P1-3: the ONLY semantic-quality claim safe for hash is exact-token
+        // recall. Drive every ExactToken judged query and require its on-topic
+        // file to be retrieved; do NOT assert nDCG/MRR (not a hash property).
+        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots");
+        let mut exact_token_seen = 0_usize;
+        for jq in SEMANTIC_JUDGED_QUERIES {
+            if jq.intent_kind != SemanticIntentKind::ExactToken {
+                continue;
+            }
+            exact_token_seen = exact_token_seen.saturating_add(1);
+            let q = semantic_route_query(jq.id, jq.query);
+            let order = produced_order(&mut rt, &q).expect("exact-token semantic query runs");
+            assert!(
+                order.iter().any(|d| d.as_str() == jq.on_topic_path),
+                "exact-token query `{}` must recall its on-topic file `{}` under hash; got {order:?}",
+                jq.id,
+                jq.on_topic_path
+            );
+        }
+        assert!(
+            exact_token_seen > 0,
+            "the semantic fixture MUST contain at least one ExactToken judged query"
+        );
+    }
+
+    #[test]
+    fn semantic_paraphrase_query_runs_deterministically_without_quality_claim() {
+        // RFC P1-3 honesty: the paraphrase layer is the discriminative subset a
+        // NEURAL embedder separates. Under hash we assert ONLY that the route runs
+        // and is deterministic — never that hash recalls the paraphrase target
+        // (it is expected not to). This documents the limit instead of faking it.
+        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots");
+        let mut paraphrase_seen = 0_usize;
+        for jq in SEMANTIC_JUDGED_QUERIES {
+            if jq.intent_kind != SemanticIntentKind::Paraphrase {
+                continue;
+            }
+            paraphrase_seen = paraphrase_seen.saturating_add(1);
+            let q = semantic_route_query(jq.id, jq.query);
+            let first = produced_order(&mut rt, &q).expect("paraphrase query run 1");
+            let second = produced_order(&mut rt, &q).expect("paraphrase query run 2");
+            assert_eq!(
+                first, second,
+                "paraphrase query `{}` must be deterministic under hash (mechanics, not quality)",
+                jq.id
+            );
+            // Every returned id is still a path, never a raw chunk id.
+            let corpus_paths: std::collections::BTreeSet<&str> =
+                SEMANTIC_RELEVANCE_CORPUS.iter().map(|(p, _)| *p).collect();
+            for doc in &first {
+                assert!(
+                    corpus_paths.contains(doc.as_str()),
+                    "paraphrase route returned non-path id `{doc}`"
+                );
+            }
+        }
+        assert!(
+            paraphrase_seen > 0,
+            "the semantic fixture MUST contain at least one Paraphrase judged query (local discriminative layer)"
+        );
     }
 
     #[test]

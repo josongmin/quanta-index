@@ -25,6 +25,11 @@ use crate::artifact::BenchSyntax;
 pub enum RelevanceRoute {
     /// `query_text` over the lexical corpus; doc id = repo-relative path.
     Lexical,
+    /// `query_semantic` (pure vector ranking, no lexical scope) over the
+    /// semantic corpus; doc id = the candidate's repo-relative path AFTER
+    /// same-path collapse to the earliest occurrence, so one file cannot hold
+    /// multiple head ranks via repeated chunk hits.
+    Semantic,
 }
 
 impl RelevanceRoute {
@@ -32,6 +37,7 @@ impl RelevanceRoute {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lexical => "lexical",
+            Self::Semantic => "semantic",
         }
     }
 }
@@ -224,6 +230,126 @@ pub const JUDGED_QUERIES: &[JudgedQuery] = &[
             // The `connection`/`connected` stemming distractor must stay out of top 2.
             forbidden_within: &[("src/db/connection.rs", 2)],
         },
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Semantic relevance fixture (RFC jun-23-embedding-pipeline-sota P1-3).
+// ---------------------------------------------------------------------------
+
+/// Repo id under which the semantic relevance fixture is ingested.
+///
+/// Separate from `RELEVANCE_REPO`: the semantic grades are NOT BM25-calibrated
+/// and the lexical corpus MUST NOT be retrofitted (RFC §7).
+pub const SEMANTIC_RELEVANCE_REPO: &str = "repo-relevance-semantic";
+
+/// `(path, content)` semantic fixture, file-granular (one chunk per file is fine
+/// — RFC §8 accepts file granularity for the first gate).
+///
+/// Two layers in one manifest (RFC §5 P1-3), distinguished by `intent_kind` on
+/// the judged query, NOT by which corpus they live in:
+///
+/// - **CI mechanics layer** — `auth/token_refresh.rs` is the on-topic file for an
+///   EXACT-TOKEN query ("refresh the auth token"); its tokens appear verbatim, so
+///   the deterministic hash embedder genuinely retrieves it. `auth/login.rs` is a
+///   sibling-symbol near-neighbour. `util/string_pad.rs` is an unambiguous
+///   off-topic negative.
+/// - **Local discriminative layer** — `cache/eviction.rs` is the on-topic file for
+///   a PARAPHRASE query ("remove stale entries from the in-memory store") whose
+///   wording shares little vocabulary with the file body (`evict`, `purge`,
+///   `expire`); `db/migration.rs` is a lexical-trap negative that shares the
+///   surface token `entries`/`store` but is unrelated. This layer is the one a
+///   real neural embedder can separate; hash is expected to do poorly on it, so
+///   the CI test asserts only determinism/mechanics over it, never nDCG.
+///
+/// `auth/token_refresh.rs` is intentionally ingested as MULTIPLE chunks by the
+/// semantic test so the same-path-collapse rule has something to collapse.
+pub const SEMANTIC_RELEVANCE_CORPUS: &[(&str, &str)] = &[
+    (
+        "auth/token_refresh.rs",
+        "/// Refresh the auth token before it expires.\n\
+         pub fn refresh_auth_token(session: &mut Session) -> AuthToken {\n    \
+             let token = mint_auth_token(&session.refresh_token);\n    \
+             session.auth_token = token.clone();\n    \
+             token\n}\n",
+    ),
+    (
+        "auth/login.rs",
+        "/// Authenticate a user and open a session.\n\
+         pub fn login(creds: &Credentials) -> Session {\n    \
+             let session = Session::open(creds);\n    \
+             session\n}\n",
+    ),
+    (
+        "util/string_pad.rs",
+        "/// Left-pad a string to a fixed width with spaces.\n\
+         pub fn left_pad(input: &str, width: usize) -> String {\n    \
+             format!(\"{input:>width$}\")\n}\n",
+    ),
+    (
+        "cache/eviction.rs",
+        "/// Evict and purge expired records held in the bounded LRU.\n\
+         pub fn evict_expired(lru: &mut Lru) {\n    \
+             lru.purge_expired();\n    \
+             lru.compact();\n}\n",
+    ),
+    (
+        "db/migration.rs",
+        "/// Insert new entries into the persistent store during a migration.\n\
+         pub fn migrate_entries(store: &mut Store, entries: Vec<Row>) {\n    \
+             for row in entries { store.insert_row(row); }\n}\n",
+    ),
+];
+
+/// How a judged semantic query is expected to behave on the deterministic hash
+/// embedder, separating the two RFC layers as a code-level label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticIntentKind {
+    /// Exact-token query: tokens appear verbatim in the on-topic file, so the
+    /// hash embedder genuinely retrieves it. Recall is a fair CI assertion.
+    ExactToken,
+    /// Paraphrase/synonym query: low lexical overlap with the on-topic file. A
+    /// neural embedder can separate this; hash cannot, so only determinism /
+    /// mechanics are asserted in CI, never recall or nDCG.
+    Paraphrase,
+}
+
+/// One judged semantic query (the semantic-route SSOT, kept apart from the
+/// lexical `JUDGED_QUERIES` so the BM25-calibrated grades never bleed in).
+#[derive(Clone, Copy, Debug)]
+pub struct SemanticJudgedQuery {
+    /// Stable query id (artifact key + regression anchor).
+    pub id: &'static str,
+    /// Which RFC layer / hash-behaviour class this query belongs to.
+    pub intent_kind: SemanticIntentKind,
+    /// Human intent label.
+    pub intent: &'static str,
+    /// Exact query text issued to the engine.
+    pub query: &'static str,
+    /// The single on-topic file the query targets (file-granular gold).
+    pub on_topic_path: &'static str,
+    /// A clear off-topic / lexical-trap negative that must not be the on-topic
+    /// answer.
+    pub hard_negative_path: &'static str,
+}
+
+/// The judged semantic query set.
+pub const SEMANTIC_JUDGED_QUERIES: &[SemanticJudgedQuery] = &[
+    SemanticJudgedQuery {
+        id: "sem.refresh_auth_token.exact",
+        intent_kind: SemanticIntentKind::ExactToken,
+        intent: "locate the file that refreshes the auth token (exact-token query)",
+        query: "refresh auth token expires",
+        on_topic_path: "auth/token_refresh.rs",
+        hard_negative_path: "util/string_pad.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.evict_cache.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where stale in-memory entries are removed (paraphrase / low overlap)",
+        query: "remove stale entries from the in-memory store",
+        on_topic_path: "cache/eviction.rs",
+        hard_negative_path: "db/migration.rs",
     },
 ];
 

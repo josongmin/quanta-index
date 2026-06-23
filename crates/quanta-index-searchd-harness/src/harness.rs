@@ -40,8 +40,8 @@ use quanta_index_contract::{
 use quanta_index_ipc::{IpcError, send_request};
 use quanta_index_search_plane::ActivationCatalog;
 use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
-use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use quanta_index_searchd_runtime::build_runtime;
 use tempfile::TempDir;
 
@@ -128,6 +128,14 @@ fn structural_role_tags(
 pub struct E2eRuntime {
     tempdir: Option<TempDir>,
     state_root: PathBuf,
+    /// Embedder profile the lazily-started daemon is configured with.
+    ///
+    /// Default is `Hash` (deterministic, key-free, network-free) so existing
+    /// callers and the CI relevance rail stay deterministic. A caller that wants
+    /// a real-neural local A/B selects `OpenAi` via `boot_with_embedder_profile`.
+    /// Held on the runtime (not mutated through process-global env) so two
+    /// harness instances in one process can disagree on embedder.
+    embedder_profile: SemanticEmbedderProfile,
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
@@ -201,13 +209,27 @@ pub struct E2eTextChunkSpec<'a> {
 
 impl E2eRuntime {
     /// Create a fresh tempdir and an owned publisher. The driver is NOT
-    /// started yet — it boots lazily on first `query_text`.
+    /// started yet — it boots lazily on first `query_text`. The daemon under
+    /// test uses the default `Hash` embedder profile.
     pub fn boot() -> AnyResult<Self> {
+        Self::boot_with_embedder_profile(SemanticEmbedderProfile::default())
+    }
+
+    /// Like [`Self::boot`] but selects the daemon's semantic embedder profile
+    /// explicitly (e.g. `OpenAi` for a local A/B run).
+    ///
+    /// The profile is recorded on the runtime and applied when the driver lazily
+    /// starts, so this is the harness-owned override the relevance rail uses to
+    /// run a deterministic `Hash` semantic gate in CI and a real-neural profile
+    /// locally — without touching process-global env. Selecting `OpenAi`
+    /// requires a key/network at query time; CI MUST stay on the `Hash` default.
+    pub fn boot_with_embedder_profile(profile: SemanticEmbedderProfile) -> AnyResult<Self> {
         let tempdir = tempfile::tempdir()?;
         let state_root = tempdir.path().to_path_buf();
         Ok(Self {
             tempdir: Some(tempdir),
             state_root,
+            embedder_profile: profile,
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
@@ -215,6 +237,12 @@ impl E2eRuntime {
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
         })
+    }
+
+    /// The embedder profile the (lazily-started) daemon is configured with.
+    #[must_use]
+    pub fn embedder_profile(&self) -> &SemanticEmbedderProfile {
+        &self.embedder_profile
     }
 
     /// Stop the driver (if running) and reconstruct a publisher over the
@@ -240,7 +268,7 @@ impl E2eRuntime {
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
             let (query_socket, ingest_socket, shutdown, join, query_obs_store) =
-                start_driver(&self.state_root)?;
+                start_driver(&self.state_root, &self.embedder_profile)?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -1861,8 +1889,11 @@ fn explain_transport_error(
     }
 }
 
-fn start_driver(state_root: &Path) -> AnyResult<DriverHandles> {
-    let config = build_config(state_root);
+fn start_driver(
+    state_root: &Path,
+    embedder_profile: &SemanticEmbedderProfile,
+) -> AnyResult<DriverHandles> {
+    let config = build_config(state_root, embedder_profile);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
@@ -1886,11 +1917,12 @@ fn start_driver(state_root: &Path) -> AnyResult<DriverHandles> {
     Ok((query_socket, ingest_socket, shutdown, join, query_obs_store))
 }
 
-fn build_config(state_root: &Path) -> SearchdConfig {
+fn build_config(state_root: &Path, embedder_profile: &SemanticEmbedderProfile) -> SearchdConfig {
     let mut cfg = SearchdConfig::from_state_root(state_root.to_path_buf());
     let (query_socket, control_socket, ingest_socket) = unique_socket_paths();
     cfg = SearchdConfig::with_socket_overrides(cfg, query_socket, control_socket);
-    SearchdConfig::with_ingest_socket_override(cfg, ingest_socket)
+    cfg = SearchdConfig::with_ingest_socket_override(cfg, ingest_socket);
+    cfg.with_semantic_embedder_profile(embedder_profile.clone())
 }
 
 fn unexpected_response(kind: &str) -> E2eQueryResult {
