@@ -41,9 +41,7 @@ use quanta_index_search_plane::{
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
     SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
-use quanta_index_embed::{
-    CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider, OpenAiProviderConfig,
-};
+use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
 use regex::Regex;
 
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
@@ -160,13 +158,13 @@ fn build_semantic_embedders(
             api_key,
             tuning,
         } => {
-            // Thread the env-resolved operational knobs into the provider config.
-            let openai = OpenAiEmbeddingProvider::with_reqwest(
-                OpenAiProviderConfig::new(api_key.clone(), model.clone(), *dimension)
-                    .with_max_batch(tuning.max_batch)
-                    .with_max_retries(tuning.max_retries)
-                    .with_timeout(tuning.timeout),
-            )?;
+            // Thread the env-resolved operational knobs into the provider config
+            // (mapping owned + unit-tested on OpenAiEmbedderTuning::provider_config).
+            let openai = OpenAiEmbeddingProvider::with_reqwest(tuning.provider_config(
+                model.clone(),
+                *dimension,
+                api_key.clone(),
+            ))?;
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
                 // Persistent content-hash cache (model+dim scoped) so rebuilds /
                 // incrementals avoid paid re-embedding of unchanged chunks.
@@ -863,5 +861,46 @@ mod tests {
             Ok(())
         })();
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    // The cache_enabled knob gates whether the OpenAi provider is wrapped in a
+    // FileEmbeddingCache (which materializes an `embed-cache` dir under the state
+    // root). These two tests pin BOTH branches of the composition root — provider
+    // construction is offline (a non-empty key builds the client without any
+    // network call), so the only observable is the cache dir.
+    fn openai_profile(cache_enabled: bool) -> super::SemanticEmbedderProfile {
+        super::SemanticEmbedderProfile::OpenAi {
+            model: "text-embedding-3-small".to_string(),
+            dimension: 1536,
+            api_key: "sk-unit-test".to_string(),
+            tuning: crate::app::config::OpenAiEmbedderTuning {
+                cache_enabled,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn build_semantic_embedders_creates_cache_dir_when_cache_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `expect` only needs the CoreError (Err) to be Debug; the Ok tuple of
+        // trait objects is not, so we bind it rather than format it.
+        let _embedders = super::build_semantic_embedders(&openai_profile(true), dir.path())
+            .expect("offline construction must succeed");
+        assert!(
+            dir.path().join("embed-cache").is_dir(),
+            "cache_enabled=true must materialize the embed-cache dir"
+        );
+    }
+
+    #[test]
+    fn build_semantic_embedders_skips_cache_dir_when_cache_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _embedders = super::build_semantic_embedders(&openai_profile(false), dir.path())
+            .expect("offline construction must succeed");
+        assert!(
+            !dir.path().join("embed-cache").exists(),
+            "cache_enabled=false must NOT create the embed-cache dir (bare provider)"
+        );
     }
 }

@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use quanta_index_embed::{DEFAULT_MAX_BATCH, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT};
+use quanta_index_embed::{
+    DEFAULT_MAX_BATCH, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
+};
 use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 
 /// Default `OpenAI` embedding model and dimension when the `openai` profile is
@@ -34,6 +36,26 @@ impl Default for OpenAiEmbedderTuning {
             timeout: DEFAULT_TIMEOUT,
             cache_enabled: true,
         }
+    }
+}
+
+impl OpenAiEmbedderTuning {
+    /// Build the provider config for `model`/`dimension`/`api_key`, threading
+    /// every tuning knob (except `cache_enabled`, which gates the cache wrapper at
+    /// the composition root) onto its config setter. Owning this mapping here —
+    /// instead of inline at the composition root — makes the knob->config wiring
+    /// unit-testable, so a swapped or dropped field fails the test.
+    #[must_use]
+    pub fn provider_config(
+        &self,
+        model: String,
+        dimension: usize,
+        api_key: String,
+    ) -> OpenAiProviderConfig {
+        OpenAiProviderConfig::new(api_key, model, dimension)
+            .with_max_batch(self.max_batch)
+            .with_max_retries(self.max_retries)
+            .with_timeout(self.timeout)
     }
 }
 
@@ -241,24 +263,31 @@ fn embed_dim_from_env(default: usize) -> Result<usize> {
 /// provider defaults for any unset knob. Each knob is parsed by a pure helper so
 /// the env→tuning mapping is unit-testable without mutating process env.
 fn openai_tuning_from_env() -> Result<OpenAiEmbedderTuning> {
+    openai_tuning_from_raw(
+        std::env::var("QUANTA_INDEX_EMBED_BATCH").ok().as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_MAX_RETRIES").ok().as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_TIMEOUT_SECS").ok().as_deref(),
+        std::env::var("QUANTA_INDEX_EMBED_CACHE").ok().as_deref(),
+    )
+}
+
+/// Pure assembler: maps the four raw knob strings onto their tuning fields,
+/// falling back to provider defaults for any unset knob. Extracted from
+/// [`openai_tuning_from_env`] so the env-var-name -> field mapping (not just the
+/// individual leaf parsers) is unit-testable without mutating process env — a
+/// cross-wired field or typo'd binding fails the test instead of shipping green.
+fn openai_tuning_from_raw(
+    batch: Option<&str>,
+    max_retries: Option<&str>,
+    timeout_secs: Option<&str>,
+    cache: Option<&str>,
+) -> Result<OpenAiEmbedderTuning> {
     let defaults = OpenAiEmbedderTuning::default();
     Ok(OpenAiEmbedderTuning {
-        max_batch: parse_embed_batch(
-            std::env::var("QUANTA_INDEX_EMBED_BATCH").ok().as_deref(),
-            defaults.max_batch,
-        )?,
-        max_retries: parse_embed_max_retries(
-            std::env::var("QUANTA_INDEX_EMBED_MAX_RETRIES").ok().as_deref(),
-            defaults.max_retries,
-        )?,
-        timeout: parse_embed_timeout(
-            std::env::var("QUANTA_INDEX_EMBED_TIMEOUT_SECS").ok().as_deref(),
-            defaults.timeout,
-        )?,
-        cache_enabled: parse_embed_cache_enabled(
-            std::env::var("QUANTA_INDEX_EMBED_CACHE").ok().as_deref(),
-            defaults.cache_enabled,
-        )?,
+        max_batch: parse_embed_batch(batch, defaults.max_batch)?,
+        max_retries: parse_embed_max_retries(max_retries, defaults.max_retries)?,
+        timeout: parse_embed_timeout(timeout_secs, defaults.timeout)?,
+        cache_enabled: parse_embed_cache_enabled(cache, defaults.cache_enabled)?,
     })
 }
 
@@ -415,5 +444,53 @@ mod tests {
         assert_eq!(parse_embed_dim(Some("1536"), 64).expect("ok"), 1536);
         assert_eq!(parse_embed_dim(None, 64).expect("default"), 64);
         assert!(parse_embed_dim(Some("big"), 64).is_err());
+    }
+
+    #[test]
+    fn tuning_assembler_maps_each_env_knob_to_its_own_field() {
+        // DISTINCT values per knob so a cross-wire (e.g. binding BATCH into
+        // max_retries) cannot pass: each field must equal its own source.
+        let tuning = openai_tuning_from_raw(Some("7"), Some("2"), Some("11"), Some("off"))
+            .expect("assembles");
+        assert_eq!(tuning.max_batch, 7, "BATCH knob -> max_batch");
+        assert_eq!(tuning.max_retries, 2, "MAX_RETRIES knob -> max_retries");
+        assert_eq!(tuning.timeout, Duration::from_secs(11), "TIMEOUT_SECS knob -> timeout");
+        assert!(!tuning.cache_enabled, "CACHE=off -> cache_enabled false");
+    }
+
+    #[test]
+    fn tuning_assembler_unset_knobs_fall_back_to_defaults() {
+        let tuning = openai_tuning_from_raw(None, None, None, None).expect("assembles");
+        assert_eq!(tuning, OpenAiEmbedderTuning::default());
+    }
+
+    #[test]
+    fn tuning_assembler_propagates_a_bad_knob_as_error() {
+        // A single garbage knob fails closed (no silent default substitution).
+        assert!(openai_tuning_from_raw(Some("nope"), None, None, None).is_err());
+        assert!(openai_tuning_from_raw(None, None, Some("0"), None).is_err());
+    }
+
+    #[test]
+    fn provider_config_threads_every_tuning_knob_to_its_setter() {
+        // Distinct, non-default values so a swapped/dropped setter is caught: the
+        // produced OpenAiProviderConfig must carry exactly this tuning.
+        let tuning = OpenAiEmbedderTuning {
+            max_batch: 13,
+            max_retries: 4,
+            timeout: Duration::from_secs(9),
+            cache_enabled: false,
+        };
+        let config = tuning.provider_config(
+            "text-embedding-3-large".to_string(),
+            3072,
+            "sk-unit-test".to_string(),
+        );
+        assert_eq!(config.max_batch, 13);
+        assert_eq!(config.max_retries, 4);
+        assert_eq!(config.timeout, Duration::from_secs(9));
+        assert_eq!(config.model, "text-embedding-3-large");
+        assert_eq!(config.dimension, 3072);
+        assert_eq!(config.api_key, "sk-unit-test");
     }
 }
