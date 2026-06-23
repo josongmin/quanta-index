@@ -36,6 +36,14 @@ pub trait EmbeddingTransport: Send + Sync {
         api_key: &str,
         body: &str,
     ) -> Result<HttpResponse, CoreError>;
+
+    /// The HTTP timeout this transport's client was built with, when it has one.
+    /// Defaults to `None` for transports without a network client (e.g. test
+    /// stubs); the real reqwest transport returns its configured value so the
+    /// `with_reqwest(config)` -> client timeout wire is observable end to end.
+    fn configured_timeout(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// A raw HTTP response (status + body) returned by an [`EmbeddingTransport`].
@@ -172,6 +180,14 @@ impl OpenAiEmbeddingProvider {
     pub fn with_reqwest(config: OpenAiProviderConfig) -> Result<Self, CoreError> {
         let transport = ReqwestBlockingTransport::new(config.timeout)?;
         Self::new(config, Box::new(transport))
+    }
+
+    /// The HTTP timeout the provider's transport was built with, if it exposes
+    /// one. Lets tests observe that `with_reqwest` threaded `config.timeout` all
+    /// the way into the transport's client.
+    #[cfg(test)]
+    fn transport_configured_timeout(&self) -> Option<Duration> {
+        self.transport.configured_timeout()
     }
 
     fn embed_one_batch(
@@ -326,14 +342,13 @@ impl ReqwestBlockingTransport {
             configured_timeout: timeout,
         })
     }
-
-    /// The timeout the inner reqwest client was constructed with.
-    pub fn configured_timeout(&self) -> Duration {
-        self.configured_timeout
-    }
 }
 
 impl EmbeddingTransport for ReqwestBlockingTransport {
+    fn configured_timeout(&self) -> Option<Duration> {
+        Some(self.configured_timeout)
+    }
+
     fn post_embeddings(
         &self,
         url: &str,
@@ -799,18 +814,34 @@ mod tests {
 
     #[test]
     fn reqwest_transport_retains_its_configured_timeout() {
-        // `with_reqwest` threads `config.timeout` into `ReqwestBlockingTransport::new`,
-        // which builds the reqwest client with it. reqwest hides its own timeout, so
-        // the transport retains the value to make that wire observable. A non-default
-        // custom value guards against a vacuous pass against DEFAULT_TIMEOUT.
+        // The transport builds its reqwest client with exactly the timeout it is
+        // handed and exposes it (reqwest hides its own). A non-default custom value
+        // guards against a vacuous pass against DEFAULT_TIMEOUT.
         let custom = Duration::from_millis(4321);
         assert_ne!(custom, DEFAULT_TIMEOUT);
         let transport =
             ReqwestBlockingTransport::new(custom).expect("transport builds with a valid timeout");
         assert_eq!(
             transport.configured_timeout(),
-            custom,
+            Some(custom),
             "transport must build its client with exactly the timeout it is handed"
+        );
+    }
+
+    #[test]
+    fn with_reqwest_threads_config_timeout_into_transport() {
+        // Closes the end-to-end wire: `with_reqwest(config)` must build the real
+        // transport with `config.timeout`, not a hardcoded/default. If the single
+        // `ReqwestBlockingTransport::new(config.timeout)` line dropped config.timeout
+        // (e.g. used DEFAULT_TIMEOUT), this fails. Custom value differs from default.
+        let custom = Duration::from_millis(7654);
+        assert_ne!(custom, DEFAULT_TIMEOUT);
+        let provider = OpenAiEmbeddingProvider::with_reqwest(cfg(8).with_timeout(custom))
+            .expect("provider builds over the real transport");
+        assert_eq!(
+            provider.transport_configured_timeout(),
+            Some(custom),
+            "with_reqwest must thread config.timeout all the way into the transport"
         );
     }
 

@@ -273,18 +273,23 @@ fn embed_dim_from_env(default: usize) -> Result<usize> {
 /// provider defaults for any unset knob. Each knob is parsed by a pure helper so
 /// the env→tuning mapping is unit-testable without mutating process env.
 fn openai_tuning_from_env() -> Result<OpenAiEmbedderTuning> {
+    openai_tuning_from_env_with(|name| std::env::var(name).ok())
+}
+
+/// Resolve tuning from an injected `name -> value` lookup. Splitting the lookup
+/// from the real `std::env::var` call keeps the env-var-NAME -> field binding
+/// unit-testable without mutating process env (this crate forbids `unsafe`, so
+/// `std::env::set_var` is unavailable in tests).
+fn openai_tuning_from_env_with<F>(lookup: F) -> Result<OpenAiEmbedderTuning>
+where
+    F: Fn(&str) -> Option<String>,
+{
     openai_tuning_from_raw(
-        std::env::var("QUANTA_INDEX_EMBED_BATCH").ok().as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_MAX_EST_TOKENS")
-            .ok()
-            .as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_MAX_RETRIES")
-            .ok()
-            .as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_TIMEOUT_SECS")
-            .ok()
-            .as_deref(),
-        std::env::var("QUANTA_INDEX_EMBED_CACHE").ok().as_deref(),
+        lookup("QUANTA_INDEX_EMBED_BATCH").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_MAX_EST_TOKENS").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_MAX_RETRIES").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_TIMEOUT_SECS").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_CACHE").as_deref(),
     )
 }
 
@@ -569,6 +574,45 @@ mod tests {
         // A single garbage knob fails closed (no silent default substitution).
         assert!(openai_tuning_from_raw(Some("nope"), None, None, None, None).is_err());
         assert!(openai_tuning_from_raw(None, Some("0"), None, None, None).is_err());
+    }
+
+    #[test]
+    fn from_env_binds_each_env_var_name_to_its_own_tuning_field() {
+        // The assembler tests prove positional args map to fields; this proves the
+        // ENV-VAR-NAME -> position binding in openai_tuning_from_env_with. Distinct
+        // values (7 / 1234 / 2 / 11 / off) so a name<->field cross-wire (e.g. reading
+        // MAX_RETRIES into the batch slot, or a typo'd env name returning None ->
+        // default) is caught. Uses an injected lookup — no process-env mutation.
+        let lookup = |name: &str| -> Option<String> {
+            match name {
+                "QUANTA_INDEX_EMBED_BATCH" => Some("7".to_string()),
+                "QUANTA_INDEX_EMBED_MAX_EST_TOKENS" => Some("1234".to_string()),
+                "QUANTA_INDEX_EMBED_MAX_RETRIES" => Some("2".to_string()),
+                "QUANTA_INDEX_EMBED_TIMEOUT_SECS" => Some("11".to_string()),
+                "QUANTA_INDEX_EMBED_CACHE" => Some("off".to_string()),
+                _ => None,
+            }
+        };
+        let tuning =
+            openai_tuning_from_env_with(lookup).expect("env tuning assembles from valid knobs");
+        assert_eq!(tuning.max_batch, 7, "QUANTA_INDEX_EMBED_BATCH -> max_batch");
+        assert_eq!(
+            tuning.max_estimated_tokens_per_request, 1234,
+            "QUANTA_INDEX_EMBED_MAX_EST_TOKENS -> max_estimated_tokens_per_request"
+        );
+        assert_eq!(
+            tuning.max_retries, 2,
+            "QUANTA_INDEX_EMBED_MAX_RETRIES -> max_retries"
+        );
+        assert_eq!(
+            tuning.timeout,
+            Duration::from_secs(11),
+            "QUANTA_INDEX_EMBED_TIMEOUT_SECS -> timeout"
+        );
+        assert!(
+            !tuning.cache_enabled,
+            "QUANTA_INDEX_EMBED_CACHE=off -> cache_enabled=false"
+        );
     }
 
     #[test]
