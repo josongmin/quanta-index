@@ -82,9 +82,18 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
             }
             for ((key, positions), vector) in distinct_keys.iter().zip(waiters.iter()).zip(fresh) {
                 self.cache.put(key, &vector);
-                for &position in positions {
-                    if let Some(slot) = slots.get_mut(position) {
-                        *slot = Some(vector.clone());
+                // Fan out to every waiter: clone for all but the last, then MOVE the
+                // vector into the last slot. The common case (one waiter, no
+                // duplicate text) does zero clones — saving one dim-sized copy per
+                // distinct text over a large corpus.
+                if let Some((&last, rest)) = positions.split_last() {
+                    for &position in rest {
+                        if let Some(slot) = slots.get_mut(position) {
+                            *slot = Some(vector.clone());
+                        }
+                    }
+                    if let Some(slot) = slots.get_mut(last) {
+                        *slot = Some(vector);
                     }
                 }
             }
@@ -153,8 +162,16 @@ impl EmbeddingCache for InMemoryEmbeddingCache {
     }
 }
 
-/// Durable file cache: one `<key>.vec` file per entry under `root`, holding the
-/// vector as little-endian `f32` bytes.
+/// Number of leading hex characters of the (SHA-256) key used as a shard
+/// subdirectory. Two hex chars = 256 buckets, keeping any single directory's
+/// fan-out ~1/256th of the corpus so directory operations stay fast.
+const SHARD_PREFIX_LEN: usize = 2;
+
+/// Durable file cache: one `<key>.vec` file per entry, sharded as
+/// `root/<key[..2]>/<key>.vec` and holding the vector as little-endian `f32`
+/// bytes. Sharding avoids piling tens of thousands of files into one directory
+/// (a filesystem scaling cliff); a legacy flat `root/<key>.vec` is still read so
+/// upgrading an existing cache never triggers a paid re-embed storm.
 pub struct FileEmbeddingCache {
     root: PathBuf,
 }
@@ -173,26 +190,47 @@ impl FileEmbeddingCache {
         Ok(Self { root })
     }
 
+    /// Sharded path `root/<key[..2]>/<key>.vec`. SHA-256 hex keys distribute the
+    /// prefix uniformly across buckets. Keys shorter than the prefix (only test
+    /// keys) fall back to a single `_` bucket.
     fn path_for(&self, key: &str) -> PathBuf {
+        let shard = key.get(0..SHARD_PREFIX_LEN).unwrap_or("_");
+        self.root.join(shard).join(format!("{key}.vec"))
+    }
+
+    /// Pre-sharding flat path `root/<key>.vec`, read-only for migration so an
+    /// existing flat cache is still served after the layout change.
+    fn legacy_flat_path(&self, key: &str) -> PathBuf {
         self.root.join(format!("{key}.vec"))
     }
 }
 
 impl EmbeddingCache for FileEmbeddingCache {
     fn get(&self, key: &str) -> Option<Vec<f32>> {
-        // A read failure (absent / unreadable) degrades to a miss, never a wrong hit.
+        // A read failure (absent / unreadable) degrades to a miss, never a wrong
+        // hit. Try the sharded path, then the legacy flat path so a pre-sharding
+        // cache keeps serving (the extra stat only happens on a sharded miss, when
+        // a network embedding is imminent anyway, so its relative cost is ~0).
         let bytes = match std::fs::read(self.path_for(key)) {
             Ok(bytes) => bytes,
-            Err(_absent) => return None,
+            Err(_absent) => match std::fs::read(self.legacy_flat_path(key)) {
+                Ok(bytes) => bytes,
+                Err(_absent) => return None,
+            },
         };
         decode_vector(&bytes)
     }
 
     fn put(&self, key: &str, vector: &[f32]) {
-        // Best-effort: a write failure only forces a recompute next time. The
-        // returned vector is already valid, so caching must not gate embedding.
+        // Best-effort: any failure only forces a recompute next time. The returned
+        // vector is already valid, so caching must not gate embedding. Ensure the
+        // shard subdir exists before writing (cheap no-op once warm).
         let bytes = encode_vector(vector);
-        drop(std::fs::write(self.path_for(key), &bytes));
+        let path = self.path_for(key);
+        if let Some(parent) = path.parent() {
+            drop(std::fs::create_dir_all(parent));
+        }
+        drop(std::fs::write(path, &bytes));
     }
 }
 
@@ -365,6 +403,52 @@ mod tests {
         assert!(cache.get("missing").is_none());
         cache.put("k1", &[1.0, -0.5, 2.25]);
         assert_eq!(cache.get("k1"), Some(vec![1.0, -0.5, 2.25]));
+    }
+
+    #[test]
+    fn file_cache_shards_entries_into_prefix_subdirectories() {
+        // A put must land under root/<key[..2]>/<key>.vec, not flat under root, so
+        // a large corpus never piles all entries into one directory.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        let cache = FileEmbeddingCache::new(root.clone()).expect("file cache");
+        let key = "abcd1234ef"; // stands in for a SHA-256 hex key
+        cache.put(key, &[1.0, 2.0]);
+        let sharded = root.join("ab").join("abcd1234ef.vec");
+        let flat = root.join("abcd1234ef.vec");
+        assert!(
+            sharded.exists(),
+            "entry must be written under its shard subdir {}",
+            sharded.display()
+        );
+        assert!(
+            !flat.exists(),
+            "entry must NOT be written flat under root"
+        );
+        // ...and it round-trips back through the sharded read path.
+        assert_eq!(cache.get(key), Some(vec![1.0, 2.0]));
+    }
+
+    #[test]
+    fn file_cache_reads_legacy_flat_layout_after_sharding_upgrade() {
+        // Migration safety: a pre-sharding flat entry must still be served so
+        // upgrading the layout never forces a paid re-embed of an existing cache.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("embed-cache");
+        let cache = FileEmbeddingCache::new(root.clone()).expect("file cache");
+        let key = "deadbeef99";
+        // Write the entry in the OLD flat layout directly (no shard subdir).
+        let flat = root.join("deadbeef99.vec");
+        std::fs::write(&flat, encode_vector(&[7.0, -1.5])).expect("seed legacy flat entry");
+        assert!(
+            !root.join("de").join("deadbeef99.vec").exists(),
+            "precondition: no sharded copy yet"
+        );
+        assert_eq!(
+            cache.get(key),
+            Some(vec![7.0, -1.5]),
+            "legacy flat entry must still be readable after the sharding upgrade"
+        );
     }
 
     #[test]

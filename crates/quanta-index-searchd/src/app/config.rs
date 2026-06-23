@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quanta_index_embed::{
-    DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST, DEFAULT_MAX_RETRIES,
-    DEFAULT_TIMEOUT, OpenAiProviderConfig,
+    DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, OpenAiProviderConfig,
 };
 use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 
@@ -30,6 +30,9 @@ pub struct OpenAiEmbedderTuning {
     pub timeout: Duration,
     /// Whether the on-disk embedding cache is used (`QUANTA_INDEX_EMBED_CACHE`).
     pub cache_enabled: bool,
+    /// Embedding requests dispatched concurrently per batch
+    /// (`QUANTA_INDEX_EMBED_CONCURRENCY`; 1 = sequential).
+    pub concurrency: usize,
 }
 
 impl Default for OpenAiEmbedderTuning {
@@ -40,6 +43,7 @@ impl Default for OpenAiEmbedderTuning {
             max_retries: DEFAULT_MAX_RETRIES,
             timeout: DEFAULT_TIMEOUT,
             cache_enabled: true,
+            concurrency: DEFAULT_CONCURRENCY,
         }
     }
 }
@@ -62,6 +66,7 @@ impl OpenAiEmbedderTuning {
             .with_max_estimated_tokens_per_request(self.max_estimated_tokens_per_request)
             .with_max_retries(self.max_retries)
             .with_timeout(self.timeout)
+            .with_concurrency(self.concurrency)
     }
 }
 
@@ -290,6 +295,7 @@ where
         lookup("QUANTA_INDEX_EMBED_MAX_RETRIES").as_deref(),
         lookup("QUANTA_INDEX_EMBED_TIMEOUT_SECS").as_deref(),
         lookup("QUANTA_INDEX_EMBED_CACHE").as_deref(),
+        lookup("QUANTA_INDEX_EMBED_CONCURRENCY").as_deref(),
     )
 }
 
@@ -304,6 +310,7 @@ fn openai_tuning_from_raw(
     max_retries: Option<&str>,
     timeout_secs: Option<&str>,
     cache: Option<&str>,
+    concurrency: Option<&str>,
 ) -> Result<OpenAiEmbedderTuning> {
     let defaults = OpenAiEmbedderTuning::default();
     Ok(OpenAiEmbedderTuning {
@@ -315,7 +322,25 @@ fn openai_tuning_from_raw(
         max_retries: parse_embed_max_retries(max_retries, defaults.max_retries)?,
         timeout: parse_embed_timeout(timeout_secs, defaults.timeout)?,
         cache_enabled: parse_embed_cache_enabled(cache, defaults.cache_enabled)?,
+        concurrency: parse_embed_concurrency(concurrency, defaults.concurrency)?,
     })
+}
+
+fn parse_embed_concurrency(raw: Option<&str>, default: usize) -> Result<usize> {
+    match raw {
+        None | Some("") => Ok(default),
+        Some(value) => {
+            let parsed = value.trim().parse::<usize>().map_err(|err| {
+                anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_CONCURRENCY '{value}': {err}")
+            })?;
+            if parsed == 0 {
+                return Err(anyhow::anyhow!(
+                    "QUANTA_INDEX_EMBED_CONCURRENCY must be >= 1, got 0"
+                ));
+            }
+            Ok(parsed)
+        }
+    }
 }
 
 fn parse_embed_dim(raw: Option<&str>, default: usize) -> Result<usize> {
@@ -509,6 +534,7 @@ mod tests {
             Some("5"),
             Some("10"),
             Some("false"),
+            Some("3"),
         )
         .expect("raw tuning parses");
         assert_eq!(tuning.max_batch, 8);
@@ -516,6 +542,7 @@ mod tests {
         assert_eq!(tuning.max_retries, 5);
         assert_eq!(tuning.timeout, Duration::from_secs(10));
         assert!(!tuning.cache_enabled);
+        assert_eq!(tuning.concurrency, 3);
     }
 
     #[test]
@@ -546,9 +573,15 @@ mod tests {
     fn tuning_assembler_maps_each_env_knob_to_its_own_field() {
         // DISTINCT values per knob so a cross-wire (e.g. binding BATCH into
         // max_retries) cannot pass: each field must equal its own source.
-        let tuning =
-            openai_tuning_from_raw(Some("7"), Some("1024"), Some("2"), Some("11"), Some("off"))
-                .expect("assembles");
+        let tuning = openai_tuning_from_raw(
+            Some("7"),
+            Some("1024"),
+            Some("2"),
+            Some("11"),
+            Some("off"),
+            Some("5"),
+        )
+        .expect("assembles");
         assert_eq!(tuning.max_batch, 7, "BATCH knob -> max_batch");
         assert_eq!(
             tuning.max_estimated_tokens_per_request, 1024,
@@ -561,19 +594,22 @@ mod tests {
             "TIMEOUT_SECS knob -> timeout"
         );
         assert!(!tuning.cache_enabled, "CACHE=off -> cache_enabled false");
+        assert_eq!(tuning.concurrency, 5, "CONCURRENCY knob -> concurrency");
     }
 
     #[test]
     fn tuning_assembler_unset_knobs_fall_back_to_defaults() {
-        let tuning = openai_tuning_from_raw(None, None, None, None, None).expect("assembles");
+        let tuning = openai_tuning_from_raw(None, None, None, None, None, None).expect("assembles");
         assert_eq!(tuning, OpenAiEmbedderTuning::default());
     }
 
     #[test]
     fn tuning_assembler_propagates_a_bad_knob_as_error() {
         // A single garbage knob fails closed (no silent default substitution).
-        assert!(openai_tuning_from_raw(Some("nope"), None, None, None, None).is_err());
-        assert!(openai_tuning_from_raw(None, Some("0"), None, None, None).is_err());
+        assert!(openai_tuning_from_raw(Some("nope"), None, None, None, None, None).is_err());
+        assert!(openai_tuning_from_raw(None, Some("0"), None, None, None, None).is_err());
+        // concurrency=0 is rejected (would mean "no dispatch").
+        assert!(openai_tuning_from_raw(None, None, None, None, None, Some("0")).is_err());
     }
 
     #[test]
@@ -590,6 +626,7 @@ mod tests {
                 "QUANTA_INDEX_EMBED_MAX_RETRIES" => Some("2".to_string()),
                 "QUANTA_INDEX_EMBED_TIMEOUT_SECS" => Some("11".to_string()),
                 "QUANTA_INDEX_EMBED_CACHE" => Some("off".to_string()),
+                "QUANTA_INDEX_EMBED_CONCURRENCY" => Some("5".to_string()),
                 _ => None,
             }
         };
@@ -613,6 +650,10 @@ mod tests {
             !tuning.cache_enabled,
             "QUANTA_INDEX_EMBED_CACHE=off -> cache_enabled=false"
         );
+        assert_eq!(
+            tuning.concurrency, 5,
+            "QUANTA_INDEX_EMBED_CONCURRENCY -> concurrency"
+        );
     }
 
     #[test]
@@ -625,6 +666,7 @@ mod tests {
             max_retries: 4,
             timeout: Duration::from_secs(9),
             cache_enabled: false,
+            concurrency: 6,
         };
         let config = tuning.provider_config(
             "text-embedding-3-large".to_string(),
@@ -635,6 +677,7 @@ mod tests {
         assert_eq!(config.max_estimated_tokens_per_request, 8192);
         assert_eq!(config.max_retries, 4);
         assert_eq!(config.timeout, Duration::from_secs(9));
+        assert_eq!(config.concurrency, 6);
         assert_eq!(config.model, "text-embedding-3-large");
         assert_eq!(config.dimension, 3072);
         assert_eq!(config.api_key, "sk-unit-test");
