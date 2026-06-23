@@ -304,6 +304,10 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
 /// The real blocking transport: a `reqwest::blocking::Client` over rustls.
 pub struct ReqwestBlockingTransport {
     client: reqwest::blocking::Client,
+    /// The timeout the inner client was built with. `reqwest::Client` does not
+    /// expose its configured timeout, so we retain it to make the
+    /// config -> transport timeout wire observable in tests.
+    configured_timeout: Duration,
 }
 
 impl ReqwestBlockingTransport {
@@ -317,7 +321,15 @@ impl ReqwestBlockingTransport {
                     &format!("openai: http client build failed: {err}"),
                 )
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            configured_timeout: timeout,
+        })
+    }
+
+    /// The timeout the inner reqwest client was constructed with.
+    pub fn configured_timeout(&self) -> Duration {
+        self.configured_timeout
     }
 }
 
@@ -783,6 +795,23 @@ mod tests {
         assert_eq!(tuned.max_estimated_tokens_per_request, 1);
         assert_eq!(tuned.max_retries, 7);
         assert_eq!(tuned.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn reqwest_transport_retains_its_configured_timeout() {
+        // `with_reqwest` threads `config.timeout` into `ReqwestBlockingTransport::new`,
+        // which builds the reqwest client with it. reqwest hides its own timeout, so
+        // the transport retains the value to make that wire observable. A non-default
+        // custom value guards against a vacuous pass against DEFAULT_TIMEOUT.
+        let custom = Duration::from_millis(4321);
+        assert_ne!(custom, DEFAULT_TIMEOUT);
+        let transport =
+            ReqwestBlockingTransport::new(custom).expect("transport builds with a valid timeout");
+        assert_eq!(
+            transport.configured_timeout(),
+            custom,
+            "transport must build its client with exactly the timeout it is handed"
+        );
     }
 
     fn dot(a: &[f32], b: &[f32]) -> f32 {
