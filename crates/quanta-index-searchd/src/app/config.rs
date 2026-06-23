@@ -3,17 +3,48 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 
+/// Default OpenAI embedding model and dimension when the `openai` profile is
+/// selected without explicit overrides.
+const DEFAULT_OPENAI_MODEL: &str = "text-embedding-3-small";
+const DEFAULT_OPENAI_DIMENSION: usize = 1536;
+
 /// How `searchd` resolves the semantic embedder for BOTH the query path and
 /// corpus derivation. One profile drives both, so the two sides can never
 /// disagree on model identity (the query-time model-identity gate then holds).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum SemanticEmbedderProfile {
     /// Deterministic FNV-1a hash embedder (default; no network, free).
     Hash { dimension: usize },
+    /// Network-backed OpenAI embeddings. `api_key` is held here but redacted in
+    /// `Debug` (R-SEC-01) and never logged.
+    OpenAi {
+        model: String,
+        dimension: usize,
+        api_key: String,
+    },
     /// No query-time embedder is configured: semantic/hybrid queries fail closed
-    /// (`SEM_PROVIDER_UNAVAILABLE`) AND the corpus derives no semantics — so there
-    /// is never a populated-but-unqueryable semantic index.
+    /// (`SEM_PROVIDER_UNAVAILABLE`) while the corpus still hash-derives so the
+    /// generation materializes — the deliberate degraded-config contract.
     Unavailable,
+}
+
+impl std::fmt::Debug for SemanticEmbedderProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hash { dimension } => {
+                f.debug_struct("Hash").field("dimension", dimension).finish()
+            }
+            Self::OpenAi {
+                model, dimension, ..
+            } => f
+                .debug_struct("OpenAi")
+                .field("model", model)
+                .field("dimension", dimension)
+                .field("api_key", &"<redacted>")
+                .finish(),
+            Self::Unavailable => f.write_str("Unavailable"),
+        }
+    }
 }
 
 impl Default for SemanticEmbedderProfile {
@@ -143,9 +174,21 @@ fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderProfile> {
             dimension: embed_dim_from_env(SEARCH_OWNED_SEMANTIC_DIMENSION)?,
         }),
         Some("unavailable") => Ok(SemanticEmbedderProfile::Unavailable),
-        Some("openai") => Err(anyhow::anyhow!(
-            "QUANTA_INDEX_EMBEDDER=openai is not yet wired (pending the OpenAI provider); use 'hash' or 'unavailable'"
-        )),
+        Some("openai") => {
+            let api_key = std::env::var("OPENAI_API_KEY").map_err(|_err| {
+                anyhow::anyhow!("QUANTA_INDEX_EMBEDDER=openai requires OPENAI_API_KEY to be set")
+            })?;
+            if api_key.trim().is_empty() {
+                return Err(anyhow::anyhow!("OPENAI_API_KEY is set but empty"));
+            }
+            let model = std::env::var("QUANTA_INDEX_EMBED_MODEL")
+                .unwrap_or_else(|_err| DEFAULT_OPENAI_MODEL.to_string());
+            Ok(SemanticEmbedderProfile::OpenAi {
+                model,
+                dimension: embed_dim_from_env(DEFAULT_OPENAI_DIMENSION)?,
+                api_key,
+            })
+        }
         Some(other) => Err(anyhow::anyhow!(
             "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected hash|unavailable|openai)"
         )),
