@@ -6,8 +6,12 @@
 //! an async runtime into the search/ingest hot paths. The blocking HTTP client
 //! reuses the in-tree `reqwest` + `rustls` stack (no new TLS dependency).
 
+mod cache;
 mod openai;
 
+pub use cache::{
+    CachingEmbeddingProvider, EmbeddingCache, FileEmbeddingCache, InMemoryEmbeddingCache,
+};
 pub use openai::{
     EmbeddingTransport, HttpResponse, OpenAiEmbeddingProvider, OpenAiProviderConfig,
     ReqwestBlockingTransport,

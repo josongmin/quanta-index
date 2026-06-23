@@ -41,7 +41,9 @@ use quanta_index_search_plane::{
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
     SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
-use quanta_index_embed::{OpenAiEmbeddingProvider, OpenAiProviderConfig};
+use quanta_index_embed::{
+    CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider, OpenAiProviderConfig,
+};
 use regex::Regex;
 
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
@@ -135,6 +137,7 @@ impl QueryTextEmbedderPort for QueryEmbedderAdapter {
 /// hash-derives (the deliberate degraded-config contract).
 fn build_semantic_embedders(
     profile: &SemanticEmbedderProfile,
+    state_root: &Path,
 ) -> Result<
     (
         Arc<dyn QueryTextEmbedderPort + Send + Sync>,
@@ -156,10 +159,17 @@ fn build_semantic_embedders(
             dimension,
             api_key,
         } => {
-            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> =
-                Arc::new(OpenAiEmbeddingProvider::with_reqwest(
-                    OpenAiProviderConfig::new(api_key.clone(), model.clone(), *dimension),
-                )?);
+            let openai = OpenAiEmbeddingProvider::with_reqwest(OpenAiProviderConfig::new(
+                api_key.clone(),
+                model.clone(),
+                *dimension,
+            ))?;
+            // Persistent content-hash cache (model+dim scoped) so rebuilds /
+            // incrementals avoid paid re-embedding of unchanged chunks.
+            let cache = FileEmbeddingCache::new(state_root.join("embed-cache"))?;
+            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
+                CachingEmbeddingProvider::new(Box::new(openai), Box::new(cache)),
+            );
             Ok((
                 Arc::new(QueryEmbedderAdapter(Arc::clone(&provider))),
                 provider,
@@ -588,7 +598,7 @@ impl SearchdRuntime {
                 .map_err(anyhow::Error::from)?;
         }
         let (query_text_embedder, corpus_embedder) =
-            build_semantic_embedders(config.semantic_embedder_profile())
+            build_semantic_embedders(config.semantic_embedder_profile(), config.state_root())
                 .map_err(anyhow::Error::from)?;
         let direct_sem_ingest_port: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
             DirectSemanticMaterializer::new(Arc::clone(&sem_build_port), Arc::clone(&ledger)),
