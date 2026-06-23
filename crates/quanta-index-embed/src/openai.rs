@@ -580,26 +580,46 @@ fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_nanos(jittered)
 }
 
-/// Process-local xorshift64 PRNG for backoff jitter only. Seeded once from the
-/// wall clock; not cryptographic and used for nothing but retry timing.
+/// Per-thread xorshift64 PRNG for backoff jitter only; not cryptographic and used
+/// for nothing but retry timing.
+///
+/// State is thread-local (not a shared atomic): under concurrent dispatch a shared
+/// load/store generator lets two workers read the same state and return identical
+/// jitter, re-correlating the very 429 retries the jitter exists to spread. Each
+/// thread seeds once from the wall clock XOR a process-global counter, so threads
+/// seeded within the same nanosecond still diverge and the generators are
+/// independent — no per-call atomic on the hot path.
 fn next_jitter_u64() -> u64 {
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicU64, Ordering};
-    static STATE: AtomicU64 = AtomicU64::new(0);
-    let mut state = STATE.load(Ordering::Relaxed);
-    if state == 0 {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
-            .unwrap_or(0x9E37_79B9_7F4A_7C15);
-        // Force non-zero so the generator never latches at zero.
-        state = seed | 1;
+
+    thread_local! {
+        static STATE: Cell<u64> = const { Cell::new(0) };
     }
-    state ^= state << 13;
-    state ^= state >> 7;
-    state ^= state << 17;
-    STATE.store(state, Ordering::Relaxed);
-    state
+    static SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    STATE.with(|cell| {
+        let mut state = cell.get();
+        if state == 0 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
+                .unwrap_or(0x9E37_79B9_7F4A_7C15);
+            // A distinct per-thread offset so two threads seeded in the same
+            // nanosecond still start from different states.
+            let unique = SEED_COUNTER
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            // Force non-zero so the generator never latches at zero.
+            state = (nanos ^ unique) | 1;
+        }
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        cell.set(state);
+        state
+    })
 }
 
 fn preview(body: &str) -> String {
