@@ -40,35 +40,47 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         let model_id = self.inner.model_id();
         let dimension = self.inner.dimension();
         let mut slots: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
-        let mut miss_texts: Vec<&str> = Vec::new();
-        let mut miss_keys: Vec<String> = Vec::new();
-        let mut miss_positions: Vec<usize> = Vec::new();
+        // Misses deduped BY CONTENT: each distinct uncached text is embedded once
+        // and its vector is fanned out to every position that requested it, so a
+        // batch with N copies of one text costs one inner embedding, not N.
+        let mut distinct_texts: Vec<&str> = Vec::new();
+        let mut distinct_keys: Vec<String> = Vec::new();
+        let mut waiters: Vec<Vec<usize>> = Vec::new();
+        let mut distinct_index_by_key: BTreeMap<String, usize> = BTreeMap::new();
         for (position, &text) in texts.iter().enumerate() {
             let key = cache_key(model_id, dimension, text);
             if let Some(vector) = self.cache.get(&key) {
                 slots.push(Some(vector));
+                continue;
+            }
+            slots.push(None);
+            if let Some(&existing) = distinct_index_by_key.get(&key) {
+                if let Some(positions) = waiters.get_mut(existing) {
+                    positions.push(position);
+                }
             } else {
-                slots.push(None);
-                miss_texts.push(text);
-                miss_keys.push(key);
-                miss_positions.push(position);
+                let next_index = distinct_texts.len();
+                let _ = distinct_index_by_key.insert(key.clone(), next_index);
+                distinct_texts.push(text);
+                distinct_keys.push(key);
+                waiters.push(vec![position]);
             }
         }
-        if !miss_texts.is_empty() {
-            let fresh = self.inner.embed_batch(&miss_texts)?;
-            if fresh.len() != miss_texts.len() {
+        if !distinct_texts.is_empty() {
+            let fresh = self.inner.embed_batch(&distinct_texts)?;
+            if fresh.len() != distinct_texts.len() {
                 return Err(CoreError::Storage(format!(
-                    "embedding cache: inner returned {} vectors for {} misses",
+                    "embedding cache: inner returned {} vectors for {} distinct misses",
                     fresh.len(),
-                    miss_texts.len()
+                    distinct_texts.len()
                 )));
             }
-            for ((position, key), vector) in
-                miss_positions.iter().zip(miss_keys.iter()).zip(fresh)
-            {
+            for ((key, positions), vector) in distinct_keys.iter().zip(waiters.iter()).zip(fresh) {
                 self.cache.put(key, &vector);
-                if let Some(slot) = slots.get_mut(*position) {
-                    *slot = Some(vector);
+                for &position in positions {
+                    if let Some(slot) = slots.get_mut(position) {
+                        *slot = Some(vector.clone());
+                    }
                 }
             }
         }
@@ -248,6 +260,28 @@ mod tests {
             dimension: 2,
             embedded,
         }
+    }
+
+    // P0-1: duplicate texts within one batch are embedded once and fanned out.
+    #[test]
+    fn duplicate_texts_embed_once_and_fan_out() {
+        let embedded = Arc::new(AtomicUsize::new(0));
+        let provider = CachingEmbeddingProvider::new(
+            Box::new(counting("m-dedup", Arc::clone(&embedded))),
+            Box::new(InMemoryEmbeddingCache::default()),
+        );
+        let out = provider.embed_batch(&["a", "a", "bb"]).expect("dedup ok");
+        assert_eq!(out.len(), 3);
+        // The two "a" positions share the same vector...
+        assert_eq!(out.first(), out.get(1), "duplicate positions must share a vector");
+        // ...and "bb" differs.
+        assert_ne!(out.first(), out.get(2));
+        // Distinct misses = {"a","bb"} = 2 inner embeds, NOT 3.
+        assert_eq!(
+            embedded.load(Ordering::SeqCst),
+            2,
+            "duplicate text must not be embedded twice"
+        );
     }
 
     #[test]

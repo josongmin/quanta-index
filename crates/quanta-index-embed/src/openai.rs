@@ -344,8 +344,41 @@ fn classify_status(status: u16) -> StatusClass {
     }
 }
 
+/// Full-jitter exponential backoff: a uniform random delay in
+/// `[0, RETRY_BASE_DELAY * 2^attempt]`. Jitter is essential once more than one
+/// request (or process) can hit a 429 — a deterministic schedule makes all
+/// retriers wake together and re-stampede. Randomness is confined to retry
+/// timing and never affects embedding output.
 fn backoff_delay(attempt: u32) -> Duration {
-    RETRY_BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt))
+    let bound = RETRY_BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt));
+    let bound_nanos = u64::try_from(bound.as_nanos()).unwrap_or(u64::MAX);
+    if bound_nanos == 0 {
+        return Duration::ZERO;
+    }
+    let jittered = next_jitter_u64().checked_rem(bound_nanos).unwrap_or(0);
+    Duration::from_nanos(jittered)
+}
+
+/// Process-local xorshift64 PRNG for backoff jitter only. Seeded once from the
+/// wall clock; not cryptographic and used for nothing but retry timing.
+fn next_jitter_u64() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let mut state = STATE.load(Ordering::Relaxed);
+    if state == 0 {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        // Force non-zero so the generator never latches at zero.
+        state = seed | 1;
+    }
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    STATE.store(state, Ordering::Relaxed);
+    state
 }
 
 fn preview(body: &str) -> String {
@@ -462,6 +495,25 @@ mod tests {
         let vectors = provider.embed_batch(&[]).expect("empty ok");
         assert!(vectors.is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0, "empty input must make no HTTP calls");
+    }
+
+    // P0-2: full-jitter backoff stays within the exponential bound every sample.
+    #[test]
+    fn backoff_jitter_stays_within_exponential_bound() {
+        for attempt in 0_u32..5 {
+            let bound = RETRY_BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt));
+            for _sample in 0..64 {
+                let delay = backoff_delay(attempt);
+                assert!(
+                    delay <= bound,
+                    "attempt {attempt}: delay {delay:?} exceeds bound {bound:?}"
+                );
+            }
+        }
+        // Attempt 0's bound is exactly RETRY_BASE_DELAY.
+        for _sample in 0..64 {
+            assert!(backoff_delay(0) <= RETRY_BASE_DELAY);
+        }
     }
 
     #[test]
