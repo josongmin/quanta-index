@@ -309,9 +309,10 @@ impl OpenAiEmbeddingProvider {
     /// pulling the next batch index from a shared cursor and running its own
     /// retry/backoff. The transport is `Send + Sync`, so `&self` is shared
     /// directly with no clone. Results are reassembled by batch index, so the
-    /// returned vectors keep input order regardless of completion order; the
-    /// first error (in input order) is propagated and a worker stops pulling new
-    /// work once any batch has failed (bounds wasted requests on failure).
+    /// returned vectors keep input order regardless of completion order. An error
+    /// fails the whole call (returning the lowest-index error among batches that
+    /// ran), and a worker stops pulling new work once any batch has failed (bounds
+    /// wasted requests on failure).
     fn embed_batches_concurrently(
         &self,
         texts: &[&str],
@@ -322,13 +323,12 @@ impl OpenAiEmbeddingProvider {
         let cursor = AtomicUsize::new(0);
         let failed = AtomicBool::new(false);
         let worker_count = self.concurrency.min(batches.len()).max(1);
-        let worker_results: Result<Vec<Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)>>, CoreError> =
+        let worker_results: Result<Vec<Vec<IndexedBatchResult>>, CoreError> =
             std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..worker_count)
                     .map(|_| {
                         scope.spawn(|| {
-                            let mut local: Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)> =
-                                Vec::new();
+                            let mut local: Vec<IndexedBatchResult> = Vec::new();
                             loop {
                                 if failed.load(Ordering::Relaxed) {
                                     break;
@@ -368,7 +368,7 @@ impl OpenAiEmbeddingProvider {
             });
 
         // Reassemble in batch-index order so output matches input order.
-        let mut indexed: Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)> =
+        let mut indexed: Vec<IndexedBatchResult> =
             worker_results?.into_iter().flatten().collect();
         indexed.sort_by_key(|(index, _)| *index);
         let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
@@ -508,6 +508,10 @@ fn classify_status(status: u16) -> StatusClass {
         _ => StatusClass::Fatal,
     }
 }
+
+/// A batch's embedding result paired with its batch index, used to reassemble
+/// concurrent worker output back into input order.
+type IndexedBatchResult = (usize, Result<Vec<Vec<f32>>, CoreError>);
 
 #[derive(Clone, Copy)]
 struct RequestBatch {
@@ -845,6 +849,69 @@ mod tests {
                 assert_eq!(code, LexicalErrorCode::SemProviderTransport.as_code_str());
             }
             other => panic!("a fatal batch must fail the whole concurrent call, got {other:?}"),
+        }
+    }
+
+    /// Succeeds for every input except `"t<fail_at>"`, which gets a fatal status —
+    /// so most concurrent batches succeed while exactly one fails.
+    struct PartialFailureTransport {
+        fail_at: usize,
+    }
+
+    impl EmbeddingTransport for PartialFailureTransport {
+        fn post_embeddings(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            body: &str,
+        ) -> Result<HttpResponse, CoreError> {
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).expect("partial: body is valid json");
+            let inputs = parsed
+                .get("input")
+                .and_then(serde_json::Value::as_array)
+                .expect("partial: body has an input array");
+            let mut items: Vec<(usize, Vec<f32>)> = Vec::new();
+            for (position, value) in inputs.iter().enumerate() {
+                let text = value.as_str().expect("partial: input is a string");
+                let n: usize = text
+                    .trim_start_matches('t')
+                    .parse()
+                    .expect("partial: input is t<N>");
+                if n == self.fail_at {
+                    return Ok(HttpResponse {
+                        status: 400,
+                        body: "{\"error\":\"forced\"}".to_string(),
+                    });
+                }
+                items.push((position, vec![n as f32]));
+            }
+            Ok(ok_body(&items))
+        }
+    }
+
+    #[test]
+    fn concurrent_embed_batch_fails_closed_when_one_of_many_batches_errors() {
+        // Partial-failure race: with max_batch=1 over 8 inputs (8 batches) and
+        // concurrency=4, batch "t5" fails while the other seven succeed. The whole
+        // call must still fail closed — a partial success must never leak through as
+        // Ok with a short or hole-punched vector list.
+        let provider = OpenAiEmbeddingProvider::new(
+            cfg(1).with_max_batch(1).with_concurrency(4),
+            Box::new(PartialFailureTransport { fail_at: 5 }),
+        )
+        .expect("provider builds");
+        let texts: Vec<String> = (0..8).map(|n| format!("t{n}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        match provider.embed_batch(&refs) {
+            Err(CoreError::Typed { code, .. }) => {
+                assert_eq!(
+                    code,
+                    LexicalErrorCode::SemProviderTransport.as_code_str(),
+                    "one failing batch among successes must fail the whole call"
+                );
+            }
+            other => panic!("partial failure must fail closed, got {other:?}"),
         }
     }
 
