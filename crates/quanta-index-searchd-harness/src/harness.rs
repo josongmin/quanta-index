@@ -491,6 +491,102 @@ impl E2eRuntime {
             .collect())
     }
 
+    /// Ingest several files as ONE multi-scope corpus batch (one scope per file).
+    ///
+    /// This is the realistic shape of a production ingest wave: many files in a
+    /// single batch. The semantic derivation then embeds the whole wave in one
+    /// batched provider call instead of one call per file — the batching that the
+    /// per-file `ingest_text*` helpers cannot exercise (each makes a single-scope
+    /// batch). Returns the chunk ids across all files in ingest order.
+    pub fn ingest_text_files_one_batch(
+        &mut self,
+        files: &[(&str, &[E2eTextChunkSpec<'_>])],
+    ) -> AnyResult<Vec<String>> {
+        if files.is_empty() {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: ingest_text_files_one_batch requires at least one file"
+            ));
+        }
+        let mut scopes = Vec::with_capacity(files.len());
+        let mut all_ids = Vec::new();
+        for (path, chunks) in files {
+            if chunks.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: file `{path}` requires at least one chunk"
+                ));
+            }
+            let language = LanguageCode::new(language_from_path(path)).map_err(|err| {
+                anyhow::anyhow!("language_from_path must return canonical lowercase codes: {err}")
+            })?;
+            let records = chunks
+                .iter()
+                .map(|chunk| {
+                    let chunk_id = ChunkId::new(format!(
+                        "e2e-{}-{path}",
+                        self.request_id_counter.fetch_add(1, Ordering::Relaxed)
+                    ));
+                    let source_repo_id = chunk.source_repo_id.map(RepoId::new);
+                    Ok::<ChunkRecord, anyhow::Error>(ChunkRecord {
+                        chunk_id,
+                        repo_relative_path: RepoRelativePath::new(*path),
+                        language: language.clone(),
+                        start_byte: 0,
+                        end_byte: u32::try_from(chunk.content.len()).map_err(|err| {
+                            anyhow::anyhow!("e2e harness content length overflow: {err}")
+                        })?,
+                        start_line: chunk.start_line,
+                        end_line: chunk.end_line,
+                        text: chunk.content.to_string().into_boxed_str(),
+                        structural: None,
+                        parent_chunk_id: None,
+                        source_repo_id,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for record in &records {
+                all_ids.push(record.chunk_id.as_str().to_string());
+            }
+            if let Some(last_record) = records.last().cloned() {
+                let _old = self
+                    .chunk_ids_by_path
+                    .insert((*path).to_string(), last_record.chunk_id.clone());
+                let _old = self
+                    .chunk_records_by_path
+                    .insert((*path).to_string(), last_record);
+            }
+            scopes.push(SearchCorpusReplaceScope {
+                scope: scope_key(path),
+                scope_digest: format!("scope:{path}:{}-chunks", records.len()),
+                chunks: records,
+                symbols: Vec::new(),
+            });
+        }
+        let (mode, base_generation) = self.lexical_batch_contract();
+        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            SearchCorpusIngestBatch {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                generation: self.current_generation(),
+                base_generation,
+                manifest_digest: format!(
+                    "lex-multi:{}:{}",
+                    files.len(),
+                    self.current_generation().get()
+                ),
+                batch_digest: format!(
+                    "lex-multi-batch:{}",
+                    self.request_id_counter.load(Ordering::Relaxed)
+                ),
+                mode,
+                bundle_payload: None,
+                replace_scopes: scopes,
+                tombstone_scopes: Vec::new(),
+                seal: false,
+            },
+        ))?;
+        Ok(all_ids)
+    }
+
     pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
         let (mode, base_generation) = self.lexical_batch_contract();
         self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(

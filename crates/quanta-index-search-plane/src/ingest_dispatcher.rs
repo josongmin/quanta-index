@@ -370,31 +370,47 @@ fn derive_semantic_batch_from_search_corpus_batch(
         ));
     }
     let model_contract = embedding_model_contract_for(embedder)?;
+    // Embed the WHOLE batch in one call: gather every chunk text across ALL
+    // scopes and hand them to the embedder together, so a real provider packs
+    // them into the fewest token-budget-bounded requests (one network round trip
+    // can carry many scopes/files). Embedding per scope instead forces at least
+    // one request per scope — in practice one per file — which provider telemetry
+    // confirmed dominates ingest cost. The deterministic hash embedder is
+    // unaffected: its per-text vectors are identical regardless of batching.
+    let all_texts: Vec<&str> = batch
+        .replace_scopes
+        .iter()
+        .flat_map(|scope| scope.chunks.iter().map(|chunk| chunk.text.as_ref()))
+        .collect();
+    let all_vectors = embedder.embed_batch(&all_texts)?;
+    if all_vectors.len() != all_texts.len() {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic derivation: embedder returned {} vectors for {} batched chunk texts",
+            all_vectors.len(),
+            all_texts.len()
+        )));
+    }
+
+    // Redistribute the flat vectors back to their scopes IN ORDER. A draining
+    // iterator preserves chunk<->vector alignment without index arithmetic; an
+    // underflow (fewer vectors than chunks) and a leftover (more than chunks)
+    // both fail closed rather than silently misalign a vector with a chunk.
+    let mut vectors = all_vectors.into_iter();
     let replace_scopes = batch
         .replace_scopes
         .iter()
         .map(|scope| {
-            // Batch the scope's chunk texts into one embed call: a single
-            // network round-trip per scope for a real provider, and identical
-            // per-text vectors for the deterministic hash embedder.
-            let texts: Vec<&str> = scope
-                .chunks
-                .iter()
-                .map(|chunk| chunk.text.as_ref())
-                .collect();
-            let vectors = embedder.embed_batch(&texts)?;
-            if vectors.len() != scope.chunks.len() {
-                return Err(CoreError::InvalidContract(format!(
-                    "semantic derivation: embedder returned {} vectors for {} chunks",
-                    vectors.len(),
-                    scope.chunks.len()
-                )));
-            }
             let embeddings = scope
                 .chunks
                 .iter()
-                .zip(vectors)
-                .map(|(chunk, vector)| {
+                .map(|chunk| {
+                    let vector = vectors.next().ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "semantic derivation: ran out of embedding vectors while \
+                             redistributing the batched embed result across scopes"
+                                .to_string(),
+                        )
+                    })?;
                     embedding_record_for(
                         chunk,
                         semantic_embedding_input_text(chunk),
@@ -410,6 +426,12 @@ fn derive_semantic_batch_from_search_corpus_batch(
             })
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
+    if vectors.next().is_some() {
+        return Err(CoreError::InvalidContract(
+            "semantic derivation: batched embed produced more vectors than the batch had chunks"
+                .to_string(),
+        ));
+    }
     Ok(SemanticIngestBatch {
         repo_id: batch.repo_id.clone(),
         revision_id: batch.revision_id.clone(),
@@ -1335,6 +1357,177 @@ mod tests {
                 }
             }
             other => return Err(format!("dim mismatch must fail closed, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    fn chunk_record_v(
+        id: &str,
+        path: &str,
+        text: &str,
+    ) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        Ok(ChunkRecord {
+            chunk_id: ChunkId::new(id),
+            repo_relative_path: RepoRelativePath::new(path),
+            language: quanta_index_contract::lex::LanguageCode::new("rust")
+                .map_err(str::to_string)?,
+            start_byte: 0,
+            end_byte: 24,
+            start_line: 1,
+            end_line: 1,
+            text: text.to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        })
+    }
+
+    fn scope_with_chunks(
+        path: &str,
+        digest: &str,
+        chunks: Vec<ChunkRecord>,
+    ) -> SearchCorpusReplaceScope {
+        SearchCorpusReplaceScope {
+            scope: SearchScopeKey {
+                doc_surface: SearchScopeSurface::Chunk,
+                repo_relative_path: RepoRelativePath::new(path),
+            },
+            scope_digest: digest.to_string(),
+            chunks,
+            symbols: Vec::new(),
+        }
+    }
+
+    // A batch spanning 3 scopes with 2 / 1 / 2 chunks = 5 chunk texts in total.
+    fn multi_scope_corpus_batch() -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
+        Ok(SearchCorpusIngestBatch {
+            repo_id: RepoId::new("r"),
+            revision_id: RevisionId::new("rev"),
+            generation: ManifestGeneration::new(7),
+            base_generation: None,
+            manifest_digest: "manifest:lex".to_string(),
+            batch_digest: "batch:lex".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            bundle_payload: None,
+            replace_scopes: vec![
+                scope_with_chunks(
+                    "a.rs",
+                    "scope:a",
+                    vec![
+                        chunk_record_v("a-1", "a.rs", "alpha one")?,
+                        chunk_record_v("a-2", "a.rs", "alpha two")?,
+                    ],
+                ),
+                scope_with_chunks(
+                    "b.rs",
+                    "scope:b",
+                    vec![chunk_record_v("b-1", "b.rs", "beta one")?],
+                ),
+                scope_with_chunks(
+                    "c.rs",
+                    "scope:c",
+                    vec![
+                        chunk_record_v("c-1", "c.rs", "gamma one")?,
+                        chunk_record_v("c-2", "c.rs", "gamma two")?,
+                    ],
+                ),
+            ],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        })
+    }
+
+    // An embedder that counts embed_batch calls and returns one zero vector per
+    // input text, so a test can assert how many provider round trips a batch costs.
+    struct CountingEmbedder {
+        dimension: usize,
+        calls: Mutex<usize>,
+    }
+
+    impl TextEmbeddingProvider for CountingEmbedder {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+            {
+                let mut calls = self.calls.lock().map_err(|err| {
+                    CoreError::InvalidContract(format!("counting embedder lock poisoned: {err}"))
+                })?;
+                *calls += 1;
+            }
+            Ok(texts.iter().map(|_| vec![0.0_f32; self.dimension]).collect())
+        }
+        fn model_id(&self) -> &str {
+            "counting-embedder"
+        }
+        fn model_version(&self) -> Option<&str> {
+            None
+        }
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+    }
+
+    // CASE-COVERS: a multi-scope ingest batch is embedded in ONE provider call
+    // (not one per scope/file), and the flat vectors are redistributed back to
+    // each scope's chunks IN ORDER. Reverting the derivation to a per-scope embed
+    // makes the call-count assertion fail; misaligning the redistribution makes
+    // the chunk-id-order assertion fail.
+    #[test]
+    fn corpus_derivation_batches_all_scopes_into_one_embed_call() -> TestRes {
+        let embedder = Arc::new(CountingEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            calls: Mutex::new(0),
+        });
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+            DirectSemanticMaterializer::new(semantic_builder.clone(), Arc::clone(&semantic_ledger)),
+        );
+        let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            search_corpus_builder,
+            lexical_ledger,
+            semantic_materializer,
+            embedder.clone(),
+        );
+
+        let batch = multi_scope_corpus_batch()?;
+        let _receipt = materializer.publish_batch(&batch)?;
+
+        // (1) The whole 3-scope / 5-chunk batch costs exactly ONE embed call.
+        let calls = *embedder
+            .calls
+            .lock()
+            .map_err(|err| format!("counting embedder lock poisoned: {err}"))?;
+        if calls != 1 {
+            return Err(format!(
+                "expected ONE batched embed call for the whole batch, got {calls} (per-scope regression)"
+            )
+            .into());
+        }
+
+        // (2) Vectors redistributed back to scopes with chunk counts + order intact.
+        let derived = semantic_builder.take()?;
+        let derived_batch = derived
+            .first()
+            .ok_or_else(|| "expected one derived semantic batch".to_string())?;
+        let per_scope_counts: Vec<usize> = derived_batch
+            .replace_scopes
+            .iter()
+            .map(|scope| scope.embeddings.len())
+            .collect();
+        if per_scope_counts != vec![2, 1, 2] {
+            return Err(format!(
+                "scope->chunk redistribution wrong: {per_scope_counts:?}, expected [2, 1, 2]"
+            )
+            .into());
+        }
+        let ids: Vec<&str> = derived_batch
+            .replace_scopes
+            .iter()
+            .flat_map(|scope| scope.embeddings.iter().map(|record| record.embedding_id.as_str()))
+            .collect();
+        if ids != vec!["a-1", "a-2", "b-1", "c-1", "c-2"] {
+            return Err(format!("chunk<->vector alignment lost across scopes: {ids:?}").into());
         }
         Ok(())
     }

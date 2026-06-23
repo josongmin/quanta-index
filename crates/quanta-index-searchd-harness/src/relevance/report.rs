@@ -29,7 +29,7 @@ use crate::artifact::BenchSyntax;
 use crate::harness::E2eRuntime;
 use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
-    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES, SEMANTIC_RELEVANCE_REPO,
+    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES,
     SOURCEGRAPH_OVERLAP_BUCKETS, SemanticIntentKind, SemanticJudgedQuery, SourcegraphOverlapBucket,
     TOP_K, semantic_fixture_docs,
 };
@@ -162,15 +162,20 @@ pub fn prepare_relevance_runtime() -> AnyResult<E2eRuntime> {
 
 fn seed_semantic_relevance_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     use crate::harness::E2eTextChunkSpec;
+    // Seed the WHOLE semantic corpus as ONE multi-scope ingest batch (one scope
+    // per file), the realistic shape of a production ingest wave. The semantic
+    // derivation then embeds the entire corpus in a single batched provider call
+    // instead of one call per file, so the provider-stats request count reflects
+    // real batching rather than a per-file seeding artifact. auth/token_refresh.rs
+    // is split into two chunks so same-path collapse still has repeats to fold.
+    let mut chunk_specs: Vec<(&str, Vec<E2eTextChunkSpec<'_>>)> = Vec::new();
     for (path, content) in semantic_fixture_docs() {
         if path == "auth/token_refresh.rs" {
-            // Two chunks, same path -> exercises same-path collapse on the rail.
             let half = content.len() / 2;
             let (head, tail) = content.split_at(half);
-            let _ids = rt.ingest_text_chunks(
-                SEMANTIC_RELEVANCE_REPO,
+            chunk_specs.push((
                 path,
-                &[
+                vec![
                     E2eTextChunkSpec {
                         content: head,
                         start_line: 1,
@@ -184,11 +189,24 @@ fn seed_semantic_relevance_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
                         source_repo_id: None,
                     },
                 ],
-            )?;
+            ));
         } else {
-            rt.ingest_text(SEMANTIC_RELEVANCE_REPO, path, content)?;
+            chunk_specs.push((
+                path,
+                vec![E2eTextChunkSpec {
+                    content,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: None,
+                }],
+            ));
         }
     }
+    let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = chunk_specs
+        .iter()
+        .map(|(path, chunks)| (*path, chunks.as_slice()))
+        .collect();
+    let _ids = rt.ingest_text_files_one_batch(&files)?;
     Ok(())
 }
 
