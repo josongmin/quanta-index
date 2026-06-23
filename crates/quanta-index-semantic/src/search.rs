@@ -210,18 +210,19 @@ fn column_as_f32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float32Ar
 /// Convert a lancedb cosine *distance* to the query contract's cosine
 /// *similarity* (`1 - distance`), failing closed on a non-finite distance.
 ///
-/// A NaN/Inf distance signals a corrupt index or a degenerate vector; letting it
-/// propagate would seed a NaN score into ranked output and `semantic_score_raw`,
-/// which downstream consumers do not expect. Reject it with a typed error instead
-/// of emitting a silent non-finite score (R-SAFE-03 fail-closed).
+/// A NaN/Inf distance signals a corrupt index or a degenerate *stored* vector
+/// (not a bad query vector), so it is reported as `CoreError::Storage` — the same
+/// channel as the sibling lancedb integrity checks (missing column, row-count
+/// mismatch) — rather than `SEM_INVALID_VECTOR`, which means a bad *query* vector
+/// everywhere else. Letting it propagate would seed a NaN score into ranked
+/// output and `semantic_score_raw`. A non-finite distance aborts the entire query
+/// (not just the row), by design: a corrupt generation must not serve partial
+/// ranked output (R-SAFE-03 fail-closed).
 fn cosine_distance_to_score_v1(distance: f32, candidate_id: &str) -> Result<f32, CoreError> {
     if !distance.is_finite() {
-        return Err(CoreError::Typed {
-            code: LexicalErrorCode::SemInvalidVector.as_code_str().to_string(),
-            message: format!(
-                "semantic: non-finite cosine distance {distance} from lancedb for candidate {candidate_id} (corrupt index or degenerate vector)"
-            ),
-        });
+        return Err(CoreError::Storage(format!(
+            "semantic: non-finite cosine distance {distance} from lancedb for candidate {candidate_id} (corrupt index or degenerate stored vector)"
+        )));
     }
     // Lancedb returns cosine *distance* in [0, 2]; the historical query contract
     // is cosine *similarity* in [-1, 1] (higher = better).
@@ -421,7 +422,6 @@ impl SemanticSearcher for PersistedSemanticSearcher {
 #[cfg(test)]
 mod tests {
     use super::cosine_distance_to_score_v1;
-    use quanta_index_contract::lex::LexicalErrorCode;
     use quanta_index_core::CoreError;
 
     // CASE-COVERS: non-finite cosine distance must fail closed, not seed a NaN score.
@@ -432,15 +432,17 @@ mod tests {
         assert_eq!(cosine_distance_to_score_v1(2.0, "c").expect("finite ok"), -1.0);
         assert_eq!(cosine_distance_to_score_v1(0.5, "c").expect("finite ok"), 0.5);
 
-        // NaN / +Inf / -Inf each fail closed with SEM_INVALID_VECTOR (not a NaN score).
+        // NaN / +Inf / -Inf each fail closed as a storage/index-corruption error
+        // (not a query-vector error, not a silent NaN score).
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             match cosine_distance_to_score_v1(bad, "candidate-x") {
-                Err(CoreError::Typed { code, .. }) => assert_eq!(
-                    code,
-                    LexicalErrorCode::SemInvalidVector.as_code_str(),
-                    "non-finite distance {bad} must surface SEM_INVALID_VECTOR"
+                Err(CoreError::Storage(message)) => assert!(
+                    message.contains("non-finite cosine distance"),
+                    "storage error must name the corruption, got {message}"
                 ),
-                other => panic!("non-finite distance {bad} must fail closed, got {other:?}"),
+                other => panic!(
+                    "non-finite distance {bad} must fail closed as Storage, got {other:?}"
+                ),
             }
         }
     }

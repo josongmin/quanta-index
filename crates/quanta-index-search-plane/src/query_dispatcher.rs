@@ -4472,11 +4472,17 @@ fn build_semantic_response_explanation(
         stage: PlannerStage::Merge,
         detail: format!("semantic.results={result_count}"),
     });
-    let engines_touched = if scoped {
-        vec![EngineTouched::Lexical, EngineTouched::Semantic]
-    } else {
-        vec![EngineTouched::Semantic]
-    };
+    // Honest engine contribution (consistent with the hybrid path): report a lane
+    // only when it actually contributed, never as a fixed capability claim. The
+    // lexical scope contributed only if it narrowed to candidates; the semantic
+    // engine only if it returned results.
+    let mut engines_touched = Vec::new();
+    if scoped && scope_candidate_count > 0 {
+        engines_touched.push(EngineTouched::Lexical);
+    }
+    if result_count > 0 {
+        engines_touched.push(EngineTouched::Semantic);
+    }
     let summary = if scoped {
         format!(
             "semantic scoped query returned {result_count} candidates from text scope of {scope_candidate_count}"
@@ -4490,7 +4496,9 @@ fn build_semantic_response_explanation(
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
-        strategy: if scoped {
+        strategy: if result_count == 0 {
+            "empty".to_string()
+        } else if scoped {
             "semantic_scoped".to_string()
         } else {
             "semantic".to_string()
@@ -4520,11 +4528,15 @@ fn build_hybrid_response_explanation(
     if semantic_hits > 0 {
         engines_touched.push(EngineTouched::Semantic);
     }
-    let strategy = match (lexical_hits, semantic_hits) {
-        // semantic is scoped to lexical, so semantic_hits > 0 implies lexical_hits > 0
-        (l, s) if l > 0 && s > 0 => "rrf",
-        (l, _) if l > 0 => "lexical_only",
-        _ => "empty",
+    let strategy = match (lexical_hits > 0, semantic_hits > 0) {
+        (true, true) => "rrf",
+        (true, false) => "lexical_only",
+        // Production-unreachable: the semantic lane is scoped to lexical recall, so
+        // semantic_hits > 0 requires lexical_hits > 0. Kept self-consistent with
+        // engines_touched (= [Semantic]) rather than collapsing to the nonsensical
+        // "empty"-with-Semantic-touched state, so strategy and engines never disagree.
+        (false, true) => "semantic_only",
+        (false, false) => "empty",
     }
     .to_string();
     SearchExplanation {
@@ -4645,6 +4657,15 @@ mod tests {
             "empty hybrid must claim no engines, got {:?}",
             empty.engines_touched
         );
+
+        // INVARIANT arm (production-unreachable: semantic is scoped to lexical, so
+        // semantic_hits>0 requires lexical_hits>0). The output must still be
+        // self-consistent — engines=[Semantic] AND strategy="semantic_only", never
+        // the nonsensical empty-strategy-with-Semantic-engine state.
+        // args: (lexical_universe, lexical_hits=0, semantic_hits=1, fused, top_k, stop)
+        let semantic_only = build_hybrid_response_explanation(0, 0, 1, 1, 100, None);
+        assert_eq!(semantic_only.strategy, "semantic_only");
+        assert_eq!(semantic_only.engines_touched, vec![EngineTouched::Semantic]);
     }
 
     // CASE-COVERS: query-time semantic model-identity enforcement (SEM_MODEL_MISMATCH).

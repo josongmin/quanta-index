@@ -348,9 +348,7 @@ fn search_owned_semantic_model_contract() -> Result<EmbeddingModelContract, Core
         dimension,
         normalization: EmbeddingNormalization::L2Unit,
         distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: "search-owned-hash-text-v1:chunk.text"
-            .to_string()
-            .into_boxed_str(),
+        policy_digest: format!("{SEARCH_OWNED_SEMANTIC_MODEL_ID}:chunk.text").into_boxed_str(),
         view_policy_digest: None,
     })
 }
