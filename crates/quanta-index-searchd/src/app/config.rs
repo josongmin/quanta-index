@@ -166,9 +166,11 @@ impl SearchdConfig {
 }
 
 /// Resolve the semantic embedder profile from env. Defaults to the deterministic
-/// hash embedder; an unknown selector or a not-yet-wired provider fails closed
-/// (no silent fallback). `openai` is reserved for the OpenAI provider phase.
-fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderProfile> {
+/// hash embedder; an unknown selector or a missing OpenAI key fails closed (no
+/// silent fallback). Applied on BOTH config entry points (state-root override and
+/// full from_env) so `QUANTA_INDEX_EMBEDDER` is honored regardless of how the
+/// state root was resolved.
+pub(crate) fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderProfile> {
     match std::env::var("QUANTA_INDEX_EMBEDDER").ok().as_deref() {
         None | Some("") | Some("hash") => Ok(SemanticEmbedderProfile::Hash {
             dimension: embed_dim_from_env(SEARCH_OWNED_SEMANTIC_DIMENSION)?,

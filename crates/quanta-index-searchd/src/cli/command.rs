@@ -33,7 +33,13 @@ impl SearchdCommand {
 
     pub fn into_config(self) -> Result<SearchdConfig> {
         if let Some(root) = self.state_root_override {
-            return Ok(SearchdConfig::from_state_root(root));
+            // The semantic embedder profile is env-driven regardless of how the
+            // state root was resolved, so `--state-root` still honors
+            // QUANTA_INDEX_EMBEDDER (otherwise an explicit state root would
+            // silently force the hash embedder).
+            return Ok(SearchdConfig::from_state_root(root).with_semantic_embedder_profile(
+                crate::app::config::semantic_embedder_profile_from_env()?,
+            ));
         }
         SearchdConfig::from_env()
     }
