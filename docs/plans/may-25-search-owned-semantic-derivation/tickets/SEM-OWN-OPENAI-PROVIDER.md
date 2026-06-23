@@ -35,6 +35,13 @@ QUANTA_INDEX_EMBEDDER=openai            # default: hash
 OPENAI_API_KEY=<key>                    # required for openai; never logged
 QUANTA_INDEX_EMBED_MODEL=text-embedding-3-small   # default
 QUANTA_INDEX_EMBED_DIM=1536                        # default
+
+# Operational knobs (optional; unset => provider defaults). Resolved by the
+# daemon and threaded into the provider/cache at the composition root.
+QUANTA_INDEX_EMBED_BATCH=256            # max inputs per /v1/embeddings request (>=1)
+QUANTA_INDEX_EMBED_MAX_RETRIES=3        # bounded retries on 429/5xx/transport (0 = none)
+QUANTA_INDEX_EMBED_TIMEOUT_SECS=60      # per-request HTTP timeout in seconds (>=1)
+QUANTA_INDEX_EMBED_CACHE=true           # on-disk embedding cache; true|false|on|off|1|0
 ```
 Real semantic-relatedness proof (synonym closer than unrelated; impossible with
 the hash embedder):
