@@ -21,7 +21,7 @@ pub use ingest_dispatcher::{
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
     LegacySemanticJournalStore, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    SEARCH_OWNED_SEMANTIC_MODEL_ID, SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use quanta_index_lq_obs::{MetricSample, ObsError};

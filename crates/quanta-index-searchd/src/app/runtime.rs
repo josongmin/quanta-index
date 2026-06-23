@@ -84,6 +84,17 @@ impl QueryTextEmbedderPort for ProviderUnavailableQueryTextEmbedder {
             message: "query-time embedder is not configured for this runtime".to_string(),
         })
     }
+
+    fn model_id(&self) -> &str {
+        // Sentinel only: this embedder always fails `embed_query` before any
+        // model-identity comparison runs, so this value is never used to decide
+        // a query. It must not collide with a real model id.
+        "provider-unavailable"
+    }
+
+    fn model_version(&self) -> Option<&str> {
+        None
+    }
 }
 
 struct NoopQueryObsSink;

@@ -3,6 +3,15 @@ use quanta_index_core::CoreError;
 
 pub trait QueryTextEmbedderPort {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
+
+    /// Stable identity of the model this embedder produces query vectors for.
+    /// Query vectors are only comparable (cosine) against a corpus indexed by the
+    /// SAME model; the query path enforces this against the indexed generation's
+    /// persisted model identity and fails closed (SEM_MODEL_MISMATCH) on drift.
+    fn model_id(&self) -> &str;
+
+    /// Optional model version, compared alongside [`Self::model_id`].
+    fn model_version(&self) -> Option<&str>;
 }
 
 pub struct HashingQueryTextEmbedder {
@@ -19,6 +28,16 @@ impl HashingQueryTextEmbedder {
 impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError> {
         hash_query_text(query_text, self.dimension)
+    }
+
+    fn model_id(&self) -> &str {
+        crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
+    }
+
+    fn model_version(&self) -> Option<&str> {
+        // The search-owned hash embedder carries no model version (matches the
+        // corpus EmbeddingModelContract.model_version = None).
+        None
     }
 }
 

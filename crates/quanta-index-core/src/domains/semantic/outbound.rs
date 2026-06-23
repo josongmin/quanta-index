@@ -52,4 +52,14 @@ pub trait SemanticSearcher: Send + Sync {
         allowed_ids: &BTreeSet<String>,
         top_k: u32,
     ) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Model identity the indexed vectors were built with (from the generation's
+    /// persisted manifest). The query path compares this against the query
+    /// embedder's model identity and fails closed if they differ — a query
+    /// vector from a different model is not cosine-comparable even at equal
+    /// dimension.
+    fn index_model_id(&self) -> &str;
+
+    /// Optional model version paired with [`Self::index_model_id`].
+    fn index_model_version(&self) -> Option<&str>;
 }

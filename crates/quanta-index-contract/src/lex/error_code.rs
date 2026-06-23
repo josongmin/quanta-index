@@ -115,6 +115,7 @@ pub enum LexicalErrorCode {
 
     // --- SEM-01 semantic ---
     SemDimMismatch,
+    SemModelMismatch,
     SemNotReady,
     SemInvalidVector,
     SemProviderUnavailable,
@@ -212,6 +213,7 @@ impl LexicalErrorCode {
         Self::DirtyPayloadDecodeFail,
         Self::InvalidBufferConfig,
         Self::SemDimMismatch,
+        Self::SemModelMismatch,
         Self::SemNotReady,
         Self::SemInvalidVector,
         Self::SemProviderUnavailable,
@@ -302,6 +304,7 @@ impl LexicalErrorCode {
             Self::DirtyPayloadDecodeFail => "DIRTY_PAYLOAD_DECODE_FAIL",
             Self::InvalidBufferConfig => "INVALID_BUFFER_CONFIG",
             Self::SemDimMismatch => "SEM_DIM_MISMATCH",
+            Self::SemModelMismatch => "SEM_MODEL_MISMATCH",
             Self::SemNotReady => "SEM_NOT_READY",
             Self::SemInvalidVector => "SEM_INVALID_VECTOR",
             Self::SemProviderUnavailable => "SEM_PROVIDER_UNAVAILABLE",

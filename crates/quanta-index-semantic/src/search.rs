@@ -91,6 +91,8 @@ pub(crate) struct LoadedGeneration {
     revision_id: RevisionId,
     generation: ManifestGeneration,
     dimension: usize,
+    model_id: String,
+    model_version: Option<String>,
     table: lancedb::Table,
 }
 
@@ -160,6 +162,8 @@ pub(crate) async fn open_generation(
         revision_id: revision.clone(),
         generation,
         dimension,
+        model_id: manifest.model_id.clone(),
+        model_version: manifest.model_version.clone(),
         table,
     })
 }
@@ -245,6 +249,14 @@ fn extract_candidates(
 }
 
 impl LoadedGeneration {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn model_version(&self) -> Option<&str> {
+        self.model_version.as_deref()
+    }
+
     fn check_query_dim(&self, query_vector: &[f32]) -> Result<(), CoreError> {
         if query_vector.len() == self.dimension {
             return Ok(());
@@ -376,5 +388,13 @@ impl SemanticSearcher for PersistedSemanticSearcher {
             self.loaded
                 .search_scoped_async(query_vector, allowed_ids, limit),
         )
+    }
+
+    fn index_model_id(&self) -> &str {
+        self.loaded.model_id()
+    }
+
+    fn index_model_version(&self) -> Option<&str> {
+        self.loaded.model_version()
     }
 }

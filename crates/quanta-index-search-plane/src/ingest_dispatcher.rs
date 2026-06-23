@@ -330,6 +330,12 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
 
 pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
 
+/// SSOT for the search-owned hash embedder's model identity. Both the corpus
+/// derivation contract (here) and the query-time `HashingQueryTextEmbedder`
+/// (`query_embedder.rs`) read this so the two sides cannot silently disagree on
+/// model identity; query-time enforcement rejects a mismatch (SEM_MODEL_MISMATCH).
+pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
+
 fn search_owned_semantic_model_contract() -> Result<EmbeddingModelContract, CoreError> {
     let dimension = u32::try_from(SEARCH_OWNED_SEMANTIC_DIMENSION).map_err(|err| {
         CoreError::InvalidContract(format!(
@@ -337,7 +343,7 @@ fn search_owned_semantic_model_contract() -> Result<EmbeddingModelContract, Core
         ))
     })?;
     Ok(EmbeddingModelContract {
-        model_id: "search-owned-hash-text-v1".to_string().into_boxed_str(),
+        model_id: SEARCH_OWNED_SEMANTIC_MODEL_ID.to_string().into_boxed_str(),
         model_version: None,
         dimension,
         normalization: EmbeddingNormalization::L2Unit,

@@ -367,6 +367,13 @@ impl SearchPlaneDispatcher {
             .query_embedder
             .embed_query(request.query_text.as_str())
             .map_err(|err| prefix_semantic_query_error("semantic", err))?;
+        ensure_query_model_matches_index_v1(
+            self.query_embedder.model_id(),
+            self.query_embedder.model_version(),
+            searcher.index_model_id(),
+            searcher.index_model_version(),
+            "semantic",
+        )?;
         let results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
             searcher.search_scoped(&query_vector, scope_ids, request.top_k)?
         } else {
@@ -421,6 +428,13 @@ impl SearchPlaneDispatcher {
             .query_embedder
             .embed_query(request.semantic_query_text.as_str())
             .map_err(|err| prefix_semantic_query_error("hybrid", err))?;
+        ensure_query_model_matches_index_v1(
+            self.query_embedder.model_id(),
+            self.query_embedder.model_version(),
+            sem_searcher.index_model_id(),
+            sem_searcher.index_model_version(),
+            "hybrid",
+        )?;
         let mut sem_results =
             sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
         stabilize_ranked_candidates(&mut sem_results);
@@ -486,6 +500,13 @@ impl SearchPlaneDispatcher {
             .query_embedder
             .embed_query(request.semantic_query_text.as_str())
             .map_err(|err| prefix_semantic_query_error("hybrid seed", err))?;
+        ensure_query_model_matches_index_v1(
+            self.query_embedder.model_id(),
+            self.query_embedder.model_version(),
+            sem_searcher.index_model_id(),
+            sem_searcher.index_model_version(),
+            "hybrid seed",
+        )?;
         let mut sem_results =
             sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
         stabilize_ranked_candidates(&mut sem_results);
@@ -4409,6 +4430,28 @@ fn build_probe_query(probe_text: &str) -> LqQuery {
     }
 }
 
+/// Reject a query whose embedder model identity differs from the indexed
+/// generation's model, even at equal dimension — query vectors from a different
+/// model are not cosine-comparable, so a same-dimension model swap would
+/// otherwise produce silent garbage rankings. Fails closed (SEM_MODEL_MISMATCH).
+fn ensure_query_model_matches_index_v1(
+    embedder_model_id: &str,
+    embedder_model_version: Option<&str>,
+    index_model_id: &str,
+    index_model_version: Option<&str>,
+    plane: &str,
+) -> Result<(), CoreError> {
+    if embedder_model_id == index_model_id && embedder_model_version == index_model_version {
+        return Ok(());
+    }
+    Err(CoreError::Typed {
+        code: LexicalErrorCode::SemModelMismatch.as_code_str().to_string(),
+        message: format!(
+            "{plane}: query embedder model {embedder_model_id}/{embedder_model_version:?} is not comparable to index model {index_model_id}/{index_model_version:?} (equal dimension is insufficient; vectors from different models are not cosine-comparable)"
+        ),
+    })
+}
+
 fn build_semantic_response_explanation(
     scope_candidate_count: usize,
     scoped: bool,
@@ -4464,6 +4507,26 @@ fn build_hybrid_response_explanation(
     internal_top_k: u32,
     early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
+    // The hybrid semantic lane is scoped to the lexical candidate universe
+    // (`search_scoped` over `lexical_ids`), so it re-ranks lexical recall and can
+    // never surface a semantic-only hit. Report the honest lane contribution and
+    // strategy: a genuine two-lane RRF only when BOTH lanes contributed; otherwise
+    // the degraded single-lane reality (or empty), never a symmetric "rrf" over a
+    // starved lane.
+    let mut engines_touched = Vec::new();
+    if lexical_hits > 0 {
+        engines_touched.push(EngineTouched::Lexical);
+    }
+    if semantic_hits > 0 {
+        engines_touched.push(EngineTouched::Semantic);
+    }
+    let strategy = match (lexical_hits, semantic_hits) {
+        // semantic is scoped to lexical, so semantic_hits > 0 implies lexical_hits > 0
+        (l, s) if l > 0 && s > 0 => "rrf",
+        (l, _) if l > 0 => "lexical_only",
+        _ => "empty",
+    }
+    .to_string();
     SearchExplanation {
         planner_trace: vec![
             PlannerTraceEntry {
@@ -4473,7 +4536,7 @@ fn build_hybrid_response_explanation(
             PlannerTraceEntry {
                 stage: PlannerStage::ExecFanout,
                 detail: format!(
-                    "hybrid.lexical_universe={lexical_universe_size}; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}"
+                    "hybrid.semantic_scoped_to_lexical=true; hybrid.lexical_universe={lexical_universe_size}; lexical_hits={lexical_hits}; semantic_hits={semantic_hits}"
                 ),
             },
             PlannerTraceEntry {
@@ -4481,11 +4544,11 @@ fn build_hybrid_response_explanation(
                 detail: format!("hybrid.fused_results={fused_hits}"),
             },
         ],
-        engines_touched: vec![EngineTouched::Lexical, EngineTouched::Semantic],
+        engines_touched,
         early_stop_reason,
         contributions: Vec::new(),
         ranker_weights_hash: [0u8; 32],
-        strategy: "rrf".to_string(),
+        strategy,
         summary: format!(
             "hybrid fused {lexical_hits} lexical and {semantic_hits} semantic candidates into {fused_hits} results"
         ),
@@ -4537,6 +4600,100 @@ mod tests {
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
         SEARCH_OWNED_SEMANTIC_DIMENSION,
     };
+
+    // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
+    #[test]
+    fn build_hybrid_response_explanation_reports_honest_lane_contribution_v1() {
+        use super::build_hybrid_response_explanation;
+        use quanta_index_contract::EngineTouched;
+        // ORIGINAL HAPPY PATH: both lanes contributed -> genuine RRF over both engines.
+        let both = build_hybrid_response_explanation(2, 2, 2, 2, 100, None);
+        assert_eq!(both.strategy, "rrf", "both-lane hybrid must stay rrf");
+        assert_eq!(
+            both.engines_touched,
+            vec![EngineTouched::Lexical, EngineTouched::Semantic],
+            "both-lane hybrid must report symmetric rrf over both engines"
+        );
+
+        // DEGRADED EDGE (the bug this fixes): lexical found candidates but the
+        // semantic re-rank lane (scoped to lexical) matched none -> must NOT claim
+        // a symmetric rrf fusion; it is lexical-only and the Semantic engine is
+        // not touched. Old hardcoded code returned "rrf" + [Lexical, Semantic] here.
+        let lex_only = build_hybrid_response_explanation(3, 3, 0, 3, 100, None);
+        assert_eq!(
+            lex_only.strategy, "lexical_only",
+            "semantic-empty hybrid must report lexical_only, not rrf"
+        );
+        assert_eq!(
+            lex_only.engines_touched,
+            vec![EngineTouched::Lexical],
+            "semantic-empty hybrid must not over-claim the Semantic engine"
+        );
+
+        // EMPTY CORNER: lexical empty -> semantic scoped to empty -> no engine
+        // contributed; honest "empty", no engines claimed.
+        let empty = build_hybrid_response_explanation(0, 0, 0, 0, 100, None);
+        assert_eq!(empty.strategy, "empty", "no-hit hybrid must report empty");
+        assert!(
+            empty.engines_touched.is_empty(),
+            "empty hybrid must claim no engines, got {:?}",
+            empty.engines_touched
+        );
+    }
+
+    // CASE-COVERS: query-time semantic model-identity enforcement (SEM_MODEL_MISMATCH).
+    #[test]
+    fn ensure_query_model_matches_index_v1_fails_closed_on_model_drift() {
+        use super::ensure_query_model_matches_index_v1;
+        use quanta_index_contract::lex::LexicalErrorCode;
+        use quanta_index_core::CoreError;
+
+        let expect_model_mismatch = |err: CoreError| match err {
+            CoreError::Typed { code, .. } => assert_eq!(
+                code,
+                LexicalErrorCode::SemModelMismatch.as_code_str(),
+                "model drift must surface SEM_MODEL_MISMATCH"
+            ),
+            other => panic!("expected SemModelMismatch typed error, got {other:?}"),
+        };
+
+        // POSITIVE: identical model id + version => Ok (matching path proceeds).
+        assert!(
+            ensure_query_model_matches_index_v1(
+                "search-owned-hash-text-v1",
+                None,
+                "search-owned-hash-text-v1",
+                None,
+                "semantic",
+            )
+            .is_ok()
+        );
+        assert!(ensure_query_model_matches_index_v1("m", Some("2"), "m", Some("2"), "hybrid").is_ok());
+
+        // ORIGINAL TRIGGER: same dimension is irrelevant — a different model id
+        // (the future same-dim engine swap) MUST fail closed, not silently rank.
+        expect_model_mismatch(
+            ensure_query_model_matches_index_v1(
+                "neural-768-v2",
+                None,
+                "search-owned-hash-text-v1",
+                None,
+                "semantic",
+            )
+            .unwrap_err(),
+        );
+
+        // EDGE: same id, version drift must also fail closed.
+        expect_model_mismatch(
+            ensure_query_model_matches_index_v1("m", Some("1"), "m", Some("2"), "hybrid seed")
+                .unwrap_err(),
+        );
+
+        // CORNER: version presence drift (Some vs None) at same id must fail closed.
+        expect_model_mismatch(
+            ensure_query_model_matches_index_v1("m", Some("1"), "m", None, "semantic").unwrap_err(),
+        );
+    }
     use quanta_index_contract::channel::{LexicalChannelOp, UpsertChunk};
     use quanta_index_contract::lex::{
         CommitRecord, CommitSha, DirtyRecord, LanguageCode, SymbolKindCode, SymbolKindFamily,
@@ -5010,6 +5167,17 @@ mod tests {
                 .scoped_vectors
                 .push(query_vector.to_vec());
             Ok(vec![candidate("semantic-scoped", 1.0)])
+        }
+
+        fn index_model_id(&self) -> &str {
+            // Match the HashingQueryTextEmbedder these tests query with, so the
+            // model-identity gate passes on the matching path (the mismatch path
+            // is covered by ensure_query_model_matches_index_v1's unit test).
+            crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        }
+
+        fn index_model_version(&self) -> Option<&str> {
+            None
         }
     }
 

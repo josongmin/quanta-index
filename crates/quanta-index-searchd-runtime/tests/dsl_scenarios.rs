@@ -979,7 +979,8 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     });
     let has_exec = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::ExecFanout
-            && entry.detail == "hybrid.lexical_universe=2; lexical_hits=2; semantic_hits=2"
+            && entry.detail
+                == "hybrid.semantic_scoped_to_lexical=true; hybrid.lexical_universe=2; lexical_hits=2; semantic_hits=2"
     });
     let has_merge = explanation.planner_trace.iter().any(|entry| {
         entry.stage == PlannerStage::Merge && entry.detail == "hybrid.fused_results=2"
