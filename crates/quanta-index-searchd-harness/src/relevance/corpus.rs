@@ -264,7 +264,14 @@ pub const SEMANTIC_RELEVANCE_REPO: &str = "repo-relevance-semantic";
 ///
 /// `auth/token_refresh.rs` is intentionally ingested as MULTIPLE chunks by the
 /// semantic test so the same-path-collapse rule has something to collapse.
+// Each judged paraphrase query targets an ON-TOPIC file written in synonyms
+// (carrying NONE of the query's surface tokens) paired with a lexical-trap HARD
+// NEGATIVE that DOES carry the query's tokens but means something else. The
+// deterministic hash embedder ranks by token overlap, so it is drawn to the trap;
+// only a neural embedder reads the meaning and ranks the on-topic file higher.
+// This pairing is the whole point of the A/B (RFC §5 P1-3 / §7).
 pub const SEMANTIC_RELEVANCE_CORPUS: &[(&str, &str)] = &[
+    // -- exact-token pair (hash genuinely retrieves; A/B baseline) -------------
     (
         "auth/token_refresh.rs",
         "/// Refresh the auth token before it expires.\n\
@@ -286,18 +293,158 @@ pub const SEMANTIC_RELEVANCE_CORPUS: &[(&str, &str)] = &[
          pub fn left_pad(input: &str, width: usize) -> String {\n    \
              format!(\"{input:>width$}\")\n}\n",
     ),
+    // -- pair 1: cache invalidation -------------------------------------------
     (
         "cache/eviction.rs",
         "/// Evict and purge expired records held in the bounded LRU.\n\
-         pub fn evict_expired(lru: &mut Lru) {\n    \
-             lru.purge_expired();\n    \
-             lru.compact();\n}\n",
+         pub fn evict_expired(lru: &mut Lru) { lru.purge_expired(); lru.compact(); }\n",
     ),
     (
         "db/migration.rs",
         "/// Insert new entries into the persistent store during a migration.\n\
          pub fn migrate_entries(store: &mut Store, entries: Vec<Row>) {\n    \
              for row in entries { store.insert_row(row); }\n}\n",
+    ),
+    // -- pair 2: retry with backoff -------------------------------------------
+    (
+        "net/retry_backoff.rs",
+        "/// Exponential backoff: sleep a growing duration before re-issuing a\n\
+         /// request, doubling the wait each round until it succeeds.\n\
+         pub fn backoff_then_reissue(round: u32) -> Duration { base().mul(2u32.pow(round)) }\n",
+    ),
+    (
+        "diag/flaky_report.rs",
+        "/// Count how many repeated attempts a flaky call made before failing.\n\
+         pub fn attempts_before_failing(call: &Trace) -> usize { call.repeated_attempts() }\n",
+    ),
+    // -- pair 3: deduplicate keeping first ------------------------------------
+    (
+        "collections/unique.rs",
+        "/// Retain one copy of each value, discarding later repeats by tracking\n\
+         /// the keys already seen in a set.\n\
+         pub fn retain_distinct<T>(values: &mut Vec<T>, seen: &mut Set) { values.retain(|v| seen.insert(v)); }\n",
+    ),
+    (
+        "resource/drop_guard.rs",
+        "/// Drop the guard to release the lock; the first acquired handle keeps\n\
+         /// ownership of the items until the scope ends.\n\
+         pub fn drop_first_guard(items: &mut Pool) { items.first_handle().release(); }\n",
+    ),
+    // -- pair 4: rate limiting ------------------------------------------------
+    (
+        "net/throttle.rs",
+        "/// Throttle a client once it exceeds its allowance window, returning a\n\
+         /// TooManyRequests status instead of serving the call.\n\
+         pub fn throttle(client: &Client) -> Status { if client.exceeds_allowance() { Status::TooMany } else { Status::Ok } }\n",
+    ),
+    (
+        "finance/cost_budget.rs",
+        "/// Reject a purchase that goes over the monthly spending budget per\n\
+         /// account, returning the overspend amount.\n\
+         pub fn reject_over_budget(p: &Purchase) -> bool { p.amount > p.account.monthly_budget }\n",
+    ),
+    // -- pair 5: serialize to bytes -------------------------------------------
+    (
+        "codec/encode.rs",
+        "/// Serialize a value into a compact CBOR representation for persistence.\n\
+         pub fn encode_cbor<T: Encode>(value: &T) -> Vec<u8> { value.to_cbor() }\n",
+    ),
+    (
+        "io/disk_writer.rs",
+        "/// Write raw bytes to a file on disk, flushing the record buffer after\n\
+         /// each line is appended.\n\
+         pub fn write_bytes_to_disk(buf: &[u8], file: &mut File) { file.write_all(buf); file.flush(); }\n",
+    ),
+    // -- pair 6: pagination next page -----------------------------------------
+    (
+        "api/paginate.rs",
+        "/// Advance the cursor to fetch the next page of items beyond the last\n\
+         /// seen id, stopping when the cursor is exhausted.\n\
+         pub fn advance_cursor(c: &mut Cursor) -> Option<Page> { c.beyond_last_seen() }\n",
+    ),
+    (
+        "diag/result_chunk.rs",
+        "/// Load the following test results chunk from the current run for the\n\
+         /// report viewer to display.\n\
+         pub fn load_following_results(run: &Run) -> Chunk { run.current_results_chunk() }\n",
+    ),
+    // -- pair 7: graceful shutdown --------------------------------------------
+    (
+        "runtime/graceful_drain.rs",
+        "/// Quiesce the executor: refuse fresh submissions while awaiting the\n\
+         /// in-flight tasks to complete, then release resources.\n\
+         pub fn quiesce(exec: &mut Executor) { exec.refuse_fresh(); exec.await_inflight(); }\n",
+    ),
+    (
+        "scheduler/job_runner.rs",
+        "/// Start running new jobs and let queued work finish on the worker pool\n\
+         /// as capacity frees up.\n\
+         pub fn run_new_jobs(pool: &mut Pool, jobs: Vec<Job>) { for j in jobs { pool.start(j); } }\n",
+    ),
+    // -- pair 8: memoize ------------------------------------------------------
+    (
+        "compute/memoize.rs",
+        "/// Cache a deterministic computation result keyed by its arguments so a\n\
+         /// repeated evaluation is served from the table instead of recomputed.\n\
+         pub fn cached_eval(args: Args, table: &mut Table) -> Out { table.entry(args).or_compute() }\n",
+    ),
+    (
+        "docs/pure_functions.rs",
+        "/// A pure function has no side effects; remember to keep its output\n\
+         /// deterministic for every call with the same arguments.\n\
+         pub fn note_pure_function_output() {}\n",
+    ),
+    // -- pair 9: connection-pool checkout -------------------------------------
+    (
+        "db/pool_acquire.rs",
+        "/// Lease an available handle from the pool, blocking the caller until\n\
+         /// another releases one back.\n\
+         pub fn lease_handle(pool: &Pool) -> Handle { pool.block_until_free() }\n",
+    ),
+    (
+        "concurrency/busy_wait.rs",
+        "/// Spin while the worker connection is busy, checking out the spare slot\n\
+         /// once it stops being occupied.\n\
+         pub fn spin_until_spare(worker: &Worker) -> Slot { while worker.busy() {} worker.spare_slot() }\n",
+    ),
+    // -- pair 10: input sanitization ------------------------------------------
+    (
+        "security/sanitize.rs",
+        "/// Escape HTML entities and neutralize control bytes from untrusted\n\
+         /// payloads before rendering them in the page.\n\
+         pub fn sanitize(payload: &str) -> String { escape_html(neutralize_control(payload)) }\n",
+    ),
+    (
+        "text/trim_display.rs",
+        "/// Remove dangerous leading characters from the user supplied text for a\n\
+         /// tidy display column.\n\
+         pub fn remove_dangerous_leading(text: &str) -> String { text.trim_start_matches('!').to_string() }\n",
+    ),
+    // -- pair 11: debounce ----------------------------------------------------
+    (
+        "events/debounce.rs",
+        "/// Coalesce a burst of signals, firing the handler only after a quiet\n\
+         /// interval has elapsed with no further input.\n\
+         pub fn coalesce(signals: &Stream, quiet: Duration) -> Handler { signals.after_quiet(quiet) }\n",
+    ),
+    (
+        "ui/button_press.rs",
+        "/// Act once on each trigger; rapid repeated presses each fire their own\n\
+         /// immediate handler with no settling.\n\
+         pub fn on_trigger_act_once(btn: &Button) { btn.fire_immediately(); }\n",
+    ),
+    // -- pair 12: backpressure ------------------------------------------------
+    (
+        "stream/backpressure.rs",
+        "/// Signal the upstream to pause emitting items while the downstream\n\
+         /// buffer stays full, resuming once it drains.\n\
+         pub fn signal_pause(up: &Upstream, down: &Buffer) { if down.is_full() { up.pause(); } }\n",
+    ),
+    (
+        "perf/speedup.rs",
+        "/// Speed up the producer so the consumer can keep up with the rising\n\
+         /// demand during a load spike.\n\
+         pub fn speed_up_producer(p: &mut Producer) { p.raise_rate(); }\n",
     ),
 ];
 
@@ -460,13 +607,104 @@ pub const SEMANTIC_JUDGED_QUERIES: &[SemanticJudgedQuery] = &[
         on_topic_path: "auth/token_refresh.rs",
         hard_negative_path: "util/string_pad.rs",
     },
+    // -- paraphrase layer: 12 diverse low-overlap intents, each with a
+    //    lexical-trap hard negative. Aggregate win-rate over these (not n=1) is
+    //    the statistical A/B signal.
     SemanticJudgedQuery {
         id: "sem.evict_cache.paraphrase",
         intent_kind: SemanticIntentKind::Paraphrase,
-        intent: "find where stale in-memory entries are removed (paraphrase / low overlap)",
+        intent: "find where stale in-memory entries are removed",
         query: "remove stale entries from the in-memory store",
         on_topic_path: "cache/eviction.rs",
         hard_negative_path: "db/migration.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.retry_backoff.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where repeated attempts are spaced out after a failure",
+        query: "pause longer between repeated attempts when a call keeps failing",
+        on_topic_path: "net/retry_backoff.rs",
+        hard_negative_path: "diag/flaky_report.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.dedup.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where duplicate items are removed keeping the first",
+        query: "drop duplicate items keeping only the first occurrence",
+        on_topic_path: "collections/unique.rs",
+        hard_negative_path: "resource/drop_guard.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.rate_limit.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where excess calls are rejected against an allowance",
+        query: "reject calls that go over the permitted budget per second",
+        on_topic_path: "net/throttle.rs",
+        hard_negative_path: "finance/cost_budget.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.serialize.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where a value is converted to bytes for persistence",
+        query: "turn the record into bytes for writing to disk",
+        on_topic_path: "codec/encode.rs",
+        hard_negative_path: "io/disk_writer.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.pagination.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where the next page of results is fetched",
+        query: "load the following chunk of results after the current one",
+        on_topic_path: "api/paginate.rs",
+        hard_negative_path: "diag/result_chunk.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.graceful_shutdown.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where new work stops while in-flight work finishes",
+        query: "stop taking new work and let running jobs finish",
+        on_topic_path: "runtime/graceful_drain.rs",
+        hard_negative_path: "scheduler/job_runner.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.memoize.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where a costly computation result is cached",
+        query: "remember the output of a costly pure function call",
+        on_topic_path: "compute/memoize.rs",
+        hard_negative_path: "docs/pure_functions.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.pool_checkout.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where a free handle is leased from a pool",
+        query: "check out a spare worker connection that is not busy",
+        on_topic_path: "db/pool_acquire.rs",
+        hard_negative_path: "concurrency/busy_wait.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.sanitize.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where untrusted input is made safe before rendering",
+        query: "remove dangerous characters from user supplied text",
+        on_topic_path: "security/sanitize.rs",
+        hard_negative_path: "text/trim_display.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.debounce.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where a burst of triggers is coalesced until quiet",
+        query: "ignore rapid repeated triggers and act only once they settle",
+        on_topic_path: "events/debounce.rs",
+        hard_negative_path: "ui/button_press.rs",
+    },
+    SemanticJudgedQuery {
+        id: "sem.backpressure.paraphrase",
+        intent_kind: SemanticIntentKind::Paraphrase,
+        intent: "find where a fast producer is slowed for a slow consumer",
+        query: "slow the producer when the consumer cannot keep up",
+        on_topic_path: "stream/backpressure.rs",
+        hard_negative_path: "perf/speedup.rs",
     },
 ];
 
