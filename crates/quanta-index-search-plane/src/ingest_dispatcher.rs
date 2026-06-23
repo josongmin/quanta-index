@@ -27,13 +27,13 @@ use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
+    TextEmbeddingProvider,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::query_embedder::hash_query_text;
 use crate::{AuxiliaryAuthorityStore, Ledger};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -233,7 +233,7 @@ pub struct DirectSearchCorpusMaterializer {
     builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
     semantic_ingest: Option<Arc<dyn SemanticIngestPort + Send + Sync>>,
-    semantic_embedding_dimension: usize,
+    semantic_embedder: Option<Arc<dyn TextEmbeddingProvider + Send + Sync>>,
 }
 
 impl DirectSearchCorpusMaterializer {
@@ -246,7 +246,7 @@ impl DirectSearchCorpusMaterializer {
             builder,
             ledger,
             semantic_ingest: None,
-            semantic_embedding_dimension: 0,
+            semantic_embedder: None,
         }
     }
 
@@ -255,13 +255,13 @@ impl DirectSearchCorpusMaterializer {
         builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
         ledger: Arc<RwLock<Ledger>>,
         semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
-        semantic_embedding_dimension: usize,
+        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
     ) -> Self {
         Self {
             builder,
             ledger,
             semantic_ingest: Some(semantic_ingest),
-            semantic_embedding_dimension,
+            semantic_embedder: Some(semantic_embedder),
         }
     }
 }
@@ -271,16 +271,14 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
-        let derived_semantic_batch = self
-            .semantic_ingest
-            .as_ref()
-            .map(|_semantic_ingest| {
-                derive_semantic_batch_from_search_corpus_batch(
-                    batch,
-                    self.semantic_embedding_dimension,
-                )
-            })
-            .transpose()?;
+        let derived_semantic_batch = match (&self.semantic_ingest, &self.semantic_embedder) {
+            (Some(_), Some(embedder)) => Some(derive_semantic_batch_from_search_corpus_batch(
+                batch,
+                embedder.as_ref(),
+            )?),
+            // Semantics are wired as a pair (ingest + embedder) or not at all.
+            _ => None,
+        };
         self.builder.build_batch(batch)?;
         let mut guard = self.ledger.write().map_err(|err| {
             CoreError::Storage(format!(
@@ -336,41 +334,64 @@ pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
 /// model identity; query-time enforcement rejects a mismatch (SEM_MODEL_MISMATCH).
 pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
 
-fn search_owned_semantic_model_contract() -> Result<EmbeddingModelContract, CoreError> {
-    let dimension = u32::try_from(SEARCH_OWNED_SEMANTIC_DIMENSION).map_err(|err| {
+fn embedding_model_contract_for(
+    embedder: &dyn TextEmbeddingProvider,
+) -> Result<EmbeddingModelContract, CoreError> {
+    let dimension = u32::try_from(embedder.dimension()).map_err(|err| {
         CoreError::InvalidContract(format!(
             "semantic derivation: embedding dimension overflow: {err}"
         ))
     })?;
+    let model_id = embedder.model_id();
     Ok(EmbeddingModelContract {
-        model_id: SEARCH_OWNED_SEMANTIC_MODEL_ID.to_string().into_boxed_str(),
-        model_version: None,
+        model_id: model_id.to_string().into_boxed_str(),
+        model_version: embedder
+            .model_version()
+            .map(|version| version.to_string().into_boxed_str()),
         dimension,
         normalization: EmbeddingNormalization::L2Unit,
         distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: format!("{SEARCH_OWNED_SEMANTIC_MODEL_ID}:chunk.text").into_boxed_str(),
+        policy_digest: format!("{model_id}:chunk.text").into_boxed_str(),
         view_policy_digest: None,
     })
 }
 
 fn derive_semantic_batch_from_search_corpus_batch(
     batch: &SearchCorpusIngestBatch,
-    dimension: usize,
+    embedder: &dyn TextEmbeddingProvider,
 ) -> Result<SemanticIngestBatch, CoreError> {
+    let dimension = embedder.dimension();
     if dimension == 0 {
         return Err(CoreError::InvalidContract(
             "semantic derivation: embedding dimension must be non-zero".to_string(),
         ));
     }
-    let model_contract = search_owned_semantic_model_contract()?;
+    let model_contract = embedding_model_contract_for(embedder)?;
     let replace_scopes = batch
         .replace_scopes
         .iter()
         .map(|scope| {
+            // Batch the scope's chunk texts into one embed call: a single
+            // network round-trip per scope for a real provider, and identical
+            // per-text vectors for the deterministic hash embedder.
+            let texts: Vec<&str> = scope
+                .chunks
+                .iter()
+                .map(|chunk| chunk.text.as_ref())
+                .collect();
+            let vectors = embedder.embed_batch(&texts)?;
+            if vectors.len() != scope.chunks.len() {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic derivation: embedder returned {} vectors for {} chunks",
+                    vectors.len(),
+                    scope.chunks.len()
+                )));
+            }
             let embeddings = scope
                 .chunks
                 .iter()
-                .map(|chunk| derive_embedding_record(chunk, dimension))
+                .zip(vectors)
+                .map(|(chunk, vector)| embedding_record_for(chunk, vector, dimension))
                 .collect::<Result<Vec<_>, CoreError>>()?;
             Ok(SemanticReplaceScope {
                 scope: scope.scope.clone(),
@@ -400,11 +421,18 @@ fn derive_semantic_batch_from_search_corpus_batch(
     })
 }
 
-fn derive_embedding_record(
+fn embedding_record_for(
     chunk: &quanta_index_contract::ChunkRecord,
+    vector: Vec<f32>,
     dimension: usize,
 ) -> Result<EmbeddingRecord, CoreError> {
-    let vector = hash_query_text(chunk.text.as_ref(), dimension)?;
+    if vector.len() != dimension {
+        return Err(CoreError::InvalidContract(format!(
+            "semantic derivation: embedder returned dim {} for chunk {}, expected {dimension}",
+            vector.len(),
+            chunk.chunk_id.as_str()
+        )));
+    }
     Ok(EmbeddingRecord {
         embedding_id: EmbeddingId::new(chunk.chunk_id.as_str()),
         owner_kind: OwnerDocKind::Chunk,
@@ -1093,7 +1121,9 @@ mod tests {
             search_corpus_builder,
             Arc::clone(&lexical_ledger),
             semantic_materializer,
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
         );
         let batch = fixture_search_corpus_batch()?;
         let receipt = materializer.publish_batch(&batch)?;
@@ -1125,6 +1155,89 @@ mod tests {
             .ok_or_else(|| "derived semantic batch missing embedding".to_string())?;
         if embedding.embedding_id.as_str() != "chunk-1" {
             return Err("derived semantic embedding_id must equal chunk_id".into());
+        }
+        Ok(())
+    }
+
+    struct FixedFakeEmbedder {
+        dimension: usize,
+        vectors_per_call: usize,
+        vector_len: usize,
+    }
+
+    impl TextEmbeddingProvider for FixedFakeEmbedder {
+        fn embed_batch(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+            Ok((0..self.vectors_per_call)
+                .map(|_| vec![0.0_f32; self.vector_len])
+                .collect())
+        }
+        fn model_id(&self) -> &str {
+            "fake-embedder"
+        }
+        fn model_version(&self) -> Option<&str> {
+            None
+        }
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+    }
+
+    fn materializer_with_embedder(
+        embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+    ) -> DirectSearchCorpusMaterializer {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_ledger = Arc::new(RwLock::new(Ledger::new()));
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
+            DirectSemanticMaterializer::new(semantic_builder, Arc::clone(&semantic_ledger)),
+        );
+        let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
+        DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            search_corpus_builder,
+            lexical_ledger,
+            semantic_materializer,
+            embedder,
+        )
+    }
+
+    // CASE-COVERS: corpus derivation fails closed when the embedder returns the
+    // wrong number of vectors — a misaligned batch must never reach the index.
+    #[test]
+    fn search_corpus_derivation_fails_closed_on_embedder_count_mismatch() -> TestRes {
+        let materializer = materializer_with_embedder(Arc::new(FixedFakeEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            vectors_per_call: 0,
+            vector_len: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        }));
+        let batch = fixture_search_corpus_batch()?;
+        match materializer.publish_batch(&batch) {
+            Err(CoreError::InvalidContract(message)) => {
+                if !message.contains("vectors for") {
+                    return Err(format!("unexpected count-mismatch message: {message}").into());
+                }
+            }
+            other => return Err(format!("count mismatch must fail closed, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: corpus derivation fails closed when a returned vector has the
+    // wrong dimension — would corrupt the lancedb fixed-size-list schema.
+    #[test]
+    fn search_corpus_derivation_fails_closed_on_embedder_dim_mismatch() -> TestRes {
+        let materializer = materializer_with_embedder(Arc::new(FixedFakeEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            vectors_per_call: 1,
+            vector_len: SEARCH_OWNED_SEMANTIC_DIMENSION + 1,
+        }));
+        let batch = fixture_search_corpus_batch()?;
+        match materializer.publish_batch(&batch) {
+            Err(CoreError::InvalidContract(message)) => {
+                if !message.contains("returned dim") {
+                    return Err(format!("unexpected dim-mismatch message: {message}").into());
+                }
+            }
+            other => return Err(format!("dim mismatch must fail closed, got {other:?}").into()),
         }
         Ok(())
     }

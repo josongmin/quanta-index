@@ -539,7 +539,7 @@ impl SearchdRuntime {
                     Arc::clone(&search_corpus_build_port),
                     Arc::clone(&ledger),
                     Arc::clone(&direct_sem_ingest_port),
-                    SEARCH_OWNED_SEMANTIC_DIMENSION,
+                    Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION)),
                 ),
             );
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(

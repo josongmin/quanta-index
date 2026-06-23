@@ -27,7 +27,7 @@ pub use domains::repomap::{
 };
 pub use domains::semantic::{
     SemanticBatchBuildPort, SemanticIndexOpenPort, SemanticIngestPort, SemanticPolicy,
-    SemanticQueryPort, SemanticReadiness, SemanticSearcher,
+    SemanticQueryPort, SemanticReadiness, SemanticSearcher, TextEmbeddingProvider,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

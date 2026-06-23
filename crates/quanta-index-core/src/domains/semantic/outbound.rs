@@ -13,6 +13,28 @@ pub trait SemanticIngestPort: Send + Sync {
     fn publish_batch(&self, batch: &SemanticIngestBatch) -> Result<BatchPublishReceipt, CoreError>;
 }
 
+/// Produces embedding vectors for text. This is the single embedder seam shared
+/// by BOTH the query path and corpus derivation, so the two can never disagree
+/// on model identity (the query-time model-identity gate compares
+/// [`Self::model_id`]/[`Self::model_version`] against the indexed generation's).
+///
+/// Vectors are unit-normalized (cosine-comparable). `embed_batch` returns exactly
+/// one vector per input, in input order, and fails the whole batch closed on any
+/// error — a partial/misaligned batch must never reach the index.
+pub trait TextEmbeddingProvider: Send + Sync {
+    /// Embed `texts` into one vector each, in input order. Errors fail closed.
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError>;
+
+    /// Stable identity of the model these vectors come from.
+    fn model_id(&self) -> &str;
+
+    /// Optional model version/snapshot paired with [`Self::model_id`].
+    fn model_version(&self) -> Option<&str>;
+
+    /// Output vector dimension every returned vector must have.
+    fn dimension(&self) -> usize;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticReadiness {
     pub manifest_generation: ManifestGeneration,

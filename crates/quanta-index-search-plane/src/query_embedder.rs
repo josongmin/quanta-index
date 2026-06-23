@@ -1,5 +1,5 @@
 use quanta_index_contract::lex::LexicalErrorCode;
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, TextEmbeddingProvider};
 
 pub trait QueryTextEmbedderPort {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
@@ -38,6 +38,27 @@ impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
         // The search-owned hash embedder carries no model version (matches the
         // corpus EmbeddingModelContract.model_version = None).
         None
+    }
+}
+
+impl TextEmbeddingProvider for HashingQueryTextEmbedder {
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
+        texts
+            .iter()
+            .map(|text| hash_query_text(text, self.dimension))
+            .collect()
+    }
+
+    fn model_id(&self) -> &str {
+        crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
+    }
+
+    fn model_version(&self) -> Option<&str> {
+        None
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
     }
 }
 
