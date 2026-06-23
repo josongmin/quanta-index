@@ -21,6 +21,12 @@ pub const DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST: usize = 4096;
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Default per-request HTTP timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default number of `/v1/embeddings` requests dispatched concurrently from one
+/// `embed_batch` call. A small pool overlaps network round-trips (the dominant
+/// corpus-embedding cost) while staying well under typical provider rate limits;
+/// the full-jitter backoff de-correlates the workers' 429 retries. Set to 1 to
+/// force fully sequential dispatch.
+pub const DEFAULT_CONCURRENCY: usize = 4;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
@@ -68,6 +74,7 @@ pub struct OpenAiProviderConfig {
     pub max_estimated_tokens_per_request: usize,
     pub max_retries: u32,
     pub timeout: Duration,
+    pub concurrency: usize,
 }
 
 impl OpenAiProviderConfig {
@@ -84,6 +91,7 @@ impl OpenAiProviderConfig {
             max_estimated_tokens_per_request: DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
             max_retries: DEFAULT_MAX_RETRIES,
             timeout: DEFAULT_TIMEOUT,
+            concurrency: DEFAULT_CONCURRENCY,
         }
     }
 
@@ -124,6 +132,14 @@ impl OpenAiProviderConfig {
         self.timeout = timeout;
         self
     }
+
+    /// Number of embedding requests dispatched concurrently per `embed_batch`
+    /// (clamped to >= 1; 1 = fully sequential).
+    #[must_use]
+    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency.max(1);
+        self
+    }
 }
 
 /// `OpenAI`-backed [`TextEmbeddingProvider`].
@@ -141,6 +157,7 @@ pub struct OpenAiEmbeddingProvider {
     max_batch: usize,
     max_estimated_tokens_per_request: usize,
     max_retries: u32,
+    concurrency: usize,
 }
 
 impl OpenAiEmbeddingProvider {
@@ -172,6 +189,7 @@ impl OpenAiEmbeddingProvider {
             max_batch: config.max_batch.max(1),
             max_estimated_tokens_per_request: config.max_estimated_tokens_per_request.max(1),
             max_retries: config.max_retries,
+            concurrency: config.concurrency.max(1),
         })
     }
 
@@ -286,6 +304,79 @@ impl OpenAiEmbeddingProvider {
             )
         }))
     }
+
+    /// Dispatch `batches` over a bounded pool of scoped worker threads, each
+    /// pulling the next batch index from a shared cursor and running its own
+    /// retry/backoff. The transport is `Send + Sync`, so `&self` is shared
+    /// directly with no clone. Results are reassembled by batch index, so the
+    /// returned vectors keep input order regardless of completion order; the
+    /// first error (in input order) is propagated and a worker stops pulling new
+    /// work once any batch has failed (bounds wasted requests on failure).
+    fn embed_batches_concurrently(
+        &self,
+        texts: &[&str],
+        batches: &[RequestBatch],
+    ) -> Result<Vec<Vec<f32>>, CoreError> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let cursor = AtomicUsize::new(0);
+        let failed = AtomicBool::new(false);
+        let worker_count = self.concurrency.min(batches.len()).max(1);
+        let worker_results: Result<Vec<Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)>>, CoreError> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..worker_count)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut local: Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)> =
+                                Vec::new();
+                            loop {
+                                if failed.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                let index = cursor.fetch_add(1, Ordering::Relaxed);
+                                let Some(batch) = batches.get(index) else {
+                                    break;
+                                };
+                                let result = self.embed_one_batch(
+                                    &texts[batch.start..batch.end],
+                                    batch.estimated_tokens,
+                                );
+                                let is_err = result.is_err();
+                                local.push((index, result));
+                                if is_err {
+                                    failed.store(true, Ordering::Relaxed);
+                                    break;
+                                }
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                // A worker panic must not silently drop its batches (that would
+                // shorten the output) — surface it as a typed transport error.
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle.join().map_err(|_panicked| {
+                            typed(
+                                LexicalErrorCode::SemProviderTransport,
+                                "openai: embedding worker thread panicked",
+                            )
+                        })
+                    })
+                    .collect()
+            });
+
+        // Reassemble in batch-index order so output matches input order.
+        let mut indexed: Vec<(usize, Result<Vec<Vec<f32>>, CoreError>)> =
+            worker_results?.into_iter().flatten().collect();
+        indexed.sort_by_key(|(index, _)| *index);
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for (_, result) in indexed {
+            out.extend(result?);
+        }
+        Ok(out)
+    }
 }
 
 impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
@@ -293,15 +384,20 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-        for batch in
-            partition_request_batches(texts, self.max_batch, self.max_estimated_tokens_per_request)
-        {
-            out.extend(
-                self.embed_one_batch(&texts[batch.start..batch.end], batch.estimated_tokens)?,
-            );
+        let batches =
+            partition_request_batches(texts, self.max_batch, self.max_estimated_tokens_per_request);
+        // Common per-call case (one batch) or concurrency disabled: stay sequential
+        // with zero thread/coordination overhead.
+        if batches.len() <= 1 || self.concurrency <= 1 {
+            let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+            for batch in batches {
+                out.extend(
+                    self.embed_one_batch(&texts[batch.start..batch.end], batch.estimated_tokens)?,
+                );
+            }
+            return Ok(out);
         }
-        Ok(out)
+        self.embed_batches_concurrently(texts, &batches)
     }
 
     fn model_id(&self) -> &str {
@@ -613,6 +709,123 @@ mod tests {
         assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
         assert_eq!(provider.model_id(), "openai:text-embedding-3-small");
         assert_eq!(provider.dimension(), 2);
+    }
+
+    /// Records peak concurrency and answers each request from its OWN body, so a
+    /// correct response is produced regardless of which worker handles which batch
+    /// (a fixed response queue would be order-dependent under concurrency). Each
+    /// input text `"t<N>"` embeds to `[N as f32]` so the reassembled output is
+    /// deterministic and order-checkable.
+    struct ConcurrencyProbeTransport {
+        in_flight: Arc<AtomicUsize>,
+        peak_in_flight: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    impl EmbeddingTransport for ConcurrencyProbeTransport {
+        fn post_embeddings(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            body: &str,
+        ) -> Result<HttpResponse, CoreError> {
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            let _prev_peak = self.peak_in_flight.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).expect("probe: request body is valid json");
+            let inputs = parsed
+                .get("input")
+                .and_then(serde_json::Value::as_array)
+                .expect("probe: body has an input array");
+            let items: Vec<(usize, Vec<f32>)> = inputs
+                .iter()
+                .enumerate()
+                .map(|(position, value)| {
+                    let text = value.as_str().expect("probe: input is a string");
+                    let n: f32 = text
+                        .trim_start_matches('t')
+                        .parse()
+                        .expect("probe: input is t<N>");
+                    (position, vec![n])
+                })
+                .collect();
+            let _prior = self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(ok_body(&items))
+        }
+    }
+
+    /// Always returns the same HTTP status, deterministically, regardless of how
+    /// many concurrent calls land before the failure flag stops the rest.
+    struct AlwaysStatusTransport {
+        status: u16,
+    }
+
+    impl EmbeddingTransport for AlwaysStatusTransport {
+        fn post_embeddings(
+            &self,
+            _url: &str,
+            _api_key: &str,
+            _body: &str,
+        ) -> Result<HttpResponse, CoreError> {
+            Ok(HttpResponse {
+                status: self.status,
+                body: "{\"error\":\"forced\"}".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn embed_batch_dispatches_batches_concurrently_and_preserves_order() {
+        // max_batch=1 -> one batch per text (10 batches); concurrency=4 -> workers
+        // overlap. The probe's per-request delay makes the overlap observable.
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let transport = ConcurrencyProbeTransport {
+            in_flight: Arc::clone(&in_flight),
+            peak_in_flight: Arc::clone(&peak),
+            delay: Duration::from_millis(25),
+        };
+        let provider = OpenAiEmbeddingProvider::new(
+            cfg(1).with_max_batch(1).with_concurrency(4),
+            Box::new(transport),
+        )
+        .expect("provider builds");
+        let texts: Vec<String> = (0..10).map(|n| format!("t{n}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let out = provider.embed_batch(&refs).expect("concurrent embed ok");
+        // Output order MUST match input order despite concurrent completion.
+        let expected: Vec<Vec<f32>> = (0..10).map(|n| vec![n as f32]).collect();
+        assert_eq!(out, expected, "concurrent dispatch must preserve input order");
+        // Concurrency actually happened: peak in-flight > 1 (bounded by 4).
+        let observed_peak = peak.load(Ordering::SeqCst);
+        assert!(
+            observed_peak >= 2,
+            "batches must overlap; peak in-flight was {observed_peak}"
+        );
+        assert!(
+            observed_peak <= 4,
+            "concurrency must stay bounded by the knob; peak was {observed_peak}"
+        );
+    }
+
+    #[test]
+    fn concurrent_embed_batch_propagates_a_batch_error() {
+        // A non-retryable status on any batch must fail the whole call (no partial
+        // success) even under concurrency.
+        let provider = OpenAiEmbeddingProvider::new(
+            cfg(1).with_max_batch(1).with_concurrency(4),
+            Box::new(AlwaysStatusTransport { status: 400 }),
+        )
+        .expect("provider builds");
+        let texts: Vec<String> = (0..6).map(|n| format!("t{n}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        match provider.embed_batch(&refs) {
+            Err(CoreError::Typed { code, .. }) => {
+                assert_eq!(code, LexicalErrorCode::SemProviderTransport.as_code_str());
+            }
+            other => panic!("a fatal batch must fail the whole concurrent call, got {other:?}"),
+        }
     }
 
     #[test]
