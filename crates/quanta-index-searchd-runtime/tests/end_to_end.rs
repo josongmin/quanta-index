@@ -44,8 +44,9 @@ use quanta_index_contract::{
     StructuralTombstoneScope, StructuralTreeRecord, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd::app::SearchdConfig;
+use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
 use quanta_index_searchd::app::searchd::drive;
+use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use quanta_index_searchd_runtime::build_runtime;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
@@ -1814,6 +1815,149 @@ fn semantic_query_without_lexical_scope_returns_global_nearest_hit() -> TestResu
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected global nearest [alpha], got {ids:?}").into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+/// Boot the real daemon with an explicit `OpenAi` embedder profile.
+fn start_runtime_with_openai(
+    state_root: &Path,
+    thread_name: &str,
+    api_key: String,
+) -> Result<RuntimeHandles, Box<dyn Error>> {
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let (query_socket, control_socket) = unique_socket_paths();
+    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
+    config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
+        model: "text-embedding-3-small".to_string(),
+        dimension: 1536,
+        api_key,
+        tuning: OpenAiEmbedderTuning::default(),
+    });
+    let runtime = build_runtime(config)?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("openai e2e: sockets never appeared".into());
+    }
+    Ok((query_socket, ingest_socket, shutdown, join))
+}
+
+/// CROWN PROOF (gated, real OpenAI API): full daemon -> corpus embed -> lancedb
+/// cosine -> ranked results. The query shares NO meaningful token with either
+/// indexed doc (only the stopword "the"), so a token-distribution hash embedder
+/// (the prior FNV-1a default) cannot rank them by meaning. Real neural embeddings
+/// must rank the semantically-related "cat" doc above the unrelated "finance" doc.
+/// This is the end-to-end capability that was structurally impossible before.
+///
+/// `#[ignore]` because it hits the real OpenAI API; run with OPENAI_API_KEY set:
+/// `OPENAI_API_KEY=<key> cargo test -p quanta-index-searchd-runtime --test end_to_end \
+///   -- --ignored openai_semantic_paraphrase_outranks_unrelated_v1 --nocapture`
+#[test]
+#[ignore = "hits the real OpenAI API; run with OPENAI_API_KEY set and --ignored"]
+fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
+    let api_key = match std::env::var("OPENAI_API_KEY") {
+        Ok(key) if !key.trim().is_empty() => key,
+        _ => return Err("OPENAI_API_KEY must be set to run this gated test".into()),
+    };
+
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime_with_openai(state_root, "searchd-openai-paraphrase-e2e", api_key)?;
+
+    // Zero meaningful lexical overlap with the query "the cat is sleeping":
+    // cat-doc uses kitten/dozed/windowsill; finance-doc uses revenue/dividends.
+    // Both share only the stopword "the", so lexical/hash signal is a tie —
+    // only neural meaning can separate them.
+    let cat_doc = chunk_record(
+        "cat-doc",
+        "A kitten curled up and dozed on the warm windowsill all afternoon.",
+    )?;
+    let finance_doc = chunk_record(
+        "finance-doc",
+        "Quarterly revenue and shareholder dividends climbed after the earnings report.",
+    )?;
+    publish_search_corpus_chunks(&ingest_socket, vec![cat_doc, finance_doc], None)?;
+    seal_lexical(&ingest_socket)?;
+
+    let pin = GenerationPin::new(repo(), revision(), generation());
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 7,
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+            query_text: "the cat is sleeping".to_string(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 2,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("openai semantic query never became ready".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let results = match response.payload {
+        SearchPlaneQueryIpcResponse::Semantic(semantic) => {
+            if semantic.generation != pin {
+                shutdown.store(true, Ordering::Release);
+                drop(join.join());
+                return Err("openai semantic response did not echo request pin".into());
+            }
+            semantic.results
+        }
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected Semantic response, got {other:?}").into());
+        }
+    };
+
+    let ranked: Vec<String> = results
+        .iter()
+        .map(|candidate| candidate.candidate_id.clone())
+        .collect();
+
+    // Crown assertions, evidence-backed (R-TEST-19/25): both docs retrieved, and
+    // the semantically-related doc ranks strictly above the unrelated one. With
+    // the hash embedder this ordering is not derivable (token-overlap tie).
+    if ranked.len() != 2 {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!("expected both docs ranked, got {ranked:?}").into());
+    }
+    if ranked.first().map(String::as_str) != Some("cat-doc") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "neural ranking failed: a paraphrase query should rank 'cat-doc' first; got {ranked:?}"
+        )
+        .into());
+    }
+    if ranked.get(1).map(String::as_str) != Some("finance-doc") {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected unrelated 'finance-doc' ranked second, got {ranked:?}"
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)
