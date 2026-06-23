@@ -23,7 +23,7 @@ use quanta_index_core::{
     RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
     SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
-    StructuralMatchCandidate, StructuralReadiness,
+    StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_lq_structural::{
@@ -43,7 +43,7 @@ use quanta_index_search_plane::{
 };
 use regex::Regex;
 
-use crate::app::config::{QueryTextEmbedderMode, SearchdConfig};
+use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
 use crate::app::ipc_dispatcher::{
     SearchPlaneControlIpcAdapter, SearchPlaneIngestIpcAdapter, SearchPlaneQueryIpcAdapter,
 };
@@ -104,14 +104,29 @@ impl QueryObsSink for NoopQueryObsSink {
 }
 
 fn build_query_text_embedder(
-    mode: QueryTextEmbedderMode,
+    profile: &SemanticEmbedderProfile,
 ) -> Arc<dyn QueryTextEmbedderPort + Send + Sync> {
-    match mode {
-        QueryTextEmbedderMode::DeterministicText => Arc::new(HashingQueryTextEmbedder::new(
-            SEARCH_OWNED_SEMANTIC_DIMENSION,
-        )),
-        QueryTextEmbedderMode::ProviderUnavailable => {
-            Arc::new(ProviderUnavailableQueryTextEmbedder)
+    match profile {
+        SemanticEmbedderProfile::Hash { dimension } => {
+            Arc::new(HashingQueryTextEmbedder::new(*dimension))
+        }
+        SemanticEmbedderProfile::Unavailable => Arc::new(ProviderUnavailableQueryTextEmbedder),
+    }
+}
+
+/// The corpus-side embedder for the profile. For `Unavailable` the corpus still
+/// derives semantics with the deterministic hash embedder so the generation
+/// materializes — the query embedder is what fails closed
+/// (`SEM_PROVIDER_UNAVAILABLE`); this is the deliberate degraded-config contract.
+fn build_corpus_embedder(
+    profile: &SemanticEmbedderProfile,
+) -> Arc<dyn TextEmbeddingProvider + Send + Sync> {
+    match profile {
+        SemanticEmbedderProfile::Hash { dimension } => {
+            Arc::new(HashingQueryTextEmbedder::new(*dimension))
+        }
+        SemanticEmbedderProfile::Unavailable => {
+            Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION))
         }
     }
 }
@@ -539,7 +554,7 @@ impl SearchdRuntime {
                     Arc::clone(&search_corpus_build_port),
                     Arc::clone(&ledger),
                     Arc::clone(&direct_sem_ingest_port),
-                    Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION)),
+                    build_corpus_embedder(config.semantic_embedder_profile()),
                 ),
             );
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
@@ -568,7 +583,7 @@ impl SearchdRuntime {
             Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
             Arc::clone(&ledger),
             activation_catalog.clone(),
-            build_query_text_embedder(config.query_text_embedder_mode()),
+            build_query_text_embedder(config.semantic_embedder_profile()),
             query_obs_sink,
         ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(

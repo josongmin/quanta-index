@@ -1,11 +1,27 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum QueryTextEmbedderMode {
-    DeterministicText,
-    ProviderUnavailable,
+/// How `searchd` resolves the semantic embedder for BOTH the query path and
+/// corpus derivation. One profile drives both, so the two sides can never
+/// disagree on model identity (the query-time model-identity gate then holds).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticEmbedderProfile {
+    /// Deterministic FNV-1a hash embedder (default; no network, free).
+    Hash { dimension: usize },
+    /// No query-time embedder is configured: semantic/hybrid queries fail closed
+    /// (`SEM_PROVIDER_UNAVAILABLE`) AND the corpus derives no semantics — so there
+    /// is never a populated-but-unqueryable semantic index.
+    Unavailable,
+}
+
+impl Default for SemanticEmbedderProfile {
+    fn default() -> Self {
+        Self::Hash {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        }
+    }
 }
 
 /// Resolved runtime paths for one `searchd` instance.
@@ -18,7 +34,7 @@ pub struct SearchdConfig {
     /// batches here; searchd's ingest dispatcher applies them through the
     /// direct authority path.
     ingest_socket_path: PathBuf,
-    query_text_embedder_mode: QueryTextEmbedderMode,
+    semantic_embedder_profile: SemanticEmbedderProfile,
 }
 
 impl SearchdConfig {
@@ -30,16 +46,21 @@ impl SearchdConfig {
             query_socket_path: socket_dir.join("query.sock"),
             control_socket_path: socket_dir.join("control.sock"),
             ingest_socket_path: socket_dir.join("ingest.sock"),
-            query_text_embedder_mode: QueryTextEmbedderMode::DeterministicText,
+            semantic_embedder_profile: SemanticEmbedderProfile::default(),
         }
     }
 
     pub fn from_env() -> Result<Self> {
+        let base = Self::from_state_root(Self::resolve_state_root_from_env()?);
+        Ok(base.with_semantic_embedder_profile(semantic_embedder_profile_from_env()?))
+    }
+
+    fn resolve_state_root_from_env() -> Result<PathBuf> {
         if let Ok(explicit) = std::env::var("QUANTA_INDEX_STATE_ROOT") {
-            return Ok(Self::from_state_root(PathBuf::from(explicit)));
+            return Ok(PathBuf::from(explicit));
         }
         if let Ok(cache) = std::env::var("QUANTA_INDEX_CACHE_ROOT") {
-            return Ok(Self::from_state_root(PathBuf::from(cache).join("state")));
+            return Ok(PathBuf::from(cache).join("state"));
         }
         let home = std::env::var("HOME").map_err(|_err| {
             anyhow::anyhow!("cannot resolve state_root: HOME unset and no QUANTA_INDEX_* env vars")
@@ -49,7 +70,7 @@ impl SearchdConfig {
         let default_root = home_path.join("Library/Caches/quanta-index/state");
         #[cfg(not(target_os = "macos"))]
         let default_root = home_path.join(".cache/quanta-index/state");
-        Ok(Self::from_state_root(default_root))
+        Ok(default_root)
     }
 
     #[must_use]
@@ -73,8 +94,8 @@ impl SearchdConfig {
     }
 
     #[must_use]
-    pub const fn query_text_embedder_mode(&self) -> QueryTextEmbedderMode {
-        self.query_text_embedder_mode
+    pub fn semantic_embedder_profile(&self) -> &SemanticEmbedderProfile {
+        &self.semantic_embedder_profile
     }
 
     #[must_use]
@@ -102,13 +123,66 @@ impl SearchdConfig {
     }
 
     #[must_use]
-    pub fn with_query_text_embedder_mode(mut self, mode: QueryTextEmbedderMode) -> Self {
-        self.query_text_embedder_mode = mode;
+    pub fn with_semantic_embedder_profile(mut self, profile: SemanticEmbedderProfile) -> Self {
+        self.semantic_embedder_profile = profile;
         self
     }
 
     #[must_use]
     pub fn with_provider_unavailable_query_text_embedder(self) -> Self {
-        self.with_query_text_embedder_mode(QueryTextEmbedderMode::ProviderUnavailable)
+        self.with_semantic_embedder_profile(SemanticEmbedderProfile::Unavailable)
+    }
+}
+
+/// Resolve the semantic embedder profile from env. Defaults to the deterministic
+/// hash embedder; an unknown selector or a not-yet-wired provider fails closed
+/// (no silent fallback). `openai` is reserved for the OpenAI provider phase.
+fn semantic_embedder_profile_from_env() -> Result<SemanticEmbedderProfile> {
+    match std::env::var("QUANTA_INDEX_EMBEDDER").ok().as_deref() {
+        None | Some("") | Some("hash") => Ok(SemanticEmbedderProfile::Hash {
+            dimension: embed_dim_from_env(SEARCH_OWNED_SEMANTIC_DIMENSION)?,
+        }),
+        Some("unavailable") => Ok(SemanticEmbedderProfile::Unavailable),
+        Some("openai") => Err(anyhow::anyhow!(
+            "QUANTA_INDEX_EMBEDDER=openai is not yet wired (pending the OpenAI provider); use 'hash' or 'unavailable'"
+        )),
+        Some(other) => Err(anyhow::anyhow!(
+            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected hash|unavailable|openai)"
+        )),
+    }
+}
+
+fn embed_dim_from_env(default: usize) -> Result<usize> {
+    match std::env::var("QUANTA_INDEX_EMBED_DIM") {
+        Ok(raw) => raw.trim().parse::<usize>().map_err(|err| {
+            anyhow::anyhow!("invalid QUANTA_INDEX_EMBED_DIM '{raw}': {err}")
+        }),
+        Err(_) => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_profile_is_hash_at_search_owned_dimension() {
+        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"));
+        assert_eq!(
+            config.semantic_embedder_profile(),
+            &SemanticEmbedderProfile::Hash {
+                dimension: SEARCH_OWNED_SEMANTIC_DIMENSION
+            }
+        );
+    }
+
+    #[test]
+    fn provider_unavailable_builder_sets_unavailable_profile() {
+        let config = SearchdConfig::from_state_root(PathBuf::from("/tmp/quanta-index-cfg-test"))
+            .with_provider_unavailable_query_text_embedder();
+        assert_eq!(
+            config.semantic_embedder_profile(),
+            &SemanticEmbedderProfile::Unavailable
+        );
     }
 }
