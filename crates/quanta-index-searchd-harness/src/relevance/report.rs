@@ -19,17 +19,20 @@ use std::path::Path;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::TextQuerySyntax;
+use quanta_index_embed::{
+    OpenAiEmbedStatsSnapshot, reset_openai_embed_stats, snapshot_openai_embed_stats,
+};
+use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use serde_json::{Value, json};
 
 use crate::artifact::BenchSyntax;
 use crate::harness::E2eRuntime;
 use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
-    SEMANTIC_GATED_QUERIES, SEMANTIC_RELEVANCE_CORPUS, SEMANTIC_RELEVANCE_REPO,
-    SOURCEGRAPH_OVERLAP_BUCKETS, SourcegraphOverlapBucket, TOP_K,
+    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES, SEMANTIC_RELEVANCE_REPO,
+    SOURCEGRAPH_OVERLAP_BUCKETS, SemanticIntentKind, SemanticJudgedQuery, SourcegraphOverlapBucket,
+    TOP_K, semantic_fixture_docs,
 };
-#[cfg(test)]
-use crate::relevance::corpus::{SEMANTIC_JUDGED_QUERIES, SemanticIntentKind};
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,
 };
@@ -157,31 +160,10 @@ pub fn prepare_relevance_runtime() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
-/// Boot a HASH-embedder runtime over the SEMANTIC fixture and activate the
-/// Lexical + Semantic tracks so `query_semantic` has a live vector index.
-///
-/// Seeds ONLY the semantic corpus (the lexical corpus is intentionally absent so
-/// the semantic route's produced ids stay within the semantic fixture, never
-/// blurred by lexical-corpus paths). `auth/token_refresh.rs` is ingested as TWO
-/// chunks so the same-path-collapse rule has repeated hits to collapse. Asserting
-/// the `Hash` profile keeps the CI semantic gate deterministic and
-/// neural-quality-free (RFC §5 P1-3); the OpenAI A/B is a separate local lane.
-pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
+fn seed_semantic_relevance_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
     use crate::harness::E2eTextChunkSpec;
-    use quanta_index_contract::SearchPlaneTrackKind;
-
-    let mut rt = E2eRuntime::boot()?;
-    if !matches!(
-        rt.embedder_profile(),
-        quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
-    ) {
-        return Err(anyhow::anyhow!(
-            "the semantic CI gate MUST run on the deterministic Hash embedder; got {:?}",
-            rt.embedder_profile()
-        ));
-    }
-    for (path, content) in SEMANTIC_RELEVANCE_CORPUS {
-        if *path == "auth/token_refresh.rs" {
+    for (path, content) in semantic_fixture_docs() {
+        if path == "auth/token_refresh.rs" {
             // Two chunks, same path -> exercises same-path collapse on the rail.
             let half = content.len() / 2;
             let (head, tail) = content.split_at(half);
@@ -207,6 +189,15 @@ pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
             rt.ingest_text(SEMANTIC_RELEVANCE_REPO, path, content)?;
         }
     }
+    Ok(())
+}
+
+fn prepare_semantic_relevance_runtime_with_profile(
+    profile: SemanticEmbedderProfile,
+) -> AnyResult<E2eRuntime> {
+    use quanta_index_contract::SearchPlaneTrackKind;
+    let mut rt = E2eRuntime::boot_with_embedder_profile(profile)?;
+    seed_semantic_relevance_fixture(&mut rt)?;
     let _generation = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Semantic,
@@ -218,8 +209,31 @@ pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
     Ok(rt)
 }
 
-/// Collapse repeated same-path hits to the earliest occurrence, preserving the
-/// produced order of first occurrences.
+/// Boot a HASH-embedder runtime over the SEMANTIC fixture and activate the
+/// Lexical + Semantic tracks so `query_semantic` has a live vector index.
+///
+/// Seeds ONLY the semantic corpus (the lexical corpus is intentionally absent so
+/// the semantic route's produced ids stay within the semantic fixture, never
+/// blurred by lexical-corpus paths). `auth/token_refresh.rs` is ingested as TWO
+/// chunks so the same-path-collapse rule has repeated hits to collapse. Asserting
+/// the `Hash` profile keeps the CI semantic gate deterministic and
+/// neural-quality-free (RFC §5 P1-3); the OpenAI A/B is a separate local lane.
+pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
+    let rt = prepare_semantic_relevance_runtime_with_profile(SemanticEmbedderProfile::default())?;
+    if !matches!(
+        rt.embedder_profile(),
+        quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
+    ) {
+        return Err(anyhow::anyhow!(
+            "the semantic CI gate MUST run on the deterministic Hash embedder; got {:?}",
+            rt.embedder_profile()
+        ));
+    }
+    Ok(rt)
+}
+
+/// Collapse repeated same-repo same-path hits to the earliest occurrence,
+/// preserving the produced order of first occurrences.
 ///
 /// The semantic route is scored at file granularity, but the engine returns one
 /// candidate per CHUNK, so a single file can appear several times. Collapsing to
@@ -227,15 +241,42 @@ pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
 /// multiple head ranks and from inflating or obscuring file-level metrics. This
 /// is deterministic: given the same produced order it returns the same collapsed
 /// order.
-fn collapse_same_path(paths: Vec<String>) -> Vec<String> {
+fn collapse_same_repo_path(repo_paths: Vec<(String, String)>) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
-    let mut collapsed = Vec::with_capacity(paths.len());
-    for path in paths {
-        if seen.insert(path.clone()) {
+    let mut collapsed = Vec::with_capacity(repo_paths.len());
+    for (repo_id, path) in repo_paths {
+        if seen.insert((repo_id, path.clone())) {
             collapsed.push(path);
         }
     }
     collapsed
+}
+
+fn produced_semantic_order(
+    rt: &mut E2eRuntime,
+    query_id: &str,
+    query_text: &str,
+) -> AnyResult<Vec<String>> {
+    let result = rt.query_semantic(query_text, TOP_K, None);
+    if let Some(error) = result.typed_error {
+        return Err(anyhow::anyhow!(
+            "relevance query `{}` returned typed error {}: {}",
+            query_id,
+            error.code,
+            error.message
+        ));
+    }
+    let repo_paths = result
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.repo_id.as_str().to_string(),
+                candidate.repo_relative_path.as_str().to_string(),
+            )
+        })
+        .collect();
+    Ok(collapse_same_repo_path(repo_paths))
 }
 
 /// Run one judged query and return its produced doc-id ordering (top-first).
@@ -265,23 +306,7 @@ fn produced_order(rt: &mut E2eRuntime, query: &JudgedQuery) -> AnyResult<Vec<Str
             // Pure vector ranking: no lexical scope, so the semantic searcher
             // ranks the whole index by embedding similarity (NOT a lexical-scoped
             // re-rank, which would blur semantic-route truth — RFC §5 P1-2).
-            let result = rt.query_semantic(query.query, TOP_K, None);
-            if let Some(error) = result.typed_error {
-                return Err(anyhow::anyhow!(
-                    "relevance query `{}` returned typed error {}: {}",
-                    query.id,
-                    error.code,
-                    error.message
-                ));
-            }
-            // Score by repo-relative path (NOT raw chunk id), then collapse
-            // repeated same-path hits to the earliest occurrence.
-            let paths = result
-                .candidates
-                .iter()
-                .map(|candidate| candidate.repo_relative_path.as_str().to_string())
-                .collect();
-            Ok(collapse_same_path(paths))
+            produced_semantic_order(rt, query.id, query.query)
         }
     }
 }
@@ -476,6 +501,118 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     })
 }
 
+#[derive(Clone, Debug)]
+pub struct SemanticCaseMetrics {
+    pub produced_order: Vec<String>,
+    pub mrr_at_10: f64,
+    pub ndcg_at_10: f64,
+    pub recall_at_20: f64,
+    pub top1_is_on_topic: bool,
+    pub hard_negative_rank: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SemanticAbCase {
+    pub id: &'static str,
+    pub intent_kind: SemanticIntentKind,
+    pub intent: &'static str,
+    pub query: &'static str,
+    pub on_topic_path: &'static str,
+    pub hard_negative_path: &'static str,
+    pub hash: SemanticCaseMetrics,
+    pub openai: SemanticCaseMetrics,
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenAiSemanticAbReport {
+    pub cases: Vec<SemanticAbCase>,
+    pub provider_stats: OpenAiEmbedStatsSnapshot,
+}
+
+fn score_semantic_case(
+    query: &SemanticJudgedQuery,
+    produced_order: Vec<String>,
+) -> AnyResult<SemanticCaseMetrics> {
+    let judged = vec![
+        GradedDoc {
+            doc_id: query.on_topic_path.to_string(),
+            grade: 3,
+        },
+        GradedDoc {
+            doc_id: query.hard_negative_path.to_string(),
+            grade: 0,
+        },
+    ];
+    let grades = grade_index(&judged)?;
+    Ok(SemanticCaseMetrics {
+        mrr_at_10: reciprocal_rank_at_k(&produced_order, &grades, RANK_K),
+        ndcg_at_10: ndcg_at_k(&produced_order, &grades, RANK_K),
+        recall_at_20: recall_at_k(&produced_order, &grades, RECALL_K),
+        top1_is_on_topic: produced_order.first().map(String::as_str) == Some(query.on_topic_path),
+        hard_negative_rank: produced_order
+            .iter()
+            .position(|doc| doc == query.hard_negative_path)
+            .map(|index| index.saturating_add(1)),
+        produced_order,
+    })
+}
+
+pub fn openai_profile_from_env_for_relevance_ab() -> AnyResult<SemanticEmbedderProfile> {
+    let config = SearchdConfig::from_env()?;
+    match config.semantic_embedder_profile().clone() {
+        profile @ SemanticEmbedderProfile::OpenAi { .. } => Ok(profile),
+        other => Err(anyhow::anyhow!(
+            "local OpenAI A/B requires an OpenAi semantic profile; got {:?}",
+            other
+        )),
+    }
+}
+
+pub fn run_openai_semantic_ab_report(
+    openai_profile: SemanticEmbedderProfile,
+) -> AnyResult<OpenAiSemanticAbReport> {
+    let mut hash_runtime = prepare_semantic_relevance_runtime()?;
+    let hash_cases: Vec<SemanticCaseMetrics> = SEMANTIC_JUDGED_QUERIES
+        .iter()
+        .map(|query| {
+            produced_semantic_order(&mut hash_runtime, query.id, query.query)
+                .and_then(|order| score_semantic_case(query, order))
+        })
+        .collect::<AnyResult<Vec<_>>>()?;
+
+    reset_openai_embed_stats();
+    let mut openai_runtime = prepare_semantic_relevance_runtime_with_profile(openai_profile)?;
+    let openai_cases: Vec<SemanticCaseMetrics> = SEMANTIC_JUDGED_QUERIES
+        .iter()
+        .map(|query| {
+            produced_semantic_order(&mut openai_runtime, query.id, query.query)
+                .and_then(|order| score_semantic_case(query, order))
+        })
+        .collect::<AnyResult<Vec<_>>>()?;
+    let provider_stats = snapshot_openai_embed_stats();
+
+    let cases = SEMANTIC_JUDGED_QUERIES
+        .iter()
+        .zip(hash_cases)
+        .zip(openai_cases)
+        .map(|((query, hash), openai)| SemanticAbCase {
+            id: query.id,
+            intent_kind: query.intent_kind,
+            intent: query.intent,
+            query: query.query,
+            on_topic_path: query.on_topic_path,
+            hard_negative_path: query.hard_negative_path,
+            hash,
+            openai,
+        })
+        .collect();
+
+    Ok(OpenAiSemanticAbReport {
+        cases,
+        provider_stats,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Artifact emission.
 // ---------------------------------------------------------------------------
@@ -637,6 +774,138 @@ pub fn write_artifacts(
     Ok(())
 }
 
+fn semantic_intent_kind_label(kind: SemanticIntentKind) -> &'static str {
+    match kind {
+        SemanticIntentKind::ExactToken => "exact_token",
+        SemanticIntentKind::Paraphrase => "paraphrase",
+    }
+}
+
+fn semantic_case_metrics_json(metrics: &SemanticCaseMetrics) -> Value {
+    json!({
+        "produced_order": metrics.produced_order,
+        "mrr_at_10": metrics.mrr_at_10,
+        "ndcg_at_10": metrics.ndcg_at_10,
+        "recall_at_20": metrics.recall_at_20,
+        "top1_is_on_topic": metrics.top1_is_on_topic,
+        "hard_negative_rank": metrics.hard_negative_rank,
+    })
+}
+
+fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
+    let rows: Vec<Value> = report
+        .cases
+        .iter()
+        .map(|case| {
+            json!({
+                "id": case.id,
+                "intent_kind": semantic_intent_kind_label(case.intent_kind),
+                "intent": case.intent,
+                "query": case.query,
+                "on_topic_path": case.on_topic_path,
+                "hard_negative_path": case.hard_negative_path,
+                "hash": semantic_case_metrics_json(&case.hash),
+                "openai": semantic_case_metrics_json(&case.openai),
+                "delta": {
+                    "mrr_at_10": case.openai.mrr_at_10 - case.hash.mrr_at_10,
+                    "ndcg_at_10": case.openai.ndcg_at_10 - case.hash.ndcg_at_10,
+                    "recall_at_20": case.openai.recall_at_20 - case.hash.recall_at_20,
+                    "top1_win": case.openai.top1_is_on_topic && !case.hash.top1_is_on_topic,
+                },
+            })
+        })
+        .collect();
+    json!({ "schema_version": 1, "cases": rows })
+}
+
+fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
+    let max_request_texts = stats
+        .request_samples
+        .iter()
+        .map(|sample| sample.texts_submitted)
+        .max()
+        .unwrap_or(0);
+    let max_estimated_tokens = stats
+        .request_samples
+        .iter()
+        .map(|sample| sample.estimated_tokens)
+        .max()
+        .unwrap_or(0);
+    json!({
+        "schema_version": 1,
+        "total_texts_observed": stats.total_texts_observed,
+        "cache_hits": stats.cache_hits,
+        "distinct_miss_texts": stats.distinct_miss_texts,
+        "http_request_count": stats.http_request_count,
+        "retry_count": stats.retry_count,
+        "retryable_status_count": stats.retryable_status_count,
+        "transport_error_count": stats.transport_error_count,
+        "max_request_texts": max_request_texts,
+        "max_estimated_tokens": max_estimated_tokens,
+        "request_samples": stats.request_samples.iter().map(|sample| {
+            json!({
+                "texts_submitted": sample.texts_submitted,
+                "estimated_tokens": sample.estimated_tokens,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Value {
+    let paraphrase_case_count = report
+        .cases
+        .iter()
+        .filter(|case| case.intent_kind == SemanticIntentKind::Paraphrase)
+        .count();
+    let paraphrase_openai_top1 = report
+        .cases
+        .iter()
+        .filter(|case| {
+            case.intent_kind == SemanticIntentKind::Paraphrase && case.openai.top1_is_on_topic
+        })
+        .count();
+    let paraphrase_hash_top1 = report
+        .cases
+        .iter()
+        .filter(|case| {
+            case.intent_kind == SemanticIntentKind::Paraphrase && case.hash.top1_is_on_topic
+        })
+        .count();
+    json!({
+        "schema_version": 1,
+        "dimension": "relevance-openai-ab",
+        "status": "captured",
+        "git_rev": git_rev,
+        "case_count": report.cases.len(),
+        "paraphrase_case_count": paraphrase_case_count,
+        "paraphrase_hash_top1": paraphrase_hash_top1,
+        "paraphrase_openai_top1": paraphrase_openai_top1,
+        "provider_stats": {
+            "http_request_count": report.provider_stats.http_request_count,
+            "cache_hits": report.provider_stats.cache_hits,
+            "distinct_miss_texts": report.provider_stats.distinct_miss_texts,
+            "retry_count": report.provider_stats.retry_count,
+        },
+    })
+}
+
+pub fn write_openai_ab_artifacts(
+    report: &OpenAiSemanticAbReport,
+    dir: &Path,
+    git_rev: &str,
+) -> AnyResult<()> {
+    crate::artifact::write_json_pretty(
+        &dir.join("summary.json"),
+        &openai_ab_summary_json(report, git_rev),
+    )?;
+    crate::artifact::write_json_pretty(&dir.join("cases.json"), &openai_ab_cases_json(report))?;
+    crate::artifact::write_json_pretty(
+        &dir.join("provider-stats.json"),
+        &openai_provider_stats_json(&report.provider_stats),
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Adversarial gate tests — prove the rail can go RED.
@@ -668,12 +937,32 @@ mod tests {
         ids.iter().map(|s| (*s).to_string()).collect()
     }
 
+    fn repo_paths(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(repo_id, path)| ((*repo_id).to_string(), (*path).to_string()))
+            .collect()
+    }
+
+    fn semantic_fixture_path_set() -> std::collections::BTreeSet<&'static str> {
+        semantic_fixture_docs()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
     // --- pure same-path-collapse oracle (no daemon) ---------------------
 
     #[test]
-    fn collapse_same_path_keeps_first_occurrence_only() {
+    fn collapse_same_repo_path_keeps_first_occurrence_only() {
         // A file hit at ranks 1 and 3 must occupy exactly one (earliest) rank.
-        let collapsed = collapse_same_path(order(&["a.rs", "b.rs", "a.rs", "c.rs", "b.rs"]));
+        let collapsed = collapse_same_repo_path(repo_paths(&[
+            ("repo-a", "a.rs"),
+            ("repo-a", "b.rs"),
+            ("repo-a", "a.rs"),
+            ("repo-a", "c.rs"),
+            ("repo-a", "b.rs"),
+        ]));
         assert_eq!(
             collapsed,
             order(&["a.rs", "b.rs", "c.rs"]),
@@ -682,23 +971,44 @@ mod tests {
     }
 
     #[test]
-    fn collapse_same_path_is_identity_when_already_unique() {
-        let input = order(&["x.rs", "y.rs", "z.rs"]);
+    fn collapse_same_repo_path_is_identity_when_already_unique() {
+        let input = repo_paths(&[("repo-a", "x.rs"), ("repo-a", "y.rs"), ("repo-a", "z.rs")]);
         assert_eq!(
-            collapse_same_path(input.clone()),
-            input,
+            collapse_same_repo_path(input),
+            order(&["x.rs", "y.rs", "z.rs"]),
             "an already-unique ordering must be returned unchanged"
         );
     }
 
     #[test]
-    fn collapse_same_path_is_deterministic_across_repeated_calls() {
-        let input = order(&["p.rs", "q.rs", "p.rs", "r.rs", "q.rs", "p.rs"]);
-        let first = collapse_same_path(input.clone());
-        let second = collapse_same_path(input);
+    fn collapse_same_repo_path_is_deterministic_across_repeated_calls() {
+        let input = repo_paths(&[
+            ("repo-a", "p.rs"),
+            ("repo-a", "q.rs"),
+            ("repo-a", "p.rs"),
+            ("repo-a", "r.rs"),
+            ("repo-a", "q.rs"),
+            ("repo-a", "p.rs"),
+        ]);
+        let first = collapse_same_repo_path(input.clone());
+        let second = collapse_same_repo_path(input);
         assert_eq!(
             first, second,
             "collapse is a pure function: same input must yield same output"
+        );
+    }
+
+    #[test]
+    fn collapse_same_repo_path_keeps_same_path_from_different_repos_distinct() {
+        let collapsed = collapse_same_repo_path(repo_paths(&[
+            ("repo-a", "shared.rs"),
+            ("repo-b", "shared.rs"),
+            ("repo-a", "shared.rs"),
+        ]));
+        assert_eq!(
+            collapsed,
+            order(&["shared.rs", "shared.rs"]),
+            "same path text in different repos must NOT collapse into one rank"
         );
     }
 
@@ -706,7 +1016,7 @@ mod tests {
 
     /// Build a `Semantic`-route judged query so the test drives the REAL
     /// production dispatch arm (`produced_order` -> `query_semantic(None)` ->
-    /// path projection -> `collapse_same_path`), not a parallel re-implementation.
+    /// path projection -> `collapse_same_repo_path`), not a parallel re-implementation.
     fn semantic_route_query(id: &'static str, query: &'static str) -> JudgedQuery {
         JudgedQuery {
             id,
@@ -746,8 +1056,7 @@ mod tests {
         );
         // Path projection: every returned id is a corpus path, never an engine
         // chunk id (chunk ids are `e2e-<n>-<path>` shaped).
-        let corpus_paths: std::collections::BTreeSet<&str> =
-            SEMANTIC_RELEVANCE_CORPUS.iter().map(|(p, _)| *p).collect();
+        let corpus_paths = semantic_fixture_path_set();
         for doc in &order {
             assert!(
                 corpus_paths.contains(doc.as_str()),
@@ -863,8 +1172,7 @@ mod tests {
                 jq.id
             );
             // Every returned id is still a path, never a raw chunk id.
-            let corpus_paths: std::collections::BTreeSet<&str> =
-                SEMANTIC_RELEVANCE_CORPUS.iter().map(|(p, _)| *p).collect();
+            let corpus_paths = semantic_fixture_path_set();
             for doc in &first {
                 assert!(
                     corpus_paths.contains(doc.as_str()),

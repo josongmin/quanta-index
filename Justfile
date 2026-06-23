@@ -306,6 +306,21 @@ rust-verify-quality-relevance:
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --all-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" QUANTA_QUALITY_CAPTURE_DATE="$(date -u +%Y-%m-%d)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/latest"'
 
+# Local semantic A/B capture. Advisory only: compares deterministic Hash against
+# env-resolved OpenAI on the semantic judged fixture and writes delta artifacts
+# plus request-shaping telemetry; this is NOT a blocking CI rail.
+# Requires: OPENAI_API_KEY. Optional env knobs: QUANTA_INDEX_EMBED_MODEL,
+# QUANTA_INDEX_EMBED_DIM, QUANTA_INDEX_EMBED_BATCH,
+# QUANTA_INDEX_EMBED_MAX_EST_TOKENS, QUANTA_INDEX_EMBED_MAX_RETRIES,
+# QUANTA_INDEX_EMBED_TIMEOUT_SECS, QUANTA_INDEX_EMBED_CACHE.
+# Artifacts: artifacts/search-quality/relevance/openai-ab/latest/{summary,cases,provider-stats}.json
+rust-capture-quality-relevance-openai-ab:
+    bash -lc 'test -n "${OPENAI_API_KEY:-}" || { echo "OPENAI_API_KEY is required"; exit 1; }'
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --all-features --locked -- --nocapture
+    mkdir -p artifacts/search-quality/relevance/openai-ab/latest
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_openai_ab --all-features --locked
+    env QUANTA_INDEX_EMBEDDER=openai QUANTA_INDEX_BUILD_LANE=test-daemon-lane DSL_BENCH_GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/relevance_openai_ab" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/relevance/openai-ab/latest"'
+
 # Ambiguity / repairability rail (J7Q-06). Blocking dimension: ambiguity.
 # Proves: typed repair-payload invariants — repairable bridge codes carry
 # non-empty supported alternatives + a docs anchor; the internal invariant-break
