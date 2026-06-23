@@ -4614,6 +4614,12 @@ mod tests {
             vec![EngineTouched::Lexical, EngineTouched::Semantic],
             "both-lane hybrid must report symmetric rrf over both engines"
         );
+        assert!(
+            both.planner_trace
+                .iter()
+                .any(|e| e.detail.contains("semantic_scoped_to_lexical=true")),
+            "hybrid trace must expose that the semantic lane is scoped to lexical recall"
+        );
 
         // DEGRADED EDGE (the bug this fixes): lexical found candidates but the
         // semantic re-rank lane (scoped to lexical) matched none -> must NOT claim
@@ -5706,6 +5712,154 @@ mod tests {
         }
         if !scoped_vectors.is_empty() {
             return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
+        }
+        Ok(())
+    }
+
+    /// Embeds a real vector but advertises a configurable model identity, so a
+    /// query-time model drift can be exercised at the dispatcher boundary.
+    struct FixedModelQueryEmbedder {
+        model_id: &'static str,
+        model_version: Option<&'static str>,
+        dimension: usize,
+    }
+
+    impl QueryTextEmbedderPort for FixedModelQueryEmbedder {
+        fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+            HashingQueryTextEmbedder::new(self.dimension).embed_query(query_text)
+        }
+        fn model_id(&self) -> &str {
+            self.model_id
+        }
+        fn model_version(&self) -> Option<&str> {
+            self.model_version
+        }
+    }
+
+    /// Always fails `embed_query` (provider down), to prove the model gate runs
+    /// AFTER embed and does not mask the provider-unavailable rail.
+    struct UnavailableTestQueryEmbedder;
+
+    impl QueryTextEmbedderPort for UnavailableTestQueryEmbedder {
+        fn embed_query(
+            &self,
+            _query_text: &str,
+        ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
+                    .as_code_str()
+                    .to_string(),
+                message: "test embedder unavailable".to_string(),
+            })
+        }
+        fn model_id(&self) -> &str {
+            "provider-unavailable"
+        }
+        fn model_version(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    fn semantic_focus_request() -> SemanticQueryRequest {
+        SemanticQueryRequest {
+            query_text: "focus alpha".to_string(),
+            generation: Some(GenerationPin::new(
+                RepoId::new("repo-map-ipc"),
+                RevisionId::new("rev-map-ipc"),
+                ManifestGeneration::new(9),
+            )),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 3,
+        }
+    }
+
+    // CASE-COVERS: query-time model gate WIRING — a model-id drift at the dispatcher
+    // boundary fails closed BEFORE the searcher runs (proves the gate is invoked at
+    // the call site, not just that the helper logic is correct).
+    #[test]
+    fn semantic_dispatch_rejects_model_identity_drift_v1() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+            Arc::new(FixedModelQueryEmbedder {
+                model_id: "neural-768-v2",
+                model_version: None,
+                dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            }),
+            Arc::new(super::NoopQueryObsSink),
+        );
+
+        match dispatcher.semantic(&semantic_focus_request()) {
+            Err(quanta_index_core::CoreError::Typed { code, .. }) => {
+                let expected =
+                    quanta_index_contract::lex::LexicalErrorCode::SemModelMismatch.as_code_str();
+                if code != expected {
+                    return Err(format!("expected SEM_MODEL_MISMATCH, got code {code}").into());
+                }
+            }
+            other => {
+                return Err(format!("model drift must fail closed, got {other:?}").into());
+            }
+        }
+
+        // The gate runs AFTER embed but BEFORE the searcher: no vectors reach the
+        // searcher, so a mismatched-model query never produces a (garbage) ranking.
+        let guard = state
+            .lock()
+            .map_err(|err| format!("semantic state poisoned: {err}"))?;
+        if !guard.search_vectors.is_empty() || !guard.scoped_vectors.is_empty() {
+            return Err(format!(
+                "model drift must reject before invoking the searcher; search={:?} scoped={:?}",
+                guard.search_vectors, guard.scoped_vectors
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS: embed-before-model-gate ORDER — an unavailable embedder surfaces
+    // SEM_PROVIDER_UNAVAILABLE (from embed), NOT SEM_MODEL_MISMATCH, proving the gate
+    // is placed after embed so the provider-unavailable rail keeps its own error.
+    #[test]
+    fn semantic_dispatch_unavailable_embedder_keeps_provider_error_before_model_gate_v1()
+    -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = SearchPlaneDispatcher::new_with_obs(
+            Arc::new(RejectLexicalOpener),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+            Arc::new(UnavailableTestQueryEmbedder),
+            Arc::new(super::NoopQueryObsSink),
+        );
+
+        match dispatcher.semantic(&semantic_focus_request()) {
+            Err(quanta_index_core::CoreError::Typed { code, .. }) => {
+                let provider =
+                    quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
+                        .as_code_str();
+                if code != provider {
+                    return Err(format!(
+                        "unavailable embedder must surface SEM_PROVIDER_UNAVAILABLE (embed precedes the model gate), got {code}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("unavailable embedder must fail closed, got {other:?}").into());
+            }
         }
         Ok(())
     }
