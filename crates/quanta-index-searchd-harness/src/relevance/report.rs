@@ -846,10 +846,12 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
                 "delta": {
                     "mrr_at_10": case.openai.mrr_at_10 - case.hash.mrr_at_10,
                     "ndcg_at_10": case.openai.ndcg_at_10 - case.hash.ndcg_at_10,
-                    // recall@20 is non-discriminative on a <=20-doc corpus (always
-                    // 1.0 for both); kept for completeness, never the headline.
+                    // on_topic_rank is the headline (finest) signal. recall@20 is a
+                    // COARSE top-20-membership delta: 0 when both keep the file in
+                    // the top 20, non-zero only when one drops it out entirely (so
+                    // it is vacuous on a <=20-doc corpus but does move on a larger
+                    // one). Kept for completeness, never the headline.
                     "recall_at_20": case.openai.recall_at_20 - case.hash.recall_at_20,
-                    "recall_at_20_discriminative": false,
                     "on_topic_rank_hash": case.hash.on_topic_rank,
                     "on_topic_rank_openai": case.openai.on_topic_rank,
                     "openai_ranks_on_topic_higher": openai_ranks_on_topic_higher,
@@ -940,8 +942,7 @@ fn openai_ab_summary_json(report: &OpenAiSemanticAbReport, git_rev: &str) -> Val
         "paraphrase_openai_top1": paraphrase_openai_top1,
         "paraphrase_openai_ranks_on_topic_higher": paraphrase_openai_ranks_higher,
         "headline_metric": "on_topic_rank",
-        "recall_at_20_discriminative": false,
-        "metrics_note": "recall@20 saturates to 1.0 on a <=20-doc corpus; the discriminative A/B signals are on_topic_rank, mrr_at_10, and ndcg_at_10",
+        "metrics_note": "on_topic_rank is the headline (finest) signal; mrr_at_10/ndcg_at_10 track it. recall@20 is a COARSE top-20-membership signal: vacuous on a <=20-doc corpus but meaningful on a larger one, where it catches files hash drops out of the top 20 entirely",
         "provider_stats": {
             "http_request_count": report.provider_stats.http_request_count,
             "cache_hits": report.provider_stats.cache_hits,
