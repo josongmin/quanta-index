@@ -368,15 +368,26 @@ impl OpenAiEmbeddingProvider {
             });
 
         // Reassemble in batch-index order so output matches input order.
-        let mut indexed: Vec<IndexedBatchResult> =
-            worker_results?.into_iter().flatten().collect();
+        let mut indexed: Vec<IndexedBatchResult> = worker_results?.into_iter().flatten().collect();
         indexed.sort_by_key(|(index, _)| *index);
-        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-        for (_, result) in indexed {
-            out.extend(result?);
-        }
-        Ok(out)
+        flatten_batch_results(indexed.into_iter().map(|(_, result)| result), texts.len())
     }
+}
+
+/// Concatenate per-batch embedding results into one flat `vector-per-text` list.
+///
+/// Preserves iteration order and propagates the first error — the single place
+/// the output-order + fail-closed invariant lives for both the sequential and
+/// concurrent embed paths.
+fn flatten_batch_results(
+    ordered: impl IntoIterator<Item = Result<Vec<Vec<f32>>, CoreError>>,
+    text_count: usize,
+) -> Result<Vec<Vec<f32>>, CoreError> {
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(text_count);
+    for result in ordered {
+        out.extend(result?);
+    }
+    Ok(out)
 }
 
 impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
@@ -389,13 +400,12 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
         // Common per-call case (one batch) or concurrency disabled: stay sequential
         // with zero thread/coordination overhead.
         if batches.len() <= 1 || self.concurrency <= 1 {
-            let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-            for batch in batches {
-                out.extend(
-                    self.embed_one_batch(&texts[batch.start..batch.end], batch.estimated_tokens)?,
-                );
-            }
-            return Ok(out);
+            return flatten_batch_results(
+                batches.iter().map(|batch| {
+                    self.embed_one_batch(&texts[batch.start..batch.end], batch.estimated_tokens)
+                }),
+                texts.len(),
+            );
         }
         self.embed_batches_concurrently(texts, &batches)
     }
@@ -753,7 +763,10 @@ mod tests {
             _api_key: &str,
             body: &str,
         ) -> Result<HttpResponse, CoreError> {
-            let current = self.in_flight.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            let current = self
+                .in_flight
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
             let _prev_peak = self.peak_in_flight.fetch_max(current, Ordering::SeqCst);
             std::thread::sleep(self.delay);
             let parsed: serde_json::Value =
@@ -820,7 +833,10 @@ mod tests {
         let out = provider.embed_batch(&refs).expect("concurrent embed ok");
         // Output order MUST match input order despite concurrent completion.
         let expected: Vec<Vec<f32>> = (0..10).map(|n| vec![n as f32]).collect();
-        assert_eq!(out, expected, "concurrent dispatch must preserve input order");
+        assert_eq!(
+            out, expected,
+            "concurrent dispatch must preserve input order"
+        );
         // Concurrency actually happened: peak in-flight > 1 (bounded by 4).
         let observed_peak = peak.load(Ordering::SeqCst);
         assert!(
