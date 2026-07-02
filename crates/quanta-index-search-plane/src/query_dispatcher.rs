@@ -38,7 +38,8 @@ use quanta_index_core::domains::structural::{
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
     LexicalPolicy, LexicalQueryPort, RepoMapPolicy, RepoMapQueryPort, SemanticIndexOpenPort,
-    SemanticPolicy, SemanticQueryPort, StructuralMatchBinding, StructuralMatchCandidate,
+    SemanticPolicy, SemanticQueryPort, SemanticSearcher, StructuralMatchBinding,
+    StructuralMatchCandidate,
     StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
 };
@@ -210,6 +211,16 @@ struct SemanticSelection {
     expected_manifest_digest: Option<String>,
 }
 
+/// Outcome of the shared hybrid lexical+semantic fusion, before the caller
+/// wraps it in its path-specific response (plain hybrid vs. hybrid-seed).
+struct HybridFusion {
+    pin: GenerationPin,
+    lex_results: Vec<LexicalCandidate>,
+    sem_results: Vec<LexicalCandidate>,
+    fused: Vec<LexicalCandidate>,
+    explanation: SearchExplanation,
+}
+
 impl SearchPlaneDispatcher {
     #[must_use]
     pub fn new(
@@ -332,6 +343,101 @@ impl SearchPlaneDispatcher {
         })
     }
 
+    /// Embed a semantic query string and gate it against the opened index's
+    /// model identity. This is the single place the embed → model-identity-gate
+    /// invariant lives for the semantic, hybrid, and hybrid-seed paths — a query
+    /// vector from a model that differs from the indexed one is not
+    /// cosine-comparable and must fail closed here.
+    fn embed_and_gate_query(
+        &self,
+        query_text: &str,
+        sem_searcher: &dyn SemanticSearcher,
+        plane: &str,
+    ) -> Result<Vec<f32>, CoreError> {
+        let query_vector = self
+            .query_embedder
+            .embed_query(query_text)
+            .map_err(|err| prefix_semantic_query_error(plane, err))?;
+        ensure_query_model_matches_index_v1(
+            self.query_embedder.model_id(),
+            self.query_embedder.model_version(),
+            sem_searcher.index_model_id(),
+            sem_searcher.index_model_version(),
+            plane,
+        )?;
+        Ok(query_vector)
+    }
+
+    /// Shared lexical+semantic RRF fusion for the hybrid and hybrid-seed paths.
+    /// Both resolve their selection differently and wrap the outcome in a
+    /// different response, but the middle — readiness gate, dual open, lexical
+    /// lower/search, semantic scoped re-rank, RRF, explanation — is identical.
+    fn execute_hybrid_fusion(
+        &self,
+        selection: &SemanticSelection,
+        text_query: &TextQueryRequest,
+        semantic_query_text: &str,
+        top_k: u32,
+        plane: &str,
+    ) -> Result<HybridFusion, CoreError> {
+        let pin = selection.pin.clone();
+        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
+        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
+        self.validate_semantic_selection(selection, plane)?;
+
+        let lex_searcher =
+            self.lex_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let sem_searcher =
+            self.sem_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let lexical_query = lower_lexical_text_query(text_query)?;
+        LexicalPolicy::validate_query(&lexical_query)?;
+        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(top_k);
+        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        stabilize_ranked_candidates(&mut lex_results);
+        let lexical_ids = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<BTreeSet<_>>();
+        let query_vector =
+            self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane)?;
+        let mut sem_results =
+            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        stabilize_ranked_candidates(&mut sem_results);
+        let fused_universe_size = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .chain(
+                sem_results
+                    .iter()
+                    .map(|candidate| candidate.candidate_id.as_str()),
+            )
+            .collect::<BTreeSet<_>>()
+            .len();
+        let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, top_k);
+        let early_stop_reason = if fused_universe_size > fused.len() {
+            Some(EarlyStopReason::CountReached)
+        } else {
+            None
+        };
+        let explanation = build_hybrid_response_explanation(
+            lexical_ids.len(),
+            lex_results.len(),
+            sem_results.len(),
+            fused.len(),
+            internal_top_k,
+            early_stop_reason,
+        );
+        Ok(HybridFusion {
+            pin,
+            lex_results,
+            sem_results,
+            fused,
+            explanation,
+        })
+    }
+
     fn semantic(&self, request: &SemanticQueryRequest) -> Result<SemanticQueryResponse, CoreError> {
         SemanticPolicy::validate_top_k(request.top_k)?;
         let selection =
@@ -363,17 +469,8 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.sem_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let query_vector = self
-            .query_embedder
-            .embed_query(request.query_text.as_str())
-            .map_err(|err| prefix_semantic_query_error("semantic", err))?;
-        ensure_query_model_matches_index_v1(
-            self.query_embedder.model_id(),
-            self.query_embedder.model_version(),
-            searcher.index_model_id(),
-            searcher.index_model_version(),
-            "semantic",
-        )?;
+        let query_vector =
+            self.embed_and_gate_query(request.query_text.as_str(), searcher.as_ref(), "semantic")?;
         let results = if let Some(scope_ids) = scope_candidate_ids.as_ref() {
             searcher.search_scoped(&query_vector, scope_ids, request.top_k)?
         } else {
@@ -404,68 +501,17 @@ impl SearchPlaneDispatcher {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_hybrid_request_selection(self.activation_catalog.as_ref(), request)?;
-        let pin = selection.pin.clone();
-        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
-        self.validate_semantic_selection(&selection, "hybrid")?;
-
-        let lex_searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let sem_searcher =
-            self.sem_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let lexical_query = lower_lexical_text_query(&request.text_query)?;
-        LexicalPolicy::validate_query(&lexical_query)?;
-        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
-        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
-        stabilize_ranked_candidates(&mut lex_results);
-        let lexical_ids = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.clone())
-            .collect::<BTreeSet<_>>();
-        let query_vector = self
-            .query_embedder
-            .embed_query(request.semantic_query_text.as_str())
-            .map_err(|err| prefix_semantic_query_error("hybrid", err))?;
-        ensure_query_model_matches_index_v1(
-            self.query_embedder.model_id(),
-            self.query_embedder.model_version(),
-            sem_searcher.index_model_id(),
-            sem_searcher.index_model_version(),
+        let fusion = self.execute_hybrid_fusion(
+            &selection,
+            &request.text_query,
+            request.semantic_query_text.as_str(),
+            request.top_k,
             "hybrid",
         )?;
-        let mut sem_results =
-            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
-        stabilize_ranked_candidates(&mut sem_results);
-        let fused_universe_size = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.as_str())
-            .chain(
-                sem_results
-                    .iter()
-                    .map(|candidate| candidate.candidate_id.as_str()),
-            )
-            .collect::<BTreeSet<_>>()
-            .len();
-        let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k);
-        let early_stop_reason = if fused_universe_size > fused.len() {
-            Some(EarlyStopReason::CountReached)
-        } else {
-            None
-        };
-        let explanation = build_hybrid_response_explanation(
-            lexical_ids.len(),
-            lex_results.len(),
-            sem_results.len(),
-            fused.len(),
-            internal_top_k,
-            early_stop_reason,
-        );
         Ok(HybridQueryResponse {
-            generation: pin,
-            results: fused,
-            explanation,
+            generation: fusion.pin,
+            results: fusion.fused,
+            explanation: fusion.explanation,
         })
     }
 
@@ -476,69 +522,22 @@ impl SearchPlaneDispatcher {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
-        let pin = selection.pin.clone();
-        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
-        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
-        self.validate_semantic_selection(&selection, "hybrid seed")?;
-
-        let lex_searcher =
-            self.lex_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let sem_searcher =
-            self.sem_opener
-                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let lexical_query = lower_lexical_text_query(&request.text_query)?;
-        LexicalPolicy::validate_query(&lexical_query)?;
-        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
-        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
-        stabilize_ranked_candidates(&mut lex_results);
-        let lexical_ids = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.clone())
-            .collect::<BTreeSet<_>>();
-        let query_vector = self
-            .query_embedder
-            .embed_query(request.semantic_query_text.as_str())
-            .map_err(|err| prefix_semantic_query_error("hybrid seed", err))?;
-        ensure_query_model_matches_index_v1(
-            self.query_embedder.model_id(),
-            self.query_embedder.model_version(),
-            sem_searcher.index_model_id(),
-            sem_searcher.index_model_version(),
+        let fusion = self.execute_hybrid_fusion(
+            &selection,
+            &request.text_query,
+            request.semantic_query_text.as_str(),
+            request.top_k,
             "hybrid seed",
         )?;
-        let mut sem_results =
-            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
-        stabilize_ranked_candidates(&mut sem_results);
-        let fused_universe_size = lex_results
-            .iter()
-            .map(|candidate| candidate.candidate_id.as_str())
-            .chain(
-                sem_results
-                    .iter()
-                    .map(|candidate| candidate.candidate_id.as_str()),
-            )
-            .collect::<BTreeSet<_>>()
-            .len();
-        let fused = HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k);
-        let early_stop_reason = if fused_universe_size > fused.len() {
-            Some(EarlyStopReason::CountReached)
-        } else {
-            None
-        };
-        let explanation = build_hybrid_response_explanation(
-            lexical_ids.len(),
-            lex_results.len(),
-            sem_results.len(),
-            fused.len(),
-            internal_top_k,
-            early_stop_reason,
-        );
-        let seed_candidates = build_hybrid_seed_candidates_v1(&fused, &lex_results, &sem_results)?;
+        let seed_candidates = build_hybrid_seed_candidates_v1(
+            &fusion.fused,
+            &fusion.lex_results,
+            &fusion.sem_results,
+        )?;
         Ok(HybridSeedQueryResponse {
-            generation: pin,
+            generation: fusion.pin,
             seed_candidates,
-            explanation,
+            explanation: fusion.explanation,
         })
     }
 
@@ -4696,7 +4695,9 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(ensure_query_model_matches_index_v1("m", Some("2"), "m", Some("2"), "hybrid").is_ok());
+        assert!(
+            ensure_query_model_matches_index_v1("m", Some("2"), "m", Some("2"), "hybrid").is_ok()
+        );
 
         // ORIGINAL TRIGGER: same dimension is irrelevant — a different model id
         // (the future same-dim engine swap) MUST fail closed, not silently rank.
@@ -5763,10 +5764,7 @@ mod tests {
     struct UnavailableTestQueryEmbedder;
 
     impl QueryTextEmbedderPort for UnavailableTestQueryEmbedder {
-        fn embed_query(
-            &self,
-            _query_text: &str,
-        ) -> Result<Vec<f32>, quanta_index_core::CoreError> {
+        fn embed_query(&self, _query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
             Err(quanta_index_core::CoreError::Typed {
                 code: quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
                     .as_code_str()
@@ -5869,9 +5867,8 @@ mod tests {
 
         match dispatcher.semantic(&semantic_focus_request()) {
             Err(quanta_index_core::CoreError::Typed { code, .. }) => {
-                let provider =
-                    quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
-                        .as_code_str();
+                let provider = quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
+                    .as_code_str();
                 if code != provider {
                     return Err(format!(
                         "unavailable embedder must surface SEM_PROVIDER_UNAVAILABLE (embed precedes the model gate), got {code}"
