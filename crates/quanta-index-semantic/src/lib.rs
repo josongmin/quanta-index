@@ -29,6 +29,7 @@
 
 mod build;
 mod codec;
+mod errors;
 mod generation_contract;
 mod layout;
 mod manifest;

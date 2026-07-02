@@ -18,6 +18,19 @@ use crate::manifest::{SemanticManifest, distance_metric_token, normalization_tok
 
 const GENERATION_CONTRACT_VERSION: u32 = 1;
 
+/// Return `Err($variant(format!(...)))` when two contract fields disagree.
+///
+/// Both validation paths (`validate_batch`, `validate_manifest`) are a run of
+/// field-equality guards that differ only in the `CoreError` variant and the
+/// message wording — this keeps each guard a single, uniform line.
+macro_rules! ensure_field_eq {
+    ($variant:expr, $lhs:expr, $rhs:expr, $fmt:literal) => {
+        if $lhs != $rhs {
+            return Err($variant(format!($fmt, $lhs, $rhs)));
+        }
+    };
+}
+
 pub(crate) struct GenerationContract {
     pub(crate) format_version: u32,
     pub(crate) mode: BatchIngestMode,
@@ -84,83 +97,83 @@ impl GenerationContract {
         Self::validate_batch_shape(batch)?;
         self.validate_format()?;
         let observed = Self::from_batch(batch);
-        if self.mode != observed.mode {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation mode {:?} does not match batch mode {:?}",
-                self.mode, observed.mode
-            )));
-        }
-        if self.base_generation != observed.base_generation {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation base_generation {:?} does not match batch base_generation {:?}",
-                self.base_generation, observed.base_generation
-            )));
-        }
-        if self.model_id != observed.model_id {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation model_id `{}` does not match batch model_id `{}`",
-                self.model_id, observed.model_id
-            )));
-        }
-        if self.model_version != observed.model_version {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation model_version {:?} does not match batch model_version {:?}",
-                self.model_version, observed.model_version
-            )));
-        }
-        if self.dimension != observed.dimension {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation dimension {} does not match batch dimension {}",
-                self.dimension, observed.dimension
-            )));
-        }
-        if self.distance_metric != observed.distance_metric {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation distance_metric `{}` does not match batch distance_metric `{}`",
-                self.distance_metric, observed.distance_metric
-            )));
-        }
-        if self.normalization != observed.normalization {
-            return Err(CoreError::InvalidContract(format!(
-                "semantic: existing generation normalization `{}` does not match batch normalization `{}`",
-                self.normalization, observed.normalization
-            )));
-        }
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.mode,
+            observed.mode,
+            "semantic: existing generation mode {:?} does not match batch mode {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.base_generation,
+            observed.base_generation,
+            "semantic: existing generation base_generation {:?} does not match batch base_generation {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.model_id,
+            observed.model_id,
+            "semantic: existing generation model_id `{}` does not match batch model_id `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.model_version,
+            observed.model_version,
+            "semantic: existing generation model_version {:?} does not match batch model_version {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.dimension,
+            observed.dimension,
+            "semantic: existing generation dimension {} does not match batch dimension {}"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.distance_metric,
+            observed.distance_metric,
+            "semantic: existing generation distance_metric `{}` does not match batch distance_metric `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.normalization,
+            observed.normalization,
+            "semantic: existing generation normalization `{}` does not match batch normalization `{}`"
+        );
         Ok(())
     }
 
     pub(crate) fn validate_manifest(&self, manifest: &SemanticManifest) -> Result<(), CoreError> {
         self.validate_format()?;
-        if manifest.model_id != self.model_id {
-            return Err(CoreError::Storage(format!(
-                "semantic: manifest model_id `{}` does not match sealed build contract `{}`",
-                manifest.model_id, self.model_id
-            )));
-        }
-        if manifest.model_version != self.model_version {
-            return Err(CoreError::Storage(format!(
-                "semantic: manifest model_version {:?} does not match sealed build contract {:?}",
-                manifest.model_version, self.model_version
-            )));
-        }
-        if manifest.dimension != self.dimension {
-            return Err(CoreError::Storage(format!(
-                "semantic: manifest dimension {} does not match sealed build contract {}",
-                manifest.dimension, self.dimension
-            )));
-        }
-        if manifest.distance_metric != self.distance_metric {
-            return Err(CoreError::Storage(format!(
-                "semantic: manifest distance_metric `{}` does not match sealed build contract `{}`",
-                manifest.distance_metric, self.distance_metric
-            )));
-        }
-        if manifest.normalization != self.normalization {
-            return Err(CoreError::Storage(format!(
-                "semantic: manifest normalization `{}` does not match sealed build contract `{}`",
-                manifest.normalization, self.normalization
-            )));
-        }
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.model_id,
+            self.model_id,
+            "semantic: manifest model_id `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.model_version,
+            self.model_version,
+            "semantic: manifest model_version {:?} does not match sealed build contract {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.dimension,
+            self.dimension,
+            "semantic: manifest dimension {} does not match sealed build contract {}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.distance_metric,
+            self.distance_metric,
+            "semantic: manifest distance_metric `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.normalization,
+            self.normalization,
+            "semantic: manifest normalization `{}` does not match sealed build contract `{}`"
+        );
         Ok(())
     }
 

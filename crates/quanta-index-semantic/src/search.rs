@@ -36,16 +36,13 @@ use crate::build::{
     COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
     COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
+use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
 use crate::layout;
 use crate::manifest::{FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION, SemanticManifest};
 use crate::sql::build_id_in_filter;
 
 const COLUMN_DISTANCE: &str = "_distance";
-
-fn lancedb_err(action: &str, err: impl core::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("semantic: lancedb {action}: {err}"))
-}
 
 fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
@@ -168,41 +165,24 @@ pub(crate) async fn open_generation(
     })
 }
 
-fn column_as_string<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, CoreError> {
+/// Downcast a named column to a concrete Arrow array type.
+///
+/// Fails closed with the same message shape for both the missing-column and
+/// wrong-type cases. `arrow_type` is the human-readable expected type name used
+/// in the error.
+fn column_as<'a, T: Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+    arrow_type: &str,
+) -> Result<&'a T, CoreError> {
     let column = batch.column_by_name(name).ok_or_else(|| {
         CoreError::Storage(format!(
             "semantic: column `{name}` missing from lancedb result batch"
         ))
     })?;
-    column.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+    column.as_any().downcast_ref::<T>().ok_or_else(|| {
         CoreError::Storage(format!(
-            "semantic: column `{name}` has unexpected Arrow type (expected Utf8) in lancedb result batch"
-        ))
-    })
-}
-
-fn column_as_u32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, CoreError> {
-    let column = batch.column_by_name(name).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: column `{name}` missing from lancedb result batch"
-        ))
-    })?;
-    column.as_any().downcast_ref::<UInt32Array>().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: column `{name}` has unexpected Arrow type (expected UInt32) in lancedb result batch"
-        ))
-    })
-}
-
-fn column_as_f32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float32Array, CoreError> {
-    let column = batch.column_by_name(name).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: column `{name}` missing from lancedb result batch"
-        ))
-    })?;
-    column.as_any().downcast_ref::<Float32Array>().ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: column `{name}` has unexpected Arrow type (expected Float32) in lancedb result batch"
+            "semantic: column `{name}` has unexpected Arrow type (expected {arrow_type}) in lancedb result batch"
         ))
     })
 }
@@ -236,12 +216,12 @@ fn extract_candidates(
     generation: ManifestGeneration,
     out: &mut Vec<LexicalCandidate>,
 ) -> Result<(), CoreError> {
-    let id_col = column_as_string(batch, COLUMN_EMBEDDING_ID)?;
-    let path_col = column_as_string(batch, COLUMN_REPO_RELATIVE_PATH)?;
-    let start_col = column_as_u32(batch, COLUMN_START_LINE)?;
-    let end_col = column_as_u32(batch, COLUMN_END_LINE)?;
-    let snippet_col = column_as_string(batch, COLUMN_SNIPPET)?;
-    let distance_col = column_as_f32(batch, COLUMN_DISTANCE)?;
+    let id_col = column_as::<StringArray>(batch, COLUMN_EMBEDDING_ID, "Utf8")?;
+    let path_col = column_as::<StringArray>(batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?;
+    let start_col = column_as::<UInt32Array>(batch, COLUMN_START_LINE, "UInt32")?;
+    let end_col = column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?;
+    let snippet_col = column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?;
+    let distance_col = column_as::<Float32Array>(batch, COLUMN_DISTANCE, "Float32")?;
     for row in 0..batch.num_rows() {
         let id = id_col.value(row).to_owned();
         let path = path_col.value(row).to_owned();
@@ -428,9 +408,18 @@ mod tests {
     #[test]
     fn cosine_distance_to_score_rejects_non_finite_v1() {
         // Finite distances convert to similarity = 1 - distance.
-        assert_eq!(cosine_distance_to_score_v1(0.0, "c").expect("finite ok"), 1.0);
-        assert_eq!(cosine_distance_to_score_v1(2.0, "c").expect("finite ok"), -1.0);
-        assert_eq!(cosine_distance_to_score_v1(0.5, "c").expect("finite ok"), 0.5);
+        assert_eq!(
+            cosine_distance_to_score_v1(0.0, "c").expect("finite ok"),
+            1.0
+        );
+        assert_eq!(
+            cosine_distance_to_score_v1(2.0, "c").expect("finite ok"),
+            -1.0
+        );
+        assert_eq!(
+            cosine_distance_to_score_v1(0.5, "c").expect("finite ok"),
+            0.5
+        );
 
         // NaN / +Inf / -Inf each fail closed as a storage/index-corruption error
         // (not a query-vector error, not a silent NaN score).
@@ -440,9 +429,9 @@ mod tests {
                     message.contains("non-finite cosine distance"),
                     "storage error must name the corruption, got {message}"
                 ),
-                other => panic!(
-                    "non-finite distance {bad} must fail closed as Storage, got {other:?}"
-                ),
+                other => {
+                    panic!("non-finite distance {bad} must fail closed as Storage, got {other:?}")
+                }
             }
         }
     }

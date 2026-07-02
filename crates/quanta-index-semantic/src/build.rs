@@ -15,7 +15,7 @@
 )]
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,6 +29,7 @@ use quanta_index_contract::{EmbeddingDistanceMetric, SemanticIngestBatch, Semant
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
 
+use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::layout;
 use crate::manifest::SemanticManifest;
@@ -98,18 +99,6 @@ pub(crate) const COLUMN_END_LINE: &str = "end_line";
 pub(crate) const COLUMN_SNIPPET: &str = "snippet";
 pub(crate) const COLUMN_VECTOR: &str = "vector";
 
-fn fs_err(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
-    CoreError::Storage(format!("semantic: {action} {}: {err}", path.display()))
-}
-
-fn lancedb_err(action: &str, err: impl core::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("semantic: lancedb {action}: {err}"))
-}
-
-fn arrow_err(action: &str, err: impl core::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("semantic: arrow {action}: {err}"))
-}
-
 /// Crash-atomic file write for our scope-metadata markers/manifest.
 fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
     let staging = path.with_extension("tmp");
@@ -131,6 +120,35 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), CoreError> {
         } else {
             let _bytes = fs::copy(&from, &to).map_err(|err| fs_err("copy file", &from, &err))?;
         }
+    }
+    Ok(())
+}
+
+/// The `dataset/`, `dataset.staging`, and `dataset.backup` sibling directories.
+///
+/// The triple makes dataset replacement crash-atomic: we build into staging and
+/// park the previous live dataset in backup during promotion, then recover from
+/// whichever combination a crash leaves behind.
+struct DatasetPaths {
+    dataset: PathBuf,
+    staging: PathBuf,
+    backup: PathBuf,
+}
+
+impl DatasetPaths {
+    fn for_generation(generation_dir: &Path) -> Self {
+        Self {
+            dataset: layout::dataset_dir(generation_dir),
+            staging: generation_dir.join(STAGING_DIR_NAME),
+            backup: generation_dir.join(BACKUP_DIR_NAME),
+        }
+    }
+}
+
+/// Remove `dir` and its contents if it exists, tagging IO failure with `action`.
+fn remove_dir_if_exists(action: &str, dir: &Path) -> Result<(), CoreError> {
+    if dir.exists() {
+        fs::remove_dir_all(dir).map_err(|err| fs_err(action, dir, &err))?;
     }
     Ok(())
 }
@@ -360,30 +378,19 @@ async fn append_scope(
 }
 
 fn recover_dataset_artifacts(generation_dir: &Path) -> Result<(), CoreError> {
-    let dataset_dir = layout::dataset_dir(generation_dir);
-    let staging_dir = generation_dir.join(STAGING_DIR_NAME);
-    let backup_dir = generation_dir.join(BACKUP_DIR_NAME);
+    let paths = DatasetPaths::for_generation(generation_dir);
 
-    if dataset_dir.exists() {
-        if staging_dir.exists() {
-            fs::remove_dir_all(&staging_dir)
-                .map_err(|err| fs_err("clean stale staging dir", &staging_dir, &err))?;
-        }
-        if backup_dir.exists() {
-            fs::remove_dir_all(&backup_dir)
-                .map_err(|err| fs_err("clean stale backup dir", &backup_dir, &err))?;
-        }
+    if paths.dataset.exists() {
+        remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
+        remove_dir_if_exists("clean stale backup dir", &paths.backup)?;
         return Ok(());
     }
 
-    if backup_dir.exists() {
-        fs::rename(&backup_dir, &dataset_dir)
-            .map_err(|err| fs_err("restore backup dataset", &backup_dir, &err))?;
+    if paths.backup.exists() {
+        fs::rename(&paths.backup, &paths.dataset)
+            .map_err(|err| fs_err("restore backup dataset", &paths.backup, &err))?;
     }
-    if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir)
-            .map_err(|err| fs_err("clean stale staging dir", &staging_dir, &err))?;
-    }
+    remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
     Ok(())
 }
 
@@ -422,15 +429,11 @@ fn prepare_staging_dataset(
     revision_id: &quanta_index_contract::RevisionId,
 ) -> Result<std::path::PathBuf, CoreError> {
     recover_dataset_artifacts(generation_dir)?;
-    let dataset_dir = layout::dataset_dir(generation_dir);
-    let staging_dir = generation_dir.join(STAGING_DIR_NAME);
-    if staging_dir.exists() {
-        fs::remove_dir_all(&staging_dir)
-            .map_err(|err| fs_err("clean stale staging dir", &staging_dir, &err))?;
-    }
-    if dataset_dir.exists() {
-        copy_dir(&dataset_dir, &staging_dir)?;
-        return Ok(staging_dir);
+    let paths = DatasetPaths::for_generation(generation_dir);
+    remove_dir_if_exists("clean stale staging dir", &paths.staging)?;
+    if paths.dataset.exists() {
+        copy_dir(&paths.dataset, &paths.staging)?;
+        return Ok(paths.staging);
     }
     if let Some(base_generation) = generation_contract.base_generation {
         let base_dir = layout::generation_dir(semantic_root, repo_id, revision_id, base_generation);
@@ -451,41 +454,30 @@ fn prepare_staging_dataset(
                 revision_id.as_str()
             )));
         }
-        copy_dir(&base_dataset, &staging_dir)?;
-        return Ok(staging_dir);
+        copy_dir(&base_dataset, &paths.staging)?;
+        return Ok(paths.staging);
     }
-    fs::create_dir_all(&staging_dir)
-        .map_err(|err| fs_err("create staging dataset dir", &staging_dir, &err))?;
-    Ok(staging_dir)
+    fs::create_dir_all(&paths.staging)
+        .map_err(|err| fs_err("create staging dataset dir", &paths.staging, &err))?;
+    Ok(paths.staging)
 }
 
 fn promote_staging_dataset(generation_dir: &Path) -> Result<(), CoreError> {
-    let dataset_dir = layout::dataset_dir(generation_dir);
-    let staging_dir = generation_dir.join(STAGING_DIR_NAME);
-    let backup_dir = generation_dir.join(BACKUP_DIR_NAME);
-    if backup_dir.exists() {
-        fs::remove_dir_all(&backup_dir)
-            .map_err(|err| fs_err("clean stale backup dir", &backup_dir, &err))?;
+    let paths = DatasetPaths::for_generation(generation_dir);
+    remove_dir_if_exists("clean stale backup dir", &paths.backup)?;
+    if paths.dataset.exists() {
+        fs::rename(&paths.dataset, &paths.backup)
+            .map_err(|err| fs_err("move current dataset to backup", &paths.dataset, &err))?;
     }
-    if dataset_dir.exists() {
-        fs::rename(&dataset_dir, &backup_dir)
-            .map_err(|err| fs_err("move current dataset to backup", &dataset_dir, &err))?;
-    }
-    match fs::rename(&staging_dir, &dataset_dir) {
-        Ok(()) => {
-            if backup_dir.exists() {
-                fs::remove_dir_all(&backup_dir)
-                    .map_err(|err| fs_err("remove promoted backup dataset", &backup_dir, &err))?;
-            }
-            Ok(())
-        }
+    match fs::rename(&paths.staging, &paths.dataset) {
+        Ok(()) => remove_dir_if_exists("remove promoted backup dataset", &paths.backup),
         Err(err) => {
-            if backup_dir.exists() && !dataset_dir.exists() {
-                fs::rename(&backup_dir, &dataset_dir).map_err(|restore_err| {
-                    fs_err("restore backup dataset", &backup_dir, &restore_err)
+            if paths.backup.exists() && !paths.dataset.exists() {
+                fs::rename(&paths.backup, &paths.dataset).map_err(|restore_err| {
+                    fs_err("restore backup dataset", &paths.backup, &restore_err)
                 })?;
             }
-            Err(fs_err("promote staging dataset", &staging_dir, &err))
+            Err(fs_err("promote staging dataset", &paths.staging, &err))
         }
     }
 }
