@@ -70,6 +70,10 @@ pub trait SemanticSearcher: Send + Sync {
 
     /// Search within a lexical allowlist. Callers rely on this for exact scope
     /// semantics rather than global-top-k followed by post-filtering.
+    ///
+    /// An empty `allowed_ids` yields an empty result (`Ok(vec![])`): the scope
+    /// admits nothing, so there is nothing to rank. Implementors must honor this
+    /// rather than treating an empty scope as "unscoped"/global search.
     fn search_scoped(
         &self,
         query_vector: &[f32],
