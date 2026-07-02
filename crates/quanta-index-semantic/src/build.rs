@@ -156,17 +156,8 @@ fn built_at_unix_nanos() -> Result<u64, CoreError> {
         .map_err(|err| CoreError::Storage(format!("semantic: build timestamp overflow: {err}")))
 }
 
-fn dataset_dir_uri(dataset_dir: &Path) -> Result<String, CoreError> {
-    dataset_dir.to_str().map(str::to_owned).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: dataset path is not valid UTF-8: {}",
-            dataset_dir.display()
-        ))
-    })
-}
-
 async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
-    let uri = dataset_dir_uri(dataset_dir)?;
+    let uri = layout::dataset_dir_to_uri(dataset_dir)?;
     connect(&uri)
         .execute()
         .await

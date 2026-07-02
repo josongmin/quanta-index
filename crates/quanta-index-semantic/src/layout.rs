@@ -77,7 +77,12 @@ pub(crate) fn dimension_to_i32(dimension: usize) -> Result<i32, CoreError> {
 /// Filesystem path of the lancedb dataset, as the UTF-8 string lancedb's
 /// `connect` expects.
 pub(crate) fn dataset_uri(generation_dir: &Path) -> Result<String, CoreError> {
-    let dataset_dir = dataset_dir(generation_dir);
+    dataset_dir_to_uri(&dataset_dir(generation_dir))
+}
+
+/// Convert an already-resolved dataset directory into the UTF-8 URI lancedb's
+/// `connect` expects. The single place the not-UTF-8 failure is shaped.
+pub(crate) fn dataset_dir_to_uri(dataset_dir: &Path) -> Result<String, CoreError> {
     dataset_dir.to_str().map(str::to_owned).ok_or_else(|| {
         CoreError::Storage(format!(
             "semantic: dataset path is not valid UTF-8: {}",
