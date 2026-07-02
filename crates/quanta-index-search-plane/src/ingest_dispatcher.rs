@@ -325,16 +325,6 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     }
 }
 
-pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
-
-/// SSOT for the search-owned hash embedder's model identity.
-///
-/// Both the corpus derivation contract (here) and the query-time
-/// `HashingQueryTextEmbedder` (`query_embedder.rs`) read this so the two sides
-/// cannot silently disagree on model identity; query-time enforcement rejects a
-/// mismatch (`SEM_MODEL_MISMATCH`).
-pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
-
 /// Direct semantic batch materializer.
 ///
 /// Writes the durable, generation-scoped semantic adapter first (rows on every
@@ -773,6 +763,7 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::*;
+    use crate::SEARCH_OWNED_SEMANTIC_DIMENSION;
     use crate::semantic_derive::{
         semantic_embedding_input_digest, semantic_embedding_input_text, semantic_vector_digest,
     };

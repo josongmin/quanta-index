@@ -21,8 +21,8 @@ pub use control_dispatcher::SearchPlaneControlDispatcher;
 pub use ingest_dispatcher::{
     DirectHistoryMaterializer, DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer,
     DirectSemanticMaterializer, DirectStructuralMaterializer, HistoryIngestPort,
-    LegacySemanticJournalStore, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SEARCH_OWNED_SEMANTIC_MODEL_ID, SearchPlaneIngestDispatcher, StructuralIngestPort,
+    LegacySemanticJournalStore, RuntimeMetadataIngestPort, SearchPlaneIngestDispatcher,
+    StructuralIngestPort,
 };
 pub use lowering::{lower_lexical_text_query, lower_sourcegraph_query_text};
 pub use quanta_index_lq_obs::{MetricSample, ObsError};
@@ -30,7 +30,10 @@ pub use query_dispatcher::{
     BoundedQueryObsStore, QueryObsSink, SearchPlaneDispatcher, SearchPlaneQueryDispatcher,
     SearchPlaneQueryService, make_pin, repair_for_code,
 };
-pub use query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort};
+pub use query_embedder::{
+    HashingQueryTextEmbedder, QueryTextEmbedderPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    SEARCH_OWNED_SEMANTIC_MODEL_ID,
+};
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger, TrackLedger,
 };

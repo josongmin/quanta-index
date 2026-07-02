@@ -1,6 +1,18 @@
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{CoreError, TextEmbeddingProvider};
 
+/// Output dimension of the search-owned hash embedder.
+pub const SEARCH_OWNED_SEMANTIC_DIMENSION: usize = 64;
+
+/// SSOT for the search-owned hash embedder's model identity.
+///
+/// This lives with the embedder that defines it: both the query-time
+/// [`HashingQueryTextEmbedder`] (here) and the corpus derivation contract
+/// (`ingest_dispatcher`/`semantic_derive`) read it so the two sides cannot
+/// silently disagree on model identity; query-time enforcement rejects a
+/// mismatch (`SEM_MODEL_MISMATCH`).
+pub const SEARCH_OWNED_SEMANTIC_MODEL_ID: &str = "search-owned-hash-text-v1";
+
 pub trait QueryTextEmbedderPort {
     fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, CoreError>;
 
@@ -31,7 +43,7 @@ impl QueryTextEmbedderPort for HashingQueryTextEmbedder {
     }
 
     fn model_id(&self) -> &str {
-        crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        SEARCH_OWNED_SEMANTIC_MODEL_ID
     }
 
     fn model_version(&self) -> Option<&str> {
@@ -50,7 +62,7 @@ impl TextEmbeddingProvider for HashingQueryTextEmbedder {
     }
 
     fn model_id(&self) -> &str {
-        crate::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        SEARCH_OWNED_SEMANTIC_MODEL_ID
     }
 
     fn model_version(&self) -> Option<&str> {
