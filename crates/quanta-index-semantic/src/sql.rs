@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::build::COLUMN_EMBEDDING_ID;
+use crate::layout::COLUMN_EMBEDDING_ID;
 
 /// Wrap `value` in single quotes and escape any embedded `'` for use as a
 /// `DataFusion` string literal (the only literal kind lancedb predicates accept).

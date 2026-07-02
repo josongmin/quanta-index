@@ -32,13 +32,12 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearcher};
 
-use crate::build::{
-    COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
-    COLUMN_START_LINE, TABLE_NAME, dataset_uri,
-};
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
-use crate::layout;
+use crate::layout::{
+    self, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
+    COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+};
 use crate::manifest::{FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION, SemanticManifest};
 use crate::sql::build_id_in_filter;
 

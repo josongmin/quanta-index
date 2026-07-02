@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field};
 use lancedb::DistanceType;
 use lancedb::connect;
 use lancedb::index::Index;
@@ -31,10 +31,10 @@ use quanta_index_core::domains::semantic::SemanticPolicy;
 
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
-use crate::layout;
+use crate::layout::{
+    self, COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME, dimension_to_i32, semantic_schema,
+};
 use crate::manifest::SemanticManifest;
-
-pub(crate) const TABLE_NAME: &str = "semantic";
 
 /// Row-count floor below which we skip ANN index construction at seal.
 ///
@@ -91,13 +91,6 @@ pub(crate) fn set_append_fail_path_for_debug(path: Option<&str>) {
 
 #[cfg(any(test, debug_assertions))]
 const _: fn(Option<&str>) = set_append_fail_path_for_debug;
-
-pub(crate) const COLUMN_EMBEDDING_ID: &str = "embedding_id";
-pub(crate) const COLUMN_REPO_RELATIVE_PATH: &str = "repo_relative_path";
-pub(crate) const COLUMN_START_LINE: &str = "start_line";
-pub(crate) const COLUMN_END_LINE: &str = "end_line";
-pub(crate) const COLUMN_SNIPPET: &str = "snippet";
-pub(crate) const COLUMN_VECTOR: &str = "vector";
 
 /// Crash-atomic file write for our scope-metadata markers/manifest.
 fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
@@ -161,43 +154,6 @@ fn built_at_unix_nanos() -> Result<u64, CoreError> {
         })?;
     u64::try_from(duration.as_nanos())
         .map_err(|err| CoreError::Storage(format!("semantic: build timestamp overflow: {err}")))
-}
-
-/// Arrow schema for the lancedb `semantic` table at the given vector dimension.
-pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
-        Field::new(COLUMN_REPO_RELATIVE_PATH, DataType::Utf8, false),
-        Field::new(COLUMN_START_LINE, DataType::UInt32, false),
-        Field::new(COLUMN_END_LINE, DataType::UInt32, false),
-        Field::new(COLUMN_SNIPPET, DataType::Utf8, false),
-        Field::new(
-            COLUMN_VECTOR,
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dimension,
-            ),
-            false,
-        ),
-    ]))
-}
-
-fn dimension_to_i32(dimension: usize) -> Result<i32, CoreError> {
-    i32::try_from(dimension).map_err(|err| {
-        CoreError::Storage(format!(
-            "semantic: dimension {dimension} does not fit in i32 (Arrow FixedSizeList list size): {err}"
-        ))
-    })
-}
-
-pub(crate) fn dataset_uri(generation_dir: &Path) -> Result<String, CoreError> {
-    let dataset_dir = layout::dataset_dir(generation_dir);
-    dataset_dir.to_str().map(str::to_owned).ok_or_else(|| {
-        CoreError::Storage(format!(
-            "semantic: dataset path is not valid UTF-8: {}",
-            dataset_dir.display()
-        ))
-    })
 }
 
 fn dataset_dir_uri(dataset_dir: &Path) -> Result<String, CoreError> {
