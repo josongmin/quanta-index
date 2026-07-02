@@ -29,7 +29,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_CONCURRENCY: usize = 4;
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
+mod batching;
 mod retry;
+use batching::{RequestBatch, partition_request_batches};
 use retry::{StatusClass, backoff_delay, classify_status};
 
 /// Outbound transport for a single embeddings request.
@@ -508,62 +510,6 @@ struct EmbeddingItem {
 /// A batch's embedding result paired with its batch index, used to reassemble
 /// concurrent worker output back into input order.
 type IndexedBatchResult = (usize, Result<Vec<Vec<f32>>, CoreError>);
-
-#[derive(Clone, Copy)]
-struct RequestBatch {
-    start: usize,
-    end: usize,
-    estimated_tokens: usize,
-}
-
-fn partition_request_batches(
-    texts: &[&str],
-    max_batch: usize,
-    max_estimated_tokens_per_request: usize,
-) -> Vec<RequestBatch> {
-    let mut out = Vec::new();
-    let mut start = 0_usize;
-    let mut current_count = 0_usize;
-    let mut current_estimated_tokens = 0_usize;
-    for (index, text) in texts.iter().enumerate() {
-        let estimated = estimate_text_tokens(text);
-        let exceeds_count = current_count == max_batch;
-        let exceeds_tokens = current_count > 0
-            && current_estimated_tokens.saturating_add(estimated)
-                > max_estimated_tokens_per_request;
-        if exceeds_count || exceeds_tokens {
-            out.push(RequestBatch {
-                start,
-                end: index,
-                estimated_tokens: current_estimated_tokens,
-            });
-            start = index;
-            current_count = 0;
-            current_estimated_tokens = 0;
-        }
-        current_count = current_count.saturating_add(1);
-        current_estimated_tokens = current_estimated_tokens.saturating_add(estimated);
-    }
-    if current_count > 0 {
-        out.push(RequestBatch {
-            start,
-            end: texts.len(),
-            estimated_tokens: current_estimated_tokens,
-        });
-    }
-    out
-}
-
-fn estimate_text_tokens(text: &str) -> usize {
-    let bytes = text.len();
-    let byte_estimate = bytes
-        .saturating_add(2)
-        .checked_div(3)
-        .unwrap_or(usize::MAX)
-        .max(1);
-    let word_estimate = text.split_whitespace().count().max(1);
-    byte_estimate.max(word_estimate)
-}
 
 fn preview(body: &str) -> String {
     body.chars().take(ERROR_BODY_PREVIEW_CHARS).collect()
