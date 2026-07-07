@@ -1,6 +1,17 @@
 # quanta-index Search Plane Implementation Plan
 
-Status: `Canonical implementation plan for this repo`
+Status: `Canonical implementation plan for this repo (partially superseded — see SPA-00 note)`
+
+> **SPA-00 owner-model freeze note (jul-7).** Two things below are no longer
+> current-tree truth: (1) the standalone `quanta-index-control` (SQLite) crate
+> and its `store`/`ControlPlane` module references have been **deleted from the
+> workspace** — generation/activation/readiness/delta-apply authority now lives
+> in the search plane's persisted authority stores
+> (`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`);
+> (2) the producer no longer authors embeddings — `quanta-index` derives semantic
+> vectors from ingested chunk text and serves semantic/hybrid queries. Read the
+> `quanta-index-control` table rows below as historical plan context, not as
+> current live crates.
 
 ## Scope
 
