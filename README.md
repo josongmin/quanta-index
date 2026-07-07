@@ -2,13 +2,29 @@
 
 External search-plane for Semantica/Quanta indexing and serving.
 
-Phase 1–3 status (lexical path closed; semantic deferred to Phase 3.5):
+> Current owner model (jul-7, SPA-00 freeze): the producer
+> (`semantica-codegraph-v2`) mints search truth — `ChunkRecord`, `SymbolRecord`,
+> structural, dirty/runtime, and repo-map records. `quanta-index` **derives
+> semantic vectors from the ingested chunk text** and owns generation/readiness,
+> fusion, and lexical/semantic/hybrid serving. The cross-repo boundary is typed
+> contract DTOs + the `quanta-index-sdk` ingress facade over UDS transport (not
+> DTO-only). Sections below that pre-date this freeze (e.g. a producer-authored
+> embedding model, a deferred semantic query path, or a `quanta-index-control`
+> crate) are historical planning context and are corrected inline where they
+> would otherwise read as current truth.
+
+Historical Phase 1–3 status (lexical path closed; semantic derivation and
+serving now live in `quanta-index-search-plane` — see the freeze note above):
 
 - shared contract crate with bundle/control/query DTOs (manual `Serialize` /
   `Deserialize` impls, no proc-macro derives per workspace rule D18)
 - hexagonal core crate with port traits and validation services
-- control-plane adapter (SQLite; manifest catalog, activation, generation pin,
-  delta-apply governance with stale/active/missing-manifest guards)
+- generation/readiness authority: manifest catalog, activation, generation pin,
+  and delta-apply governance with stale/active/missing-manifest guards, now
+  owned by the search plane's persisted authority stores
+  (`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`).
+  The historical standalone `quanta-index-control` (SQLite) crate has been
+  deleted from the workspace
 - `quanta-index-lexical` Tantivy 0.22 adapter with reader caching
 - `quanta-index-semantic` persisted, generation-scoped semantic adapter:
   durable build + direct open from sealed generations (in-house CBOR columnar
@@ -85,10 +101,11 @@ Repo layout:
   - vendor-neutral port traits
   - application validation services
   - no `rusqlite`, no `tantivy`, no `lancedb`
-- `crates/quanta-index-control`
-  - control-plane adapter (backend is an internal implementation detail; currently SQLite)
-  - schema bootstrap
-  - outbox/activation/readiness plumbing
+- generation/activation/readiness plumbing
+  - **historical**: the standalone `quanta-index-control` (SQLite) crate has
+    been deleted from the workspace; this responsibility now lives in the
+    search plane's persisted authority stores
+    (`crates/quanta-index-search-plane/src/{ingest_dispatcher,readiness}.rs`)
 - `crates/quanta-index-lexical`, `quanta-index-semantic`
   - driven adapters; the lexical backend is Tantivy and the semantic backend is
     an in-house persisted columnar shard plus an HNSW graph, each living inside
@@ -128,8 +145,11 @@ Non-goals in this Phase 1–3 cut:
 
 - no raw HIR/source ingestion (producer responsibility)
 - no HTTP transport (UDS only)
-- no semantic / hybrid query ANN path yet (no embedder shipped; both return
-  `NotImplemented` fail-closed)
+- **(superseded by the SPA-00 freeze — no longer a non-goal)** semantic vector
+  derivation from ingested chunk text and semantic/hybrid query serving are now
+  implemented and owned by `quanta-index-search-plane`
+  (`src/semantic_derive.rs`, `src/ingest_dispatcher.rs`, and
+  `src/query_dispatcher/semantic_query.rs`); production serving is `searchd`-only
 - no `materialized` / `failed` catalog-state transitions yet (only `prepared`
   and `active` are written; SSOT lifecycle is a Phase 3.5 follow-up)
 - no production observability (tracing/metrics) — Phase 4

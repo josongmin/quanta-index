@@ -60,9 +60,18 @@ PublishStructuralBatch}` plus the persisted authority stores in
 
 ---
 
-## 2. Producer Authorship Rule (Verbatim)
+## 2. Producer Authorship Rule (Verbatim, embedding clause superseded)
 
-The following rule, locked in [channel-architecture.md §3.1](channel-architecture.md), governs every op below:
+The following rule, locked in [channel-architecture.md §3.1](channel-architecture.md), governs every op below.
+
+> **Superseded by the SPA-00 owner-model freeze (jul-7).** The `EmbeddingRecord`
+> / "never computes embeddings" half of the verbatim rule below is historical.
+> Under the current owner model the producer does not author embeddings and there
+> is no producer-side public semantic publish; `quanta-index` derives semantic
+> vectors from ingested chunk text and serves semantic/hybrid queries. The
+> `ChunkRecord` / `SymbolRecord` / `ParseTreeRecord` / commit-metadata authorship
+> is still accurate. The verbatim quote is retained for historical archive
+> fidelity only.
 
 > **Authorship rule (locked):** every payload carried by these ops — `ChunkRecord`, `SymbolRecord` (including `kind`, `name`, `span`, `lang`), `CommitRecord` (including `parents`, `applied_at_ms`), `ParseTreeRecord`, `EmbeddingRecord` — is **authored by the producer** in `semantica-codegraph-v2`. Search plane never parses source bytes, never walks git, never computes embeddings. It decodes producer-supplied records and indexes them. This is the structural inverse of the "search engine does its own extraction" pattern in tools like Sourcegraph Zoekt or Elasticsearch: here, extraction lives upstream so the search plane is a pure index + query plane.
 
@@ -73,7 +82,7 @@ The following rule, locked in [channel-architecture.md §3.1](channel-architectu
 | Search plane reads `*.rs` / `*.py` source bytes | any adapter crate | violates [channel-architecture.md §0](channel-architecture.md) out-of-scope; collapses producer/search split. |
 | Search plane shells out to `git log`, `git rev-parse`, `git diff` | history adapter | violates authorship rule; producer is git authority. |
 | Search plane runs `tree-sitter` against source | structural / symbol adapters | violates authorship rule; producer ships parse trees. |
-| Search plane computes embeddings (e.g. calls a model) | semantic adapter | violates authorship rule; producer ships vectors. |
+| ~~Search plane computes embeddings (e.g. calls a model)~~ **(no longer forbidden — superseded by the SPA-00 freeze; the search plane now derives semantic vectors from ingested chunk text)** | semantic adapter | historical inverse claim; producer no longer ships vectors. |
 | Heuristic best-effort "fill-in" when the producer record is absent | any adapter | violates [../../CLAUDE.md](../../CLAUDE.md) "no heuristic authority when the real authority is absent"; must surface typed `NotReady` instead. |
 | A second producer→search ingress channel (e.g. an `apply_changes` UDS IPC) | any | violates [channel-architecture.md §11 rule 6](channel-architecture.md) — `BundleChannelPublisher::publish` is the only ingress. |
 
