@@ -880,6 +880,126 @@ mod tests {
         }
     }
 
+    // CASE-COVERS (positive half of the identity-coupling invariant): the query
+    // embedder and corpus embedder that `build_semantic_embedders` returns for the
+    // SAME provider profile MUST advertise the SAME model identity. This is the
+    // property that makes the query-time model-identity gate automatically
+    // consistent with the vectors the corpus derivation indexed — instead of the
+    // two sides being hardcoded/asserted to agree, they share one provider identity
+    // by construction. A real (OpenAi) provider is used so the identity is a genuine
+    // network-model id (`openai:text-embedding-3-small`), not the hash fixture's
+    // constant.
+    //
+    // If a future refactor built the query and corpus embedders from DIFFERENT
+    // providers (the exact drift this seam exists to prevent), their model_id()s
+    // would diverge and this assertion would fail.
+    #[test]
+    fn build_semantic_embedders_couples_query_and_corpus_model_identity_for_real_provider()
+    -> TestRes {
+        let dir = tempfile::tempdir()?;
+        let (query_embedder, corpus_embedder) =
+            super::build_semantic_embedders(&openai_profile(false), dir.path())
+                .map_err(|err| format!("offline construction must succeed: {err:?}"))?;
+
+        // Positive: matched identity across the two sides (id AND version).
+        if query_embedder.model_id() != corpus_embedder.model_id() {
+            return Err(format!(
+                "query/corpus model_id drift: query={:?} corpus={:?} (the shared-provider seam is broken)",
+                query_embedder.model_id(),
+                corpus_embedder.model_id()
+            )
+            .into());
+        }
+        if query_embedder.model_version() != corpus_embedder.model_version() {
+            return Err(format!(
+                "query/corpus model_version drift: query={:?} corpus={:?}",
+                query_embedder.model_version(),
+                corpus_embedder.model_version()
+            )
+            .into());
+        }
+        // The coupled identity is the genuine provider model id (the OpenAI provider
+        // namespaces it as `openai:<model>`), NOT the hash fixture constant — proving
+        // the real provider (not a silent hash fallback) is wired on BOTH sides in the
+        // production `OpenAi` profile.
+        if query_embedder.model_id() != "openai:text-embedding-3-small" {
+            return Err(format!(
+                "expected real provider model id on the query side, got {:?} (hash fallback leaked?)",
+                query_embedder.model_id()
+            )
+            .into());
+        }
+        if query_embedder.model_id()
+            == quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        {
+            return Err(
+                "OpenAi profile must NOT advertise the search-owned hash fixture identity".into(),
+            );
+        }
+        Ok(())
+    }
+
+    // CASE-COVERS (negative half of the identity-coupling invariant): the
+    // deliberately-degraded `Unavailable` profile DECOUPLES the query identity from
+    // the corpus identity — the query embedder advertises the `provider-unavailable`
+    // sentinel while the corpus still hash-derives under the search-owned hash id.
+    // Because those identities differ, a semantic query in this config fails closed
+    // at the query-time model-identity gate (it never silently reuses the hash
+    // corpus vectors as if a real query embedder had produced the query vector).
+    // This is the structural counter-case to the positive coupling test above:
+    // matched profile -> identities agree; degraded profile -> identities disagree
+    // by design, which the gate then rejects.
+    #[test]
+    fn unavailable_profile_decouples_query_identity_from_corpus_identity() -> TestRes {
+        let dir = tempfile::tempdir()?;
+        let (query_embedder, corpus_embedder) = super::build_semantic_embedders(
+            &super::SemanticEmbedderProfile::Unavailable,
+            dir.path(),
+        )
+        .map_err(|err| format!("unavailable-profile construction must succeed: {err:?}"))?;
+
+        // Corpus side still derives under the search-owned hash identity (so the
+        // generation materializes) — the deliberate degraded-config contract.
+        if corpus_embedder.model_id()
+            != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        {
+            return Err(format!(
+                "unavailable profile must keep the hash corpus identity, got {:?}",
+                corpus_embedder.model_id()
+            )
+            .into());
+        }
+
+        // Query side is the fail-closed sentinel, NOT the corpus identity: the two
+        // sides are decoupled, so a query cannot masquerade as the hash-indexed model.
+        if query_embedder.model_id() == corpus_embedder.model_id() {
+            return Err(
+                "unavailable profile must NOT let the query embedder advertise the corpus identity"
+                    .into(),
+            );
+        }
+
+        // And the sentinel query embedder itself fails closed on embed — proving no
+        // real query vector is ever produced in this config (no silent hash fallback).
+        match query_embedder.embed_query("anything") {
+            Err(quanta_index_core::CoreError::Typed { code, .. }) => {
+                let expected = quanta_index_contract::lex::LexicalErrorCode::SemProviderUnavailable
+                    .as_code_str();
+                if code != expected {
+                    return Err(
+                        format!("expected SEM_PROVIDER_UNAVAILABLE, got code {code}").into(),
+                    );
+                }
+            }
+            other => {
+                return Err(
+                    format!("unavailable query embedder must fail closed, got {other:?}").into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn build_semantic_embedders_creates_cache_dir_when_cache_enabled() {
         let dir = tempfile::tempdir().expect("tempdir");
