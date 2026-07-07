@@ -781,9 +781,12 @@ mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
         LedgerStructuralProducer, LqStructuralBlock, RepoId, RevisionId, StructuralProducerPort,
-        StructuralReadiness,
+        StructuralReadiness, TextEmbeddingProvider,
     };
     use quanta_index_contract::LqOptions;
+    // A1 hermetic smoke: query-side embed contract (`embed_query`) lives on this
+    // port; the corpus side uses `TextEmbeddingProvider::embed_batch` (imported above).
+    use quanta_index_search_plane::QueryTextEmbedderPort;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{Arc, RwLock};
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -997,6 +1000,114 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    // A1 HERMETIC SEMANTIC SMOKE (searchd real vector path, NO network): the
+    // `Hash` profile is the deterministic hermetic embedder searchd defaults to
+    // when `QUANTA_INDEX_EMBEDDER` is unset / `hash` (see
+    // `config::semantic_embedder_profile_from_env`). This smoke proves the REAL
+    // searchd semantic vector derivation — the exact query + corpus embedders
+    // `SearchdRuntime::assemble` wires for the Hash profile — actually produces
+    // non-degenerate, dimension-correct, deterministic vectors and that the query
+    // and corpus sides share ONE model identity (so a query vector is comparable
+    // against corpus-indexed vectors). This is the offline vector-path proof; the
+    // full daemon ingest->query round-trip over UDS is proven on the semantica
+    // product-path integration test (`search_owner_semantic_product_path_contract_test`,
+    // which spawns the real searchd process with `QUANTA_INDEX_EMBEDDER=hash`).
+    //
+    // The RELEASE truth proof — `QUANTA_INDEX_EMBEDDER=openai` + `OPENAI_API_KEY`
+    // + a live `/v1/embeddings` ingest->query run — is a documented MANUAL rail and
+    // is deliberately NOT run here (needs network + key). See A1-closeout (qidx).
+    #[test]
+    fn hermetic_hash_profile_derives_real_coupled_semantic_vectors_v1() -> TestRes {
+        use quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION;
+
+        // The hermetic default: the exact profile `semantic_embedder_profile_from_env`
+        // returns for `QUANTA_INDEX_EMBEDDER=hash` / unset.
+        let profile = super::SemanticEmbedderProfile::Hash {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+        };
+        let dir = tempfile::tempdir()?;
+        let (query_embedder, corpus_embedder) =
+            super::build_semantic_embedders(&profile, dir.path())
+                .map_err(|err| format!("hermetic hash embedder construction must succeed: {err:?}"))?;
+
+        // (1) Query + corpus share ONE model identity by construction (no drift
+        // between the vector the query path embeds and the vectors the corpus
+        // derivation indexed).
+        if query_embedder.model_id() != corpus_embedder.model_id() {
+            return Err(format!(
+                "hash profile query/corpus model_id drift: query={:?} corpus={:?}",
+                query_embedder.model_id(),
+                corpus_embedder.model_id()
+            )
+            .into());
+        }
+        if query_embedder.model_id()
+            != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
+        {
+            return Err(format!(
+                "hash profile must advertise the search-owned hash identity, got {:?}",
+                query_embedder.model_id()
+            )
+            .into());
+        }
+
+        // (2) The REAL query vector path: a non-empty text derives a
+        // dimension-correct, non-degenerate (not all-zero) vector.
+        let corpus_text = "semantica hermetic semantic ingest anchor token";
+        let query_text = "semantica hermetic semantic ingest anchor token";
+        let corpus_vectors = corpus_embedder
+            .embed_batch(&[corpus_text])
+            .map_err(|err| format!("hash corpus embed_batch must derive a real vector: {err:?}"))?;
+        let corpus_vector = corpus_vectors
+            .first()
+            .ok_or("hash corpus derivation returned no vector")?;
+        let query_vector = query_embedder
+            .embed_query(query_text)
+            .map_err(|err| format!("hash query embed must derive a real vector: {err:?}"))?;
+
+        if corpus_vector.len() != SEARCH_OWNED_SEMANTIC_DIMENSION
+            || query_vector.len() != SEARCH_OWNED_SEMANTIC_DIMENSION
+        {
+            return Err(format!(
+                "hash vectors must have the search-owned dimension {SEARCH_OWNED_SEMANTIC_DIMENSION}, got corpus={} query={}",
+                corpus_vector.len(),
+                query_vector.len()
+            )
+            .into());
+        }
+        if corpus_vector.iter().all(|value| *value == 0.0)
+            || query_vector.iter().all(|value| *value == 0.0)
+        {
+            return Err(
+                "hash vectors must be non-degenerate (an all-zero vector means the real derivation did not run)"
+                    .into(),
+            );
+        }
+
+        // (3) Determinism: re-deriving the SAME text yields the identical vector
+        // (searchd's real path must be reproducible for cache/incremental sanity).
+        let query_vector_again = query_embedder
+            .embed_query(query_text)
+            .map_err(|err| format!("hash query re-embed must succeed: {err:?}"))?;
+        if query_vector != query_vector_again {
+            return Err("hash query derivation must be deterministic across identical input".into());
+        }
+
+        // (4) Discrimination: a DIFFERENT text derives a DIFFERENT vector (the
+        // embedder is not a constant — the negative half of the smoke).
+        let other_vector = query_embedder
+            .embed_query("completely unrelated lexical payload zzz")
+            .map_err(|err| format!("hash query embed (other text) must succeed: {err:?}"))?;
+        if query_vector == other_vector {
+            return Err(
+                "hash query derivation must distinguish distinct inputs (constant embedder detected)"
+                    .into(),
+            );
+        }
+
         Ok(())
     }
 
