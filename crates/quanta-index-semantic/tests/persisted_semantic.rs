@@ -76,6 +76,76 @@ fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
         .generation_dir(root, generation)
 }
 
+/// Pure exhaustive cosine oracle for the persisted adapter's constrained
+/// query contract. This intentionally does not share the LanceDB predicate or
+/// ranking implementation: it filters the fixture records in memory, computes
+/// cosine similarity directly, and applies the stable identity tie-break.
+fn exhaustive_constrained_cosine_oracle(
+    query: &[f32],
+    records: &[EmbeddingRecord],
+    allowed_ids: &BTreeSet<String>,
+    constraints: &QueryConstraintSetV1,
+) -> Result<Vec<(String, f64)>, String> {
+    let query_norm_squared = query
+        .iter()
+        .map(|value| {
+            let value = f64::from(*value);
+            value * value
+        })
+        .sum::<f64>();
+    if query_norm_squared == 0.0 {
+        return Err("oracle query vector must be non-zero".to_string());
+    }
+
+    let mut ranked = records
+        .iter()
+        .filter(|record| allowed_ids.contains(record.embedding_id.as_str()))
+        .filter(|record| {
+            constraints.language_any_of.is_empty()
+                || constraints.language_any_of.contains(&record.language)
+        })
+        .map(|record| {
+            if record.vector.len() != query.len() {
+                return Err(format!(
+                    "oracle dimension mismatch for {}: {} != {}",
+                    record.embedding_id.as_str(),
+                    record.vector.len(),
+                    query.len()
+                ));
+            }
+            let dot_product = query
+                .iter()
+                .zip(&record.vector)
+                .map(|(left, right)| f64::from(*left) * f64::from(*right))
+                .sum::<f64>();
+            let record_norm_squared = record
+                .vector
+                .iter()
+                .map(|value| {
+                    let value = f64::from(*value);
+                    value * value
+                })
+                .sum::<f64>();
+            if record_norm_squared == 0.0 {
+                return Err(format!(
+                    "oracle stored vector must be non-zero for {}",
+                    record.embedding_id.as_str()
+                ));
+            }
+            Ok((
+                record.embedding_id.as_str().to_string(),
+                dot_product / (query_norm_squared * record_norm_squared).sqrt(),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    ranked.sort_by(|(left_id, left_score), (right_id, right_score)| {
+        right_score
+            .total_cmp(left_score)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    Ok(ranked)
+}
+
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -176,6 +246,120 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
         scoped.first().map(|hit| hit.candidate_id.as_str()),
         Some("rust-target")
     );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts a real LanceDB query against an independent exhaustive cosine oracle"
+)]
+fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(81);
+    let query = vec![1.0, 0.0, 0.0];
+
+    let python_nearest = {
+        let mut record = embedding_record_v1(
+            "python-nearest",
+            "src/oracle.py",
+            OwnerDocKind::Chunk,
+            "owner-python",
+            SemanticCorpusKindV1::RawCodeFallback,
+            vec![1.0, 0.0, 0.0],
+        )?;
+        record.language = LanguageCode::new("python").map_err(str::to_string)?;
+        record
+    };
+    let records = vec![
+        python_nearest,
+        embedding_record_v1(
+            "rust-best",
+            "src/oracle.rs",
+            OwnerDocKind::Chunk,
+            "owner-rust-best",
+            SemanticCorpusKindV1::RawCodeFallback,
+            vec![0.8, 0.6, 0.0],
+        )?,
+        embedding_record_v1(
+            "rust-second",
+            "src/oracle.rs",
+            OwnerDocKind::Chunk,
+            "owner-rust-second",
+            SemanticCorpusKindV1::RawCodeFallback,
+            vec![0.6, 0.8, 0.0],
+        )?,
+        embedding_record_v1(
+            "rust-out-of-scope",
+            "src/outside.rs",
+            OwnerDocKind::Chunk,
+            "owner-rust-outside",
+            SemanticCorpusKindV1::RawCodeFallback,
+            vec![0.99, 0.1, 0.0],
+        )?,
+        embedding_record_v1(
+            "rust-irrelevant",
+            "src/oracle.rs",
+            OwnerDocKind::Chunk,
+            "owner-rust-irrelevant",
+            SemanticCorpusKindV1::RawCodeFallback,
+            vec![0.0, 1.0, 0.0],
+        )?,
+    ];
+    adapter.build_batch(&sealed_batch(
+        generation,
+        "src/oracle.rs",
+        records.clone(),
+        3,
+    ))?;
+
+    let constraints =
+        QueryConstraintSetV1::from_languages([LanguageCode::new("rust").map_err(str::to_string)?]);
+    let allowed_ids = BTreeSet::from([
+        "python-nearest".to_string(),
+        "rust-best".to_string(),
+        "rust-second".to_string(),
+        "rust-irrelevant".to_string(),
+    ]);
+    let expected =
+        exhaustive_constrained_cosine_oracle(&query, &records, &allowed_ids, &constraints)
+            .map_err(|err| format!("exhaustive cosine oracle: {err}"))?;
+    assert_eq!(
+        expected
+            .iter()
+            .map(|(id, _score)| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rust-best", "rust-second", "rust-irrelevant"],
+        "the pure oracle must exclude both the closer python row and the closer out-of-scope row"
+    );
+
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    for top_k in 1..=expected.len() + 1 {
+        let top_k = u32::try_from(top_k).map_err(|err| format!("top_k conversion: {err}"))?;
+        let actual =
+            searcher.search_scoped_constrained(&query, &allowed_ids, &constraints, top_k)?;
+        let expected_prefix = &expected[..actual.len()];
+        assert_eq!(
+            actual
+                .iter()
+                .map(|hit| hit.candidate_id.as_str())
+                .collect::<Vec<_>>(),
+            expected_prefix
+                .iter()
+                .map(|(id, _score)| id.as_str())
+                .collect::<Vec<_>>(),
+            "top_k={top_k} must return the exhaustive constrained prefix"
+        );
+        for (hit, (_id, expected_score)) in actual.iter().zip(expected_prefix) {
+            assert!(
+                (f64::from(hit.score) - expected_score).abs() < 0.000_1,
+                "{} score {} differs from exhaustive cosine {expected_score}",
+                hit.candidate_id,
+                hit.score
+            );
+        }
+    }
     Ok(())
 }
 
