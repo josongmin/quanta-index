@@ -4,6 +4,7 @@ use quanta_index_contract::{
         CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
         GenerationStatusRequest, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
         SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+        SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
     },
 };
 
@@ -33,11 +34,36 @@ impl<'a> GenerationNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::ActivationAck(ack) => Ok(ack),
             other @ (SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected activation ack, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
+        }
+    }
+
+    /// Apply an explicit semantic rollback guarded by the expected active
+    /// generation and digest. This is separate from monotonic activation.
+    pub fn rollback(
+        &self,
+        request: SearchPlaneRollbackGenerationRequest,
+    ) -> Result<SearchPlaneRollbackGenerationAck, SdkError> {
+        let response = self
+            .client
+            .dispatch_control(SearchPlaneControlIpcRequest::RollbackGeneration(request))?;
+        match response {
+            SearchPlaneControlIpcResponse::RollbackAck(ack) => Ok(ack),
+            other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected rollback ack, got {}",
                     QuantaIndex::control_response_kind(&other)
                 )))
             }
@@ -66,6 +92,7 @@ impl<'a> GenerationNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => Ok(snapshot),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
@@ -94,6 +121,7 @@ impl<'a> GenerationNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::GenerationStatusReport(report) => Ok(report),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(

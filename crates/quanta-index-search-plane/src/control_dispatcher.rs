@@ -10,7 +10,8 @@ use quanta_index_contract::{
     CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     RepoMapActivateGenerationRequest, RepoMapMutationAck, SearchPlaneActivateGenerationRequest,
     SearchPlaneActivationAck, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-    SearchPlaneIpcError, SearchPlaneTrackKind, TrackReadinessRecord,
+    SearchPlaneIpcError, SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
+    SearchPlaneTrackKind, TrackReadinessRecord,
 };
 use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
 
@@ -22,6 +23,8 @@ const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
 const ERR_SEMANTIC_ACTIVATION_REGRESSION: &str = "SEMANTIC_ACTIVATION_REGRESSION";
+#[cfg(test)]
+const ERR_ROLLBACK_CAS_CONFLICT: &str = crate::readiness::ERR_ROLLBACK_CAS_CONFLICT;
 
 pub struct SearchPlaneControlDispatcher {
     // QI-INT-01: `repo_map_ingest` field removed. RepoMap bundle ingest now
@@ -80,6 +83,31 @@ impl SearchPlaneControlDispatcher {
             manifest_digest: request.manifest_digest,
             tracks: request.tracks,
         })
+    }
+
+    fn rollback_generation(
+        &self,
+        request: SearchPlaneRollbackGenerationRequest,
+    ) -> Result<SearchPlaneRollbackGenerationAck, CoreError> {
+        if request.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(
+                "rollback-generation: only semantic track supports explicit rollback".to_string(),
+            ));
+        }
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard.validate_semantic_generation(
+            &request.repo_id,
+            &request.revision_id,
+            request.target_generation,
+            Some(request.target_manifest_digest.as_str()),
+            true,
+            "rollback-generation",
+        )?;
+        drop(guard);
+        self.activation_catalog.rollback(&request)
     }
 
     fn validate_track_activation(
@@ -160,6 +188,12 @@ impl SearchPlaneControlDispatcher {
             SearchPlaneControlIpcRequest::ActivateGeneration(request) => {
                 match self.activate_generation(request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::ActivationAck(resp),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
+            SearchPlaneControlIpcRequest::RollbackGeneration(request) => {
+                match self.rollback_generation(request) {
+                    Ok(resp) => SearchPlaneControlIpcResponse::RollbackAck(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
@@ -245,7 +279,8 @@ mod tests {
     use quanta_index_contract::{
         ManifestGeneration, RepoId, RepoMapActivateGenerationRequest, RepoMapMutationAck,
         RevisionId, SearchPlaneActivateGenerationRequest, SearchPlaneActivationAck,
-        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneTrackKind,
+        SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+        SearchPlaneRollbackGenerationRequest, SearchPlaneTrackKind,
     };
     use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
     use tempfile::tempdir;
@@ -276,6 +311,7 @@ mod tests {
         match response {
             SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => Ok(ack),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
@@ -290,6 +326,7 @@ mod tests {
         match response {
             SearchPlaneControlIpcResponse::ActivationAck(ack) => Ok(ack),
             other @ (SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
@@ -305,6 +342,7 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err.code),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
@@ -319,6 +357,7 @@ mod tests {
             SearchPlaneControlIpcResponse::Error(err) => Ok(err),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
@@ -613,6 +652,99 @@ mod tests {
             != "activate-generation: semantic generation regression for repo=repo-sem revision=rev-sem: requested=10 active=11"
         {
             return Err(format!("unexpected semantic regression message: {}", err.message).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_generation_uses_explicit_semantic_cas_and_preserves_activate_monotonicity()
+    -> TestResult {
+        let dir = tempdir()?;
+        let activation_catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        {
+            let mut guard = ledger
+                .write()
+                .map_err(|err| format!("ledger poisoned: {err}"))?;
+            let repo_id = RepoId::new("repo-rollback");
+            let revision_id = RevisionId::new("rev-rollback");
+            for (generation, digest) in [(10, "manifest-digest-10"), (11, "manifest-digest-11")] {
+                guard.record_track_materialized(
+                    &repo_id,
+                    &revision_id,
+                    SearchPlaneTrackKind::Semantic,
+                    ManifestGeneration::new(generation),
+                    Some(digest),
+                );
+                guard.record_track_seal_with_digest(
+                    &repo_id,
+                    &revision_id,
+                    SearchPlaneTrackKind::Semantic,
+                    ManifestGeneration::new(generation),
+                    digest,
+                );
+            }
+        }
+        activation_catalog.activate(&SearchPlaneActivateGenerationRequest {
+            repo_id: RepoId::new("repo-rollback"),
+            revision_id: RevisionId::new("rev-rollback"),
+            manifest_generation: ManifestGeneration::new(11),
+            manifest_digest: "manifest-digest-11".to_string(),
+            tracks: vec![SearchPlaneTrackKind::Semantic],
+        })?;
+        let dispatcher = SearchPlaneControlDispatcher::new(
+            Arc::new(StubRepoMapActivatePort),
+            Arc::clone(&activation_catalog),
+            ledger,
+        );
+
+        let response = dispatcher.dispatch(SearchPlaneControlIpcRequest::RollbackGeneration(
+            SearchPlaneRollbackGenerationRequest {
+                repo_id: RepoId::new("repo-rollback"),
+                revision_id: RevisionId::new("rev-rollback"),
+                track: SearchPlaneTrackKind::Semantic,
+                expected_active_generation: ManifestGeneration::new(11),
+                expected_active_manifest_digest: "manifest-digest-11".to_string(),
+                target_generation: ManifestGeneration::new(10),
+                target_manifest_digest: "manifest-digest-10".to_string(),
+            },
+        ));
+        let SearchPlaneControlIpcResponse::RollbackAck(ack) = response else {
+            return Err("expected rollback ack".into());
+        };
+        if ack.previous_generation != ManifestGeneration::new(11)
+            || ack.manifest_generation != ManifestGeneration::new(10)
+            || ack.manifest_digest != "manifest-digest-10"
+        {
+            return Err(format!("unexpected rollback ack: {ack:?}").into());
+        }
+        let current = activation_catalog.resolve_record(
+            &RepoId::new("repo-rollback"),
+            &RevisionId::new("rev-rollback"),
+            SearchPlaneTrackKind::Semantic,
+        )?;
+        if current.manifest_generation != ManifestGeneration::new(10)
+            || current.manifest_digest != "manifest-digest-10"
+        {
+            return Err(format!("rollback did not update active state: {current:?}").into());
+        }
+
+        let stale = dispatcher.dispatch(SearchPlaneControlIpcRequest::RollbackGeneration(
+            SearchPlaneRollbackGenerationRequest {
+                repo_id: RepoId::new("repo-rollback"),
+                revision_id: RevisionId::new("rev-rollback"),
+                track: SearchPlaneTrackKind::Semantic,
+                expected_active_generation: ManifestGeneration::new(11),
+                expected_active_manifest_digest: "manifest-digest-11".to_string(),
+                target_generation: ManifestGeneration::new(10),
+                target_manifest_digest: "manifest-digest-10".to_string(),
+            },
+        ));
+        let SearchPlaneControlIpcResponse::Error(error) = stale else {
+            return Err("stale rollback unexpectedly succeeded".into());
+        };
+        if error.code != super::ERR_ROLLBACK_CAS_CONFLICT {
+            return Err(format!("unexpected stale rollback code: {}", error.code).into());
         }
         Ok(())
     }

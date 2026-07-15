@@ -96,6 +96,35 @@ pub struct SearchPlaneActivationAck {
     pub tracks: Vec<SearchPlaneTrackKind>,
 }
 
+/// Explicit compare-and-swap rollback request for one semantic generation.
+///
+/// `SearchPlaneActivateGenerationRequest` remains monotonic and must never be
+/// used to lower an active generation. Rollback carries both the expected
+/// active identity and the sealed target identity so a stale operator cannot
+/// overwrite a concurrent activation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchPlaneRollbackGenerationRequest {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub track: SearchPlaneTrackKind,
+    pub expected_active_generation: ManifestGeneration,
+    pub expected_active_manifest_digest: String,
+    pub target_generation: ManifestGeneration,
+    pub target_manifest_digest: String,
+}
+
+/// Result of a successful explicit rollback CAS.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchPlaneRollbackGenerationAck {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub track: SearchPlaneTrackKind,
+    pub previous_generation: ManifestGeneration,
+    pub previous_manifest_digest: String,
+    pub manifest_generation: ManifestGeneration,
+    pub manifest_digest: String,
+}
+
 const SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS: &[&str] = &[
     "repo_id",
     "revision_id",
@@ -296,6 +325,280 @@ impl<'de> Deserialize<'de> for SearchPlaneActivationAck {
             "SearchPlaneActivationAck",
             SEARCH_PLANE_ACTIVATE_GENERATION_REQUEST_FIELDS,
             SearchPlaneActivationAckVisitor,
+        )
+    }
+}
+
+const SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "track",
+    "expected_active_generation",
+    "expected_active_manifest_digest",
+    "target_generation",
+    "target_manifest_digest",
+];
+
+const SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS: &[&str] = &[
+    "repo_id",
+    "revision_id",
+    "track",
+    "previous_generation",
+    "previous_manifest_digest",
+    "manifest_generation",
+    "manifest_digest",
+];
+
+fn serialize_rollback_request<S>(
+    request: &SearchPlaneRollbackGenerationRequest,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut state = serializer.serialize_struct("SearchPlaneRollbackGenerationRequest", 7)?;
+    state.serialize_field("repo_id", &request.repo_id)?;
+    state.serialize_field("revision_id", &request.revision_id)?;
+    state.serialize_field("track", &request.track)?;
+    state.serialize_field(
+        "expected_active_generation",
+        &request.expected_active_generation,
+    )?;
+    state.serialize_field(
+        "expected_active_manifest_digest",
+        &request.expected_active_manifest_digest,
+    )?;
+    state.serialize_field("target_generation", &request.target_generation)?;
+    state.serialize_field("target_manifest_digest", &request.target_manifest_digest)?;
+    state.end()
+}
+
+impl Serialize for SearchPlaneRollbackGenerationRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_rollback_request(self, serializer)
+    }
+}
+
+struct SearchPlaneRollbackGenerationRequestVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneRollbackGenerationRequestVisitor {
+    type Value = SearchPlaneRollbackGenerationRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneRollbackGenerationRequest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id = None;
+        let mut revision_id = None;
+        let mut track = None;
+        let mut expected_active_generation = None;
+        let mut expected_active_manifest_digest = None;
+        let mut target_generation = None;
+        let mut target_manifest_digest = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "track" => {
+                    if track.is_some() {
+                        return Err(de::Error::duplicate_field("track"));
+                    }
+                    track = Some(map.next_value()?);
+                }
+                "expected_active_generation" => {
+                    if expected_active_generation.is_some() {
+                        return Err(de::Error::duplicate_field("expected_active_generation"));
+                    }
+                    expected_active_generation = Some(map.next_value()?);
+                }
+                "expected_active_manifest_digest" => {
+                    if expected_active_manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field(
+                            "expected_active_manifest_digest",
+                        ));
+                    }
+                    expected_active_manifest_digest = Some(map.next_value()?);
+                }
+                "target_generation" => {
+                    if target_generation.is_some() {
+                        return Err(de::Error::duplicate_field("target_generation"));
+                    }
+                    target_generation = Some(map.next_value()?);
+                }
+                "target_manifest_digest" => {
+                    if target_manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("target_manifest_digest"));
+                    }
+                    target_manifest_digest = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SearchPlaneRollbackGenerationRequest {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            track: track.ok_or_else(|| de::Error::missing_field("track"))?,
+            expected_active_generation: expected_active_generation
+                .ok_or_else(|| de::Error::missing_field("expected_active_generation"))?,
+            expected_active_manifest_digest: expected_active_manifest_digest
+                .ok_or_else(|| de::Error::missing_field("expected_active_manifest_digest"))?,
+            target_generation: target_generation
+                .ok_or_else(|| de::Error::missing_field("target_generation"))?,
+            target_manifest_digest: target_manifest_digest
+                .ok_or_else(|| de::Error::missing_field("target_manifest_digest"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneRollbackGenerationRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneRollbackGenerationRequest",
+            SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS,
+            SearchPlaneRollbackGenerationRequestVisitor,
+        )
+    }
+}
+
+impl Serialize for SearchPlaneRollbackGenerationAck {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchPlaneRollbackGenerationAck", 7)?;
+        state.serialize_field("repo_id", &self.repo_id)?;
+        state.serialize_field("revision_id", &self.revision_id)?;
+        state.serialize_field("track", &self.track)?;
+        state.serialize_field("previous_generation", &self.previous_generation)?;
+        state.serialize_field("previous_manifest_digest", &self.previous_manifest_digest)?;
+        state.serialize_field("manifest_generation", &self.manifest_generation)?;
+        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneRollbackGenerationAckVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneRollbackGenerationAckVisitor {
+    type Value = SearchPlaneRollbackGenerationAck;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneRollbackGenerationAck map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut repo_id = None;
+        let mut revision_id = None;
+        let mut track = None;
+        let mut previous_generation = None;
+        let mut previous_manifest_digest = None;
+        let mut manifest_generation = None;
+        let mut manifest_digest = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "repo_id" => {
+                    if repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("repo_id"));
+                    }
+                    repo_id = Some(map.next_value()?);
+                }
+                "revision_id" => {
+                    if revision_id.is_some() {
+                        return Err(de::Error::duplicate_field("revision_id"));
+                    }
+                    revision_id = Some(map.next_value()?);
+                }
+                "track" => {
+                    if track.is_some() {
+                        return Err(de::Error::duplicate_field("track"));
+                    }
+                    track = Some(map.next_value()?);
+                }
+                "previous_generation" => {
+                    if previous_generation.is_some() {
+                        return Err(de::Error::duplicate_field("previous_generation"));
+                    }
+                    previous_generation = Some(map.next_value()?);
+                }
+                "previous_manifest_digest" => {
+                    if previous_manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("previous_manifest_digest"));
+                    }
+                    previous_manifest_digest = Some(map.next_value()?);
+                }
+                "manifest_generation" => {
+                    if manifest_generation.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_generation"));
+                    }
+                    manifest_generation = Some(map.next_value()?);
+                }
+                "manifest_digest" => {
+                    if manifest_digest.is_some() {
+                        return Err(de::Error::duplicate_field("manifest_digest"));
+                    }
+                    manifest_digest = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SearchPlaneRollbackGenerationAck {
+            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
+            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
+            track: track.ok_or_else(|| de::Error::missing_field("track"))?,
+            previous_generation: previous_generation
+                .ok_or_else(|| de::Error::missing_field("previous_generation"))?,
+            previous_manifest_digest: previous_manifest_digest
+                .ok_or_else(|| de::Error::missing_field("previous_manifest_digest"))?,
+            manifest_generation: manifest_generation
+                .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
+            manifest_digest: manifest_digest
+                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneRollbackGenerationAck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneRollbackGenerationAck",
+            SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS,
+            SearchPlaneRollbackGenerationAckVisitor,
         )
     }
 }
@@ -846,6 +1149,85 @@ mod qi_act_01_tests {
             return;
         };
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn rollback_generation_request_and_ack_round_trip() {
+        let request = SearchPlaneRollbackGenerationRequest {
+            repo_id: fixture_repo(),
+            revision_id: fixture_rev(),
+            track: SearchPlaneTrackKind::Semantic,
+            expected_active_generation: ManifestGeneration::new(11),
+            expected_active_manifest_digest: "digest-11".to_string(),
+            target_generation: ManifestGeneration::new(10),
+            target_manifest_digest: "digest-10".to_string(),
+        };
+        let Ok(bytes) = encode(&request) else {
+            assert!(
+                false,
+                "failed to encode SearchPlaneRollbackGenerationRequest"
+            );
+            return;
+        };
+        let Ok(decoded) = decode::<SearchPlaneRollbackGenerationRequest>(&bytes) else {
+            assert!(
+                false,
+                "failed to decode SearchPlaneRollbackGenerationRequest"
+            );
+            return;
+        };
+        assert_eq!(decoded, request);
+
+        let ack = SearchPlaneRollbackGenerationAck {
+            repo_id: fixture_repo(),
+            revision_id: fixture_rev(),
+            track: SearchPlaneTrackKind::Semantic,
+            previous_generation: ManifestGeneration::new(11),
+            previous_manifest_digest: "digest-11".to_string(),
+            manifest_generation: ManifestGeneration::new(10),
+            manifest_digest: "digest-10".to_string(),
+        };
+        let Ok(bytes) = encode(&ack) else {
+            assert!(false, "failed to encode SearchPlaneRollbackGenerationAck");
+            return;
+        };
+        let Ok(decoded) = decode::<SearchPlaneRollbackGenerationAck>(&bytes) else {
+            assert!(false, "failed to decode SearchPlaneRollbackGenerationAck");
+            return;
+        };
+        assert_eq!(decoded, ack);
+    }
+
+    #[test]
+    fn rollback_generation_request_rejects_unknown_and_missing_fields() {
+        let unknown = serde_json::json!({
+            "repo_id": "repo",
+            "revision_id": "rev",
+            "track": "Semantic",
+            "expected_active_generation": 11,
+            "expected_active_manifest_digest": "digest-11",
+            "target_generation": 10,
+            "target_manifest_digest": "digest-10",
+            "unexpected": true,
+        });
+        assert!(SearchPlaneRollbackGenerationRequest::deserialize(unknown).is_err());
+
+        let missing = serde_json::json!({
+            "repo_id": "repo",
+            "revision_id": "rev",
+            "track": "Semantic",
+            "expected_active_generation": 11,
+            "expected_active_manifest_digest": "digest-11",
+            "target_generation": 10,
+        });
+        let Err(err) = SearchPlaneRollbackGenerationRequest::deserialize(missing) else {
+            assert!(false, "missing target digest unexpectedly deserialized");
+            return;
+        };
+        assert!(
+            err.to_string()
+                .contains("missing field `target_manifest_digest`")
+        );
     }
 
     #[test]

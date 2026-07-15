@@ -174,6 +174,7 @@ impl QuantaIndex {
                 repair: error.repair,
             }),
             payload @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => Ok(payload),
@@ -258,6 +259,7 @@ impl QuantaIndex {
     ) -> &'static str {
         match response {
             SearchPlaneControlIpcResponse::ActivationAck(_) => "activation_ack",
+            SearchPlaneControlIpcResponse::RollbackAck(_) => "rollback_ack",
             SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
                 "current_generation_snapshot"
@@ -530,6 +532,13 @@ impl<'a> ControlClient<'a> {
         request: quanta_index_contract::SearchPlaneActivateGenerationRequest,
     ) -> Result<quanta_index_contract::SearchPlaneActivationAck, SdkError> {
         self.client.generations().commit(request)
+    }
+
+    pub fn rollback(
+        &self,
+        request: quanta_index_contract::SearchPlaneRollbackGenerationRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneRollbackGenerationAck, SdkError> {
+        self.client.generations().rollback(request)
     }
 
     pub fn current(

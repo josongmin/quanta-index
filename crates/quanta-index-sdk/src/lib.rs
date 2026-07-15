@@ -63,6 +63,7 @@ pub use quanta_index_contract::{
     RepoMapQueryResponse, RepoMapSourceBundle, RepoMapSymbolNode, RepoRelativePath, RevisionId,
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivationAck, SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse,
+    SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SemanticQueryResponse,
     StructuralReplaceScope, StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate,

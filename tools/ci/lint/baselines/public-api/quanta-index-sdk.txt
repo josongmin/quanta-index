@@ -54,6 +54,8 @@ pub use quanta_index_sdk::SearchExplanation
 pub use quanta_index_sdk::SearchPlaneActivationAck
 pub use quanta_index_sdk::SearchPlaneExplainQueryResponse
 pub use quanta_index_sdk::SearchPlaneHistoryQueryResponse
+pub use quanta_index_sdk::SearchPlaneRollbackGenerationAck
+pub use quanta_index_sdk::SearchPlaneRollbackGenerationRequest
 pub use quanta_index_sdk::SearchPlaneRuntimeMetadataQueryResponse
 pub use quanta_index_sdk::SearchPlaneStructuralQueryResponse
 pub use quanta_index_sdk::SearchPlaneTrackKind
@@ -201,6 +203,7 @@ pub fn quanta_index_sdk::ControlClient<'a>::activate(&self) -> quanta_index_sdk:
 pub fn quanta_index_sdk::ControlClient<'a>::activate_repomap(&self, request: quanta_index_contract::repomap::RepoMapActivateGenerationRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapMutationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::commit(&self, request: quanta_index_contract::ipc::control::SearchPlaneActivateGenerationRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneActivationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ControlClient<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackGenerationRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneRollbackGenerationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ControlClient<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
 impl<'a> core::clone::Clone for quanta_index_sdk::ControlClient<'a>
 pub fn quanta_index_sdk::ControlClient<'a>::clone(&self) -> quanta_index_sdk::ControlClient<'a>
@@ -349,6 +352,7 @@ impl<'a> quanta_index_sdk::GenerationNamespace<'a>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::activate(&self) -> quanta_index_sdk::ActivationBuilder<'a>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::commit(&self, request: quanta_index_contract::ipc::control::SearchPlaneActivateGenerationRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneActivationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::current(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> core::result::Result<quanta_index_contract::ipc::control::GenerationSnapshot, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::GenerationNamespace<'a>::rollback(&self, request: quanta_index_contract::ipc::control::SearchPlaneRollbackGenerationRequest) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneRollbackGenerationAck, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::GenerationNamespace<'a>::status(&self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> core::result::Result<quanta_index_contract::ipc::control::GenerationStatusReport, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::GenerationNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::GenerationNamespace<'a>

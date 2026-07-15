@@ -1030,6 +1030,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::ActivateGeneration
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcRequest::RollbackGeneration(quanta_index_contract::SearchPlaneRollbackGenerationRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
 pub fn quanta_index_contract::SearchPlaneControlIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -1054,6 +1055,7 @@ pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::CurrentGeneration
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
+pub quanta_index_contract::ipc::SearchPlaneControlIpcResponse::RollbackAck(quanta_index_contract::SearchPlaneRollbackGenerationAck)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcResponse
 pub fn quanta_index_contract::SearchPlaneControlIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcResponse
@@ -2348,6 +2350,60 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneQueryIpcResponseE
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
+pub struct quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::manifest_digest: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::previous_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::previous_manifest_digest: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationAck::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::clone(&self) -> quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::eq(&self, other: &quanta_index_contract::SearchPlaneRollbackGenerationAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Send for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Sync for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub struct quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::expected_active_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::expected_active_manifest_digest: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::target_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::target_manifest_digest: alloc::string::String
+pub quanta_index_contract::ipc::SearchPlaneRollbackGenerationRequest::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::clone(&self) -> quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::eq(&self, other: &quanta_index_contract::SearchPlaneRollbackGenerationRequest) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Send for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Sync for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationRequest
 pub struct quanta_index_contract::ipc::SearchScopeKey
 pub quanta_index_contract::ipc::SearchScopeKey::doc_surface: quanta_index_contract::SearchScopeSurface
 pub quanta_index_contract::ipc::SearchScopeKey::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
@@ -6365,6 +6421,7 @@ pub quanta_index_contract::SearchPlaneControlIpcRequest::ActivateGeneration(quan
 pub quanta_index_contract::SearchPlaneControlIpcRequest::CurrentGeneration(quanta_index_contract::CurrentGenerationRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::GenerationStatus(quanta_index_contract::GenerationStatusRequest)
 pub quanta_index_contract::SearchPlaneControlIpcRequest::RepoMapActivate(quanta_index_contract::RepoMapActivateGenerationRequest)
+pub quanta_index_contract::SearchPlaneControlIpcRequest::RollbackGeneration(quanta_index_contract::SearchPlaneRollbackGenerationRequest)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcRequest
 pub fn quanta_index_contract::SearchPlaneControlIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcRequest
@@ -6389,6 +6446,7 @@ pub quanta_index_contract::SearchPlaneControlIpcResponse::CurrentGenerationSnaps
 pub quanta_index_contract::SearchPlaneControlIpcResponse::Error(quanta_index_contract::SearchPlaneIpcError)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::GenerationStatusReport(quanta_index_contract::GenerationStatusReport)
 pub quanta_index_contract::SearchPlaneControlIpcResponse::RepoMapMutationAck(quanta_index_contract::RepoMapMutationAck)
+pub quanta_index_contract::SearchPlaneControlIpcResponse::RollbackAck(quanta_index_contract::SearchPlaneRollbackGenerationAck)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneControlIpcResponse
 pub fn quanta_index_contract::SearchPlaneControlIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneControlIpcResponse
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneControlIpcResponse
@@ -8967,6 +9025,60 @@ impl core::marker::Unpin for quanta_index_contract::SearchPlaneQueryIpcResponseE
 impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneQueryIpcResponseEnvelope
+pub struct quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::manifest_digest: alloc::string::String
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::previous_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::previous_manifest_digest: alloc::string::String
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::SearchPlaneRollbackGenerationAck::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::clone(&self) -> quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::eq(&self, other: &quanta_index_contract::SearchPlaneRollbackGenerationAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationAck::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Send for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Sync for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationAck
+pub struct quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::expected_active_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::expected_active_manifest_digest: alloc::string::String
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::repo_id: quanta_index_contract_base::ids::RepoId
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::revision_id: quanta_index_contract_base::ids::RevisionId
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::target_generation: quanta_index_contract_base::ids::ManifestGeneration
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::target_manifest_digest: alloc::string::String
+pub quanta_index_contract::SearchPlaneRollbackGenerationRequest::track: quanta_index_contract::SearchPlaneTrackKind
+impl core::clone::Clone for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::clone(&self) -> quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::cmp::Eq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::eq(&self, other: &quanta_index_contract::SearchPlaneRollbackGenerationRequest) -> bool
+impl core::fmt::Debug for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl serde_core::ser::Serialize for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+pub fn quanta_index_contract::SearchPlaneRollbackGenerationRequest::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Send for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Sync for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::Unpin for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationRequest
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneRollbackGenerationRequest
 pub struct quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>

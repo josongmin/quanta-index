@@ -60,6 +60,7 @@ impl<'a> RepoMapNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::RepoMapMutationAck(ack) => Ok(ack),
             other @ (SearchPlaneControlIpcResponse::ActivationAck(_)
+            | SearchPlaneControlIpcResponse::RollbackAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
