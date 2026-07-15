@@ -67,21 +67,53 @@ impl HybridOrchestratorPolicy {
         semantic: &[LexicalCandidate],
         top_k: u32,
     ) -> Vec<LexicalCandidate> {
-        let mut accs: BTreeMap<String, FuseAccumulator> = BTreeMap::new();
-        accumulate(&mut accs, lexical, true);
-        accumulate(&mut accs, semantic, false);
+        let lexical_ids = lexical
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        let semantic_ids = semantic
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        let mut candidates = lexical
+            .iter()
+            .chain(semantic)
+            .map(|candidate| (candidate.candidate_id.clone(), candidate.clone()))
+            .collect::<BTreeMap<_, _>>();
+        Self::fuse_rrf_ids(&lexical_ids, &semantic_ids, top_k)
+            .into_iter()
+            .filter_map(|candidate_id| candidates.remove(candidate_id.as_str()))
+            .collect()
+    }
 
-        let mut fused: Vec<FuseAccumulator> = accs.into_values().collect();
+    /// Fuse ranked stable identities without manufacturing a result DTO.
+    ///
+    /// This is the authority for entity-level fusion where callers own a DTO
+    /// other than `LexicalCandidate`. Tie-break order matches [`Self::fuse_rrf`]:
+    /// higher fused score, presence in the first lane, then identity.
+    #[must_use]
+    pub fn fuse_rrf_ids(lexical: &[String], semantic: &[String], top_k: u32) -> Vec<String> {
+        Self::fuse_rrf_id_lanes(&[lexical, semantic], top_k)
+    }
+
+    /// Fuse any number of independently ranked stable-identity lanes.
+    ///
+    /// The first lane owns the deterministic preferred-lane tie break. This
+    /// keeps BM25 behavior stable while allowing each semantic corpus to retain
+    /// an independent rank domain.
+    #[must_use]
+    pub fn fuse_rrf_id_lanes(lanes: &[&[String]], top_k: u32) -> Vec<String> {
+        let mut accs: BTreeMap<String, IdFuseAccumulator> = BTreeMap::new();
+        for (lane_index, lane) in lanes.iter().enumerate() {
+            accumulate_ids(&mut accs, lane, lane_index == 0);
+        }
+
+        let mut fused: Vec<IdFuseAccumulator> = accs.into_values().collect();
         fused.sort_by(|a, b| {
             b.score
                 .total_cmp(&a.score)
                 .then(b.in_lex.cmp(&a.in_lex))
-                .then_with(|| {
-                    a.candidate
-                        .candidate_id
-                        .as_str()
-                        .cmp(b.candidate.candidate_id.as_str())
-                })
+                .then_with(|| a.candidate_id.cmp(&b.candidate_id))
         });
         // Saturating cap: top_k larger than usize::MAX (only possible on
         // <64-bit targets) is treated as unlimited. `map_or` is the
@@ -90,34 +122,31 @@ impl HybridOrchestratorPolicy {
         fused
             .into_iter()
             .take(limit)
-            .map(|acc| acc.candidate)
+            .map(|acc| acc.candidate_id)
             .collect()
     }
 }
 
-struct FuseAccumulator {
+struct IdFuseAccumulator {
     score: f64,
     in_lex: bool,
-    candidate: LexicalCandidate,
+    candidate_id: String,
 }
 
-fn accumulate(
-    accs: &mut BTreeMap<String, FuseAccumulator>,
-    ranked: &[LexicalCandidate],
-    is_lex: bool,
-) {
-    for (rank, c) in ranked.iter().enumerate() {
+fn accumulate_ids(accs: &mut BTreeMap<String, IdFuseAccumulator>, ranked: &[String], is_lex: bool) {
+    for (rank, candidate_id) in ranked.iter().enumerate() {
         let rank_plus_one = rank.saturating_add(1);
         // Saturating: rank index past u32::MAX collapses to the same RRF
         // tail score. `map_or` keeps the clippy + workspace lints happy.
         let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);
         let rank_f = f64::from(rank_u32);
-        let key = c.candidate_id.clone();
-        let entry = accs.entry(key).or_insert_with(|| FuseAccumulator {
-            score: 0.0,
-            in_lex: false,
-            candidate: c.clone(),
-        });
+        let entry = accs
+            .entry(candidate_id.clone())
+            .or_insert_with(|| IdFuseAccumulator {
+                score: 0.0,
+                in_lex: false,
+                candidate_id: candidate_id.clone(),
+            });
         entry.score += 1.0 / (RRF_K + rank_f);
         if is_lex {
             entry.in_lex = true;

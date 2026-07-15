@@ -41,6 +41,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     "quanta-index-lexical": _ADAPTER_CRATE_DEPS,
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS,
+    # Embedding adapter: implements core outbound ports from contract DTOs.
+    "quanta-index-embed": _ADAPTER_CRATE_DEPS,
     "quanta-index-ipc": _ADAPTER_CRATE_DEPS,
     "quanta-index-search-plane": frozenset(
         {
@@ -70,6 +72,15 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.
     "quanta-index-corpus-smoke": frozenset(),
+    # Non-production benchmark driver. It may drive the lexical adapter
+    # directly, but must not depend on runtime/searchd orchestration.
+    "quanta-index-scan-experiment": frozenset(
+        {
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-lexical",
+        }
+    ),
     "quanta-index-searchd": frozenset(
         {
             "quanta-index-contract",
@@ -92,6 +103,18 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
             "quanta-index-search-plane",
             "quanta-index-searchd",
             "quanta-index-semantic",
+        }
+    ),
+    # Black-box runtime/quality harness. Its dependency fan-in is intentional:
+    # production crates must never depend back on this crate.
+    "quanta-index-searchd-harness": frozenset(
+        {
+            "quanta-index-contract",
+            "quanta-index-embed",
+            "quanta-index-ipc",
+            "quanta-index-search-plane",
+            "quanta-index-searchd",
+            "quanta-index-searchd-runtime",
         }
     ),
     "quanta-index-sdk": frozenset(

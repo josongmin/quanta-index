@@ -1070,6 +1070,13 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     let path = "src/tree.rs";
     let content = "fn orphaned() {}";
     rt.ingest_text("repo-e2e", path, content)?;
+    // Keep the generation's required RawCodeFallback corpus present after
+    // deleting the structural owner's lexical authority below.
+    rt.ingest_text(
+        "repo-e2e",
+        "src/semantic_sentinel.rs",
+        "fn semantic_sentinel() {}",
+    )?;
     rt.ingest_structural_function_tree(path, content, "orphaned")?;
     rt.delete_chunk_for_path(path)?;
     _ = rt.seal_lexical_generation_for_tracks(&[

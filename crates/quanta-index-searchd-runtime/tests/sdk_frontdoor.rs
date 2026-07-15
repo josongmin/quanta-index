@@ -3722,6 +3722,7 @@ fn sdk_contract_exact_query_request_frontdoors_roundtrip_truth() -> TestResult {
         semantic_query_text: "quartz".to_string(),
         generation: None,
         generation_selector: Some(active_selector()),
+        dense_corpora: Vec::new(),
         top_k: 2,
     };
     let hybrid = wait_for_sdk_observation(

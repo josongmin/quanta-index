@@ -934,9 +934,7 @@ mod tests {
             )
             .into());
         }
-        if query_embedder.model_id()
-            == quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
-        {
+        if query_embedder.model_id() == quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID {
             return Err(
                 "OpenAi profile must NOT advertise the search-owned hash fixture identity".into(),
             );
@@ -965,9 +963,7 @@ mod tests {
 
         // Corpus side still derives under the search-owned hash identity (so the
         // generation materializes) — the deliberate degraded-config contract.
-        if corpus_embedder.model_id()
-            != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
-        {
+        if corpus_embedder.model_id() != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID {
             return Err(format!(
                 "unavailable profile must keep the hash corpus identity, got {:?}",
                 corpus_embedder.model_id()
@@ -1032,8 +1028,9 @@ mod tests {
         };
         let dir = tempfile::tempdir()?;
         let (query_embedder, corpus_embedder) =
-            super::build_semantic_embedders(&profile, dir.path())
-                .map_err(|err| format!("hermetic hash embedder construction must succeed: {err:?}"))?;
+            super::build_semantic_embedders(&profile, dir.path()).map_err(|err| {
+                format!("hermetic hash embedder construction must succeed: {err:?}")
+            })?;
 
         // (1) Query + corpus share ONE model identity by construction (no drift
         // between the vector the query path embeds and the vectors the corpus
@@ -1046,9 +1043,7 @@ mod tests {
             )
             .into());
         }
-        if query_embedder.model_id()
-            != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID
-        {
+        if query_embedder.model_id() != quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID {
             return Err(format!(
                 "hash profile must advertise the search-owned hash identity, got {:?}",
                 query_embedder.model_id()
@@ -1095,7 +1090,9 @@ mod tests {
             .embed_query(query_text)
             .map_err(|err| format!("hash query re-embed must succeed: {err:?}"))?;
         if query_vector != query_vector_again {
-            return Err("hash query derivation must be deterministic across identical input".into());
+            return Err(
+                "hash query derivation must be deterministic across identical input".into(),
+            );
         }
 
         // (4) Discrimination: a DIFFERENT text derives a DIFFERENT vector (the

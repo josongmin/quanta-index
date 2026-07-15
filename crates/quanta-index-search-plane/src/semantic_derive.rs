@@ -980,6 +980,108 @@ mod tests {
     }
 
     #[test]
+    fn semantic_derivation_propagates_owner_tombstone_without_fake_path() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch
+            .semantic_tombstone_scopes
+            .push(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::ModuleCard,
+                owner_kind: OwnerDocKind::Module,
+                owner_id: "module-deleted".to_string(),
+            });
+        let derived = derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+        let tombstone = derived
+            .tombstone_scopes
+            .first()
+            .ok_or_else(|| "expected semantic owner tombstone".to_string())?;
+        if tombstone.scope.is_some() {
+            return Err("semantic owner tombstone must not synthesize a legacy path scope".into());
+        }
+        if tombstone.semantic_scope.as_ref() != batch.semantic_tombstone_scopes.first() {
+            return Err("semantic owner tombstone identity was not preserved".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_derivation_rejects_duplicate_replace_scope() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch
+            .semantic_replace_scopes
+            .push(batch.semantic_replace_scopes[0].clone());
+        match derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("duplicate semantic replace scope") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("duplicate replace scope must fail closed, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_rejects_replace_tombstone_conflict() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut batch = fixture_search_batch()?;
+        batch
+            .semantic_tombstone_scopes
+            .push(batch.semantic_replace_scopes[0].scope.clone());
+        match derive_semantic_batch_from_semantic_sources_v1(
+            &batch,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        ) {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("replaced and tombstoned") =>
+            {
+                Ok(())
+            }
+            other => {
+                Err(format!("replace/tombstone conflict must fail closed, got {other:?}").into())
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_derivation_canonicalizes_scope_and_record_order() -> TestRes {
+        let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
+        let mut forward = fixture_search_batch()?;
+        let mut second_scope = forward.semantic_replace_scopes[0].clone();
+        second_scope.scope.owner_id = "symbol-2".to_string();
+        second_scope.scope_digest = "scope:semantic:2".to_string();
+        second_scope.sources[0].owner_id = "symbol-2".to_string();
+        second_scope.sources[0].record_id = "source-record-2".to_string();
+        forward.semantic_replace_scopes.push(second_scope);
+        let mut reverse = forward.clone();
+        reverse.semantic_replace_scopes.reverse();
+
+        let forward_derived = derive_semantic_batch_from_semantic_sources_v1(
+            &forward,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+        let reverse_derived = derive_semantic_batch_from_semantic_sources_v1(
+            &reverse,
+            &embedder,
+            SemanticDerivationModeV1::SemanticSourcesOnly,
+        )?;
+        if forward_derived != reverse_derived {
+            return Err("semantic derivation must canonicalize producer scope order".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn semantic_derivation_unknown_mode_value_fails_closed() -> TestRes {
         if SemanticDerivationModeV1::from_env_value_v1("unknown-mode").is_some() {
             return Err("unknown derive mode must not parse".into());

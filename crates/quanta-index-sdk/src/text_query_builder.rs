@@ -5,7 +5,7 @@
 
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, HybridSeedQueryRequest, SemanticQueryRequest,
-    TextQueryRequest, TextQuerySyntax,
+    SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -55,6 +55,7 @@ pub(crate) struct VectorQueryBuilderState {
     pub(crate) text_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_leg: Option<(TextQuerySyntax, String)>,
     pub(crate) scope_top_k: Option<u32>,
+    pub(crate) dense_corpora: Vec<SemanticSeedCorpusBudgetV1>,
 }
 
 impl VectorQueryBuilderState {
@@ -66,6 +67,7 @@ impl VectorQueryBuilderState {
             text_leg: None,
             scope_leg: None,
             scope_top_k: None,
+            dense_corpora: Vec::new(),
         }
     }
 
@@ -140,6 +142,7 @@ impl VectorQueryBuilderState {
             semantic_query_text,
             generation,
             generation_selector,
+            dense_corpora: self.dense_corpora,
             top_k,
         })
     }

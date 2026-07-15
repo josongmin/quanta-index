@@ -1,7 +1,7 @@
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, HybridSeedQueryRequest, HybridSeedQueryResponse,
     LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse,
+    SearchPlaneExplainQueryResponse, SemanticCorpusKindV1,
 };
 
 use crate::{QuantaIndex, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -167,6 +167,15 @@ impl<
         self.transition(|state| {
             state.top_k = Some(top_k);
         })
+    }
+
+    /// Add one independently ranked, storage-prefiltered semantic corpus lane.
+    #[must_use]
+    pub fn dense_corpus(mut self, corpus_kind: SemanticCorpusKindV1, top_k: u32) -> Self {
+        self.state
+            .dense_corpora
+            .push(quanta_index_contract::SemanticSeedCorpusBudgetV1 { corpus_kind, top_k });
+        self
     }
 }
 

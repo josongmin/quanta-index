@@ -251,6 +251,101 @@ fn validate_replace_scope(scope: &SemanticReplaceScope, dimension: usize) -> Res
     Ok(())
 }
 
+fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) -> String {
+    format!("{corpus_kind}\u{1f}{owner_kind}\u{1f}{owner_id}")
+}
+
+fn path_scope_key_v1(scope: &quanta_index_contract::SearchScopeKey) -> String {
+    format!(
+        "{:?}\u{1f}{}",
+        scope.doc_surface,
+        scope.repo_relative_path.as_str()
+    )
+}
+
+fn validate_batch_scope_authority_v1(batch: &SemanticIngestBatch) -> Result<(), CoreError> {
+    let mut replace_semantic_keys = BTreeSet::new();
+    let mut replace_path_keys = BTreeSet::new();
+    let mut record_ids = BTreeSet::new();
+    for scope in &batch.replace_scopes {
+        let path_key = path_scope_key_v1(&scope.scope);
+        if !replace_path_keys.insert(path_key) {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: duplicate replace path scope {:?}",
+                scope.scope.repo_relative_path.as_str()
+            )));
+        }
+        let mut scope_semantic_keys = BTreeSet::new();
+        for embedding in &scope.embeddings {
+            if !record_ids.insert(embedding.record_id.as_ref()) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate embedding record_id {:?}",
+                    embedding.record_id
+                )));
+            }
+            let semantic_key = semantic_scope_key_v1(
+                embedding.corpus_kind.as_code_str(),
+                embedding.owner_kind.as_code_str(),
+                embedding.owner_id.as_ref(),
+            );
+            let _scope_key_was_new = scope_semantic_keys.insert(semantic_key);
+        }
+        for semantic_key in scope_semantic_keys {
+            if !replace_semantic_keys.insert(semantic_key.clone()) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate replace semantic scope {semantic_key:?}"
+                )));
+            }
+        }
+    }
+
+    let mut tombstone_semantic_keys = BTreeSet::new();
+    let mut tombstone_path_keys = BTreeSet::new();
+    for tombstone in &batch.tombstone_scopes {
+        if tombstone.scope.is_none() && tombstone.semantic_scope.is_none() {
+            return Err(CoreError::InvalidContract(
+                "semantic: tombstone requires legacy path scope or semantic owner scope"
+                    .to_string(),
+            ));
+        }
+        if let Some(scope) = tombstone.scope.as_ref() {
+            let key = path_scope_key_v1(scope);
+            if replace_path_keys.contains(&key) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: path scope {:?} cannot be replaced and tombstoned in one batch",
+                    scope.repo_relative_path.as_str()
+                )));
+            }
+            if !tombstone_path_keys.insert(key) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate tombstone path scope {:?}",
+                    scope.repo_relative_path.as_str()
+                )));
+            }
+        }
+        if let Some(scope) = tombstone.semantic_scope.as_ref() {
+            let key = semantic_scope_key_v1(
+                scope.corpus_kind.as_code_str(),
+                scope.owner_kind.as_code_str(),
+                scope.owner_id.as_str(),
+            );
+            if replace_semantic_keys.contains(&key) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: owner scope {:?} cannot be replaced and tombstoned in one batch",
+                    scope.owner_id
+                )));
+            }
+            if !tombstone_semantic_keys.insert(key) {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate tombstone owner scope {:?}",
+                    scope.owner_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn column_as<'a, T: Array + 'static>(
     batch: &'a RecordBatch,
     name: &str,
@@ -743,6 +838,7 @@ pub(crate) async fn build_batch(
     for scope in &batch.replace_scopes {
         validate_replace_scope(scope, dimension)?;
     }
+    validate_batch_scope_authority_v1(batch)?;
 
     recover_dataset_artifacts(&generation_dir)?;
     let generation_contract = ensure_generation_contract(&generation_dir, batch)?;
@@ -1199,7 +1295,7 @@ mod tests {
             corpus_policy_digest: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: vec![SemanticTombstoneScope {
-                scope: Some(scope("src/shared.rs")),
+                scope: None,
                 semantic_scope: Some(semantic_scope(
                     SemanticCorpusKindV1::SymbolCard,
                     OwnerDocKind::Symbol,

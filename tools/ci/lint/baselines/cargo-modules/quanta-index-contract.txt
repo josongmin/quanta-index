@@ -244,6 +244,28 @@ crate quanta_index_contract
 │   │   ├── struct StructuralTreeRecord: pub
 │   │   └── struct StructuralTreeRecordVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod semantic_source: pub(self)
+│   │   ├── enum CapabilityStatusV1: pub
+│   │   ├── struct CapabilityStatusV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum RawFallbackReasonV1: pub
+│   │   ├── struct RawFallbackReasonV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum SemanticCorpusKindV1: pub
+│   │   ├── struct SemanticCorpusKindV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticSourceRecordV1: pub
+│   │   ├── struct SemanticSourceRecordV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticSourceReplaceScopeV1: pub
+│   │   ├── struct SemanticSourceReplaceScopeV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct SemanticSourceScopeKeyV1: pub
+│   │   ├── struct SemanticSourceScopeKeyV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── enum SourceRoleV1: pub
+│   │   └── struct SourceRoleV1Visitor: pub(self)
+│   │       └── type Value: pub(self)
 │   └── mod split: pub(self)
 │       ├── enum SearchPlaneControlIpcRequest: pub
 │       ├── struct SearchPlaneControlIpcRequestEnvelope: pub
@@ -347,6 +369,9 @@ crate quanta_index_contract
 │       │   └── type Value: pub(self)
 │       ├── struct SemanticQueryRequest: pub
 │       ├── struct SemanticQueryRequestVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SemanticSeedCorpusBudgetV1: pub
+│       ├── struct SemanticSeedCorpusBudgetV1Visitor: pub(self)
 │       │   └── type Value: pub(self)
 │       ├── struct StructuralQueryRequest: pub
 │       ├── struct StructuralQueryRequestVisitor: pub(self)
@@ -478,6 +503,13 @@ crate quanta_index_contract
         ├── struct SearchPlaneStructuralQueryResponse: pub
         ├── struct SearchPlaneStructuralQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)
+        ├── struct SeedCandidateV2: pub
+        ├── struct SeedCandidateV2Visitor: pub(self)
+        │   └── type Value: pub(self)
+        ├── struct SeedContributionV2: pub
+        ├── struct SeedContributionV2Visitor: pub(self)
+        │   └── type Value: pub(self)
+        ├── enum SeedLaneV2: pub
         ├── struct SemanticQueryResponse: pub
         ├── struct SemanticQueryResponseVisitor: pub(self)
         │   └── type Value: pub(self)

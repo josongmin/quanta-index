@@ -2781,14 +2781,21 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         start_runtime(state_root, "searchd-structural-shard-unavailable-test")?;
     publish_search_corpus_chunks(
         &ingest_socket,
-        vec![chunk_record_with_metadata(
-            "chunk-tree",
-            "src/lib.rs",
-            "rust",
-            1,
-            1,
-            "fn main() {}",
-        )?],
+        vec![
+            chunk_record_with_metadata("chunk-tree", "src/lib.rs", "rust", 1, 1, "fn main() {}")?,
+            // Keep one search-owned semantic source alive after orphaning the
+            // structural chunk below. The generation contract requires the
+            // RawCodeFallback corpus to remain present at seal time; this
+            // sentinel is outside the structural scope under test.
+            chunk_record_with_metadata(
+                "chunk-semantic-sentinel",
+                "src/semantic_sentinel.rs",
+                "rust",
+                1,
+                1,
+                "fn semantic_sentinel() {}",
+            )?,
+        ],
         Some(b"manifest".to_vec()),
     )?;
     publish_structural_scope(

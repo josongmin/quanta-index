@@ -2514,7 +2514,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSourceScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSourceScopeKeyV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSourceScopeKeyV1
 pub struct quanta_index_contract::ipc::SemanticTombstoneScope
-pub quanta_index_contract::ipc::SemanticTombstoneScope::scope: quanta_index_contract::SearchScopeKey
+pub quanta_index_contract::ipc::SemanticTombstoneScope::scope: core::option::Option<quanta_index_contract::SearchScopeKey>
 pub quanta_index_contract::ipc::SemanticTombstoneScope::semantic_scope: core::option::Option<quanta_index_contract::SemanticSourceScopeKeyV1>
 impl core::clone::Clone for quanta_index_contract::SemanticTombstoneScope
 pub fn quanta_index_contract::SemanticTombstoneScope::clone(&self) -> quanta_index_contract::SemanticTombstoneScope
@@ -4109,6 +4109,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::HybridQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridQueryRequest
 pub struct quanta_index_contract::query::HybridSeedQueryRequest
+pub quanta_index_contract::query::HybridSeedQueryRequest::dense_corpora: alloc::vec::Vec<quanta_index_contract::SemanticSeedCorpusBudgetV1>
 pub quanta_index_contract::query::HybridSeedQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::query::HybridSeedQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::query::HybridSeedQueryRequest::semantic_query_text: alloc::string::String
@@ -4198,6 +4199,29 @@ impl core::marker::Unpin for quanta_index_contract::SemanticQueryRequest
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticQueryRequest
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticQueryRequest
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticQueryRequest
+pub struct quanta_index_contract::query::SemanticSeedCorpusBudgetV1
+pub quanta_index_contract::query::SemanticSeedCorpusBudgetV1::corpus_kind: quanta_index_contract::SemanticCorpusKindV1
+pub quanta_index_contract::query::SemanticSeedCorpusBudgetV1::top_k: u32
+impl core::clone::Clone for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::clone(&self) -> quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::cmp::Eq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::eq(&self, other: &quanta_index_contract::SemanticSeedCorpusBudgetV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Send for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Sync for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Unpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
 pub struct quanta_index_contract::query::StructuralQueryRequest
 pub quanta_index_contract::query::StructuralQueryRequest::text_query: quanta_index_contract_base::query::requests::TextQueryRequest
 impl core::clone::Clone for quanta_index_contract::StructuralQueryRequest
@@ -7548,6 +7572,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::HybridSeedCandidate
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::HybridSeedCandidate
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::HybridSeedCandidate
 pub struct quanta_index_contract::HybridSeedQueryRequest
+pub quanta_index_contract::HybridSeedQueryRequest::dense_corpora: alloc::vec::Vec<quanta_index_contract::SemanticSeedCorpusBudgetV1>
 pub quanta_index_contract::HybridSeedQueryRequest::generation: core::option::Option<quanta_index_contract_base::query::pin::GenerationPin>
 pub quanta_index_contract::HybridSeedQueryRequest::generation_selector: core::option::Option<quanta_index_contract_base::query::pin::GenerationSelector>
 pub quanta_index_contract::HybridSeedQueryRequest::semantic_query_text: alloc::string::String
@@ -9159,6 +9184,29 @@ impl core::marker::Unpin for quanta_index_contract::SemanticReplaceScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticReplaceScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticReplaceScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticReplaceScope
+pub struct quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub quanta_index_contract::SemanticSeedCorpusBudgetV1::corpus_kind: quanta_index_contract::SemanticCorpusKindV1
+pub quanta_index_contract::SemanticSeedCorpusBudgetV1::top_k: u32
+impl core::clone::Clone for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::clone(&self) -> quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::cmp::Eq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::eq(&self, other: &quanta_index_contract::SemanticSeedCorpusBudgetV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticSeedCorpusBudgetV1
+pub fn quanta_index_contract::SemanticSeedCorpusBudgetV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Send for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Sync for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::Unpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSeedCorpusBudgetV1
 pub struct quanta_index_contract::SemanticSourceRecordV1
 pub quanta_index_contract::SemanticSourceRecordV1::authority_digest: alloc::string::String
 pub quanta_index_contract::SemanticSourceRecordV1::capability_status: quanta_index_contract::CapabilityStatusV1
@@ -9247,7 +9295,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticSourceScopeKey
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticSourceScopeKeyV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticSourceScopeKeyV1
 pub struct quanta_index_contract::SemanticTombstoneScope
-pub quanta_index_contract::SemanticTombstoneScope::scope: quanta_index_contract::SearchScopeKey
+pub quanta_index_contract::SemanticTombstoneScope::scope: core::option::Option<quanta_index_contract::SearchScopeKey>
 pub quanta_index_contract::SemanticTombstoneScope::semantic_scope: core::option::Option<quanta_index_contract::SemanticSourceScopeKeyV1>
 impl core::clone::Clone for quanta_index_contract::SemanticTombstoneScope
 pub fn quanta_index_contract::SemanticTombstoneScope::clone(&self) -> quanta_index_contract::SemanticTombstoneScope

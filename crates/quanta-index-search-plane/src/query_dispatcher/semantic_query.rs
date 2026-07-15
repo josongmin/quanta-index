@@ -13,6 +13,7 @@
     reason = "child module split out of query_dispatcher for size; it builds directly on the parent's shared resolvers, policies, and types"
 )]
 use super::*;
+use quanta_index_contract::SemanticSeedCorpusBudgetV1;
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
@@ -26,6 +27,25 @@ pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
     pub(super) fused: Vec<LexicalCandidate>,
     pub(super) explanation: SearchExplanation,
+}
+
+pub(super) fn canonical_dense_corpus_budgets_v1(
+    budgets: &[SemanticSeedCorpusBudgetV1],
+) -> Result<Vec<SemanticSeedCorpusBudgetV1>, CoreError> {
+    let mut canonical = budgets.to_vec();
+    canonical.sort_by_key(|budget| budget.corpus_kind.as_code_str());
+    for budget in &canonical {
+        SemanticPolicy::validate_top_k(budget.top_k)?;
+    }
+    for pair in canonical.windows(2) {
+        if pair[0].corpus_kind == pair[1].corpus_kind {
+            return Err(CoreError::InvalidContract(format!(
+                "hybrid seed: duplicate dense corpus budget {:?}",
+                pair[0].corpus_kind
+            )));
+        }
+    }
+    Ok(canonical)
 }
 
 pub(super) fn resolve_semantic_request_selection(
@@ -271,7 +291,7 @@ fn lexical_lane_seed_candidates_v2(
     Ok(collapsed)
 }
 
-fn semantic_lane_seed_candidates_v2(
+fn one_semantic_lane_seed_candidates_v2(
     semantic_hits: &[SemanticSearchHitV1],
 ) -> Result<Vec<SeedCandidateV2>, CoreError> {
     let mut seen_entities = BTreeSet::new();
@@ -305,22 +325,10 @@ fn semantic_lane_seed_candidates_v2(
     Ok(collapsed)
 }
 
-fn entity_rrf_proxies_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<LexicalCandidate> {
+fn entity_ids_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<String> {
     seed_candidates
         .iter()
-        .map(|candidate| LexicalCandidate {
-            candidate_id: candidate.entity_id.clone(),
-            repo_id: RepoId::new("seed-v2"),
-            revision_id: RevisionId::new("seed-v2"),
-            manifest_generation: ManifestGeneration::new(1),
-            repo_relative_path: candidate.repo_relative_path.clone(),
-            start_line: 0,
-            end_line: 0,
-            score: 0.0,
-            snippet: candidate.snippet.clone(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
-        })
+        .map(|candidate| candidate.entity_id.clone())
         .collect()
 }
 
@@ -343,21 +351,32 @@ fn merge_seed_candidate_v2(acc: &mut SeedCandidateV2, incoming: SeedCandidateV2)
 
 pub(super) fn build_hybrid_seed_candidates_v2(
     lexical: &[LexicalCandidate],
-    semantic_hits: &[SemanticSearchHitV1],
+    semantic_lanes: &[Vec<SemanticSearchHitV1>],
+    unavailable_corpus_reasons: &[String],
     top_k: u32,
 ) -> Result<Vec<SeedCandidateV2>, CoreError> {
     let collapsed_lexical = lexical_lane_seed_candidates_v2(lexical)?;
-    let collapsed_semantic = semantic_lane_seed_candidates_v2(semantic_hits)?;
-    let fused = HybridOrchestratorPolicy::fuse_rrf(
-        &entity_rrf_proxies_v2(&collapsed_lexical),
-        &entity_rrf_proxies_v2(&collapsed_semantic),
-        top_k,
+    let collapsed_semantic_lanes = semantic_lanes
+        .iter()
+        .map(|lane| one_semantic_lane_seed_candidates_v2(lane))
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let mut entity_id_lanes = Vec::with_capacity(collapsed_semantic_lanes.len().saturating_add(1));
+    entity_id_lanes.push(entity_ids_v2(&collapsed_lexical));
+    entity_id_lanes.extend(
+        collapsed_semantic_lanes
+            .iter()
+            .map(|lane| entity_ids_v2(lane)),
     );
+    let lane_refs = entity_id_lanes
+        .iter()
+        .map(Vec::as_slice)
+        .collect::<Vec<_>>();
+    let fused = HybridOrchestratorPolicy::fuse_rrf_id_lanes(&lane_refs, top_k);
 
     let mut by_entity = BTreeMap::<String, SeedCandidateV2>::new();
     for candidate in collapsed_lexical
         .into_iter()
-        .chain(collapsed_semantic.into_iter())
+        .chain(collapsed_semantic_lanes.into_iter().flatten())
     {
         if let Some(existing) = by_entity.get_mut(candidate.entity_id.as_str()) {
             merge_seed_candidate_v2(existing, candidate);
@@ -376,21 +395,22 @@ pub(super) fn build_hybrid_seed_candidates_v2(
     fused
         .into_iter()
         .enumerate()
-        .map(|(index, proxy)| {
-            let mut candidate = by_entity
-                .remove(proxy.candidate_id.as_str())
-                .ok_or_else(|| {
-                    CoreError::Storage(format!(
-                        "hybrid seed v2: fused entity {} missing merged candidate payload",
-                        proxy.candidate_id
-                    ))
-                })?;
+        .map(|(index, entity_id)| {
+            let mut candidate = by_entity.remove(entity_id.as_str()).ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "hybrid seed v2: fused entity {} missing merged candidate payload",
+                    entity_id
+                ))
+            })?;
             candidate.seed_rank = checked_rank_u32_v1(index, "hybrid seed v2 fused")?;
             candidate.contributions.sort_by(|left, right| {
                 lane_order_key_v2(left.lane)
                     .cmp(&lane_order_key_v2(right.lane))
                     .then(left.rank.cmp(&right.rank))
             });
+            candidate
+                .degraded_reasons
+                .extend(unavailable_corpus_reasons.iter().cloned());
             candidate.degraded_reasons.sort();
             candidate.degraded_reasons.dedup();
             Ok(candidate)
@@ -405,6 +425,7 @@ pub(super) fn build_hybrid_seed_response_explanation_v2(
     semantic_entities: usize,
     fused_hits: usize,
     internal_top_k: u32,
+    unavailable_corpus_reasons: &[String],
     early_stop_reason: Option<EarlyStopReason>,
 ) -> SearchExplanation {
     let mut engines_touched = Vec::new();
@@ -436,6 +457,13 @@ pub(super) fn build_hybrid_seed_response_explanation_v2(
             PlannerTraceEntry {
                 stage: PlannerStage::Merge,
                 detail: format!("hybrid_seed.fused_entities={fused_hits}"),
+            },
+            PlannerTraceEntry {
+                stage: PlannerStage::Plan,
+                detail: format!(
+                    "hybrid_seed.unavailable_corpora={}",
+                    unavailable_corpus_reasons.join(",")
+                ),
             },
         ],
         engines_touched,
@@ -470,6 +498,51 @@ pub(super) fn ensure_query_model_matches_index_v1(
             "{plane}: query embedder model {embedder_model_id}/{embedder_model_version:?} is not comparable to index model {index_model_id}/{index_model_version:?} (equal dimension is insufficient; vectors from different models are not cosine-comparable)"
         ),
     })
+}
+
+#[cfg(test)]
+mod corpus_budget_tests {
+    use super::{
+        SemanticCorpusKindV1, SemanticSeedCorpusBudgetV1, canonical_dense_corpus_budgets_v1,
+    };
+
+    #[test]
+    fn corpus_budgets_are_canonical_and_duplicate_or_zero_budgets_fail_closed() {
+        let canonical = canonical_dense_corpus_budgets_v1(&[
+            SemanticSeedCorpusBudgetV1 {
+                corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                top_k: 40,
+            },
+            SemanticSeedCorpusBudgetV1 {
+                corpus_kind: SemanticCorpusKindV1::ModuleCard,
+                top_k: 20,
+            },
+        ])
+        .expect("valid budgets");
+        assert_eq!(canonical[0].corpus_kind, SemanticCorpusKindV1::ModuleCard);
+        assert_eq!(canonical[1].corpus_kind, SemanticCorpusKindV1::SymbolCard);
+
+        assert!(
+            canonical_dense_corpus_budgets_v1(&[
+                SemanticSeedCorpusBudgetV1 {
+                    corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                    top_k: 40,
+                },
+                SemanticSeedCorpusBudgetV1 {
+                    corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                    top_k: 20,
+                },
+            ])
+            .is_err()
+        );
+        assert!(
+            canonical_dense_corpus_budgets_v1(&[SemanticSeedCorpusBudgetV1 {
+                corpus_kind: SemanticCorpusKindV1::ModuleCard,
+                top_k: 0,
+            },])
+            .is_err()
+        );
+    }
 }
 
 pub(super) fn build_semantic_response_explanation(

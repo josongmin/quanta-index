@@ -84,6 +84,16 @@ pub trait SemanticSearcher: Send + Sync {
         top_k: u32,
     ) -> Result<Vec<SemanticSearchHitV1>, CoreError>;
 
+    /// Search one logical corpus with a storage-level prefilter. Implementors
+    /// must not emulate this as global top-k followed by in-memory filtering,
+    /// because that loses corpus-local recall before ranking.
+    fn search_hits_for_corpus(
+        &self,
+        query_vector: &[f32],
+        corpus_kind: SemanticCorpusKindV1,
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError>;
+
     /// Search within a lexical allowlist. Callers rely on this for exact scope
     /// semantics rather than global-top-k followed by post-filtering.
     ///

@@ -718,6 +718,8 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
             .native("scope text")
             .semantic_text("0.25 0.75")
             .active(repo_id(), revision_id())
+            .dense_corpus(quanta_index_contract::SemanticCorpusKindV1::SymbolCard, 40,)
+            .dense_corpus(quanta_index_contract::SemanticCorpusKindV1::ModuleCard, 20,)
             .top_k(7)
             .execute()
     );
@@ -737,6 +739,19 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
     assert_eq!(req.top_k, 7);
     assert_eq!(req.text_query.top_k, 7);
     assert_eq!(req.semantic_query_text.as_str(), "0.25 0.75");
+    assert_eq!(
+        req.dense_corpora,
+        vec![
+            quanta_index_contract::SemanticSeedCorpusBudgetV1 {
+                corpus_kind: quanta_index_contract::SemanticCorpusKindV1::SymbolCard,
+                top_k: 40,
+            },
+            quanta_index_contract::SemanticSeedCorpusBudgetV1 {
+                corpus_kind: quanta_index_contract::SemanticCorpusKindV1::ModuleCard,
+                top_k: 20,
+            },
+        ]
+    );
 }
 
 #[test]
@@ -799,6 +814,7 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
             repo_id: repo_id(),
             revision_id: revision_id(),
         }),
+        dense_corpora: Vec::new(),
         top_k: 12,
     };
     let _response = ok_or_fail!(client.search().hybrid_seed_request(request.clone()));

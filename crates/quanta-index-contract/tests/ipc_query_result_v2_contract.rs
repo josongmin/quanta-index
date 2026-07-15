@@ -6,9 +6,10 @@ use quanta_index_contract::results::{
 };
 use quanta_index_contract::{
     DiffCandidate, DiffHunkSide, GenerationPin, HighlightSpan, HybridQueryRequest,
-    HybridQueryResponse, LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse,
+    HybridQueryResponse, HybridSeedQueryRequest, LexicalCandidate, LqQuery, LqSpan,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse, SemanticCorpusKindV1,
+    SemanticQueryRequest, SemanticQueryResponse, SemanticSeedCorpusBudgetV1,
     StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
 };
 
@@ -263,6 +264,26 @@ fn hybrid_request_with_query_text(query_text: &str) -> HybridQueryRequest {
     }
 }
 
+fn hybrid_seed_request_with_corpus_budgets() -> HybridSeedQueryRequest {
+    HybridSeedQueryRequest {
+        text_query: lexical_request(),
+        semantic_query_text: "semantic seed".to_string(),
+        generation: Some(generation_pin()),
+        generation_selector: None,
+        dense_corpora: vec![
+            SemanticSeedCorpusBudgetV1 {
+                corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                top_k: 40,
+            },
+            SemanticSeedCorpusBudgetV1 {
+                corpus_kind: SemanticCorpusKindV1::ModuleCard,
+                top_k: 20,
+            },
+        ],
+        top_k: 15,
+    }
+}
+
 fn sourcegraph_text_request() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
@@ -441,6 +462,33 @@ fn search_plane_ipc_request_v2_hybrid_roundtrips_lexical_subquery() -> TestRes {
     } else {
         Err(format!("expected Hybrid request, got {decoded:?}").into())
     }
+}
+
+#[test]
+fn hybrid_seed_corpus_budgets_round_trip_losslessly() -> TestRes {
+    let request = hybrid_seed_request_with_corpus_budgets();
+    let decoded: HybridSeedQueryRequest = decode(&encode(&request)?)?;
+    if decoded != request {
+        return Err(format!("hybrid seed corpus budget round-trip mismatch: {decoded:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn hybrid_seed_legacy_wire_defaults_missing_corpus_budgets_to_global_lane() -> TestRes {
+    let request = hybrid_seed_request_with_corpus_budgets();
+    let mut value = serde_json::to_value(request)?;
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| "expected hybrid seed request object".to_string())?;
+    if fields.remove("dense_corpora").is_none() {
+        return Err("dense_corpora field missing from new wire".into());
+    }
+    let decoded: HybridSeedQueryRequest = serde_json::from_value(value)?;
+    if !decoded.dense_corpora.is_empty() {
+        return Err("legacy wire must decode to the migration global dense lane".into());
+    }
+    Ok(())
 }
 
 #[test]

@@ -747,6 +747,7 @@ fn parse_hybrid_seed(
             .ok_or_else(|| CliError::usage("missing --semantic-query".to_string()))?,
         generation: Some(generation),
         generation_selector: None,
+        dense_corpora: Vec::new(),
         top_k: top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?,
     }))
 }

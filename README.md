@@ -24,10 +24,9 @@ proof remains a separate gated rail):
   `quanta-index-control` crate has been deleted
 - `quanta-index-lexical` Tantivy 0.22 adapter with reader caching
 - `quanta-index-semantic` persisted, generation-scoped semantic adapter:
-  durable build + direct open from sealed generations (in-house CBOR columnar
-  shard plus a persisted HNSW graph), no boot-time replay. See
-  `docs/plans/may-28-lancedb-adoption/` — "Lance" is the planning label for
-  this durable shape; the `lance` crate is intentionally not a dependency.
+  durable LanceDB build + direct open from sealed generations, with no
+  boot-time replay. Logical corpus predicates are pushed into the storage
+  query instead of applied after an unfiltered ANN read.
 - `quanta-index-ipc` CBOR wire codec (16 MiB frame cap)
 - `searchd` binary that actually runs: tokio current-thread UDS listener,
   owner query/control/ingest sockets, lexical + semantic + repomap serving,
@@ -37,21 +36,28 @@ Semantic Corpus V2 current state (2026-07-15):
 
 - typed semantic-source wire covers symbol/module/cluster/document/test/raw-fallback corpora;
 - semantic storage v4 preserves owner/corpus/provenance metadata and exact owner-scoped replacement;
-- source-wire (7), semantic library (13), and dedicated persisted SCV2 scenarios (4) pass on latest targeted local rails;
+- HybridSeed accepts typed per-corpus budgets, runs storage-prefiltered dense
+  lanes independently, collapses views to stable owner identity, and fuses
+  stable IDs without manufacturing lexical candidates;
+- source-wire (7), IPC query contract (29), SDK (44), core hybrid (2),
+  search-plane (136), semantic library (13), and persisted SCV2 scenarios (4)
+  pass; public API/module/hexagonal, three 60-second fuzz targets, and the full
+  daemon E2E profile are green;
 - default derivation remains `LegacyAllChunkText`; semantic-source-only cutover and live searchd activation are not complete;
 - Semantica remains responsible for graph facts, Stage3 graph expansion, and source hydration.
 
-Current verification snapshot (2026-05-27):
+Current verification snapshot (2026-07-15):
 
 - green on current live-source rerun:
-  - `cargo check -p quanta-index-contract`
-  - `cargo check -p quanta-index-sdk`
-  - `cargo test -p quanta-index-searchd-runtime --test repo_map_end_to_end`
-  - `cargo test -p quanta-index-sdk --lib`
-  - `cargo test -p quanta-index-searchd-runtime`
-- this snapshot re-proves the current closeout rails only; broader
-  semantic/hybrid/full-corpus closure remains tracked in the `may-25`
-  packet docs
+  - owner-local contract/core/SDK/search-plane/semantic/persisted rails listed above
+  - `just rust-public-api`
+  - `just rust-cargo-modules`
+  - `just rust-hexagonal`
+  - `just rust-fuzz-smoke`
+  - `just rust-profile test-daemon`
+- this snapshot proves the q-index code substrate. Live card-required
+  activation, numeric quality comparison, and legacy deletion remain separate
+  product cutover gates.
 
 Build artifacts:
 
@@ -112,9 +118,8 @@ Repo layout:
   - semantic/hybrid serving helpers
 - `crates/quanta-index-lexical`, `quanta-index-semantic`
   - driven adapters; the lexical backend is Tantivy and the semantic backend is
-    an in-house persisted columnar shard plus an HNSW graph, each living inside
-    its crate. Names stay purpose-driven so the backend can swap without
-    renaming.
+    LanceDB, each living inside its crate. Names stay purpose-driven so the
+    backend can swap without renaming.
 - `crates/quanta-index-ipc`
   - IPC wire codec (CBOR framing via `ciborium`, 16 MiB cap, manual error
     enum — no proc-macro derives)

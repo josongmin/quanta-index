@@ -210,9 +210,9 @@ use semantic_query::{
     HybridFusion, SemanticSelection, build_hybrid_response_explanation,
     build_hybrid_seed_candidates_v1, build_hybrid_seed_candidates_v2,
     build_hybrid_seed_response_explanation_v2, build_semantic_response_explanation,
-    ensure_query_model_matches_index_v1, prefix_semantic_query_error,
-    resolve_hybrid_request_selection, resolve_hybrid_seed_request_selection,
-    resolve_semantic_request_selection,
+    canonical_dense_corpus_budgets_v1, ensure_query_model_matches_index_v1,
+    prefix_semantic_query_error, resolve_hybrid_request_selection,
+    resolve_hybrid_seed_request_selection, resolve_semantic_request_selection,
 };
 
 impl SearchPlaneDispatcher {
@@ -546,8 +546,31 @@ impl SearchPlaneDispatcher {
             &lex_results,
             &sem_results,
         )?;
-        let mut semantic_hits = sem_searcher.search_hits(&query_vector, internal_top_k)?;
-        stabilize_semantic_seed_hits_v1(&mut semantic_hits);
+        let dense_corpora = canonical_dense_corpus_budgets_v1(&request.dense_corpora)?;
+        let mut unavailable_corpus_reasons = Vec::new();
+        let mut semantic_lanes = Vec::new();
+        if dense_corpora.is_empty() {
+            let mut hits = sem_searcher.search_hits(&query_vector, internal_top_k)?;
+            stabilize_semantic_seed_hits_v1(&mut hits);
+            semantic_lanes.push(hits);
+        } else {
+            for budget in dense_corpora {
+                let mut hits = sem_searcher.search_hits_for_corpus(
+                    &query_vector,
+                    budget.corpus_kind,
+                    budget.top_k,
+                )?;
+                stabilize_semantic_seed_hits_v1(&mut hits);
+                if hits.is_empty() {
+                    unavailable_corpus_reasons.push(format!(
+                        "requested_semantic_corpus_unavailable:{}",
+                        budget.corpus_kind.as_code_str()
+                    ));
+                }
+                semantic_lanes.push(hits);
+            }
+        }
+        let semantic_hits = semantic_lanes.iter().flatten().collect::<Vec<_>>();
         let lexical_entity_count = lex_results
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
@@ -564,8 +587,12 @@ impl SearchPlaneDispatcher {
             .chain(semantic_hits.iter().map(|hit| hit.owner_id.as_str()))
             .collect::<BTreeSet<_>>()
             .len();
-        let seed_candidates_v2 =
-            build_hybrid_seed_candidates_v2(&lex_results, &semantic_hits, request.top_k)?;
+        let seed_candidates_v2 = build_hybrid_seed_candidates_v2(
+            &lex_results,
+            &semantic_lanes,
+            &unavailable_corpus_reasons,
+            request.top_k,
+        )?;
         let early_stop_reason = if fused_entity_universe > seed_candidates_v2.len() {
             Some(EarlyStopReason::CountReached)
         } else {
@@ -578,6 +605,7 @@ impl SearchPlaneDispatcher {
             semantic_entity_count,
             seed_candidates_v2.len(),
             internal_top_k,
+            &unavailable_corpus_reasons,
             early_stop_reason,
         );
         Ok(HybridSeedQueryResponse {
@@ -4370,8 +4398,9 @@ mod tests {
         ERR_HISTORY_PRODUCER_UNAVAILABLE, ERR_HISTORY_SHARD_UNAVAILABLE, ERR_INVALID,
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
         FailClosedStructuralProducer, MAX_OBS_SAMPLES, QueryObsSink, SearchPlaneDispatcher,
-        classify_error_metric_name, make_pin, runtime_generation_is_stale, runtime_seed_ids,
-        validate_history_query, validate_runtime_metadata_query,
+        build_hybrid_seed_candidates_v2, classify_error_metric_name, make_pin,
+        runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
+        validate_runtime_metadata_query,
     };
     use crate::{
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
@@ -4504,8 +4533,9 @@ mod tests {
         RevisionId, RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
         RuntimeEdgeAuthorityRecord, RuntimeMetadataQueryRequest, RuntimeSnapshotRecord,
         SearchPlaneActivateGenerationRequest, SearchPlaneQueryIpcRequest,
-        SearchPlaneQueryIpcResponse, SemanticQueryRequest, SymbolCandidate, TextQueryRequest,
-        TextQuerySyntax, UpsertCommit,
+        SearchPlaneQueryIpcResponse, SemanticCorpusKindV1, SemanticQueryRequest,
+        SemanticSeedCorpusBudgetV1, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
+        UpsertCommit,
     };
     use quanta_index_core::{
         CoreError, LexicalIndexOpenPort, LexicalSearcher, RepoMapQueryPort, SemanticIndexOpenPort,
@@ -4931,6 +4961,7 @@ mod tests {
     struct RecordingSemanticState {
         search_vectors: Vec<Vec<f32>>,
         search_hit_vectors: Vec<Vec<f32>>,
+        corpus_searches: Vec<(SemanticCorpusKindV1, u32)>,
         scoped_vectors: Vec<Vec<f32>>,
     }
 
@@ -4967,6 +4998,29 @@ mod tests {
                 record_id: "semantic-inline-record".to_string(),
                 owner_id: "semantic-inline-owner".to_string(),
                 corpus_kind: None,
+            }])
+        }
+
+        fn search_hits_for_corpus(
+            &self,
+            query_vector: &[f32],
+            corpus_kind: SemanticCorpusKindV1,
+            top_k: u32,
+        ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.search_hit_vectors.push(query_vector.to_vec());
+            state.corpus_searches.push((corpus_kind, top_k));
+            if corpus_kind == SemanticCorpusKindV1::RepositorySummary {
+                return Ok(Vec::new());
+            }
+            Ok(vec![SemanticSearchHitV1 {
+                candidate: candidate(corpus_kind.as_code_str(), 1.0),
+                record_id: format!("record:{}", corpus_kind.as_code_str()),
+                owner_id: format!("owner:{}", corpus_kind.as_code_str()),
+                corpus_kind: Some(corpus_kind),
             }])
         }
 
@@ -5774,6 +5828,16 @@ mod tests {
                 semantic_query_text: "scope alpha".to_string(),
                 generation: Some(pin),
                 generation_selector: None,
+                dense_corpora: vec![
+                    SemanticSeedCorpusBudgetV1 {
+                        corpus_kind: SemanticCorpusKindV1::SymbolCard,
+                        top_k: 7,
+                    },
+                    SemanticSeedCorpusBudgetV1 {
+                        corpus_kind: SemanticCorpusKindV1::RepositorySummary,
+                        top_k: 11,
+                    },
+                ],
                 top_k: 2,
             },
         ));
@@ -5796,10 +5860,20 @@ mod tests {
                 })?;
                 if !seed_candidates_v2
                     .iter()
-                    .any(|candidate| candidate.entity_id == "semantic-inline-owner")
+                    .any(|candidate| candidate.entity_id == "owner:SymbolCard")
                 {
                     return Err(format!(
                         "dense-only semantic entity must enter v2 seed set, observed={seed_candidates_v2:?}"
+                    )
+                    .into());
+                }
+                if !seed_candidates_v2.iter().all(|candidate| {
+                    candidate.degraded_reasons.iter().any(|reason| {
+                        reason == "requested_semantic_corpus_unavailable:RepositorySummary"
+                    })
+                }) {
+                    return Err(format!(
+                        "missing requested corpus must remain explicit on every returned seed: {seed_candidates_v2:?}"
                     )
                     .into());
                 }
@@ -5828,7 +5902,7 @@ mod tests {
             }
         }
 
-        let (scoped_vectors, search_hit_vectors, search_vectors) = {
+        let (scoped_vectors, search_hit_vectors, search_vectors, corpus_searches) = {
             let guard = state
                 .lock()
                 .map_err(|err| format!("semantic state poisoned: {err}"))?;
@@ -5836,19 +5910,110 @@ mod tests {
                 guard.scoped_vectors.clone(),
                 guard.search_hit_vectors.clone(),
                 guard.search_vectors.clone(),
+                guard.corpus_searches.clone(),
             )
         };
         let expected = default_query_embedder().embed_query("scope alpha")?;
         if scoped_vectors.as_slice() != [expected.clone()] {
             return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
         }
-        if search_hit_vectors.as_slice() != [expected] {
-            return Err(format!("unexpected global hit vectors: {search_hit_vectors:?}").into());
+        if search_hit_vectors.as_slice() != [expected.clone(), expected] {
+            return Err(format!("unexpected corpus hit vectors: {search_hit_vectors:?}").into());
         }
         if !search_vectors.is_empty() {
             return Err(
                 format!("unexpected global lexical-shaped vectors: {search_vectors:?}").into(),
             );
+        }
+        if corpus_searches.as_slice()
+            != [
+                (SemanticCorpusKindV1::RepositorySummary, 11),
+                (SemanticCorpusKindV1::SymbolCard, 7),
+            ]
+        {
+            return Err(
+                format!("unexpected corpus-prefiltered searches: {corpus_searches:?}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hybrid_seed_v2_fuses_corpus_local_ranks_and_collapses_views_by_owner() -> TestResult {
+        fn hit(
+            record_id: &str,
+            owner_id: &str,
+            corpus_kind: SemanticCorpusKindV1,
+            score: f32,
+        ) -> SemanticSearchHitV1 {
+            SemanticSearchHitV1 {
+                candidate: candidate(record_id, score),
+                record_id: record_id.to_string(),
+                owner_id: owner_id.to_string(),
+                corpus_kind: Some(corpus_kind),
+            }
+        }
+
+        let semantic_lanes = vec![
+            vec![
+                hit(
+                    "module-shared",
+                    "shared",
+                    SemanticCorpusKindV1::ModuleCard,
+                    0.0001,
+                ),
+                hit(
+                    "module-only",
+                    "module-only",
+                    SemanticCorpusKindV1::ModuleCard,
+                    9_999.0,
+                ),
+            ],
+            vec![
+                hit(
+                    "symbol-shared",
+                    "shared",
+                    SemanticCorpusKindV1::SymbolCard,
+                    0.0002,
+                ),
+                hit(
+                    "symbol-only",
+                    "symbol-only",
+                    SemanticCorpusKindV1::SymbolCard,
+                    8_888.0,
+                ),
+            ],
+        ];
+        let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 3)?;
+        let shared = seeds
+            .first()
+            .ok_or_else(|| "expected fused shared owner".to_string())?;
+        if shared.entity_id != "shared" || shared.seed_rank != 1 {
+            return Err(
+                format!("shared multi-corpus owner must win rank fusion: {seeds:?}").into(),
+            );
+        }
+        let has_module = shared
+            .contributions
+            .iter()
+            .any(|contribution| contribution.corpus_kind == Some(SemanticCorpusKindV1::ModuleCard));
+        let has_symbol = shared
+            .contributions
+            .iter()
+            .any(|contribution| contribution.corpus_kind == Some(SemanticCorpusKindV1::SymbolCard));
+        if !has_module || !has_symbol {
+            return Err(format!(
+                "shared owner must retain both corpus contributions: {:?}",
+                shared.contributions
+            )
+            .into());
+        }
+        if shared
+            .contributions
+            .iter()
+            .any(|contribution| contribution.rank != 1)
+        {
+            return Err("each corpus lane must retain its own one-based rank domain".into());
         }
         Ok(())
     }

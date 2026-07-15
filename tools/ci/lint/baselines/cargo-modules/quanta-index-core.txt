@@ -6,8 +6,8 @@ crate quanta_index_core
 │   │   │   ├── trait ExplainQueryPort: pub
 │   │   │   └── trait HybridQueryPort: pub
 │   │   └── mod service: pub(self)
-│   │       ├── struct FuseAccumulator: pub(self)
-│   │       └── struct HybridOrchestratorPolicy: pub
+│   │       ├── struct HybridOrchestratorPolicy: pub
+│   │       └── struct IdFuseAccumulator: pub(self)
 │   ├── mod lexical: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait LexicalQueryPort: pub
@@ -44,7 +44,9 @@ crate quanta_index_core
 │   │   │   ├── trait SemanticIndexOpenPort: pub
 │   │   │   ├── trait SemanticIngestPort: pub
 │   │   │   ├── struct SemanticReadiness: pub
-│   │   │   └── trait SemanticSearcher: pub
+│   │   │   ├── struct SemanticSearchHitV1: pub
+│   │   │   ├── trait SemanticSearcher: pub
+│   │   │   └── trait TextEmbeddingProvider: pub
 │   │   └── mod service: pub(self)
 │   │       └── struct SemanticPolicy: pub
 │   └── mod structural: pub

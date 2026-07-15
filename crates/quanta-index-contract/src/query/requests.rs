@@ -7,6 +7,7 @@ use serde::{
 };
 
 use crate::LexicalCandidate;
+use crate::SemanticCorpusKindV1;
 
 use super::{GenerationPin, GenerationSelector, TextQueryRequest, TextQuerySyntax};
 
@@ -289,12 +290,92 @@ macro_rules! impl_hybrid_query_request_serde {
 
 impl_hybrid_query_request_serde!(HYBRID_QUERY_REQUEST_FIELDS, HybridQueryRequestVisitor);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticSeedCorpusBudgetV1 {
+    pub corpus_kind: SemanticCorpusKindV1,
+    pub top_k: u32,
+}
+
+const SEMANTIC_SEED_CORPUS_BUDGET_V1_FIELDS: &[&str] = &["corpus_kind", "top_k"];
+
+impl Serialize for SemanticSeedCorpusBudgetV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SemanticSeedCorpusBudgetV1", 2)?;
+        state.serialize_field("corpus_kind", &self.corpus_kind)?;
+        state.serialize_field("top_k", &self.top_k)?;
+        state.end()
+    }
+}
+
+struct SemanticSeedCorpusBudgetV1Visitor;
+
+impl<'de> Visitor<'de> for SemanticSeedCorpusBudgetV1Visitor {
+    type Value = SemanticSeedCorpusBudgetV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticSeedCorpusBudgetV1 map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut corpus_kind = None;
+        let mut top_k = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "corpus_kind" => {
+                    if corpus_kind.is_some() {
+                        return Err(de::Error::duplicate_field("corpus_kind"));
+                    }
+                    corpus_kind = Some(map.next_value()?);
+                }
+                "top_k" => {
+                    if top_k.is_some() {
+                        return Err(de::Error::duplicate_field("top_k"));
+                    }
+                    top_k = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEMANTIC_SEED_CORPUS_BUDGET_V1_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(SemanticSeedCorpusBudgetV1 {
+            corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
+            top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticSeedCorpusBudgetV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SemanticSeedCorpusBudgetV1",
+            SEMANTIC_SEED_CORPUS_BUDGET_V1_FIELDS,
+            SemanticSeedCorpusBudgetV1Visitor,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridSeedQueryRequest {
     pub text_query: TextQueryRequest,
     pub semantic_query_text: String,
     pub generation: Option<GenerationPin>,
     pub generation_selector: Option<GenerationSelector>,
+    /// Independent storage-prefiltered dense lanes. Empty retains the legacy
+    /// global dense lane during the SCV2 migration window.
+    pub dense_corpora: Vec<SemanticSeedCorpusBudgetV1>,
     pub top_k: u32,
 }
 
@@ -303,6 +384,7 @@ const HYBRID_SEED_QUERY_REQUEST_FIELDS: &[&str] = &[
     "semantic_query_text",
     "generation",
     "generation_selector",
+    "dense_corpora",
     "top_k",
 ];
 
@@ -313,7 +395,7 @@ macro_rules! impl_hybrid_seed_query_request_serde {
             where
                 S: Serializer,
             {
-                let mut field_count: usize = 3;
+                let mut field_count: usize = 4;
                 if self.generation.is_some() {
                     field_count = field_count.saturating_add(1);
                 }
@@ -330,6 +412,7 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                 if let Some(generation_selector) = &self.generation_selector {
                     state.serialize_field("generation_selector", generation_selector)?;
                 }
+                state.serialize_field("dense_corpora", &self.dense_corpora)?;
                 state.serialize_field("top_k", &self.top_k)?;
                 state.end()
             }
@@ -355,6 +438,7 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                 let mut generation_seen = false;
                 let mut generation_selector: Option<GenerationSelector> = None;
                 let mut generation_selector_seen = false;
+                let mut dense_corpora: Option<Vec<SemanticSeedCorpusBudgetV1>> = None;
                 let mut top_k: Option<u32> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -385,6 +469,12 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                             generation_selector_seen = true;
                             generation_selector = Some(map.next_value()?);
                         }
+                        "dense_corpora" => {
+                            if dense_corpora.is_some() {
+                                return Err(de::Error::duplicate_field("dense_corpora"));
+                            }
+                            dense_corpora = Some(map.next_value()?);
+                        }
                         "top_k" => {
                             if top_k.is_some() {
                                 return Err(de::Error::duplicate_field("top_k"));
@@ -402,6 +492,7 @@ macro_rules! impl_hybrid_seed_query_request_serde {
                         .ok_or_else(|| de::Error::missing_field("semantic_query_text"))?,
                     generation,
                     generation_selector,
+                    dense_corpora: dense_corpora.unwrap_or_default(),
                     top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
                 })
             }

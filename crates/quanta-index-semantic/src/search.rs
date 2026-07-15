@@ -536,6 +536,26 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
 
+    fn search_hits_for_corpus(
+        &self,
+        query_vector: &[f32],
+        corpus_kind: SemanticCorpusKindV1,
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.search_hits_filtered_async(
+                query_vector,
+                limit,
+                Some(corpus_kind.as_code_str()),
+            ),
+        )
+        .and_then(LoadedGeneration::map_hits_to_core_v1)
+    }
+
     fn search_scoped(
         &self,
         query_vector: &[f32],
