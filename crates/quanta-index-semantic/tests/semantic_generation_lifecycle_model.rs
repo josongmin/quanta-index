@@ -61,12 +61,12 @@ impl RecordSpec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum LifecycleCommand {
     Build {
         generation: u64,
         base_generation: Option<u64>,
-        batch_digest: &'static str,
+        batch_digest: String,
         replacements: Vec<RecordSpec>,
         tombstones: Vec<TombstoneSpec>,
         seal: bool,
@@ -108,7 +108,9 @@ impl LifecycleModel {
         if !state.sealed {
             return Err(format!("model generation {generation} is not sealed"));
         }
-        Ok(state.records_by_owner.values().cloned().collect())
+        let mut expected = state.records_by_owner.values().cloned().collect::<Vec<_>>();
+        expected.sort();
+        Ok(expected)
     }
 
     fn apply_build(
@@ -221,7 +223,7 @@ impl LifecycleModel {
                     Self::generation(generation),
                     base_generation.map(Self::generation),
                     format!("manifest:lifecycle:{generation}"),
-                    batch_digest.to_string(),
+                    batch_digest,
                     if base_generation.is_some() {
                         BatchIngestMode::Delta
                     } else {
@@ -317,7 +319,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         LifecycleCommand::Build {
             generation: 701,
             base_generation: None,
-            batch_digest: "lifecycle:g701:build",
+            batch_digest: "lifecycle:g701:build".to_string(),
             replacements: vec![
                 RecordSpec {
                     id: "alpha-v1",
@@ -339,7 +341,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         LifecycleCommand::Build {
             generation: 701,
             base_generation: None,
-            batch_digest: "lifecycle:g701:append-replace",
+            batch_digest: "lifecycle:g701:append-replace".to_string(),
             replacements: vec![
                 RecordSpec {
                     id: "alpha-v2",
@@ -360,7 +362,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         LifecycleCommand::Build {
             generation: 701,
             base_generation: None,
-            batch_digest: "lifecycle:g701:seal",
+            batch_digest: "lifecycle:g701:seal".to_string(),
             replacements: Vec::new(),
             tombstones: Vec::new(),
             seal: true,
@@ -369,7 +371,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         LifecycleCommand::Build {
             generation: 702,
             base_generation: Some(701),
-            batch_digest: "lifecycle:g702:delta-replace-tombstone-seal",
+            batch_digest: "lifecycle:g702:delta-replace-tombstone-seal".to_string(),
             replacements: vec![RecordSpec {
                 id: "beta-v2",
                 owner: "symbol:Session::beta",
@@ -387,7 +389,7 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         LifecycleCommand::Build {
             generation: 703,
             base_generation: Some(701),
-            batch_digest: "lifecycle:g703:unsealed",
+            batch_digest: "lifecycle:g703:unsealed".to_string(),
             replacements: vec![RecordSpec {
                 id: "delta-v1",
                 owner: "symbol:Session::delta",
@@ -404,5 +406,191 @@ fn deterministic_generation_lifecycle_matches_reference_model() -> TestResult {
         model.execute(&root, &mut adapter, command)?;
     }
     assert_eq!(model.active_generation, Some(701));
+    Ok(())
+}
+
+const GENERATED_TRACE_CASES: [(u64, u64); 6] = [
+    (3, 10_030),
+    (11, 10_110),
+    (29, 10_290),
+    (47, 10_470),
+    (71, 10_710),
+    (101, 11_010),
+];
+
+fn record(
+    id: &'static str,
+    owner: &'static str,
+    path: &'static str,
+    vector: [f32; 3],
+) -> RecordSpec {
+    RecordSpec {
+        id,
+        owner,
+        path,
+        vector,
+    }
+}
+
+/// Produce a bounded, deterministic state-machine trace for the semantic
+/// adapter's actual durable API. `Activate` and `Rollback` intentionally mean
+/// "select this sealed adapter generation for query" here: the process-wide
+/// active-generation CAS belongs to searchd readiness and is not simulated.
+fn generated_lifecycle_trace(seed: u64, base: u64) -> Vec<LifecycleCommand> {
+    let first = base;
+    let second = base + 1;
+    let incomplete = base + 2;
+    let (alpha, beta, gamma) = if seed & 1 == 0 {
+        (
+            record(
+                "alpha-even-v1",
+                "symbol:Generated::alpha",
+                "src/generated_even.rs",
+                [1.0, 0.0, 0.0],
+            ),
+            record(
+                "beta-even-v1",
+                "symbol:Generated::beta",
+                "src/generated_even.rs",
+                [0.0, 1.0, 0.0],
+            ),
+            record(
+                "gamma-even-v1",
+                "symbol:Generated::gamma",
+                "src/generated_other.rs",
+                [0.0, 0.0, 1.0],
+            ),
+        )
+    } else {
+        (
+            record(
+                "alpha-odd-v1",
+                "symbol:Generated::alpha",
+                "src/generated_odd.rs",
+                [1.0, 0.0, 0.0],
+            ),
+            record(
+                "beta-odd-v1",
+                "symbol:Generated::beta",
+                "src/generated_odd.rs",
+                [0.0, 1.0, 0.0],
+            ),
+            record(
+                "gamma-odd-v1",
+                "symbol:Generated::gamma",
+                "src/generated_other.rs",
+                [0.0, 0.0, 1.0],
+            ),
+        )
+    };
+
+    let initial = LifecycleCommand::Build {
+        generation: first,
+        base_generation: None,
+        batch_digest: format!("generated:{seed}:initial"),
+        replacements: vec![alpha, beta],
+        tombstones: Vec::new(),
+        seal: false,
+    };
+    let repeatable_replace = LifecycleCommand::Build {
+        generation: first,
+        base_generation: None,
+        batch_digest: format!("generated:{seed}:repeatable-replace"),
+        replacements: vec![record(
+            if seed & 1 == 0 {
+                "alpha-even-v2"
+            } else {
+                "alpha-odd-v2"
+            },
+            "symbol:Generated::alpha",
+            if seed & 1 == 0 {
+                "src/generated_even.rs"
+            } else {
+                "src/generated_odd.rs"
+            },
+            [0.8, 0.2, 0.0],
+        )],
+        tombstones: Vec::new(),
+        seal: false,
+    };
+
+    let mut trace = vec![initial];
+    for _ in 0..=seed % 2 {
+        trace.push(LifecycleCommand::RestartAndRecover);
+    }
+    trace.push(LifecycleCommand::AssertUnsealedCannotActivate { generation: first });
+    // A replace-scope delivery may be retried before seal. The adapter's
+    // delete-then-append behavior must converge to the same model state.
+    trace.push(repeatable_replace.clone());
+    trace.push(repeatable_replace);
+    trace.push(LifecycleCommand::Build {
+        generation: first,
+        base_generation: None,
+        batch_digest: format!("generated:{seed}:seal"),
+        replacements: Vec::new(),
+        tombstones: Vec::new(),
+        seal: true,
+    });
+    trace.push(LifecycleCommand::Activate { generation: first });
+    // Re-selecting an already selected sealed generation is idempotent at the
+    // adapter boundary and must remain valid across a process restart.
+    trace.push(LifecycleCommand::Activate { generation: first });
+    trace.push(LifecycleCommand::RestartAndRecover);
+    trace.push(LifecycleCommand::Activate { generation: first });
+    trace.push(LifecycleCommand::Build {
+        generation: second,
+        base_generation: Some(first),
+        batch_digest: format!("generated:{seed}:delta"),
+        replacements: vec![gamma],
+        tombstones: vec![TombstoneSpec {
+            owner: "symbol:Generated::beta",
+            path: if seed & 1 == 0 {
+                "src/generated_even.rs"
+            } else {
+                "src/generated_odd.rs"
+            },
+        }],
+        seal: true,
+    });
+    trace.push(LifecycleCommand::Activate { generation: second });
+    trace.push(LifecycleCommand::Rollback { target: first });
+    trace.push(LifecycleCommand::Activate { generation: first });
+    trace.push(LifecycleCommand::Build {
+        generation: incomplete,
+        base_generation: Some(first),
+        batch_digest: format!("generated:{seed}:incomplete"),
+        replacements: vec![record(
+            "incomplete-v1",
+            "symbol:Generated::incomplete",
+            "src/incomplete.rs",
+            [0.0, 0.5, 0.5],
+        )],
+        tombstones: Vec::new(),
+        seal: false,
+    });
+    trace.push(LifecycleCommand::AssertUnsealedCannotActivate {
+        generation: incomplete,
+    });
+    trace.push(LifecycleCommand::RestartAndRecover);
+    trace
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the generated lifecycle model has explicit invariant assertions"
+)]
+fn generated_generation_lifecycle_traces_match_reference_model() -> TestResult {
+    for (seed, base) in GENERATED_TRACE_CASES {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let mut adapter = SemanticAdapter::with_state_root(root.clone())?;
+        let mut model = LifecycleModel::default();
+
+        for command in generated_lifecycle_trace(seed, base) {
+            model.execute(&root, &mut adapter, command)?;
+        }
+        assert_eq!(model.active_generation, Some(base));
+    }
     Ok(())
 }

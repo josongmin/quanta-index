@@ -5,17 +5,63 @@
 # be named here with its owning crate and an executable CI rail. The companion
 # guard fails when the filesystem, a fuzz manifest, or this catalog diverges.
 
-format_version = 1
+format_version = 2
 
 [rails.pr-workspace-nextest]
 tier = "pr"
 command = "./scripts/cargow nextest run --workspace --all-features --locked"
 target_kind = "integration"
+workflow = ".github/workflows/ci.yml"
+job = "rust-test"
+step = "rust nextest"
 
-[rails.correctness-fuzz-smoke]
+[rails.merge-workspace-nextest]
+tier = "merge"
+command = "./scripts/cargow nextest run --workspace --all-features --locked"
+target_kind = "integration"
+workflow = ".github/workflows/ci.yml"
+job = "rust-test"
+step = "rust nextest"
+
+[rails.nightly-workspace-nextest]
+tier = "nightly"
+command = "./scripts/cargow nextest run --workspace --all-features --locked"
+target_kind = "integration"
+workflow = ".github/workflows/correctness.yml"
+job = "rust-authority-nextest"
+step = "rust nextest authority receipt"
+
+[rails.correctness-fuzz-ipc-request]
 tier = "correctness"
-command = "just rust-fuzz-smoke"
+command = "cargo +nightly fuzz run ipc_request_decode"
 target_kind = "fuzz"
+workflow = ".github/workflows/correctness.yml"
+job = "rust-fuzz-smoke"
+step = "Smoke-run ipc_request_decode (60s)"
+
+[rails.correctness-fuzz-ipc-response]
+tier = "correctness"
+command = "cargo +nightly fuzz run ipc_response_decode"
+target_kind = "fuzz"
+workflow = ".github/workflows/correctness.yml"
+job = "rust-fuzz-smoke"
+step = "Smoke-run ipc_response_decode (60s)"
+
+[rails.correctness-fuzz-search-corpus]
+tier = "correctness"
+command = "cargo +nightly fuzz run search_corpus_ingest_decode"
+target_kind = "fuzz"
+workflow = ".github/workflows/correctness.yml"
+job = "rust-fuzz-smoke"
+step = "Smoke-run search_corpus_ingest_decode (60s)"
+
+[rails.correctness-fuzz-lq-parse]
+tier = "correctness"
+command = "cargo +nightly fuzz run lq_parse_pipeline"
+target_kind = "fuzz"
+workflow = ".github/workflows/correctness.yml"
+job = "rust-fuzz-smoke"
+step = "Smoke-run lq_parse_pipeline (60s)"
 
 [[integration_targets]]
 id = "contract-ipc-query-result-v2"
@@ -45,6 +91,12 @@ rail = "pr-workspace-nextest"
 id = "contract-scv2-semantic-source-wire"
 path = "crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs"
 owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ipc-wire-historical-cbor"
+path = "crates/quanta-index-ipc/tests/wire_historical_cbor.rs"
+owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -365,7 +417,7 @@ path = "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs"
 manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
 target = "ipc_request_decode"
 owner = "quanta-index-contract"
-rail = "correctness-fuzz-smoke"
+rail = "correctness-fuzz-ipc-request"
 
 [[fuzz_targets]]
 id = "contract-ipc-response-decode-fuzz"
@@ -373,7 +425,7 @@ path = "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_response_decode.rs"
 manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
 target = "ipc_response_decode"
 owner = "quanta-index-contract"
-rail = "correctness-fuzz-smoke"
+rail = "correctness-fuzz-ipc-response"
 
 [[fuzz_targets]]
 id = "contract-search-corpus-ingest-decode-fuzz"
@@ -381,7 +433,7 @@ path = "crates/quanta-index-contract/fuzz/fuzz_targets/search_corpus_ingest_deco
 manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
 target = "search_corpus_ingest_decode"
 owner = "quanta-index-contract"
-rail = "correctness-fuzz-smoke"
+rail = "correctness-fuzz-search-corpus"
 
 [[fuzz_targets]]
 id = "lq-norm-parse-pipeline-fuzz"
@@ -389,10 +441,63 @@ path = "crates/quanta-index-lq-norm/fuzz/fuzz_targets/lq_parse_pipeline.rs"
 manifest = "crates/quanta-index-lq-norm/fuzz/Cargo.toml"
 target = "lq_parse_pipeline"
 owner = "quanta-index-lq-norm"
-rail = "correctness-fuzz-smoke"
+rail = "correctness-fuzz-lq-parse"
+
+# This is the declared P0/P1 universe. A proof row may not be added without a
+# matching universe row, and every universe row must have an executable proof
+# mapping below. It is deliberately explicit: risk acceptance must be reviewed
+# as a catalog change, not inferred from a file name.
+[[invariant_universe]]
+id = "GEN-ACTIVATE-ATOMIC-01"
+risk = "P0"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+
+[[invariant_universe]]
+id = "GEN-ROLLBACK-RECOVERY-01"
+risk = "P0"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+
+[[invariant_universe]]
+id = "SEMANTIC-OWNER-IDENTITY-01"
+risk = "P1"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+
+[[invariant_universe]]
+id = "CONTRACT-WIRE-FAIL-CLOSED-01"
+risk = "P0"
+owner = "quanta-index-contract"
+source = "crates/quanta-index-contract/src/lib.rs"
+
+[[invariant_universe]]
+id = "HYBRID-PAYLOAD-PRECEDENCE-01"
+risk = "P1"
+owner = "quanta-index-core"
+source = "crates/quanta-index-core/src/lib.rs"
+
+[[invariant_universe]]
+id = "SDK-FRONTDOOR-ROUNDTRIP-01"
+risk = "P1"
+owner = "quanta-index-searchd-runtime"
+source = "crates/quanta-index-searchd-runtime/src/lib.rs"
+
+[[invariant_universe]]
+id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
+risk = "P1"
+owner = "quanta-index-repomap"
+source = "crates/quanta-index-repomap/src/lib.rs"
+
+[[invariant_universe]]
+id = "DSL-CAPABILITY-TRUTH-01"
+risk = "P1"
+owner = "quanta-index-searchd-runtime"
+source = "crates/quanta-index-searchd-runtime/src/lib.rs"
 
 # P0/P1 rows must name independent positive, negative, recovery, and consumer
-# proof targets. The guard verifies those ids and their source files fail closed.
+# proof targets plus PR, merge, and nightly rails. The guard verifies those ids,
+# role independence, owner-local positive/negative proof, and CI bindings.
 [[invariants]]
 id = "GEN-ACTIVATE-ATOMIC-01"
 risk = "P0"
@@ -402,6 +507,9 @@ positive_target = "semantic-generation-lifecycle-model"
 negative_target = "semantic-persisted"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-end-to-end"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "GEN-ROLLBACK-RECOVERY-01"
@@ -412,6 +520,9 @@ positive_target = "semantic-generation-lifecycle-model"
 negative_target = "semantic-persisted"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-sdk-frontdoor"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "SEMANTIC-OWNER-IDENTITY-01"
@@ -422,6 +533,9 @@ positive_target = "semantic-scv2-persisted-scenarios"
 negative_target = "semantic-persisted"
 recovery_target = "semantic-generation-lifecycle-model"
 consumer_target = "searchd-runtime-end-to-end"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "CONTRACT-WIRE-FAIL-CLOSED-01"
@@ -432,6 +546,9 @@ positive_target = "contract-ipc-query-result-v2"
 negative_target = "contract-lxe-unified-surface"
 recovery_target = "contract-scv2-semantic-source-wire"
 consumer_target = "searchd-runtime-sdk-frontdoor"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "HYBRID-PAYLOAD-PRECEDENCE-01"
@@ -439,9 +556,12 @@ risk = "P1"
 owner = "quanta-index-core"
 source = "crates/quanta-index-core/src/lib.rs"
 positive_target = "core-hybrid-policy"
-negative_target = "core-hybrid-policy"
+negative_target = "core-lexical-policy"
 recovery_target = "core-semantic-policy"
 consumer_target = "searchd-runtime-end-to-end"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "SDK-FRONTDOOR-ROUNDTRIP-01"
@@ -449,9 +569,12 @@ risk = "P1"
 owner = "quanta-index-searchd-runtime"
 source = "crates/quanta-index-searchd-runtime/src/lib.rs"
 positive_target = "searchd-runtime-sdk-frontdoor"
-negative_target = "searchd-runtime-sdk-frontdoor"
+negative_target = "searchd-runtime-composite-generation-authority-restart"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-end-to-end"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
@@ -462,6 +585,9 @@ positive_target = "repomap-bootstrap-owner-flow"
 negative_target = "repomap-owner-surface"
 recovery_target = "searchd-runtime-repo-map-end-to-end"
 consumer_target = "searchd-runtime-end-to-end"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"
 
 [[invariants]]
 id = "DSL-CAPABILITY-TRUTH-01"
@@ -472,3 +598,6 @@ positive_target = "searchd-runtime-dsl-scenarios"
 negative_target = "searchd-runtime-filter-execution"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-harness-dsl-scenario-truth"
+pr_rail = "pr-workspace-nextest"
+merge_rail = "merge-workspace-nextest"
+nightly_rail = "nightly-workspace-nextest"

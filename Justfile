@@ -469,6 +469,9 @@ rust-digest-fallibility:
 rust-test-authority:
     python3 tools/ci/lint/check-test-authority.py
 
+rust-ignored-test-policy:
+    python3 tools/ci/lint/check-ignored-test-policy.py
+
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
 
@@ -514,6 +517,7 @@ rust-policy:
     @just rust-error-shape
     @just rust-digest-fallibility
     @just rust-test-authority
+    @just rust-ignored-test-policy
     @just rust-deny
 
 verify-rust:

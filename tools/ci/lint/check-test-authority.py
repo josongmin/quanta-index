@@ -107,7 +107,92 @@ def _discover_fuzz_targets(root: Path) -> set[str]:
     }
 
 
+def _load_workflow(
+    *, root: Path, catalog: Path, workflow_path: str, violations: list[Violation]
+) -> dict[str, Any] | None:
+    """Load a repository-owned GitHub workflow without silently accepting drift."""
+    path = root / workflow_path
+    if not path.is_file():
+        violations.append(_violation(catalog, f"rail workflow does not exist: {workflow_path}"))
+        return None
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        violations.append(_violation(catalog, "PyYAML is required to validate CI rail bindings"))
+        return None
+    try:
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        violations.append(_violation(path, f"cannot parse workflow YAML: {error}"))
+        return None
+    if not isinstance(parsed, dict):
+        violations.append(_violation(path, "workflow root must be a YAML mapping"))
+        return None
+    return parsed
+
+
+def _validate_rail_binding(
+    *,
+    root: Path,
+    catalog: Path,
+    rail_id: str,
+    raw_rail: dict[str, Any],
+    command: str,
+    violations: list[Violation],
+) -> None:
+    workflow_path = _relative_path(
+        raw_rail.get("workflow"),
+        catalog=catalog,
+        field=f"rail {rail_id}.workflow",
+        violations=violations,
+    )
+    job_id = _string(
+        raw_rail.get("job"),
+        catalog=catalog,
+        context=f"rail {rail_id}.job",
+        violations=violations,
+    )
+    step_name = _string(
+        raw_rail.get("step"),
+        catalog=catalog,
+        context=f"rail {rail_id}.step",
+        violations=violations,
+    )
+    if workflow_path is None or job_id is None or step_name is None:
+        return
+    workflow = _load_workflow(
+        root=root, catalog=catalog, workflow_path=workflow_path, violations=violations
+    )
+    if workflow is None:
+        return
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict) or not isinstance(jobs.get(job_id), dict):
+        violations.append(_violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}"))
+        return
+    steps = jobs[job_id].get("steps")
+    if not isinstance(steps, list):
+        violations.append(_violation(catalog, f"rail {rail_id} job {job_id} has no steps"))
+        return
+    for step in steps:
+        if not isinstance(step, dict) or step.get("name") != step_name:
+            continue
+        run = step.get("run")
+        if isinstance(run, str) and command in run:
+            return
+        violations.append(
+            _violation(
+                catalog,
+                f"rail {rail_id} workflow step {step_name!r} does not execute declared command",
+            )
+        )
+        return
+    violations.append(
+        _violation(catalog, f"rail {rail_id} workflow step does not exist: {step_name!r}")
+    )
+
+
 def _validate_rails(
+    *, root: Path,
     data: dict[str, Any], catalog: Path, violations: list[Violation]
 ) -> dict[str, dict[str, str]]:
     raw_rails = data.get("rails")
@@ -153,6 +238,14 @@ def _validate_rails(
             )
         if tier is not None and command is not None and target_kind is not None:
             rails[rail_id] = {"tier": tier, "command": command, "target_kind": target_kind}
+            _validate_rail_binding(
+                root=root,
+                catalog=catalog,
+                rail_id=rail_id,
+                raw_rail=raw_rail,
+                command=command,
+                violations=violations,
+            )
     return rails
 
 
@@ -295,10 +388,43 @@ def _validate_invariants(
     *,
     root: Path,
     catalog: Path,
+    data: dict[str, Any],
     entries: list[dict[str, Any]],
+    rails: dict[str, dict[str, str]],
     targets: dict[str, dict[str, str]],
     violations: list[Violation],
 ) -> None:
+    universe = _table_array(data, "invariant_universe", catalog, violations)
+    universe_by_id: dict[str, dict[str, str]] = {}
+    for index, entry in enumerate(universe):
+        prefix = f"invariant_universe[{index}]"
+        invariant_id = _string(
+            entry.get("id"), catalog=catalog, context=f"{prefix}.id", violations=violations
+        )
+        risk = _string(
+            entry.get("risk"), catalog=catalog, context=f"{prefix}.risk", violations=violations
+        )
+        owner = _string(
+            entry.get("owner"), catalog=catalog, context=f"{prefix}.owner", violations=violations
+        )
+        source = _relative_path(
+            entry.get("source"), catalog=catalog, field=f"{prefix}.source", violations=violations
+        )
+        if invariant_id is None or risk is None or owner is None or source is None:
+            continue
+        if invariant_id in universe_by_id:
+            violations.append(_violation(catalog, f"duplicate invariant universe id: {invariant_id}"))
+            continue
+        if risk not in {"P0", "P1", "P2", "P3"}:
+            violations.append(_violation(catalog, f"{prefix}.risk must be one of P0, P1, P2, P3"))
+            continue
+        if not (root / source).is_file():
+            violations.append(_violation(catalog, f"invariant universe source does not exist: {source}"))
+        universe_by_id[invariant_id] = {"risk": risk, "owner": owner, "source": source}
+
+    if entries and not universe_by_id:
+        violations.append(_violation(catalog, "invariant_universe must declare every P0/P1 invariant"))
+
     ids: set[str] = set()
     for index, entry in enumerate(entries):
         prefix = f"invariants[{index}]"
@@ -318,6 +444,15 @@ def _validate_invariants(
             if invariant_id in ids:
                 violations.append(_violation(catalog, f"duplicate invariant id: {invariant_id}"))
             ids.add(invariant_id)
+            expected = universe_by_id.get(invariant_id)
+            if expected is None:
+                violations.append(_violation(catalog, f"invariant {invariant_id} is absent from invariant_universe"))
+            elif owner is not None and source is not None and (
+                expected["owner"] != owner or expected["source"] != source or expected["risk"] != risk
+            ):
+                violations.append(
+                    _violation(catalog, f"invariant {invariant_id} disagrees with invariant_universe")
+                )
         if risk is not None and risk not in {"P0", "P1", "P2", "P3"}:
             violations.append(_violation(catalog, f"{prefix}.risk must be one of P0, P1, P2, P3"))
         if owner is not None and source is not None and not (root / source).is_file():
@@ -328,6 +463,7 @@ def _validate_invariants(
             )
         if risk not in {"P0", "P1"}:
             continue
+        role_targets: list[str] = []
         for role in PROOF_ROLES:
             target_id = entry.get(role)
             if not isinstance(target_id, str) or not target_id:
@@ -344,6 +480,51 @@ def _validate_invariants(
                         f"invariant {invariant_id or prefix} {role} references unknown target id {target_id}",
                     )
                 )
+            else:
+                role_targets.append(target_id)
+                if role in {"positive_target", "negative_target"} and owner is not None:
+                    if targets[target_id]["owner"] != owner:
+                        violations.append(
+                            _violation(
+                                catalog,
+                                f"invariant {invariant_id or prefix} {role} must be owned by {owner}",
+                            )
+                        )
+        if len(role_targets) != len(set(role_targets)):
+            violations.append(
+                _violation(
+                    catalog,
+                    f"invariant {invariant_id or prefix} proof roles must name distinct targets",
+                )
+            )
+        for tier_role, expected_tier in (
+            ("pr_rail", "pr"),
+            ("merge_rail", "merge"),
+            ("nightly_rail", "nightly"),
+        ):
+            rail_id = entry.get(tier_role)
+            if not isinstance(rail_id, str) or rail_id not in rails:
+                violations.append(
+                    _violation(
+                        catalog,
+                        f"invariant {invariant_id or prefix} {tier_role} references unknown rail",
+                    )
+                )
+            elif rails[rail_id]["tier"] != expected_tier:
+                violations.append(
+                    _violation(
+                        catalog,
+                        f"invariant {invariant_id or prefix} {tier_role} must reference {expected_tier} rail",
+                    )
+                )
+    required = {
+        invariant_id
+        for invariant_id, entry in universe_by_id.items()
+        if entry["risk"] in {"P0", "P1"}
+    }
+    missing = sorted(required - ids)
+    for invariant_id in missing:
+        violations.append(_violation(catalog, f"P0/P1 invariant missing proof row: {invariant_id}"))
 
 
 def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Violation]:
@@ -354,10 +535,10 @@ def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Vi
     data = _load_catalog(catalog, violations)
     if data is None:
         return violations
-    if data.get("format_version") != 1:
-        violations.append(_violation(catalog, "format_version must equal 1"))
+    if data.get("format_version") != 2:
+        violations.append(_violation(catalog, "format_version must equal 2"))
 
-    rails = _validate_rails(data, catalog, violations)
+    rails = _validate_rails(root=root, data=data, catalog=catalog, violations=violations)
     integration_entries = _table_array(data, "integration_targets", catalog, violations)
     fuzz_entries = _table_array(data, "fuzz_targets", catalog, violations)
     targets = _validate_targets(
@@ -391,7 +572,9 @@ def audit_catalog(root: Path = ROOT, catalog: Path = DEFAULT_CATALOG) -> list[Vi
     _validate_invariants(
         root=root,
         catalog=catalog,
+        data=data,
         entries=_table_array(data, "invariants", catalog, violations),
+        rails=rails,
         targets=targets,
         violations=violations,
     )

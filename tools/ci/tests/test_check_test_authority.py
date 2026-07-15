@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -22,8 +23,41 @@ def _load_module():
 
 
 def _write_catalog(path: Path, body: str) -> Path:
+    body = body.replace("format_version = 1", "format_version = 2")
+    commands = re.findall(r'^\s*command = "([^"]+)"$', body, flags=re.MULTILINE)
+    body = body.replace(
+        'target_kind = "integration"',
+        'target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"',
+    ).replace(
+        'target_kind = "fuzz"',
+        'target_kind = "fuzz"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"',
+    )
+    if "[[invariants]]" in body:
+        body = body.replace(
+            "consumer_target = \"demo-covered\"",
+            'consumer_target = "demo-covered"\n        pr_rail = "pr-workspace"\n        merge_rail = "merge-workspace"\n        nightly_rail = "nightly-workspace"',
+        )
+        body = body.replace(
+            '[rails.pr-workspace]\n        tier = "pr"',
+            '[rails.merge-workspace]\n        tier = "merge"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.nightly-workspace]\n        tier = "nightly"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.pr-workspace]\n        tier = "pr"',
+        )
+        invariant_rows = re.findall(
+            r'\[\[invariants\]\]\s+id = "([^"]+)"\s+risk = "([^"]+)"\s+owner = "([^"]+)"\s+source = "([^"]+)"',
+            body,
+        )
+        body += "\n".join(
+            f'\n[[invariant_universe]]\nid = "{ident}"\nrisk = "{risk}"\nowner = "{owner}"\nsource = "{source}"\n'
+            for ident, risk, owner, source in invariant_rows
+        )
     catalog = path / "test-authority.toml"
     catalog.write_text(body, encoding="utf-8")
+    workflow = path / ".github" / "workflows" / "test.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n  test:\n    steps:\n      - name: run\n        run: |\n"
+        + "\n".join(f"          {command}" for command in commands),
+        encoding="utf-8",
+    )
     return catalog
 
 
@@ -178,15 +212,6 @@ def test_valid_catalog_is_green(tmp_path: Path):
         owner = "demo"
         rail = "correctness-fuzz"
 
-        [[invariants]]
-        id = "DEMO-P0"
-        risk = "P0"
-        owner = "demo"
-        source = "crates/demo/src/lib.rs"
-        positive_target = "demo-covered"
-        negative_target = "demo-covered"
-        recovery_target = "demo-covered"
-        consumer_target = "demo-covered"
         """,
     )
 

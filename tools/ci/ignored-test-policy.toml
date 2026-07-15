@@ -1,0 +1,66 @@
+# Every #[ignore] is an explicit exception, never invisible test debt.
+# review_by is a hard expiry; cadence identifies the owner review rhythm.
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/repomap.rs"
+test = "cbor_roundtrip_entry"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/repomap.rs"
+test = "cbor_roundtrip_query_response"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/repomap.rs"
+test = "entry_rejects_empty_projection_status_on_serialize"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/repomap.rs"
+test = "entry_rejects_empty_projection_status_on_deserialize"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; f32 score serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/channel/records.rs"
+test = "embedding_record_round_trip"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; embedding f32 vec serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-contract/src/ipc/ingest.rs"
+test = "semantic_ingest_batch_round_trip"
+reason = "ciborium f16 path uses aarch64 inline asm that Miri cannot execute; native f32 vec serde is exercised in stable tests + fuzz"
+owner = "quanta-index-contract"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-embed/src/openai.rs"
+test = "openai_real_semantic_relatedness_synonym_beats_unrelated_v1"
+reason = "hits the real OpenAI API; run with OPENAI_API_KEY set and --ignored"
+owner = "quanta-index-embed"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/end_to_end.rs"
+test = "openai_semantic_paraphrase_outranks_unrelated_v1"
+reason = "hits the real OpenAI API; run with OPENAI_API_KEY set and --ignored"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"

@@ -19,6 +19,43 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  rust-authority-nextest:
+    name: rust-authority-nextest (nightly receipt)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: rust nextest authority receipt
+        run: |
+          mkdir -p artifacts/test-authority
+          set -o pipefail
+          export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+          ./scripts/cargow nextest run --workspace --all-features --locked \
+            --message-format libtest-json-plus \
+            | tee artifacts/test-authority/nextest.jsonl
+          python3 tools/ci/write-verification-receipt.py \
+            --rail nightly-workspace-nextest \
+            --tier nightly \
+            --command "./scripts/cargow nextest run --workspace --all-features --locked" \
+            --evidence artifacts/test-authority/nextest.jsonl \
+            --out artifacts/test-authority/receipt.json
+
+      - name: Upload verification receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-authority-${{ github.run_id }}-${{ github.job }}
+          path: artifacts/test-authority/
+          if-no-files-found: error
+
   rust-miri:
     name: rust-miri (UB detection)
     runs-on: ubuntu-latest

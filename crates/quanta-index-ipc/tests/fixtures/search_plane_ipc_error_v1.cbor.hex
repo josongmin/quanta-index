@@ -1,0 +1,10 @@
+# Historical CBOR frame fixture for SearchPlaneIpcError V1.
+#
+# Frame: little-endian u32 body length followed by the exact V1 CBOR map:
+# {"code": "BAD_REQUEST", "message": "bad request"}.
+# This value is intentionally checked in as hex so review can inspect the
+# otherwise non-UTF-8 CBOR map marker without regenerating it from production
+# serializers.
+26 00 00 00
+a2 64 63 6f 64 65 6b 42 41 44 5f 52 45 51 55 45 53 54
+67 6d 65 73 73 61 67 65 6b 62 61 64 20 72 65 71 75 65 73 74

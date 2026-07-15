@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quanta Index verification receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "revision",
+    "rail",
+    "tier",
+    "command",
+    "evidence_path",
+    "evidence_sha256",
+    "test_event_count"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "revision": {"type": "string", "minLength": 7},
+    "rail": {"type": "string", "minLength": 1},
+    "tier": {"enum": ["pr", "merge", "correctness", "nightly", "weekly"]},
+    "command": {"type": "string", "minLength": 1},
+    "evidence_path": {"type": "string", "minLength": 1},
+    "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "test_event_count": {"type": "integer", "minimum": 1}
+  }
+}
