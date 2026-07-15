@@ -24,8 +24,6 @@ pub(super) struct SemanticSelection {
 /// wraps it in its path-specific response (plain hybrid vs. hybrid-seed).
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
-    pub(super) lex_results: Vec<LexicalCandidate>,
-    pub(super) sem_results: Vec<LexicalCandidate>,
     pub(super) fused: Vec<LexicalCandidate>,
     pub(super) explanation: SearchExplanation,
 }
@@ -216,6 +214,239 @@ pub(super) fn build_hybrid_seed_candidates_v1(
             })
         })
         .collect()
+}
+
+fn owner_kind_for_semantic_seed_hit_v2(hit: &SemanticSearchHitV1) -> OwnerDocKind {
+    match hit.corpus_kind {
+        Some(SemanticCorpusKindV1::SymbolCard) => OwnerDocKind::Symbol,
+        Some(SemanticCorpusKindV1::RawCodeFallback) | None => OwnerDocKind::Chunk,
+        Some(SemanticCorpusKindV1::ModuleCard | SemanticCorpusKindV1::ClusterCard) => {
+            OwnerDocKind::Module
+        }
+        Some(
+            SemanticCorpusKindV1::DocumentLeaf
+            | SemanticCorpusKindV1::DocumentSection
+            | SemanticCorpusKindV1::DocumentSummary
+            | SemanticCorpusKindV1::TestBehavior
+            | SemanticCorpusKindV1::RepositorySummary,
+        ) => OwnerDocKind::File,
+    }
+}
+
+fn lane_order_key_v2(lane: SeedLaneV2) -> u8 {
+    match lane {
+        SeedLaneV2::Exact => 0,
+        SeedLaneV2::Bm25 => 1,
+        SeedLaneV2::Dense => 2,
+    }
+}
+
+fn lexical_lane_seed_candidates_v2(
+    lexical: &[LexicalCandidate],
+) -> Result<Vec<SeedCandidateV2>, CoreError> {
+    let mut seen_entities = BTreeSet::new();
+    let mut collapsed = Vec::new();
+    for (index, candidate) in lexical.iter().enumerate() {
+        let entity_id = candidate.candidate_id.clone();
+        if !seen_entities.insert(entity_id.clone()) {
+            continue;
+        }
+        collapsed.push(SeedCandidateV2 {
+            record_id: candidate.candidate_id.clone(),
+            entity_id,
+            owner_kind: OwnerDocKind::Chunk,
+            corpus_kind: None,
+            repo_relative_path: candidate.repo_relative_path.clone(),
+            snippet: candidate.snippet.clone(),
+            seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
+            contributions: vec![SeedContributionV2 {
+                lane: SeedLaneV2::Bm25,
+                rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
+                raw_score: Some(candidate.score),
+                corpus_kind: None,
+            }],
+            degraded_reasons: Vec::new(),
+        });
+    }
+    Ok(collapsed)
+}
+
+fn semantic_lane_seed_candidates_v2(
+    semantic_hits: &[SemanticSearchHitV1],
+) -> Result<Vec<SeedCandidateV2>, CoreError> {
+    let mut seen_entities = BTreeSet::new();
+    let mut collapsed = Vec::new();
+    for (index, hit) in semantic_hits.iter().enumerate() {
+        let entity_id = hit.owner_id.clone();
+        if !seen_entities.insert(entity_id.clone()) {
+            continue;
+        }
+        let mut degraded_reasons = Vec::new();
+        if hit.corpus_kind.is_none() {
+            degraded_reasons.push("semantic_corpus_kind_missing".to_string());
+        }
+        collapsed.push(SeedCandidateV2 {
+            record_id: hit.record_id.clone(),
+            entity_id,
+            owner_kind: owner_kind_for_semantic_seed_hit_v2(hit),
+            corpus_kind: hit.corpus_kind,
+            repo_relative_path: hit.candidate.repo_relative_path.clone(),
+            snippet: hit.candidate.snippet.clone(),
+            seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
+            contributions: vec![SeedContributionV2 {
+                lane: SeedLaneV2::Dense,
+                rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
+                raw_score: Some(hit.candidate.score),
+                corpus_kind: hit.corpus_kind,
+            }],
+            degraded_reasons,
+        });
+    }
+    Ok(collapsed)
+}
+
+fn entity_rrf_proxies_v2(seed_candidates: &[SeedCandidateV2]) -> Vec<LexicalCandidate> {
+    seed_candidates
+        .iter()
+        .map(|candidate| LexicalCandidate {
+            candidate_id: candidate.entity_id.clone(),
+            repo_id: RepoId::new("seed-v2"),
+            revision_id: RevisionId::new("seed-v2"),
+            manifest_generation: ManifestGeneration::new(1),
+            repo_relative_path: candidate.repo_relative_path.clone(),
+            start_line: 0,
+            end_line: 0,
+            score: 0.0,
+            snippet: candidate.snippet.clone(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        })
+        .collect()
+}
+
+fn merge_seed_candidate_v2(acc: &mut SeedCandidateV2, incoming: SeedCandidateV2) {
+    let prefers_incoming_identity = incoming
+        .contributions
+        .iter()
+        .any(|contribution| contribution.lane == SeedLaneV2::Dense)
+        || acc.corpus_kind.is_none();
+    if prefers_incoming_identity {
+        acc.record_id = incoming.record_id;
+        acc.owner_kind = incoming.owner_kind;
+        acc.corpus_kind = incoming.corpus_kind;
+        acc.repo_relative_path = incoming.repo_relative_path;
+        acc.snippet = incoming.snippet;
+    }
+    acc.contributions.extend(incoming.contributions);
+    acc.degraded_reasons.extend(incoming.degraded_reasons);
+}
+
+pub(super) fn build_hybrid_seed_candidates_v2(
+    lexical: &[LexicalCandidate],
+    semantic_hits: &[SemanticSearchHitV1],
+    top_k: u32,
+) -> Result<Vec<SeedCandidateV2>, CoreError> {
+    let collapsed_lexical = lexical_lane_seed_candidates_v2(lexical)?;
+    let collapsed_semantic = semantic_lane_seed_candidates_v2(semantic_hits)?;
+    let fused = HybridOrchestratorPolicy::fuse_rrf(
+        &entity_rrf_proxies_v2(&collapsed_lexical),
+        &entity_rrf_proxies_v2(&collapsed_semantic),
+        top_k,
+    );
+
+    let mut by_entity = BTreeMap::<String, SeedCandidateV2>::new();
+    for candidate in collapsed_lexical
+        .into_iter()
+        .chain(collapsed_semantic.into_iter())
+    {
+        if let Some(existing) = by_entity.get_mut(candidate.entity_id.as_str()) {
+            merge_seed_candidate_v2(existing, candidate);
+        } else {
+            if by_entity
+                .insert(candidate.entity_id.clone(), candidate)
+                .is_some()
+            {
+                return Err(CoreError::Storage(
+                    "hybrid seed v2: duplicate entity inserted after collapse".to_string(),
+                ));
+            }
+        }
+    }
+
+    fused
+        .into_iter()
+        .enumerate()
+        .map(|(index, proxy)| {
+            let mut candidate = by_entity
+                .remove(proxy.candidate_id.as_str())
+                .ok_or_else(|| {
+                    CoreError::Storage(format!(
+                        "hybrid seed v2: fused entity {} missing merged candidate payload",
+                        proxy.candidate_id
+                    ))
+                })?;
+            candidate.seed_rank = checked_rank_u32_v1(index, "hybrid seed v2 fused")?;
+            candidate.contributions.sort_by(|left, right| {
+                lane_order_key_v2(left.lane)
+                    .cmp(&lane_order_key_v2(right.lane))
+                    .then(left.rank.cmp(&right.rank))
+            });
+            candidate.degraded_reasons.sort();
+            candidate.degraded_reasons.dedup();
+            Ok(candidate)
+        })
+        .collect()
+}
+
+pub(super) fn build_hybrid_seed_response_explanation_v2(
+    lexical_hits: usize,
+    lexical_entities: usize,
+    semantic_hits: usize,
+    semantic_entities: usize,
+    fused_hits: usize,
+    internal_top_k: u32,
+    early_stop_reason: Option<EarlyStopReason>,
+) -> SearchExplanation {
+    let mut engines_touched = Vec::new();
+    if lexical_hits > 0 {
+        engines_touched.push(EngineTouched::Lexical);
+    }
+    if semantic_hits > 0 {
+        engines_touched.push(EngineTouched::Semantic);
+    }
+    let strategy = match (lexical_entities > 0, semantic_entities > 0) {
+        (true, true) => "rrf_entity",
+        (true, false) => "bm25_entity_only",
+        (false, true) => "dense_entity_only",
+        (false, false) => "empty",
+    }
+    .to_string();
+    SearchExplanation {
+        planner_trace: vec![
+            PlannerTraceEntry {
+                stage: PlannerStage::Plan,
+                detail: format!("hybrid_seed.internal_top_k={internal_top_k}"),
+            },
+            PlannerTraceEntry {
+                stage: PlannerStage::ExecFanout,
+                detail: format!(
+                    "hybrid_seed.semantic_scoped_to_lexical=false; lexical_hits={lexical_hits}; lexical_entities={lexical_entities}; semantic_hits={semantic_hits}; semantic_entities={semantic_entities}"
+                ),
+            },
+            PlannerTraceEntry {
+                stage: PlannerStage::Merge,
+                detail: format!("hybrid_seed.fused_entities={fused_hits}"),
+            },
+        ],
+        engines_touched,
+        early_stop_reason,
+        contributions: Vec::new(),
+        ranker_weights_hash: [0u8; 32],
+        strategy,
+        summary: format!(
+            "hybrid seed fused {lexical_entities} lexical entities and {semantic_entities} dense entities into {fused_hits} seed candidates"
+        ),
+    }
 }
 
 /// Reject a query whose embedder model identity differs from the indexed model.

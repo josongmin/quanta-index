@@ -471,6 +471,8 @@ impl E2eRuntime {
                     symbols: Vec::new(),
                 }],
                 tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
@@ -581,6 +583,8 @@ impl E2eRuntime {
                 bundle_payload: None,
                 replace_scopes: scopes,
                 tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
@@ -604,6 +608,8 @@ impl E2eRuntime {
                 bundle_payload: Some(payload),
                 replace_scopes: Vec::new(),
                 tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
@@ -1066,6 +1072,8 @@ impl E2eRuntime {
                 tombstone_scopes: vec![SearchCorpusTombstoneScope {
                     scope: scope_key(path),
                 }],
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
@@ -1128,6 +1136,8 @@ impl E2eRuntime {
                     symbols: vec![record],
                 }],
                 tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
                 seal: false,
             },
         ))?;
@@ -1175,6 +1185,8 @@ impl E2eRuntime {
                     bundle_payload: None,
                     replace_scopes: Vec::new(),
                     tombstone_scopes: Vec::new(),
+                    semantic_replace_scopes: Vec::new(),
+                    semantic_tombstone_scopes: Vec::new(),
                     seal: true,
                 },
             ))?;

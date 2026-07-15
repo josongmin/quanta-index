@@ -70,7 +70,9 @@ fn main() -> ExitCode {
     }
 
     if report.passed {
-        println!("ui rail green (typed snippet_hit_offset anchor points at the hit on every probe)");
+        println!(
+            "ui rail green (typed snippet_hit_offset anchor points at the hit on every probe)"
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!("ui rail RED: a probe carried a missing or wrong UI highlight anchor");

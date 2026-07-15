@@ -37,9 +37,11 @@ impl SearchdCommand {
             // state root was resolved, so `--state-root` still honors
             // QUANTA_INDEX_EMBEDDER (otherwise an explicit state root would
             // silently force the hash embedder).
-            return Ok(SearchdConfig::from_state_root(root).with_semantic_embedder_profile(
-                crate::app::config::semantic_embedder_profile_from_env()?,
-            ));
+            return Ok(
+                SearchdConfig::from_state_root(root).with_semantic_embedder_profile(
+                    crate::app::config::semantic_embedder_profile_from_env()?,
+                ),
+            );
         }
         SearchdConfig::from_env()
     }

@@ -15,8 +15,8 @@ pub use cache::{
 };
 pub use openai::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
-    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse, OpenAiEmbeddingProvider,
-    OpenAiProviderConfig, ReqwestBlockingTransport,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse,
+    OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
 };
 pub use telemetry::{
     OpenAiEmbedStatsSnapshot, OpenAiRequestSample, reset_openai_embed_stats,

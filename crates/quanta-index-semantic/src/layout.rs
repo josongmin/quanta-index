@@ -24,6 +24,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::manifest::{
+    FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::CoreError;
@@ -36,19 +39,38 @@ pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
 
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
+pub(crate) const PHYSICAL_LAYOUT_VERSION: u32 = 4;
 
 // Column names for the semantic table. This is the single source of truth for
 // the physical schema shared by the build path (schema + record batch) and the
 // search path (column extraction) — neither reaches into the other for it.
 pub(crate) const COLUMN_EMBEDDING_ID: &str = "embedding_id";
+pub(crate) const COLUMN_RECORD_ID: &str = "record_id";
 pub(crate) const COLUMN_REPO_RELATIVE_PATH: &str = "repo_relative_path";
+pub(crate) const COLUMN_OWNER_ID: &str = "owner_id";
+pub(crate) const COLUMN_OWNER_KIND: &str = "owner_kind";
+pub(crate) const COLUMN_CORPUS_KIND: &str = "corpus_kind";
+pub(crate) const COLUMN_PARENT_OWNER_ID: &str = "parent_owner_id";
+pub(crate) const COLUMN_SOURCE_DOC_ID: &str = "source_doc_id";
+pub(crate) const COLUMN_LANGUAGE: &str = "language";
+pub(crate) const COLUMN_PACKAGE: &str = "package";
+pub(crate) const COLUMN_SYMBOL_KIND: &str = "symbol_kind";
+pub(crate) const COLUMN_VISIBILITY: &str = "visibility";
+pub(crate) const COLUMN_SOURCE_ROLE: &str = "source_role";
+pub(crate) const COLUMN_GENERATED: &str = "generated";
+pub(crate) const COLUMN_CAPABILITY_STATUS: &str = "capability_status";
+pub(crate) const COLUMN_AUTHORITY_DIGEST: &str = "authority_digest";
+pub(crate) const COLUMN_RENDER_POLICY_DIGEST: &str = "render_policy_digest";
+pub(crate) const COLUMN_CARD_SCHEMA_VERSION: &str = "card_schema_version";
+pub(crate) const COLUMN_EMBEDDING_INPUT_DIGEST: &str = "embedding_input_digest";
+pub(crate) const COLUMN_VECTOR_DIGEST: &str = "vector_digest";
 pub(crate) const COLUMN_START_LINE: &str = "start_line";
 pub(crate) const COLUMN_END_LINE: &str = "end_line";
 pub(crate) const COLUMN_SNIPPET: &str = "snippet";
 pub(crate) const COLUMN_VECTOR: &str = "vector";
 
-/// Arrow schema for the lancedb `semantic` table at the given vector dimension.
-pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
+/// Arrow schema for the legacy v3 lancedb `semantic` table at the given vector dimension.
+pub(crate) fn semantic_schema_v3(dimension: i32) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
         Field::new(COLUMN_REPO_RELATIVE_PATH, DataType::Utf8, false),
@@ -64,6 +86,60 @@ pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
             false,
         ),
     ]))
+}
+
+/// Arrow schema for the v4 lancedb `semantic` table at the given vector dimension.
+pub(crate) fn semantic_schema(dimension: i32) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(COLUMN_EMBEDDING_ID, DataType::Utf8, false),
+        Field::new(COLUMN_RECORD_ID, DataType::Utf8, false),
+        Field::new(COLUMN_REPO_RELATIVE_PATH, DataType::Utf8, false),
+        Field::new(COLUMN_OWNER_ID, DataType::Utf8, false),
+        Field::new(COLUMN_OWNER_KIND, DataType::Utf8, false),
+        Field::new(COLUMN_CORPUS_KIND, DataType::Utf8, false),
+        Field::new(COLUMN_PARENT_OWNER_ID, DataType::Utf8, true),
+        Field::new(COLUMN_SOURCE_DOC_ID, DataType::Utf8, false),
+        Field::new(COLUMN_LANGUAGE, DataType::Utf8, false),
+        Field::new(COLUMN_PACKAGE, DataType::Utf8, true),
+        Field::new(COLUMN_SYMBOL_KIND, DataType::Utf8, true),
+        Field::new(COLUMN_VISIBILITY, DataType::Utf8, true),
+        Field::new(COLUMN_SOURCE_ROLE, DataType::Utf8, false),
+        Field::new(COLUMN_GENERATED, DataType::Boolean, false),
+        Field::new(COLUMN_CAPABILITY_STATUS, DataType::Utf8, false),
+        Field::new(COLUMN_AUTHORITY_DIGEST, DataType::Utf8, false),
+        Field::new(COLUMN_RENDER_POLICY_DIGEST, DataType::Utf8, false),
+        Field::new(COLUMN_CARD_SCHEMA_VERSION, DataType::UInt32, false),
+        Field::new(COLUMN_EMBEDDING_INPUT_DIGEST, DataType::Utf8, false),
+        Field::new(COLUMN_VECTOR_DIGEST, DataType::Utf8, false),
+        Field::new(COLUMN_START_LINE, DataType::UInt32, false),
+        Field::new(COLUMN_END_LINE, DataType::UInt32, false),
+        Field::new(COLUMN_SNIPPET, DataType::Utf8, false),
+        Field::new(
+            COLUMN_VECTOR,
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        ),
+    ]))
+}
+
+pub(crate) fn semantic_schema_for_manifest_version(
+    format_version: u32,
+    dimension: i32,
+) -> Result<SchemaRef, CoreError> {
+    match format_version {
+        PHYSICAL_LAYOUT_VERSION if PHYSICAL_LAYOUT_VERSION == FORMAT_VERSION => {
+            Ok(semantic_schema(dimension))
+        }
+        LEGACY_BUILD_CONTRACT_FORMAT_VERSION | LEGACY_LANCEDB_FORMAT_VERSION => {
+            Ok(semantic_schema_v3(dimension))
+        }
+        other => Err(CoreError::Storage(format!(
+            "semantic: no physical schema registered for manifest format version {other}"
+        ))),
+    }
 }
 
 pub(crate) fn dimension_to_i32(dimension: usize) -> Result<i32, CoreError> {

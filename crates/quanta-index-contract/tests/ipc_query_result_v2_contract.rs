@@ -7,10 +7,9 @@ use quanta_index_contract::results::{
 use quanta_index_contract::{
     DiffCandidate, DiffHunkSide, GenerationPin, HighlightSpan, HybridQueryRequest,
     HybridQueryResponse, LexicalCandidate, LqQuery, LqSpan, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest, SymbolCandidate,
-    TextQueryRequest, TextQuerySyntax,
+    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SemanticQueryRequest, SemanticQueryResponse,
+    StructuralQueryRequest, SymbolCandidate, TextQueryRequest, TextQuerySyntax,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;

@@ -21,15 +21,16 @@ use quanta_index_contract::{
     HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope,
     LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
     LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
-    LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, PlannerStage, PlannerTraceEntry,
-    QueryErrorRepair, RepairClass, RepoId, RepoMapQueryRequest, RepoMapQueryResponse, RevisionId,
-    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SemanticQueryRequest, SemanticQueryResponse, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
+    PlannerTraceEntry, QueryErrorRepair, RepairClass, RepoId, RepoMapQueryRequest,
+    RepoMapQueryResponse, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneStructuralQueryResponse, SearchPlaneTrackKind, SeedCandidateV2, SeedContributionV2,
+    SeedLaneV2, SemanticCorpusKindV1, SemanticQueryRequest, SemanticQueryResponse,
+    StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
@@ -38,9 +39,8 @@ use quanta_index_core::domains::structural::{
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort, LexicalIndexOpenPort,
     LexicalPolicy, LexicalQueryPort, RepoMapPolicy, RepoMapQueryPort, SemanticIndexOpenPort,
-    SemanticPolicy, SemanticQueryPort, SemanticSearcher, StructuralMatchBinding,
-    StructuralMatchCandidate,
-    StructuralService,
+    SemanticPolicy, SemanticQueryPort, SemanticSearchHitV1, SemanticSearcher,
+    StructuralMatchBinding, StructuralMatchCandidate, StructuralService,
     timeref::{parse_rev_at_time_spec, parse_search_timeref_ms},
 };
 use quanta_index_lq_obs::{
@@ -208,7 +208,8 @@ pub type SearchPlaneQueryDispatcher = SearchPlaneDispatcher;
 mod semantic_query;
 use semantic_query::{
     HybridFusion, SemanticSelection, build_hybrid_response_explanation,
-    build_hybrid_seed_candidates_v1, build_semantic_response_explanation,
+    build_hybrid_seed_candidates_v1, build_hybrid_seed_candidates_v2,
+    build_hybrid_seed_response_explanation_v2, build_semantic_response_explanation,
     ensure_query_model_matches_index_v1, prefix_semantic_query_error,
     resolve_hybrid_request_selection, resolve_hybrid_seed_request_selection,
     resolve_semantic_request_selection,
@@ -424,8 +425,6 @@ impl SearchPlaneDispatcher {
         );
         Ok(HybridFusion {
             pin,
-            lex_results,
-            sem_results,
             fused,
             explanation,
         })
@@ -515,22 +514,78 @@ impl SearchPlaneDispatcher {
         HybridOrchestratorPolicy::validate_top_k(request.top_k)?;
         let selection =
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
-        let fusion = self.execute_hybrid_fusion(
-            &selection,
-            &request.text_query,
+        let pin = selection.pin.clone();
+        let lex_materialized = self.snapshot_lex_materialized(&pin.repo_id, &pin.revision_id)?;
+        LexicalPolicy::validate_query_against_readiness(pin.manifest_generation, lex_materialized)?;
+        let manifest_digest = self.validated_semantic_manifest_digest(&selection, "hybrid seed")?;
+        let lex_searcher =
+            self.lex_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let sem_searcher =
+            self.sem_opener
+                .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
+        let lexical_query = lower_lexical_text_query(&request.text_query)?;
+        LexicalPolicy::validate_query(&lexical_query)?;
+        let internal_top_k = HybridOrchestratorPolicy::over_fetch_top_k(request.top_k);
+        let mut lex_results = lex_searcher.search(&lexical_query, internal_top_k)?;
+        stabilize_ranked_candidates(&mut lex_results);
+        let lexical_ids = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<BTreeSet<_>>();
+        let query_vector = self.embed_and_gate_query(
             request.semantic_query_text.as_str(),
-            request.top_k,
+            sem_searcher.as_ref(),
             "hybrid seed",
         )?;
+        let mut sem_results =
+            sem_searcher.search_scoped(&query_vector, &lexical_ids, internal_top_k)?;
+        stabilize_ranked_candidates(&mut sem_results);
         let seed_candidates = build_hybrid_seed_candidates_v1(
-            &fusion.fused,
-            &fusion.lex_results,
-            &fusion.sem_results,
+            &HybridOrchestratorPolicy::fuse_rrf(&lex_results, &sem_results, request.top_k),
+            &lex_results,
+            &sem_results,
         )?;
+        let mut semantic_hits = sem_searcher.search_hits(&query_vector, internal_top_k)?;
+        stabilize_semantic_seed_hits_v1(&mut semantic_hits);
+        let lexical_entity_count = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let semantic_entity_count = semantic_hits
+            .iter()
+            .map(|hit| hit.owner_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let fused_entity_universe = lex_results
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .chain(semantic_hits.iter().map(|hit| hit.owner_id.as_str()))
+            .collect::<BTreeSet<_>>()
+            .len();
+        let seed_candidates_v2 =
+            build_hybrid_seed_candidates_v2(&lex_results, &semantic_hits, request.top_k)?;
+        let early_stop_reason = if fused_entity_universe > seed_candidates_v2.len() {
+            Some(EarlyStopReason::CountReached)
+        } else {
+            None
+        };
+        let explanation = build_hybrid_seed_response_explanation_v2(
+            lex_results.len(),
+            lexical_entity_count,
+            semantic_hits.len(),
+            semantic_entity_count,
+            seed_candidates_v2.len(),
+            internal_top_k,
+            early_stop_reason,
+        );
         Ok(HybridSeedQueryResponse {
-            generation: fusion.pin,
+            generation: pin,
+            manifest_digest,
             seed_candidates,
-            explanation: fusion.explanation,
+            seed_candidates_v2: Some(seed_candidates_v2),
+            explanation,
         })
     }
 
@@ -1065,6 +1120,38 @@ impl SearchPlaneDispatcher {
             true,
             plane,
         )
+    }
+
+    fn validated_semantic_manifest_digest(
+        &self,
+        selection: &SemanticSelection,
+        plane: &str,
+    ) -> Result<String, CoreError> {
+        let guard = self
+            .ledger
+            .read()
+            .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
+        guard.validate_semantic_generation(
+            &selection.pin.repo_id,
+            &selection.pin.revision_id,
+            selection.pin.manifest_generation,
+            selection.expected_manifest_digest.as_deref(),
+            true,
+            plane,
+        )?;
+        guard
+            .semantic_generation_state(
+                &selection.pin.repo_id,
+                &selection.pin.revision_id,
+                selection.pin.manifest_generation,
+            )
+            .map(|state| state.manifest_digest().to_string())
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "{plane}: semantic generation {} manifest authority disappeared after validation",
+                    selection.pin.manifest_generation.get()
+                ))
+            })
     }
 
     fn emit_metric(
@@ -3932,6 +4019,31 @@ fn stabilize_ranked_candidates(results: &mut [LexicalCandidate]) {
     });
 }
 
+fn stabilize_semantic_seed_hits_v1(results: &mut [SemanticSearchHitV1]) {
+    results.sort_by(|left, right| {
+        right
+            .candidate
+            .score
+            .total_cmp(&left.candidate.score)
+            .then_with(|| {
+                left.candidate
+                    .repo_relative_path
+                    .as_str()
+                    .cmp(right.candidate.repo_relative_path.as_str())
+            })
+            .then(left.candidate.start_line.cmp(&right.candidate.start_line))
+            .then(left.candidate.end_line.cmp(&right.candidate.end_line))
+            .then_with(|| left.owner_id.as_str().cmp(right.owner_id.as_str()))
+            .then_with(|| left.record_id.as_str().cmp(right.record_id.as_str()))
+            .then_with(|| {
+                left.candidate
+                    .candidate_id
+                    .as_str()
+                    .cmp(right.candidate.candidate_id.as_str())
+            })
+    });
+}
+
 fn resolve_optional_selection(
     activation_catalog: &ActivationCatalog,
     generation: Option<GenerationPin>,
@@ -4265,6 +4377,8 @@ mod tests {
         ActivationCatalog, HashingQueryTextEmbedder, Ledger, QueryTextEmbedderPort,
         SEARCH_OWNED_SEMANTIC_DIMENSION,
     };
+    use quanta_index_contract::HybridSeedQueryRequest;
+    use quanta_index_core::SemanticSearchHitV1;
 
     // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
     #[test]
@@ -4816,6 +4930,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSemanticState {
         search_vectors: Vec<Vec<f32>>,
+        search_hit_vectors: Vec<Vec<f32>>,
         scoped_vectors: Vec<Vec<f32>>,
     }
 
@@ -4835,6 +4950,24 @@ mod tests {
                 .search_vectors
                 .push(query_vector.to_vec());
             Ok(vec![candidate("semantic-inline", 1.0)])
+        }
+
+        fn search_hits(
+            &self,
+            query_vector: &[f32],
+            _top_k: u32,
+        ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+            self.state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
+                .search_hit_vectors
+                .push(query_vector.to_vec());
+            Ok(vec![SemanticSearchHitV1 {
+                candidate: candidate("semantic-inline", 1.0),
+                record_id: "semantic-inline-record".to_string(),
+                owner_id: "semantic-inline-owner".to_string(),
+                corpus_kind: None,
+            }])
         }
 
         fn search_scoped(
@@ -5604,6 +5737,118 @@ mod tests {
         }
         if !search_vectors.is_empty() {
             return Err(format!("unexpected global vectors: {search_vectors:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hybrid_seed_dispatch_includes_dense_only_entity_in_v2_seed_set() -> TestResult {
+        let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(StubLexicalOpener {
+                results: vec![candidate("alpha", 1.0), candidate("beta", 0.9)],
+            }),
+            Arc::new(RecordingSemanticOpener {
+                state: Arc::clone(&state),
+            }),
+            Arc::new(StubRepoMapQueryPort),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+
+        let pin = make_pin(
+            RepoId::new("repo-map-ipc"),
+            RevisionId::new("rev-map-ipc"),
+            ManifestGeneration::new(9),
+        );
+        let response = dispatcher.dispatch(SearchPlaneQueryIpcRequest::HybridSeed(
+            HybridSeedQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Sourcegraph,
+                    query_text: "scope".to_string(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    top_k: 2,
+                },
+                semantic_query_text: "scope alpha".to_string(),
+                generation: Some(pin),
+                generation_selector: None,
+                top_k: 2,
+            },
+        ));
+
+        match response {
+            SearchPlaneQueryIpcResponse::HybridSeed(hybrid_seed) => {
+                let response_json = serde_json::to_value(&hybrid_seed)?;
+                if response_json
+                    .get("manifest_digest")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("manifest-digest-9")
+                {
+                    return Err(format!(
+                        "hybrid seed response must carry the sealed semantic manifest digest, observed={response_json}"
+                    )
+                    .into());
+                }
+                let seed_candidates_v2 = hybrid_seed.seed_candidates_v2.ok_or_else(|| {
+                    "hybrid seed response must carry seed_candidates_v2 on the new path".to_string()
+                })?;
+                if !seed_candidates_v2
+                    .iter()
+                    .any(|candidate| candidate.entity_id == "semantic-inline-owner")
+                {
+                    return Err(format!(
+                        "dense-only semantic entity must enter v2 seed set, observed={seed_candidates_v2:?}"
+                    )
+                    .into());
+                }
+                if hybrid_seed
+                    .seed_candidates
+                    .iter()
+                    .any(|candidate| candidate.candidate.candidate_id == "semantic-inline")
+                {
+                    return Err(
+                        "legacy seed_candidates should remain lexical-scoped on the compat path"
+                            .into(),
+                    );
+                }
+            }
+            other @ (SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::Error(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {
+                return Err(format!("expected HybridSeed response, got {other:?}").into());
+            }
+        }
+
+        let (scoped_vectors, search_hit_vectors, search_vectors) = {
+            let guard = state
+                .lock()
+                .map_err(|err| format!("semantic state poisoned: {err}"))?;
+            (
+                guard.scoped_vectors.clone(),
+                guard.search_hit_vectors.clone(),
+                guard.search_vectors.clone(),
+            )
+        };
+        let expected = default_query_embedder().embed_query("scope alpha")?;
+        if scoped_vectors.as_slice() != [expected.clone()] {
+            return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
+        }
+        if search_hit_vectors.as_slice() != [expected] {
+            return Err(format!("unexpected global hit vectors: {search_hit_vectors:?}").into());
+        }
+        if !search_vectors.is_empty() {
+            return Err(
+                format!("unexpected global lexical-shaped vectors: {search_vectors:?}").into(),
+            );
         }
         Ok(())
     }

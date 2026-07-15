@@ -139,30 +139,15 @@ pub enum SemanticChannelOp {
 }
 ```
 
-> **Superseded by the SPA-00 owner-model freeze (jul-7).** The `EmbeddingRecord`
-> half of the "authorship rule" below is historical: the producer no longer
-> authors embeddings and there is no producer-side public semantic publish on the
-> production path. Current truth: the producer mints search truth (`ChunkRecord`,
-> `SymbolRecord`, structural, dirty/runtime, and repo-map records), and
-> `quanta-index` **derives semantic vectors from the ingested chunk text**
-> (`crates/quanta-index-search-plane/src/semantic_derive.rs`,
-> `ingest_dispatcher.rs`) and serves lexical/semantic/hybrid queries
-> (`src/query_dispatcher/semantic_query.rs`). The `ChunkRecord` / `SymbolRecord`
-> / `ParseTreeRecord` / commit-metadata authorship below is still accurate; only
-> the "search plane never computes embeddings" clause is inverted from live code.
-
-**Authorship rule (historical, embedding clause superseded — see note above):**
-every payload carried by these ops — `ChunkRecord`,
-`SymbolRecord` (including `kind`, `name`, `span`, `lang`), `CommitRecord`
-(including `parents`, `applied_at_ms`), `ParseTreeRecord`, `EmbeddingRecord` —
-is **authored by the producer** in `semantica-codegraph-v2`. Search plane never
-parses source bytes, never walks git, and (historically) never computed
-embeddings — but under the current owner model the search plane **does** derive
-semantic vectors from ingested chunk text; see the superseding note above. It
-decodes producer-supplied records and indexes them. This is the structural
-inverse of the "search engine does its own extraction" pattern in tools like
-Sourcegraph Zoekt or Elasticsearch for the lexical/structural corpus; the
-semantic corpus is derived inside the search plane.
+**Authorship rule (current tree):** the producer in `semantica-codegraph-v2`
+authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
+payloads and may also publish typed semantic-source replace/tombstone scopes.
+The search plane validates those sources and derives the live dense corpus from
+their rendered text. `LegacyAllChunkText` remains the current default migration
+mode; it is an explicit compatibility path, not the target corpus authority.
+The `EmbeddingRecord` / `SemanticChannelOp::UpsertEmbedding` sketch in this
+section remains historical producer-authored-vector material and must not be
+read as the current serving contract.
 
 Status of the op set above:
 - Shipped (in `quanta-index-contract::channel`): `FullBundle`, `UpsertChunk`,

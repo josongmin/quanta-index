@@ -15,7 +15,9 @@ Current-tree note (2026-05-27):
   only the contract-level channel DTOs remain live as historical/internal
   carriers
 - semantic query/public SDK truth has also changed: public semantic publish is
-  removed and semantic query/hybrid are text-only
+  removed, semantic query/hybrid are live query surfaces, and semantic corpus
+  derivation happens inside `searchd` from typed semantic sources; legacy
+  chunk-text derivation remains the current migration default
 
 This is a historical archive of the old producer/search channel contract that
 was used to reason about [LEX-07](../plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-07.md), [RT-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/RT-01.md), and [STR-01](../plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md). It captures the prior 9-op channel framing and the 11 AMB-PROD-* ambiguity resolutions that predated the typed-batch UDS cutover.
@@ -60,20 +62,18 @@ PublishStructuralBatch}` plus the persisted authority stores in
 
 ---
 
-## 2. Producer Authorship Rule (Verbatim, embedding clause superseded)
+## 2. Producer Authorship Rule
 
 The following rule, locked in [channel-architecture.md §3.1](channel-architecture.md), governs every op below.
 
-> **Superseded by the SPA-00 owner-model freeze (jul-7).** The `EmbeddingRecord`
-> / "never computes embeddings" half of the verbatim rule below is historical.
-> Under the current owner model the producer does not author embeddings and there
-> is no producer-side public semantic publish; `quanta-index` derives semantic
-> vectors from ingested chunk text and serves semantic/hybrid queries. The
-> `ChunkRecord` / `SymbolRecord` / `ParseTreeRecord` / commit-metadata authorship
-> is still accurate. The verbatim quote is retained for historical archive
-> fidelity only.
-
-> **Authorship rule (locked):** every payload carried by these ops — `ChunkRecord`, `SymbolRecord` (including `kind`, `name`, `span`, `lang`), `CommitRecord` (including `parents`, `applied_at_ms`), `ParseTreeRecord`, `EmbeddingRecord` — is **authored by the producer** in `semantica-codegraph-v2`. Search plane never parses source bytes, never walks git, never computes embeddings. It decodes producer-supplied records and indexes them. This is the structural inverse of the "search engine does its own extraction" pattern in tools like Sourcegraph Zoekt or Elasticsearch: here, extraction lives upstream so the search plane is a pure index + query plane.
+> **Authorship rule (current tree):** the producer in `semantica-codegraph-v2`
+> authors chunk/symbol/commit/parse-tree/structural/history/dirty handoff
+> payloads and may publish typed semantic-source replace/tombstone scopes. The
+> search plane validates those sources and derives embeddings from their
+> rendered text via `semantic_derive`. `LegacyAllChunkText` remains the current
+> default migration mode. Producer-authored `EmbeddingRecord`/`UpsertEmbedding`
+> language is historical archive material only; it is not the current serving
+> contract.
 
 ### 2.1 Anti-pattern register (forbidden on the search side)
 
@@ -82,7 +82,7 @@ The following rule, locked in [channel-architecture.md §3.1](channel-architectu
 | Search plane reads `*.rs` / `*.py` source bytes | any adapter crate | violates [channel-architecture.md §0](channel-architecture.md) out-of-scope; collapses producer/search split. |
 | Search plane shells out to `git log`, `git rev-parse`, `git diff` | history adapter | violates authorship rule; producer is git authority. |
 | Search plane runs `tree-sitter` against source | structural / symbol adapters | violates authorship rule; producer ships parse trees. |
-| ~~Search plane computes embeddings (e.g. calls a model)~~ **(no longer forbidden — superseded by the SPA-00 freeze; the search plane now derives semantic vectors from ingested chunk text)** | semantic adapter | historical inverse claim; producer no longer ships vectors. |
+| Producer ships ready-made semantic vectors for serving | semantic adapter | violates the current dense-owner rule; live semantic vectors are derived by the search plane from typed semantic sources (or the explicit legacy chunk fallback). |
 | Heuristic best-effort "fill-in" when the producer record is absent | any adapter | violates [../../CLAUDE.md](../../CLAUDE.md) "no heuristic authority when the real authority is absent"; must surface typed `NotReady` instead. |
 | A second producer→search ingress channel (e.g. an `apply_changes` UDS IPC) | any | violates [channel-architecture.md §11 rule 6](channel-architecture.md) — `BundleChannelPublisher::publish` is the only ingress. |
 

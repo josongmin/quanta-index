@@ -175,6 +175,8 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             bundle_payload: None,
             replace_scopes: self.replace_scopes.clone(),
             tombstone_scopes: self.tombstone_scopes.clone(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: SEALED,
         }
     }

@@ -276,6 +276,8 @@ fn publish_search_corpus_chunks(
             bundle_payload,
             replace_scopes,
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: false,
         }),
     )
@@ -298,6 +300,8 @@ fn seal_lexical(socket: &Path) -> TestResult {
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         }),
     )

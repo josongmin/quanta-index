@@ -1258,7 +1258,11 @@ fn render_doctor(report: &DoctorReport, output: OutputMode) -> CliResult<String>
                 report.repo_id, report.revision_id
             ))?;
             fmt_ok(writeln!(rendered, "serve_ready: {}", report.serve_ready))?;
-            fmt_ok(writeln!(rendered, "all_resolvable: {}", report.all_resolvable))?;
+            fmt_ok(writeln!(
+                rendered,
+                "all_resolvable: {}",
+                report.all_resolvable
+            ))?;
             if report.tracks.is_empty() {
                 fmt_ok(writeln!(rendered, "tracks: 0 (none activated)"))?;
                 return Ok(rendered);

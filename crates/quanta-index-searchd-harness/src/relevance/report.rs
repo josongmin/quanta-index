@@ -29,9 +29,9 @@ use crate::artifact::BenchSyntax;
 use crate::harness::E2eRuntime;
 use crate::relevance::corpus::{
     JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
-    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES,
-    SOURCEGRAPH_OVERLAP_BUCKETS, SemanticIntentKind, SemanticJudgedQuery, SourcegraphOverlapBucket,
-    TOP_K, semantic_fixture_docs,
+    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES, SOURCEGRAPH_OVERLAP_BUCKETS,
+    SemanticIntentKind, SemanticJudgedQuery, SourcegraphOverlapBucket, TOP_K,
+    semantic_fixture_docs,
 };
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,

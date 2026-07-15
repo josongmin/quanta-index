@@ -150,8 +150,10 @@ fn capture_typed_error(rt: &mut E2eRuntime) -> OpsSnapshot {
 fn capture_perf_metrics(rt: &E2eRuntime) -> OpsSnapshot {
     let (names, count, error) = match rt.query_metrics_snapshot() {
         Ok(samples) => {
-            let mut names: Vec<String> =
-                samples.iter().map(|sample| sample.name.to_string()).collect();
+            let mut names: Vec<String> = samples
+                .iter()
+                .map(|sample| sample.name.to_string())
+                .collect();
             names.sort_unstable();
             names.dedup();
             let count = samples.len();

@@ -14,25 +14,34 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array};
+use arrow_array::{
+    Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
+};
 use arrow_schema::{DataType, Field};
+use futures::TryStreamExt as _;
 use lancedb::DistanceType;
 use lancedb::connect;
 use lancedb::index::Index;
 use lancedb::index::vector::IvfHnswSqIndexBuilder;
-use quanta_index_contract::{EmbeddingDistanceMetric, SemanticIngestBatch, SemanticReplaceScope};
+use lancedb::query::ExecutableQuery as _;
+use quanta_index_contract::{
+    EmbeddingDistanceMetric, SemanticIngestBatch, SemanticReplaceScope, SemanticTombstoneScope,
+};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::SemanticPolicy;
 
 use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
-    self, COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME, dimension_to_i32, semantic_schema,
+    self, COLUMN_CARD_SCHEMA_VERSION, COLUMN_CORPUS_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND,
+    COLUMN_RENDER_POLICY_DIGEST, COLUMN_REPO_RELATIVE_PATH, COLUMN_VECTOR, TABLE_NAME,
+    dimension_to_i32, semantic_schema,
 };
 use crate::manifest::SemanticManifest;
 
@@ -242,20 +251,121 @@ fn validate_replace_scope(scope: &SemanticReplaceScope, dimension: usize) -> Res
     Ok(())
 }
 
+fn column_as<'a, T: Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+    arrow_type: &str,
+) -> Result<&'a T, CoreError> {
+    let column = batch.column_by_name(name).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` missing from lancedb result batch"
+        ))
+    })?;
+    column.as_any().downcast_ref::<T>().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: column `{name}` has unexpected Arrow type (expected {arrow_type}) in lancedb result batch"
+        ))
+    })
+}
+
+struct ManifestCoverageSummary {
+    present_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+}
+
+async fn collect_manifest_coverage(
+    table: &lancedb::Table,
+) -> Result<ManifestCoverageSummary, CoreError> {
+    let stream = table
+        .query()
+        .execute()
+        .await
+        .map_err(|err| lancedb_err("table.query execute", err))?;
+    let batches: Vec<RecordBatch> = stream
+        .try_collect()
+        .await
+        .map_err(|err| lancedb_err("table.query stream", err))?;
+
+    let mut present_corpora = BTreeSet::new();
+    let mut card_schema_versions = BTreeSet::new();
+    let mut render_policy_digests = BTreeSet::new();
+    for batch in batches {
+        let corpus_col = column_as::<StringArray>(&batch, COLUMN_CORPUS_KIND, "Utf8")?;
+        let card_schema_col =
+            column_as::<UInt32Array>(&batch, COLUMN_CARD_SCHEMA_VERSION, "UInt32")?;
+        let render_policy_col =
+            column_as::<StringArray>(&batch, COLUMN_RENDER_POLICY_DIGEST, "Utf8")?;
+        for row in 0..batch.num_rows() {
+            let _inserted_corpus = present_corpora.insert(corpus_col.value(row).to_owned());
+            let _inserted_schema = card_schema_versions.insert(card_schema_col.value(row));
+            let _inserted_render =
+                render_policy_digests.insert(render_policy_col.value(row).to_owned());
+        }
+    }
+
+    Ok(ManifestCoverageSummary {
+        present_corpora: present_corpora.into_iter().collect(),
+        card_schema_versions: card_schema_versions.into_iter().collect(),
+        render_policy_digests: render_policy_digests.into_iter().collect(),
+    })
+}
+
 fn build_record_batch(
     scope: &SemanticReplaceScope,
     dimension: usize,
 ) -> Result<RecordBatch, CoreError> {
     let row_count = scope.embeddings.len();
     let mut ids: Vec<String> = Vec::with_capacity(row_count);
+    let mut record_ids: Vec<String> = Vec::with_capacity(row_count);
     let mut paths: Vec<String> = Vec::with_capacity(row_count);
+    let mut owner_ids: Vec<String> = Vec::with_capacity(row_count);
+    let mut owner_kinds: Vec<String> = Vec::with_capacity(row_count);
+    let mut corpus_kinds: Vec<String> = Vec::with_capacity(row_count);
+    let mut parent_owner_ids: Vec<Option<String>> = Vec::with_capacity(row_count);
+    let mut source_doc_ids: Vec<String> = Vec::with_capacity(row_count);
+    let mut languages: Vec<String> = Vec::with_capacity(row_count);
+    let mut packages: Vec<Option<String>> = Vec::with_capacity(row_count);
+    let mut symbol_kinds: Vec<Option<String>> = Vec::with_capacity(row_count);
+    let mut visibilities: Vec<Option<String>> = Vec::with_capacity(row_count);
+    let mut source_roles: Vec<String> = Vec::with_capacity(row_count);
+    let mut generateds: Vec<bool> = Vec::with_capacity(row_count);
+    let mut capability_statuses: Vec<String> = Vec::with_capacity(row_count);
+    let mut authority_digests: Vec<String> = Vec::with_capacity(row_count);
+    let mut render_policy_digests: Vec<String> = Vec::with_capacity(row_count);
+    let mut card_schema_versions: Vec<u32> = Vec::with_capacity(row_count);
+    let mut embedding_input_digests: Vec<String> = Vec::with_capacity(row_count);
+    let mut vector_digests: Vec<String> = Vec::with_capacity(row_count);
     let mut starts: Vec<u32> = Vec::with_capacity(row_count);
     let mut ends: Vec<u32> = Vec::with_capacity(row_count);
     let mut snippets: Vec<String> = Vec::with_capacity(row_count);
     let mut flat_vectors: Vec<f32> = Vec::with_capacity(row_count.saturating_mul(dimension));
     for embedding in &scope.embeddings {
         ids.push(embedding.embedding_id.as_str().to_owned());
+        record_ids.push(embedding.record_id.as_ref().to_owned());
         paths.push(embedding.repo_relative_path.as_str().to_owned());
+        owner_ids.push(embedding.owner_id.as_ref().to_owned());
+        owner_kinds.push(embedding.owner_kind.as_code_str().to_owned());
+        corpus_kinds.push(embedding.corpus_kind.as_code_str().to_owned());
+        parent_owner_ids.push(embedding.parent_owner_id.as_deref().map(str::to_owned));
+        source_doc_ids.push(embedding.source_doc_id.as_ref().to_owned());
+        languages.push(embedding.language.as_str().to_owned());
+        packages.push(embedding.package.as_deref().map(str::to_owned));
+        symbol_kinds.push(
+            embedding
+                .symbol_kind
+                .as_ref()
+                .map(|symbol_kind| symbol_kind.as_str().to_owned()),
+        );
+        visibilities.push(embedding.visibility.as_deref().map(str::to_owned));
+        source_roles.push(embedding.source_role.as_code_str().to_owned());
+        generateds.push(embedding.generated);
+        capability_statuses.push(embedding.capability_status.as_code_str().to_owned());
+        authority_digests.push(embedding.authority_digest.as_ref().to_owned());
+        render_policy_digests.push(embedding.render_policy_digest.as_ref().to_owned());
+        card_schema_versions.push(embedding.card_schema_version);
+        embedding_input_digests.push(embedding.embedding_input_digest.as_ref().to_owned());
+        vector_digests.push(embedding.vector_digest.as_ref().to_owned());
         starts.push(embedding.start_line);
         ends.push(embedding.end_line);
         snippets.push(embedding.snippet.as_ref().to_owned());
@@ -263,7 +373,25 @@ fn build_record_batch(
     }
 
     let id_array = StringArray::from(ids);
+    let record_id_array = StringArray::from(record_ids);
     let path_array = StringArray::from(paths);
+    let owner_id_array = StringArray::from(owner_ids);
+    let owner_kind_array = StringArray::from(owner_kinds);
+    let corpus_kind_array = StringArray::from(corpus_kinds);
+    let parent_owner_id_array = StringArray::from(parent_owner_ids);
+    let source_doc_id_array = StringArray::from(source_doc_ids);
+    let language_array = StringArray::from(languages);
+    let package_array = StringArray::from(packages);
+    let symbol_kind_array = StringArray::from(symbol_kinds);
+    let visibility_array = StringArray::from(visibilities);
+    let source_role_array = StringArray::from(source_roles);
+    let generated_array = BooleanArray::from(generateds);
+    let capability_status_array = StringArray::from(capability_statuses);
+    let authority_digest_array = StringArray::from(authority_digests);
+    let render_policy_digest_array = StringArray::from(render_policy_digests);
+    let card_schema_version_array = UInt32Array::from(card_schema_versions);
+    let embedding_input_digest_array = StringArray::from(embedding_input_digests);
+    let vector_digest_array = StringArray::from(vector_digests);
     let start_array = UInt32Array::from(starts);
     let end_array = UInt32Array::from(ends);
     let snippet_array = StringArray::from(snippets);
@@ -279,7 +407,25 @@ fn build_record_batch(
         schema,
         vec![
             Arc::new(id_array),
+            Arc::new(record_id_array),
             Arc::new(path_array),
+            Arc::new(owner_id_array),
+            Arc::new(owner_kind_array),
+            Arc::new(corpus_kind_array),
+            Arc::new(parent_owner_id_array),
+            Arc::new(source_doc_id_array),
+            Arc::new(language_array),
+            Arc::new(package_array),
+            Arc::new(symbol_kind_array),
+            Arc::new(visibility_array),
+            Arc::new(source_role_array),
+            Arc::new(generated_array),
+            Arc::new(capability_status_array),
+            Arc::new(authority_digest_array),
+            Arc::new(render_policy_digest_array),
+            Arc::new(card_schema_version_array),
+            Arc::new(embedding_input_digest_array),
+            Arc::new(vector_digest_array),
             Arc::new(start_array),
             Arc::new(end_array),
             Arc::new(snippet_array),
@@ -287,6 +433,26 @@ fn build_record_batch(
         ],
     )
     .map_err(|err| arrow_err("RecordBatch::try_new", err))
+}
+
+fn semantic_scope_tuple_from_embedding(
+    embedding: &quanta_index_contract::EmbeddingRecord,
+) -> (String, String, String) {
+    (
+        embedding.corpus_kind.as_code_str().to_owned(),
+        embedding.owner_kind.as_code_str().to_owned(),
+        embedding.owner_id.as_ref().to_owned(),
+    )
+}
+
+fn semantic_scopes_for_replace_scope(
+    scope: &SemanticReplaceScope,
+) -> BTreeSet<(String, String, String)> {
+    scope
+        .embeddings
+        .iter()
+        .map(semantic_scope_tuple_from_embedding)
+        .collect()
 }
 
 async fn delete_by_path(table: &lancedb::Table, path: &str) -> Result<(), CoreError> {
@@ -299,6 +465,58 @@ async fn delete_by_path(table: &lancedb::Table, path: &str) -> Result<(), CoreEr
         .await
         .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
     Ok(())
+}
+
+async fn delete_by_semantic_scope(
+    table: &lancedb::Table,
+    corpus_kind: &str,
+    owner_kind: &str,
+    owner_id: &str,
+) -> Result<(), CoreError> {
+    let predicate = format!(
+        "{COLUMN_CORPUS_KIND} = {} AND {COLUMN_OWNER_KIND} = {} AND {COLUMN_OWNER_ID} = {}",
+        crate::sql::quote_sql_string(corpus_kind),
+        crate::sql::quote_sql_string(owner_kind),
+        crate::sql::quote_sql_string(owner_id),
+    );
+    let _result = table
+        .delete(predicate.as_str())
+        .await
+        .map_err(|err| lancedb_err(&format!("delete predicate `{predicate}`"), err))?;
+    Ok(())
+}
+
+async fn delete_replace_scope_rows(
+    table: &lancedb::Table,
+    scope: &SemanticReplaceScope,
+) -> Result<(), CoreError> {
+    for (corpus_kind, owner_kind, owner_id) in semantic_scopes_for_replace_scope(scope) {
+        delete_by_semantic_scope(table, &corpus_kind, &owner_kind, &owner_id).await?;
+    }
+    Ok(())
+}
+
+async fn delete_tombstone_scope_rows(
+    table: &lancedb::Table,
+    scope: &SemanticTombstoneScope,
+) -> Result<(), CoreError> {
+    if let Some(semantic_scope) = scope.semantic_scope.as_ref() {
+        return delete_by_semantic_scope(
+            table,
+            semantic_scope.corpus_kind.as_code_str(),
+            semantic_scope.owner_kind.as_code_str(),
+            semantic_scope.owner_id.as_str(),
+        )
+        .await;
+    }
+    // LEGACY-MIGRATION-ONLY: path tombstones remain openable while producers cut over
+    // to semantic owner/corpus-scoped deletes.
+    let legacy_scope = scope.scope.as_ref().ok_or_else(|| {
+        CoreError::InvalidContract(
+            "semantic: tombstone requires legacy path scope or semantic owner scope".to_string(),
+        )
+    })?;
+    delete_by_path(table, legacy_scope.repo_relative_path.as_str()).await
 }
 
 async fn append_scope(
@@ -440,6 +658,7 @@ async fn build_manifest_bytes(
         .map_err(|err| lancedb_err("count_rows", err))?;
     let row_count_u64 = u64::try_from(row_count)
         .map_err(|err| CoreError::Storage(format!("semantic: row count overflow: {err}")))?;
+    let coverage = collect_manifest_coverage(table).await?;
 
     // SOTA++: build the ANN vector index once at seal so query-time
     // `vector_search` uses IVF_HNSW_SQ (lancedb's HNSW + scalar quantization)
@@ -470,7 +689,13 @@ async fn build_manifest_bytes(
         batch.manifest_digest.as_str(),
         row_count_u64,
         built_at,
+        coverage.present_corpora,
+        generation_contract.required_corpora.clone(),
+        coverage.card_schema_versions,
+        coverage.render_policy_digests,
+        generation_contract.corpus_policy_digest.clone(),
     );
+    manifest.validate_corpus_coverage()?;
     manifest.encode()
 }
 
@@ -534,11 +759,11 @@ pub(crate) async fn build_batch(
         let table = ensure_table(&connection, dimension).await?;
 
         for scope in &batch.replace_scopes {
-            delete_by_path(&table, scope.scope.repo_relative_path.as_str()).await?;
+            delete_replace_scope_rows(&table, scope).await?;
             append_scope(&table, scope, dimension).await?;
         }
         for scope in &batch.tombstone_scopes {
-            delete_by_path(&table, scope.scope.repo_relative_path.as_str()).await?;
+            delete_tombstone_scope_rows(&table, scope).await?;
         }
 
         if batch.seal {
@@ -572,17 +797,28 @@ pub(crate) async fn build_batch(
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::Array;
+    use futures::TryStreamExt as _;
+    use lancedb::query::ExecutableQuery as _;
     use tempfile::tempdir;
 
     use quanta_index_contract::{
-        BatchIngestMode, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-        EmbeddingNormalization, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
-        RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-        SemanticReplaceScope, lex::LanguageCode,
+        BatchIngestMode, CapabilityStatusV1, EmbeddingDistanceMetric, EmbeddingId,
+        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
+        OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface,
+        SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
+        SemanticTombstoneScope, SourceRoleV1, lex::LanguageCode,
     };
     use quanta_index_core::CoreError;
 
-    use super::{build_batch, failpoint};
+    use super::{build_batch, column_as, failpoint, open_connection};
+    use crate::layout::{
+        self, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS, COLUMN_CARD_SCHEMA_VERSION,
+        COLUMN_CORPUS_KIND, COLUMN_GENERATED, COLUMN_OWNER_ID, COLUMN_PACKAGE,
+        COLUMN_PARENT_OWNER_ID, COLUMN_RECORD_ID, COLUMN_RENDER_POLICY_DIGEST,
+        COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_ROLE, COLUMN_VISIBILITY, TABLE_NAME,
+    };
+    use crate::manifest::SemanticManifest;
     use crate::search::open_generation;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -614,15 +850,67 @@ mod tests {
         }
     }
 
-    fn embedding(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, String> {
+    fn semantic_scope(
+        corpus_kind: SemanticCorpusKindV1,
+        owner_kind: OwnerDocKind,
+        owner_id: &str,
+    ) -> SemanticSourceScopeKeyV1 {
+        SemanticSourceScopeKeyV1 {
+            corpus_kind,
+            owner_kind,
+            owner_id: owner_id.to_string(),
+        }
+    }
+
+    fn embedding(
+        id: &str,
+        path: &str,
+        owner_kind: OwnerDocKind,
+        owner_id: &str,
+        corpus_kind: SemanticCorpusKindV1,
+        vector: Vec<f32>,
+    ) -> Result<EmbeddingRecord, String> {
+        let source_role = match corpus_kind {
+            SemanticCorpusKindV1::RawCodeFallback => SourceRoleV1::RawFallbackText,
+            SemanticCorpusKindV1::DocumentSummary => SourceRoleV1::SummaryText,
+            SemanticCorpusKindV1::DocumentLeaf | SemanticCorpusKindV1::DocumentSection => {
+                SourceRoleV1::DocumentText
+            }
+            SemanticCorpusKindV1::SymbolCard
+            | SemanticCorpusKindV1::ModuleCard
+            | SemanticCorpusKindV1::ClusterCard
+            | SemanticCorpusKindV1::TestBehavior
+            | SemanticCorpusKindV1::RepositorySummary => SourceRoleV1::CardText,
+        };
+        let capability_status = if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
+            CapabilityStatusV1::Degraded
+        } else {
+            CapabilityStatusV1::Full
+        };
         Ok(EmbeddingRecord {
             embedding_id: EmbeddingId::new(id),
-            owner_kind: OwnerDocKind::Chunk,
-            owner_id: format!("owner-{id}").into_boxed_str(),
+            record_id: format!("record-{id}").into_boxed_str(),
+            owner_kind,
+            owner_id: owner_id.to_string().into_boxed_str(),
+            corpus_kind,
+            parent_owner_id: (corpus_kind == SemanticCorpusKindV1::RawCodeFallback)
+                .then(|| owner_id.to_string().into_boxed_str()),
             source_doc_id: format!("doc-{id}").into_boxed_str(),
             repo_relative_path: RepoRelativePath::new(path),
             language: LanguageCode::new("rust").map_err(std::string::ToString::to_string)?,
+            package: Some("crate".to_string().into_boxed_str()),
             symbol_kind: None,
+            visibility: Some("pub".to_string().into_boxed_str()),
+            source_role,
+            generated: false,
+            capability_status,
+            authority_digest: format!("auth:{id}").into_boxed_str(),
+            render_policy_digest: format!("render:{id}").into_boxed_str(),
+            card_schema_version: if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
+                0
+            } else {
+                1
+            },
             start_byte: 0,
             end_byte: 8,
             start_line: 1,
@@ -651,10 +939,19 @@ mod tests {
             batch_digest: format!("batch:{}:{path}", generation.get()),
             mode: BatchIngestMode::ReplaceGeneration,
             model_contract: model_contract(),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
             replace_scopes: vec![SemanticReplaceScope {
                 scope: scope(path),
                 scope_digest: format!("scope:{path}"),
-                embeddings: vec![embedding(id, path, vector)?],
+                embeddings: vec![embedding(
+                    id,
+                    path,
+                    OwnerDocKind::Chunk,
+                    &format!("owner-{id}"),
+                    SemanticCorpusKindV1::RawCodeFallback,
+                    vector,
+                )?],
             }],
             tombstone_scopes: Vec::new(),
             seal,
@@ -708,6 +1005,8 @@ mod tests {
                     batch_digest: "batch:1:seal".to_string(),
                     mode: BatchIngestMode::ReplaceGeneration,
                     model_contract: model_contract(),
+                    required_corpora: Vec::new(),
+                    corpus_policy_digest: None,
                     replace_scopes: Vec::new(),
                     tombstone_scopes: Vec::new(),
                     seal: true,
@@ -728,6 +1027,331 @@ mod tests {
             ids.contains(&"emb-1".to_string()),
             "append failure must preserve prior rows; got {ids:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts v4 metadata preservation via exact storage checks"
+    )]
+    fn scv2_02_v4_round_trip_preserves_metadata_fields() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(41);
+        let batch = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:41".to_string(),
+            batch_digest: "batch:41".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: vec![SemanticCorpusKindV1::SymbolCard],
+            corpus_policy_digest: Some("policy:semantic:v1".to_string()),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope("src/lib.rs"),
+                scope_digest: "scope:src/lib.rs".to_string(),
+                embeddings: vec![embedding(
+                    "meta-1",
+                    "src/lib.rs",
+                    OwnerDocKind::Symbol,
+                    "symbol-1",
+                    SemanticCorpusKindV1::SymbolCard,
+                    vec![1.0, 0.0, 0.0],
+                )?],
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        crate::run_blocking(&runtime, build_batch(&root, &batch))?;
+
+        let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
+        let manifest =
+            SemanticManifest::decode(&std::fs::read(layout::manifest_path(&generation_dir))?)?;
+        assert_eq!(manifest.present_corpora, vec!["SymbolCard".to_string()]);
+        assert_eq!(manifest.required_corpora, vec!["SymbolCard".to_string()]);
+        assert_eq!(manifest.card_schema_versions, vec![1]);
+        assert_eq!(
+            manifest.render_policy_digests,
+            vec!["render:meta-1".to_string()]
+        );
+        assert_eq!(
+            manifest.corpus_policy_digest,
+            Some("policy:semantic:v1".to_string())
+        );
+
+        let connection = crate::run_blocking(
+            &runtime,
+            open_connection(&layout::dataset_dir(&generation_dir)),
+        )?;
+        let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
+        let stream = crate::run_blocking(&runtime, table.query().execute())?;
+        let batches: Vec<arrow_array::RecordBatch> =
+            crate::run_blocking(&runtime, stream.try_collect())?;
+        let batch = batches
+            .into_iter()
+            .next()
+            .ok_or("expected one result batch")?;
+        let record_id_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_RECORD_ID, "Utf8")?;
+        let owner_id_col = column_as::<arrow_array::StringArray>(&batch, COLUMN_OWNER_ID, "Utf8")?;
+        let corpus_kind_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_CORPUS_KIND, "Utf8")?;
+        let parent_owner_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_PARENT_OWNER_ID, "Utf8")?;
+        let source_doc_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_SOURCE_DOC_ID, "Utf8")?;
+        let package_col = column_as::<arrow_array::StringArray>(&batch, COLUMN_PACKAGE, "Utf8")?;
+        let visibility_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_VISIBILITY, "Utf8")?;
+        let source_role_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_SOURCE_ROLE, "Utf8")?;
+        let generated_col =
+            column_as::<arrow_array::BooleanArray>(&batch, COLUMN_GENERATED, "Boolean")?;
+        let capability_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_CAPABILITY_STATUS, "Utf8")?;
+        let authority_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
+        let render_col =
+            column_as::<arrow_array::StringArray>(&batch, COLUMN_RENDER_POLICY_DIGEST, "Utf8")?;
+        let schema_col =
+            column_as::<arrow_array::UInt32Array>(&batch, COLUMN_CARD_SCHEMA_VERSION, "UInt32")?;
+        assert_eq!(record_id_col.value(0), "record-meta-1");
+        assert_eq!(owner_id_col.value(0), "symbol-1");
+        assert_eq!(corpus_kind_col.value(0), "SymbolCard");
+        assert!(parent_owner_col.is_null(0));
+        assert_eq!(source_doc_col.value(0), "doc-meta-1");
+        assert_eq!(package_col.value(0), "crate");
+        assert_eq!(visibility_col.value(0), "pub");
+        assert_eq!(source_role_col.value(0), "CardText");
+        assert!(!generated_col.value(0));
+        assert_eq!(capability_col.value(0), "Full");
+        assert_eq!(authority_col.value(0), "auth:meta-1");
+        assert_eq!(render_col.value(0), "render:meta-1");
+        assert_eq!(schema_col.value(0), 1);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts semantic-scope tombstone isolation via exact search assertions"
+    )]
+    fn scv2_02_same_path_delete_one_owner_keeps_other() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(42);
+        let seed = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:42a".to_string(),
+            batch_digest: "batch:42a".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope("src/shared.rs"),
+                scope_digest: "scope:src/shared.rs".to_string(),
+                embeddings: vec![
+                    embedding(
+                        "symbol-a",
+                        "src/shared.rs",
+                        OwnerDocKind::Symbol,
+                        "symbol-a",
+                        SemanticCorpusKindV1::SymbolCard,
+                        vec![1.0, 0.0, 0.0],
+                    )?,
+                    embedding(
+                        "module-b",
+                        "src/shared.rs",
+                        OwnerDocKind::Module,
+                        "module-b",
+                        SemanticCorpusKindV1::ModuleCard,
+                        vec![0.0, 1.0, 0.0],
+                    )?,
+                ],
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: false,
+        };
+        crate::run_blocking(&runtime, build_batch(&root, &seed))?;
+        let delete_one = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:42b".to_string(),
+            batch_digest: "batch:42b".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: Vec::new(),
+            corpus_policy_digest: None,
+            replace_scopes: Vec::new(),
+            tombstone_scopes: vec![SemanticTombstoneScope {
+                scope: Some(scope("src/shared.rs")),
+                semantic_scope: Some(semantic_scope(
+                    SemanticCorpusKindV1::SymbolCard,
+                    OwnerDocKind::Symbol,
+                    "symbol-a",
+                )),
+            }],
+            seal: true,
+        };
+        crate::run_blocking(&runtime, build_batch(&root, &delete_one))?;
+        let loaded = crate::run_blocking(
+            &runtime,
+            open_generation(&root, &repo_id(), &revision_id(), generation),
+        )?;
+        let removed = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+        )?;
+        assert!(
+            removed.is_empty(),
+            "deleted semantic scope must be gone: {removed:?}"
+        );
+        let kept = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+        )?;
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].record_id, "record-module-b");
+        assert_eq!(kept[0].owner_id, "module-b");
+        Ok(())
+    }
+
+    #[test]
+    fn scv2_02_missing_required_corpus_fails_seal() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(43);
+        let batch = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:43".to_string(),
+            batch_digest: "batch:43".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: vec![
+                SemanticCorpusKindV1::SymbolCard,
+                SemanticCorpusKindV1::ModuleCard,
+            ],
+            corpus_policy_digest: Some("policy:semantic:v1".to_string()),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope("src/missing.rs"),
+                scope_digest: "scope:src/missing.rs".to_string(),
+                embeddings: vec![embedding(
+                    "missing-1",
+                    "src/missing.rs",
+                    OwnerDocKind::Symbol,
+                    "symbol-missing",
+                    SemanticCorpusKindV1::SymbolCard,
+                    vec![1.0, 0.0, 0.0],
+                )?],
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        let err = crate::run_blocking(&runtime, build_batch(&root, &batch))
+            .expect_err("missing required corpus must fail seal");
+        match err {
+            CoreError::Storage(message) => assert!(
+                message.contains("required corpus `ModuleCard` missing"),
+                "seal failure must name the missing corpus, got {message}"
+            ),
+            other => panic!("expected storage error for missing required corpus, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts corpus filter excludes other corpora via exact hit metadata"
+    )]
+    fn scv2_02_filtered_search_excludes_other_corpora() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(44);
+        let batch = SemanticIngestBatch {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            generation,
+            base_generation: None,
+            manifest_digest: "manifest:44".to_string(),
+            batch_digest: "batch:44".to_string(),
+            mode: BatchIngestMode::ReplaceGeneration,
+            model_contract: model_contract(),
+            required_corpora: vec![
+                SemanticCorpusKindV1::SymbolCard,
+                SemanticCorpusKindV1::ModuleCard,
+            ],
+            corpus_policy_digest: Some("policy:semantic:v1".to_string()),
+            replace_scopes: vec![SemanticReplaceScope {
+                scope: scope("src/filter.rs"),
+                scope_digest: "scope:src/filter.rs".to_string(),
+                embeddings: vec![
+                    embedding(
+                        "filter-symbol",
+                        "src/filter.rs",
+                        OwnerDocKind::Symbol,
+                        "symbol-filter",
+                        SemanticCorpusKindV1::SymbolCard,
+                        vec![1.0, 0.0, 0.0],
+                    )?,
+                    embedding(
+                        "filter-module",
+                        "src/filter.rs",
+                        OwnerDocKind::Module,
+                        "module-filter",
+                        SemanticCorpusKindV1::ModuleCard,
+                        vec![0.0, 1.0, 0.0],
+                    )?,
+                ],
+            }],
+            tombstone_scopes: Vec::new(),
+            seal: true,
+        };
+        crate::run_blocking(&runtime, build_batch(&root, &batch))?;
+        let loaded = crate::run_blocking(
+            &runtime,
+            open_generation(&root, &repo_id(), &revision_id(), generation),
+        )?;
+        let symbol_hits = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+        )?;
+        assert_eq!(symbol_hits.len(), 1);
+        assert_eq!(symbol_hits[0].record_id, "record-filter-symbol");
+        assert_eq!(symbol_hits[0].owner_id, "symbol-filter");
+        assert_eq!(symbol_hits[0].corpus_kind.as_deref(), Some("SymbolCard"));
+        let module_hits = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+        )?;
+        assert_eq!(module_hits.len(), 1);
+        assert_eq!(module_hits[0].record_id, "record-filter-module");
+        assert_eq!(module_hits[0].owner_id, "module-filter");
+        assert_eq!(module_hits[0].corpus_kind.as_deref(), Some("ModuleCard"));
         Ok(())
     }
 }

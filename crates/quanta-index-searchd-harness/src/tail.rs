@@ -175,7 +175,9 @@ pub struct RouteTailMeasurement {
 /// Returns `None` when no scenario declares this route — surfaced upstream as a
 /// rail error rather than silently dropping a budgeted route.
 fn representative_scenario(route: RouteFamily) -> Option<&'static DslBenchScenario> {
-    SCENARIOS.iter().find(|scenario| scenario.route_family == route)
+    SCENARIOS
+        .iter()
+        .find(|scenario| scenario.route_family == route)
 }
 
 /// Boot one warm runtime and measure each budgeted route's tail.
@@ -194,14 +196,15 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
         // Correctness is the blocking gate: validate the route serves the right
         // golden result BEFORE timing, so a fast-but-wrong route cannot pass.
         let truth: QueryOutcome = run_scenario_query(rt, scenario);
-        validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &truth)
-            .map_err(|err| {
+        validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &truth).map_err(
+            |err| {
                 anyhow::anyhow!(
                     "tail: route `{}` scenario `{}` failed golden validation before timing: {err}",
                     budget.route.as_str(),
                     scenario.id
                 )
-            })?;
+            },
+        )?;
         let mut samples_ms: Vec<f64> = Vec::with_capacity(TAIL_SAMPLES);
         for _ in 0..TAIL_SAMPLES {
             let started = Instant::now();

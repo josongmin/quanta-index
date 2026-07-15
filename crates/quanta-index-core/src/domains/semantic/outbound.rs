@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     BatchPublishReceipt, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
-    SemanticIngestBatch,
+    SemanticCorpusKindV1, SemanticIngestBatch,
 };
 
 use crate::error::CoreError;
@@ -62,11 +62,27 @@ pub trait SemanticIndexOpenPort: Send + Sync {
     ) -> Result<Box<dyn SemanticSearcher>, CoreError>;
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticSearchHitV1 {
+    pub candidate: LexicalCandidate,
+    pub record_id: String,
+    pub owner_id: String,
+    pub corpus_kind: Option<SemanticCorpusKindV1>,
+}
+
 pub trait SemanticSearcher: Send + Sync {
     /// Embed the query externally and pass the dense vector to the searcher.
     /// Returning candidates as `LexicalCandidate` keeps the result shape uniform
     /// for the hybrid orchestrator's RRF fusion (`candidate_id`, score, snippet).
     fn search(&self, query_vector: &[f32], top_k: u32) -> Result<Vec<LexicalCandidate>, CoreError>;
+
+    /// Search globally and preserve stable record/owner identity for seed
+    /// assembly paths that must fuse on entity rather than lexical candidate ID.
+    fn search_hits(
+        &self,
+        query_vector: &[f32],
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError>;
 
     /// Search within a lexical allowlist. Callers rely on this for exact scope
     /// semantics rather than global-top-k followed by post-filtering.

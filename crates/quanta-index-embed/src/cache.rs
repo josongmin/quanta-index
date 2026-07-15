@@ -421,10 +421,7 @@ mod tests {
             "entry must be written under its shard subdir {}",
             sharded.display()
         );
-        assert!(
-            !flat.exists(),
-            "entry must NOT be written flat under root"
-        );
+        assert!(!flat.exists(), "entry must NOT be written flat under root");
         // ...and it round-trips back through the sharded read path.
         assert_eq!(cache.get(key), Some(vec![1.0, 2.0]));
     }

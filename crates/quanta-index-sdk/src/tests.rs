@@ -704,7 +704,9 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
             generation: sample_generation_pin(),
+            manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
+            seed_candidates_v2: None,
             explanation: sample_explanation(),
         }),
     ));
@@ -776,7 +778,9 @@ fn hybrid_seed_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
             generation: sample_generation_pin(),
+            manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
+            seed_candidates_v2: None,
             explanation: sample_explanation(),
         }),
     ));

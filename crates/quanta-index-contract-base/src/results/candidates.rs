@@ -77,7 +77,11 @@ impl<'de> Deserialize<'de> for HighlightSpan {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_struct("HighlightSpan", HIGHLIGHT_SPAN_FIELDS, HighlightSpanVisitor)
+        deserializer.deserialize_struct(
+            "HighlightSpan",
+            HIGHLIGHT_SPAN_FIELDS,
+            HighlightSpanVisitor,
+        )
     }
 }
 

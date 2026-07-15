@@ -37,3 +37,4 @@ pub use query_embedder::{
 pub use readiness::{
     ActivationCatalog, ActiveGenerationRecord, AuxiliaryAuthorityStore, Ledger, TrackLedger,
 };
+pub use semantic_derive::SemanticDerivationModeV1;

@@ -45,11 +45,11 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, ChunkRecord, FileContributorIdentityEntry, FileContributorIngestBatch,
     FileOwnerProjectionRow, FileOwnershipIngestBatch, HighlightSpan, LexicalCandidate,
-    LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
-    LqPredicateArg,
-    LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, ReplaceLexicalScope,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
+    LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SymbolCandidate,
     TombstoneLexicalScope,
 };
 use quanta_index_core::{
@@ -7064,7 +7064,10 @@ fn collect_highlights(emitted: &str, center_terms: &[String]) -> Vec<HighlightSp
 /// over the emitted text, so the primary offset equals the first span's `start`.
 /// Fully determined by `(stored, center_terms)`, so two runs over identical
 /// inputs emit byte-identical windows, offsets, and spans.
-fn window_snippet(stored: &str, center_terms: &[String]) -> (String, Option<u32>, Vec<HighlightSpan>) {
+fn window_snippet(
+    stored: &str,
+    center_terms: &[String],
+) -> (String, Option<u32>, Vec<HighlightSpan>) {
     let text = if stored.len() <= SNIPPET_WINDOW_BYTES {
         stored.to_string()
     } else {
@@ -7619,4 +7622,3 @@ mod regex_match_cache_tests {
         assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
     }
 }
-

@@ -10,6 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use quanta_index_contract::ipc::{
+    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
+    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
+    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
+    TrackReadinessRecord,
+};
 use quanta_index_contract::lex::ExplanationRow;
 use quanta_index_contract::{
     EngineTouched, GenerationPin, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryResponse,
@@ -20,12 +26,6 @@ use quanta_index_contract::{
     SearchPlaneIpcError, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse,
     TextQueryResponse, TextQuerySyntax,
-};
-use quanta_index_contract::ipc::{
-    CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
-    SearchPlaneControlIpcRequest, SearchPlaneControlIpcRequestEnvelope,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope, SearchPlaneTrackKind,
-    TrackReadinessRecord,
 };
 use quanta_index_ipc::{IpcDispatcher, UdsServer};
 use tempfile::tempdir;
@@ -517,10 +517,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
     }
 }
 
-fn control_error_response(
-    code: &str,
-    message: impl Into<String>,
-) -> SearchPlaneControlIpcResponse {
+fn control_error_response(code: &str, message: impl Into<String>) -> SearchPlaneControlIpcResponse {
     SearchPlaneControlIpcResponse::Error(SearchPlaneIpcError {
         code: code.to_string(),
         message: message.into(),
@@ -561,7 +558,9 @@ fn start_control_server(
 /// `--socket <dir>/query.sock` makes the SDK derive the control socket as the
 /// sibling `<dir>/control.sock`, which is where the mock binds; the query socket
 /// is never connected (doctor is control-plane only).
-fn run_doctor_json(scenario: ControlScenario) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn run_doctor_json(
+    scenario: ControlScenario,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let dir = tempdir()?;
     let query_socket = dir.path().join("query.sock");
     let control_socket = dir.path().join("control.sock");
@@ -890,6 +889,7 @@ fn dispatch_hybrid_seed_request(
     }
     SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
         generation: expected_generation.clone(),
+        manifest_digest: "manifest-digest-9".to_string(),
         seed_candidates: vec![HybridSeedCandidate {
             candidate: stub_candidate(expected_generation),
             seed_rank: 1,
@@ -899,6 +899,7 @@ fn dispatch_hybrid_seed_request(
             semantic_score_raw: Some(0.5),
             source_lanes: vec![HybridSeedLane::Lexical, HybridSeedLane::Semantic],
         }],
+        seed_candidates_v2: None,
         explanation: stub_explanation(
             "hybrid seed explanation",
             vec![EngineTouched::Lexical, EngineTouched::Semantic],

@@ -165,6 +165,8 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
             symbols: vec![symbol],
         }],
         tombstone_scopes: Vec::new(),
+        semantic_replace_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
         seal: false,
     })?;
     let tree = function_tree(content, "ParityTypeSymbol")?;

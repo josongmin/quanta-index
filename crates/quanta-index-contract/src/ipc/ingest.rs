@@ -42,7 +42,12 @@ use crate::{
     RepoMapSourceBundle, RepoRelativePath, RevisionId,
 };
 
-use super::error::SearchPlaneIpcError;
+use super::{
+    error::SearchPlaneIpcError,
+    semantic_source::{
+        SemanticCorpusKindV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    },
+};
 
 // =============================================================================
 // Batch mode
@@ -420,6 +425,8 @@ pub struct SearchCorpusIngestBatch {
     pub bundle_payload: Option<Vec<u8>>,
     pub replace_scopes: Vec<SearchCorpusReplaceScope>,
     pub tombstone_scopes: Vec<SearchCorpusTombstoneScope>,
+    pub semantic_replace_scopes: Vec<SemanticSourceReplaceScopeV1>,
+    pub semantic_tombstone_scopes: Vec<SemanticSourceScopeKeyV1>,
     pub seal: bool,
 }
 
@@ -434,6 +441,8 @@ const SEARCH_CORPUS_INGEST_BATCH_FIELDS: &[&str] = &[
     "bundle_payload",
     "replace_scopes",
     "tombstone_scopes",
+    "semantic_replace_scopes",
+    "semantic_tombstone_scopes",
     "seal",
 ];
 
@@ -442,7 +451,7 @@ impl Serialize for SearchCorpusIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 11)?;
+        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 13)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -453,6 +462,8 @@ impl Serialize for SearchCorpusIngestBatch {
         state.serialize_field("bundle_payload", &self.bundle_payload)?;
         state.serialize_field("replace_scopes", &self.replace_scopes)?;
         state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
+        state.serialize_field("semantic_replace_scopes", &self.semantic_replace_scopes)?;
+        state.serialize_field("semantic_tombstone_scopes", &self.semantic_tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
         state.end()
     }
@@ -481,6 +492,8 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
         let mut bundle_payload: Option<Option<Vec<u8>>> = None;
         let mut replace_scopes: Option<Vec<SearchCorpusReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<SearchCorpusTombstoneScope>> = None;
+        let mut semantic_replace_scopes: Option<Vec<SemanticSourceReplaceScopeV1>> = None;
+        let mut semantic_tombstone_scopes: Option<Vec<SemanticSourceScopeKeyV1>> = None;
         let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -544,6 +557,18 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                     }
                     tombstone_scopes = Some(map.next_value()?);
                 }
+                "semantic_replace_scopes" => {
+                    if semantic_replace_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_replace_scopes"));
+                    }
+                    semantic_replace_scopes = Some(map.next_value()?);
+                }
+                "semantic_tombstone_scopes" => {
+                    if semantic_tombstone_scopes.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_tombstone_scopes"));
+                    }
+                    semantic_tombstone_scopes = Some(map.next_value()?);
+                }
                 "seal" => {
                     if seal.is_some() {
                         return Err(de::Error::duplicate_field("seal"));
@@ -573,6 +598,8 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
                 .ok_or_else(|| de::Error::missing_field("tombstone_scopes"))?,
+            semantic_replace_scopes: semantic_replace_scopes.unwrap_or_default(),
+            semantic_tombstone_scopes: semantic_tombstone_scopes.unwrap_or_default(),
             seal: seal.ok_or_else(|| de::Error::missing_field("seal"))?,
         })
     }
@@ -941,18 +968,28 @@ impl<'de> Deserialize<'de> for SemanticReplaceScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticTombstoneScope {
-    pub scope: SearchScopeKey,
+    /// Legacy path-scoped deletion authority. New semantic-source producers
+    /// leave this unset and address deletion through `semantic_scope`.
+    pub scope: Option<SearchScopeKey>,
+    pub semantic_scope: Option<SemanticSourceScopeKeyV1>,
 }
 
-const SEMANTIC_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
+const SEMANTIC_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope", "semantic_scope"];
 
 impl Serialize for SemanticTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticTombstoneScope", 1)?;
-        state.serialize_field("scope", &self.scope)?;
+        let mut field_count = 1;
+        if self.scope.is_some() {
+            field_count += 1;
+        }
+        let mut state = serializer.serialize_struct("SemanticTombstoneScope", field_count)?;
+        if let Some(scope) = &self.scope {
+            state.serialize_field("scope", scope)?;
+        }
+        state.serialize_field("semantic_scope", &self.semantic_scope)?;
         state.end()
     }
 }
@@ -971,13 +1008,22 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
         A: MapAccess<'de>,
     {
         let mut scope: Option<SearchScopeKey> = None;
+        let mut scope_seen = false;
+        let mut semantic_scope: Option<Option<SemanticSourceScopeKeyV1>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "scope" => {
-                    if scope.is_some() {
+                    if scope_seen {
                         return Err(de::Error::duplicate_field("scope"));
                     }
+                    scope_seen = true;
                     scope = Some(map.next_value()?);
+                }
+                "semantic_scope" => {
+                    if semantic_scope.is_some() {
+                        return Err(de::Error::duplicate_field("semantic_scope"));
+                    }
+                    semantic_scope = Some(map.next_value()?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -987,8 +1033,15 @@ impl<'de> Visitor<'de> for SemanticTombstoneScopeVisitor {
                 }
             }
         }
+        let semantic_scope = semantic_scope.unwrap_or(None);
+        if scope.is_none() && semantic_scope.is_none() {
+            return Err(de::Error::custom(
+                "semantic tombstone requires scope or semantic_scope",
+            ));
+        }
         Ok(SemanticTombstoneScope {
-            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            scope,
+            semantic_scope,
         })
     }
 }
@@ -1016,6 +1069,8 @@ pub struct SemanticIngestBatch {
     pub batch_digest: String,
     pub mode: BatchIngestMode,
     pub model_contract: EmbeddingModelContract,
+    pub required_corpora: Vec<SemanticCorpusKindV1>,
+    pub corpus_policy_digest: Option<String>,
     pub replace_scopes: Vec<SemanticReplaceScope>,
     pub tombstone_scopes: Vec<SemanticTombstoneScope>,
     pub seal: bool,
@@ -1030,6 +1085,8 @@ const SEMANTIC_INGEST_BATCH_FIELDS: &[&str] = &[
     "batch_digest",
     "mode",
     "model_contract",
+    "required_corpora",
+    "corpus_policy_digest",
     "replace_scopes",
     "tombstone_scopes",
     "seal",
@@ -1040,7 +1097,7 @@ impl Serialize for SemanticIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SemanticIngestBatch", 11)?;
+        let mut state = serializer.serialize_struct("SemanticIngestBatch", 13)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -1049,6 +1106,8 @@ impl Serialize for SemanticIngestBatch {
         state.serialize_field("batch_digest", &self.batch_digest)?;
         state.serialize_field("mode", &self.mode)?;
         state.serialize_field("model_contract", &self.model_contract)?;
+        state.serialize_field("required_corpora", &self.required_corpora)?;
+        state.serialize_field("corpus_policy_digest", &self.corpus_policy_digest)?;
         state.serialize_field("replace_scopes", &self.replace_scopes)?;
         state.serialize_field("tombstone_scopes", &self.tombstone_scopes)?;
         state.serialize_field("seal", &self.seal)?;
@@ -1077,6 +1136,8 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
         let mut batch_digest: Option<String> = None;
         let mut mode: Option<BatchIngestMode> = None;
         let mut model_contract: Option<EmbeddingModelContract> = None;
+        let mut required_corpora: Option<Vec<SemanticCorpusKindV1>> = None;
+        let mut corpus_policy_digest: Option<Option<String>> = None;
         let mut replace_scopes: Option<Vec<SemanticReplaceScope>> = None;
         let mut tombstone_scopes: Option<Vec<SemanticTombstoneScope>> = None;
         let mut seal: Option<bool> = None;
@@ -1130,6 +1191,18 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
                     }
                     model_contract = Some(map.next_value()?);
                 }
+                "required_corpora" => {
+                    if required_corpora.is_some() {
+                        return Err(de::Error::duplicate_field("required_corpora"));
+                    }
+                    required_corpora = Some(map.next_value()?);
+                }
+                "corpus_policy_digest" => {
+                    if corpus_policy_digest.is_some() {
+                        return Err(de::Error::duplicate_field("corpus_policy_digest"));
+                    }
+                    corpus_policy_digest = Some(map.next_value()?);
+                }
                 "replace_scopes" => {
                     if replace_scopes.is_some() {
                         return Err(de::Error::duplicate_field("replace_scopes"));
@@ -1168,6 +1241,8 @@ impl<'de> Visitor<'de> for SemanticIngestBatchVisitor {
             mode: mode.ok_or_else(|| de::Error::missing_field("mode"))?,
             model_contract: model_contract
                 .ok_or_else(|| de::Error::missing_field("model_contract"))?,
+            required_corpora: required_corpora.unwrap_or_default(),
+            corpus_policy_digest: corpus_policy_digest.unwrap_or(None),
             replace_scopes: replace_scopes
                 .ok_or_else(|| de::Error::missing_field("replace_scopes"))?,
             tombstone_scopes: tombstone_scopes
@@ -4366,7 +4441,10 @@ mod tests {
         CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
         ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
     };
-    use crate::{ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath};
+    use crate::{
+        CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath,
+        SourceRoleV1,
+    };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -4422,12 +4500,23 @@ mod tests {
     fn fixture_embedding_record() -> EmbeddingRecord {
         EmbeddingRecord {
             embedding_id: fixture_embedding_id(),
+            record_id: "record-1".to_string().into_boxed_str(),
             owner_kind: crate::OwnerDocKind::Chunk,
             owner_id: "main".to_string().into_boxed_str(),
+            corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+            parent_owner_id: Some("file:src/main.rs".to_string().into_boxed_str()),
             source_doc_id: "doc-1".to_string().into_boxed_str(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
             language: LanguageCode::from_code_str("rust").unwrap_or_else(|| std::process::abort()),
+            package: None,
             symbol_kind: None,
+            visibility: None,
+            source_role: SourceRoleV1::RawFallbackText,
+            generated: false,
+            capability_status: CapabilityStatusV1::Degraded,
+            authority_digest: "auth:feed".to_string().into_boxed_str(),
+            render_policy_digest: "render:feed".to_string().into_boxed_str(),
+            card_schema_version: 0,
             start_byte: 0,
             end_byte: 12,
             start_line: 1,
@@ -4550,6 +4639,8 @@ mod tests {
                     repo_relative_path: RepoRelativePath::new("src/main.rs"),
                 },
             }],
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         }
     }
@@ -4564,16 +4655,19 @@ mod tests {
             batch_digest: "batch:feed".to_string(),
             mode: BatchIngestMode::Delta,
             model_contract: fixture_model_contract(),
+            required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
+            corpus_policy_digest: None,
             replace_scopes: vec![SemanticReplaceScope {
                 scope: fixture_scope_key(),
                 scope_digest: "scope:feed".to_string(),
                 embeddings: vec![fixture_embedding_record()],
             }],
             tombstone_scopes: vec![SemanticTombstoneScope {
-                scope: SearchScopeKey {
+                scope: Some(SearchScopeKey {
                     doc_surface: SearchScopeSurface::Chunk,
                     repo_relative_path: RepoRelativePath::new("src/old.rs"),
-                },
+                }),
+                semantic_scope: None,
             }],
             seal: false,
         }

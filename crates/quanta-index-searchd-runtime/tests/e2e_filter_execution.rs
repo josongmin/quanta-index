@@ -512,6 +512,8 @@ fn publish_revision_text_generation(
             symbols: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
+        semantic_replace_scopes: Vec::new(),
+        semantic_tombstone_scopes: Vec::new(),
         seal: true,
     })?;
     let pin = GenerationPin::new(rt.repo(), revision_id, generation);

@@ -7,13 +7,16 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use quanta_index_contract::{
-    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
-    RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticIngestBatch,
-    SemanticReplaceScope, SemanticTombstoneScope, lex::LanguageCode,
+    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingModelContract, EmbeddingRecord,
+    ManifestGeneration, RepoId, RevisionId, SearchScopeKey, SemanticIngestBatch,
+    SemanticReplaceScope,
 };
 use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
-use quanta_index_semantic::{SemanticAdapter, scan_persisted_generations, test_support};
+use quanta_index_semantic::{
+    SemanticAdapter, legacy_chunk_embedding_record_v1, model_contract_v1,
+    scan_persisted_generations, sealed_replace_batch_v1, search_scope_v1, test_support,
+    tombstone_scope_v1,
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -26,45 +29,15 @@ fn revision_id() -> RevisionId {
 }
 
 fn model_contract(dimension: u32) -> EmbeddingModelContract {
-    EmbeddingModelContract {
-        model_id: "text-embed".to_string().into_boxed_str(),
-        model_version: Some("1".to_string().into_boxed_str()),
-        dimension,
-        normalization: EmbeddingNormalization::L2Unit,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        policy_digest: "policy:feed".to_string().into_boxed_str(),
-        view_policy_digest: Some("view:feed".to_string().into_boxed_str()),
-    }
+    model_contract_v1(dimension)
 }
 
 fn scope(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
+    search_scope_v1(path)
 }
 
 fn embedding_record(id: &str, path: &str, vector: Vec<f32>) -> Result<EmbeddingRecord, String> {
-    let language = LanguageCode::new("rust")
-        .map_err(|err| format!("fixture language `rust` must stay valid: {err}"))?;
-    Ok(EmbeddingRecord {
-        embedding_id: EmbeddingId::new(id),
-        owner_kind: OwnerDocKind::Chunk,
-        owner_id: format!("owner-{id}").into_boxed_str(),
-        source_doc_id: format!("doc-{id}").into_boxed_str(),
-        repo_relative_path: RepoRelativePath::new(path),
-        language,
-        symbol_kind: None,
-        start_byte: 0,
-        end_byte: 12,
-        start_line: 1,
-        end_line: 3,
-        snippet: format!("fn {id}() {{}}").into_boxed_str(),
-        embedding_input_digest: format!("input:{id}").into_boxed_str(),
-        vector_digest: format!("vector:{id}").into_boxed_str(),
-        view_kind: "raw_chunk".to_string().into_boxed_str(),
-        vector,
-    })
+    legacy_chunk_embedding_record_v1(id, path, vector)
 }
 
 fn sealed_batch(
@@ -73,23 +46,26 @@ fn sealed_batch(
     embeddings: Vec<EmbeddingRecord>,
     contract_dimension: u32,
 ) -> SemanticIngestBatch {
-    SemanticIngestBatch {
-        repo_id: repo_id(),
-        revision_id: revision_id(),
+    sealed_replace_batch_v1(
+        repo_id(),
+        revision_id(),
         generation,
-        base_generation: None,
-        manifest_digest: format!("manifest:{}", generation.get()),
-        batch_digest: format!("batch:{}:{path}", generation.get()),
-        mode: BatchIngestMode::ReplaceGeneration,
-        model_contract: model_contract(contract_dimension),
-        replace_scopes: vec![SemanticReplaceScope {
-            scope: scope(path),
-            scope_digest: format!("scope:{path}"),
-            embeddings,
-        }],
-        tombstone_scopes: Vec::new(),
-        seal: true,
-    }
+        path,
+        embeddings,
+        contract_dimension,
+    )
+}
+
+fn embedding_record_same_owner(
+    id: &str,
+    path: &str,
+    owner_id: &str,
+    vector: Vec<f32>,
+) -> Result<EmbeddingRecord, String> {
+    let mut record = legacy_chunk_embedding_record_v1(id, path, vector)?;
+    record.owner_id = owner_id.to_string().into_boxed_str();
+    record.record_id = format!("record-{owner_id}").into_boxed_str();
+    Ok(record)
 }
 
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
@@ -195,9 +171,10 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
         let mut batch = sealed_batch(
             generation,
             "src/main.rs",
-            vec![embedding_record(
+            vec![embedding_record_same_owner(
                 "emb-1",
                 "src/main.rs",
+                "owner-main",
                 vec![1.0, 0.0, 0.0],
             )?],
             3,
@@ -208,9 +185,10 @@ fn replace_scope_overwrites_same_path_entries() -> TestResult {
     adapter.build_batch(&sealed_batch(
         generation,
         "src/main.rs",
-        vec![embedding_record(
+        vec![embedding_record_same_owner(
             "emb-2",
             "src/main.rs",
+            "owner-main",
             vec![0.0, 1.0, 0.0],
         )?],
         3,
@@ -256,10 +234,10 @@ fn tombstone_scope_removes_existing_entries() -> TestResult {
         batch_digest: "batch:tombstone".to_string(),
         mode: BatchIngestMode::Delta,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: Vec::new(),
-        tombstone_scopes: vec![SemanticTombstoneScope {
-            scope: scope("src/main.rs"),
-        }],
+        tombstone_scopes: vec![tombstone_scope_v1("src/main.rs")],
         seal: true,
     })?;
 
@@ -322,6 +300,8 @@ fn sealed_empty_generation_serves_empty_hits() -> TestResult {
         batch_digest: "batch:empty".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -638,6 +618,8 @@ fn search_scoped_restricts_to_allowlist() -> TestResult {
         batch_digest: "batch:1".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("x.rs"),
             scope_digest: "scope:x".to_string(),
@@ -747,6 +729,8 @@ fn delta_with_missing_base_fails_closed() -> TestResult {
         batch_digest: "batch:10".to_string(),
         mode: BatchIngestMode::Delta,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("x.rs"),
             scope_digest: "scope:x".to_string(),
@@ -882,6 +866,8 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         batch_digest: "batch:16:first".to_string(),
         mode: BatchIngestMode::Delta,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("delta.rs"),
             scope_digest: "scope:delta:first".to_string(),
@@ -905,6 +891,8 @@ fn reused_unsealed_generation_with_different_base_fails_closed() -> TestResult {
         batch_digest: "batch:16:second".to_string(),
         mode: BatchIngestMode::Delta,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("delta.rs"),
             scope_digest: "scope:delta:second".to_string(),
@@ -1114,6 +1102,8 @@ fn ivf_hnsw_sq_index_built_at_seal_serves_vector_search() -> TestResult {
         batch_digest: "batch:ivf".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         model_contract: model_contract(dim_u32),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("p/0.rs"),
             scope_digest: "scope:p".to_string(),
@@ -1215,6 +1205,8 @@ fn delta_with_unsealed_base_fails_closed() -> TestResult {
         batch_digest: "batch:delta".to_string(),
         mode: BatchIngestMode::Delta,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: vec![SemanticReplaceScope {
             scope: scope("b.rs"),
             scope_digest: "scope:b".to_string(),
@@ -1287,23 +1279,17 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
     batch2.replace_scopes.push(SemanticReplaceScope {
         scope: scope("b.rs"),
         scope_digest: "scope:b".to_string(),
-        embeddings: vec![EmbeddingRecord {
-            embedding_id: EmbeddingId::new("emb-bad-dim"),
-            owner_kind: OwnerDocKind::Chunk,
-            owner_id: "owner-bad".to_string().into_boxed_str(),
-            source_doc_id: "doc-bad".to_string().into_boxed_str(),
-            repo_relative_path: RepoRelativePath::new("b.rs"),
-            language: LanguageCode::new("rust").map_err(|err| format!("lang: {err}"))?,
-            symbol_kind: None,
-            start_byte: 0,
-            end_byte: 1,
-            start_line: 1,
-            end_line: 1,
-            snippet: "x".to_string().into_boxed_str(),
-            embedding_input_digest: "in:bad".to_string().into_boxed_str(),
-            vector_digest: "vec:bad".to_string().into_boxed_str(),
-            view_kind: "raw_chunk".to_string().into_boxed_str(),
-            vector: vec![1.0, 0.0], // dim=2, contract dim=3 -> InvalidContract
+        embeddings: vec![{
+            let mut record = embedding_record("emb-bad-dim", "b.rs", vec![1.0, 0.0, 0.0])?;
+            record.embedding_input_digest = "in:bad".to_string().into_boxed_str();
+            record.vector_digest = "vec:bad".to_string().into_boxed_str();
+            record.snippet = "x".to_string().into_boxed_str();
+            record.start_byte = 0;
+            record.end_byte = 1;
+            record.start_line = 1;
+            record.end_line = 1;
+            record.vector = vec![1.0, 0.0];
+            record
         }],
     });
 
@@ -1323,6 +1309,8 @@ fn validate_before_delete_preserves_prior_unsealed_rows() -> TestResult {
         batch_digest: "batch:1:seal".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,
@@ -1393,6 +1381,8 @@ fn append_failure_preserves_prior_unsealed_rows() -> TestResult {
         batch_digest: "batch:15:seal".to_string(),
         mode: BatchIngestMode::ReplaceGeneration,
         model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
         replace_scopes: Vec::new(),
         tombstone_scopes: Vec::new(),
         seal: true,

@@ -223,6 +223,8 @@ fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
                 symbols: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: false,
         }),
     )
@@ -245,6 +247,8 @@ fn seal_lexical(socket: &Path) -> TestResult {
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         }),
     )

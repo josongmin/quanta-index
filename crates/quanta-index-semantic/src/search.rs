@@ -21,6 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray, UInt32Array};
+use arrow_schema::DataType;
 use futures::TryStreamExt as _;
 use lancedb::DistanceType;
 use lancedb::connect;
@@ -28,17 +29,22 @@ use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    SemanticCorpusKindV1,
 };
 use quanta_index_core::CoreError;
-use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearcher};
+use quanta_index_core::domains::semantic::{SemanticPolicy, SemanticSearchHitV1, SemanticSearcher};
 
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
 use crate::layout::{
-    self, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET,
-    COLUMN_START_LINE, TABLE_NAME, dataset_uri,
+    self, COLUMN_CORPUS_KIND, COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_OWNER_ID,
+    COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH, COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME,
+    dataset_uri,
 };
-use crate::manifest::{FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION, SemanticManifest};
+use crate::manifest::{
+    FORMAT_VERSION, LEGACY_BUILD_CONTRACT_FORMAT_VERSION, LEGACY_LANCEDB_FORMAT_VERSION,
+    SemanticManifest,
+};
 use crate::sql::build_id_in_filter;
 
 const COLUMN_DISTANCE: &str = "_distance";
@@ -63,7 +69,7 @@ fn load_generation_contract_for_manifest(
         return load_generation_contract(generation_dir).map(Some);
     }
     match manifest.format_version {
-        FORMAT_VERSION => Err(CoreError::Storage(format!(
+        FORMAT_VERSION | LEGACY_BUILD_CONTRACT_FORMAT_VERSION => Err(CoreError::Storage(format!(
             "semantic: manifest format version {} requires generation contract {}",
             manifest.format_version,
             contract_path.display()
@@ -86,10 +92,19 @@ pub(crate) struct LoadedGeneration {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
+    format_version: u32,
     dimension: usize,
     model_id: String,
     model_version: Option<String>,
     table: lancedb::Table,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SemanticSearchHit {
+    pub(crate) candidate: LexicalCandidate,
+    pub(crate) record_id: String,
+    pub(crate) owner_id: String,
+    pub(crate) corpus_kind: Option<String>,
 }
 
 /// Open a sealed generation directly from durable state, failing closed on any
@@ -127,6 +142,16 @@ pub(crate) async fn open_generation(
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {
         CoreError::Storage(format!("semantic: manifest dimension overflow: {err}"))
     })?;
+    let manifest_dimension_i32 = i32::try_from(manifest.dimension).map_err(|err| {
+        CoreError::Storage(format!(
+            "semantic: manifest dimension {} does not fit i32 for schema validation: {err}",
+            manifest.dimension
+        ))
+    })?;
+    let expected_schema = layout::semantic_schema_for_manifest_version(
+        manifest.format_version,
+        manifest_dimension_i32,
+    )?;
 
     let uri = dataset_uri(&generation_dir)?;
     let connection = connect(&uri)
@@ -138,6 +163,37 @@ pub(crate) async fn open_generation(
         .execute()
         .await
         .map_err(|err| lancedb_err(&format!("open_table {TABLE_NAME}"), err))?;
+    let live_schema = table
+        .schema()
+        .await
+        .map_err(|err| lancedb_err("read table schema", err))?;
+    for expected_field in expected_schema.fields() {
+        let live_field = live_schema
+            .field_with_name(expected_field.name())
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: table missing expected column `{}` for format version {}: {err}",
+                    expected_field.name(),
+                    manifest.format_version,
+                ))
+            })?;
+        if live_field.data_type() != expected_field.data_type() {
+            return Err(CoreError::Storage(format!(
+                "semantic: table column `{}` type {:?} does not match expected {:?} for format version {}",
+                expected_field.name(),
+                live_field.data_type(),
+                expected_field.data_type(),
+                manifest.format_version,
+            )));
+        }
+        if *expected_field.data_type() == DataType::Boolean && live_field.is_nullable() {
+            return Err(CoreError::Storage(format!(
+                "semantic: table boolean column `{}` unexpectedly nullable for format version {}",
+                expected_field.name(),
+                manifest.format_version,
+            )));
+        }
+    }
 
     let live_row_count = table
         .count_rows(None)
@@ -157,6 +213,7 @@ pub(crate) async fn open_generation(
         repo_id: repo.clone(),
         revision_id: revision.clone(),
         generation,
+        format_version: manifest.format_version,
         dimension,
         model_id: manifest.model_id.clone(),
         model_version: manifest.model_version.clone(),
@@ -208,12 +265,13 @@ fn cosine_distance_to_score_v1(distance: f32, candidate_id: &str) -> Result<f32,
     Ok(1.0_f32 - distance)
 }
 
-fn extract_candidates(
+fn extract_hits(
     batch: &RecordBatch,
     repo_id: &RepoId,
     revision_id: &RevisionId,
     generation: ManifestGeneration,
-    out: &mut Vec<LexicalCandidate>,
+    format_version: u32,
+    out: &mut Vec<SemanticSearchHit>,
 ) -> Result<(), CoreError> {
     let id_col = column_as::<StringArray>(batch, COLUMN_EMBEDDING_ID, "Utf8")?;
     let path_col = column_as::<StringArray>(batch, COLUMN_REPO_RELATIVE_PATH, "Utf8")?;
@@ -221,6 +279,21 @@ fn extract_candidates(
     let end_col = column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?;
     let snippet_col = column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?;
     let distance_col = column_as::<Float32Array>(batch, COLUMN_DISTANCE, "Float32")?;
+    let record_id_col = if format_version == FORMAT_VERSION {
+        Some(column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?)
+    } else {
+        None
+    };
+    let owner_id_col = if format_version == FORMAT_VERSION {
+        Some(column_as::<StringArray>(batch, COLUMN_OWNER_ID, "Utf8")?)
+    } else {
+        None
+    };
+    let corpus_kind_col = if format_version == FORMAT_VERSION {
+        Some(column_as::<StringArray>(batch, COLUMN_CORPUS_KIND, "Utf8")?)
+    } else {
+        None
+    };
     for row in 0..batch.num_rows() {
         let id = id_col.value(row).to_owned();
         let path = path_col.value(row).to_owned();
@@ -229,8 +302,8 @@ fn extract_candidates(
         let end_line = end_col.value(row);
         let distance = distance_col.value(row);
         let score = cosine_distance_to_score_v1(distance, &id)?;
-        out.push(LexicalCandidate {
-            candidate_id: id,
+        let candidate = LexicalCandidate {
+            candidate_id: id.clone(),
             repo_id: repo_id.clone(),
             revision_id: revision_id.clone(),
             manifest_generation: generation,
@@ -242,6 +315,12 @@ fn extract_candidates(
             // Semantic results carry no single lexical hit anchor.
             snippet_hit_offset: None,
             highlights: Vec::new(),
+        };
+        out.push(SemanticSearchHit {
+            candidate,
+            record_id: record_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
+            owner_id: owner_id_col.map_or_else(|| id.clone(), |col| col.value(row).to_owned()),
+            corpus_kind: corpus_kind_col.map(|col| col.value(row).to_owned()),
         });
     }
     Ok(())
@@ -276,7 +355,7 @@ impl LoadedGeneration {
         query_vector: &[f32],
         top_k: usize,
         filter: Option<String>,
-    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let query_owned: Vec<f32> = query_vector.to_vec();
         let mut vector_query = self
             .table
@@ -296,13 +375,14 @@ impl LoadedGeneration {
             .await
             .map_err(|err| lancedb_err("vector_search stream", err))?;
 
-        let mut out: Vec<LexicalCandidate> = Vec::with_capacity(top_k);
+        let mut out: Vec<SemanticSearchHit> = Vec::with_capacity(top_k);
         for batch in batches {
-            extract_candidates(
+            extract_hits(
                 &batch,
                 &self.repo_id,
                 &self.revision_id,
                 self.generation,
+                self.format_version,
                 &mut out,
             )?;
             if out.len() >= top_k {
@@ -313,13 +393,57 @@ impl LoadedGeneration {
         Ok(out)
     }
 
+    fn map_hits_to_candidates(hits: Vec<SemanticSearchHit>) -> Vec<LexicalCandidate> {
+        hits.into_iter().map(|hit| hit.candidate).collect()
+    }
+
+    fn map_hits_to_core_v1(
+        hits: Vec<SemanticSearchHit>,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+        hits.into_iter()
+            .map(|hit| {
+                let corpus_kind = hit
+                    .corpus_kind
+                    .as_deref()
+                    .map(|value| {
+                        SemanticCorpusKindV1::from_code_str(value).ok_or_else(|| {
+                            CoreError::Storage(format!(
+                                "semantic: unsupported corpus_kind {:?} on record {}",
+                                value, hit.record_id
+                            ))
+                        })
+                    })
+                    .transpose()?;
+                Ok(SemanticSearchHitV1 {
+                    candidate: hit.candidate,
+                    record_id: hit.record_id,
+                    owner_id: hit.owner_id,
+                    corpus_kind,
+                })
+            })
+            .collect()
+    }
+
+    fn combine_filters(filters: impl IntoIterator<Item = String>) -> Option<String> {
+        let parts: Vec<String> = filters
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" AND "))
+        }
+    }
+
     pub(crate) async fn search_async(
         &self,
         query_vector: &[f32],
         top_k: usize,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.check_query_dim(query_vector)?;
-        self.run_vector_query(query_vector, top_k, None).await
+        self.search_hits_filtered_async(query_vector, top_k, None)
+            .await
+            .map(Self::map_hits_to_candidates)
     }
 
     pub(crate) async fn search_scoped_async(
@@ -336,9 +460,32 @@ impl LoadedGeneration {
         if allowed_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let filter = build_id_in_filter(allowed_ids);
-        self.run_vector_query(query_vector, top_k, Some(filter))
+        let filter = Self::combine_filters(std::iter::once(build_id_in_filter(allowed_ids)));
+        self.run_vector_query(query_vector, top_k, filter)
             .await
+            .map(Self::map_hits_to_candidates)
+    }
+
+    pub(crate) async fn search_hits_filtered_async(
+        &self,
+        query_vector: &[f32],
+        top_k: usize,
+        corpus_kind: Option<&str>,
+    ) -> Result<Vec<SemanticSearchHit>, CoreError> {
+        self.check_query_dim(query_vector)?;
+        if corpus_kind.is_some() && self.format_version != FORMAT_VERSION {
+            return Err(CoreError::Storage(format!(
+                "semantic: corpus_kind filter requires format version {FORMAT_VERSION}, found {}",
+                self.format_version
+            )));
+        }
+        let filter = Self::combine_filters(corpus_kind.into_iter().map(|kind| {
+            format!(
+                "{COLUMN_CORPUS_KIND} = {}",
+                crate::sql::quote_sql_string(kind)
+            )
+        }));
+        self.run_vector_query(query_vector, top_k, filter).await
     }
 }
 
@@ -371,6 +518,22 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         SemanticPolicy::validate_query_vector(query_vector)?;
         let limit = top_k_limit(top_k)?;
         crate::run_blocking(&self.runtime, self.loaded.search_async(query_vector, limit))
+    }
+
+    fn search_hits(
+        &self,
+        query_vector: &[f32],
+        top_k: u32,
+    ) -> Result<Vec<SemanticSearchHitV1>, CoreError> {
+        SemanticPolicy::validate_top_k(top_k)?;
+        SemanticPolicy::validate_query_vector(query_vector)?;
+        let limit = top_k_limit(top_k)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded
+                .search_hits_filtered_async(query_vector, limit, None),
+        )
+        .and_then(LoadedGeneration::map_hits_to_core_v1)
     }
 
     fn search_scoped(

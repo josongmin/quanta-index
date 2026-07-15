@@ -380,6 +380,36 @@ fn start_runtime(state_root: &Path, thread_name: &str) -> Result<RuntimeHandles,
     Ok((query_socket, ingest_socket, shutdown, join))
 }
 
+/// Hermetic semantic smoke: force the deterministic hash embedder explicitly so the
+/// real daemon/query path is proven without ambient env drift or live-network deps.
+fn start_runtime_with_hash(
+    state_root: &Path,
+    thread_name: &str,
+) -> Result<RuntimeHandles, Box<dyn Error>> {
+    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
+    let (query_socket, control_socket) = unique_socket_paths();
+    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
+    config = config.with_semantic_embedder_profile(SemanticEmbedderProfile::Hash {
+        dimension: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_DIMENSION,
+    });
+    let runtime = build_runtime(config)?;
+    let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_drive = Arc::clone(&shutdown);
+    let join = thread::Builder::new()
+        .name(thread_name.into())
+        .spawn(move || drive(runtime, &shutdown_for_drive))?;
+    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
+        query_socket.exists() && ingest_socket.exists()
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("hash semantic smoke: sockets never appeared".into());
+    }
+    Ok((query_socket, ingest_socket, shutdown, join))
+}
+
 fn stop_runtime(shutdown: Arc<AtomicBool>, join: DriverJoin) -> TestResult {
     shutdown.store(true, Ordering::Release);
     drop(shutdown);
@@ -450,6 +480,8 @@ fn publish_search_corpus_chunks(
             bundle_payload,
             replace_scopes,
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: false,
         }),
     )
@@ -477,6 +509,8 @@ fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
                     scope: scope_key(path),
                 })
                 .collect(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: false,
         }),
     )
@@ -499,6 +533,8 @@ fn seal_lexical(socket: &Path) -> TestResult {
             bundle_payload: None,
             replace_scopes: Vec::new(),
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         }),
     )
@@ -1853,7 +1889,7 @@ fn start_runtime_with_openai(
     Ok((query_socket, ingest_socket, shutdown, join))
 }
 
-/// CROWN PROOF (gated, real OpenAI API): full daemon -> corpus embed -> lancedb
+/// Manual release proof (gated, real OpenAI API): full daemon -> corpus embed -> lancedb
 /// cosine -> ranked results. The query shares NO meaningful token with either
 /// indexed doc (only the stopword "the"), so a token-distribution hash embedder
 /// (the prior FNV-1a default) cannot rank them by meaning. Real neural embeddings
@@ -1954,10 +1990,9 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
     if ranked.get(1).map(String::as_str) != Some("finance-doc") {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
-        return Err(format!(
-            "expected unrelated 'finance-doc' ranked second, got {ranked:?}"
-        )
-        .into());
+        return Err(
+            format!("expected unrelated 'finance-doc' ranked second, got {ranked:?}").into(),
+        );
     }
 
     stop_runtime(shutdown, join)
@@ -1967,25 +2002,8 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
 fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
     let dir = tempfile::tempdir()?;
     let state_root = dir.path();
-    let mut config = SearchdConfig::from_state_root(state_root.to_path_buf());
-    let (query_socket, control_socket) = unique_socket_paths();
-    config = SearchdConfig::with_socket_overrides(config, query_socket, control_socket);
-    let runtime = build_runtime(config)?;
-    let socket = runtime.query_server.socket_path().to_path_buf();
-    let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_for_drive = Arc::clone(&shutdown);
-    let join = thread::Builder::new()
-        .name("searchd-semantic-default-text-derivation-test".into())
-        .spawn(move || drive(runtime, &shutdown_for_drive))?;
-
-    if !wait_until(SOCKET_APPEAR_TIMEOUT, || {
-        socket.exists() && ingest_socket.exists()
-    }) {
-        shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err("semantic default-derivation sockets never appeared".into());
-    }
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime(state_root, "searchd-semantic-default-text-derivation-test")?;
 
     publish_search_corpus_chunks(
         &ingest_socket,
@@ -2035,6 +2053,70 @@ fn semantic_query_uses_search_owned_text_derivation_by_default() -> TestResult {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(format!("expected alpha candidate, got {}", first.candidate_id).into());
+    }
+
+    stop_runtime(shutdown, join)
+}
+
+#[test]
+fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let state_root = dir.path();
+    let (socket, ingest_socket, shutdown, join) =
+        start_runtime_with_hash(state_root, "searchd-semantic-explicit-hash-test")?;
+
+    publish_search_corpus_chunks(
+        &ingest_socket,
+        vec![
+            chunk_record("alpha", "parser pipeline typed semantic search")?,
+            chunk_record("beta", "archive storage compaction")?,
+        ],
+        None,
+    )?;
+    seal_lexical(&ingest_socket)?;
+
+    let req = SearchPlaneQueryIpcRequestEnvelope {
+        request_id: 44,
+        payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+            query_text: "typed semantic parser".to_string(),
+            generation: Some(GenerationPin::new(repo(), revision(), generation())),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 1,
+        }),
+    };
+
+    if !wait_until(READINESS_TIMEOUT, || {
+        send_query_request(&socket, &req)
+            .map(|resp| !matches!(resp.payload, SearchPlaneQueryIpcResponse::Error(_)))
+            .unwrap_or(false)
+    }) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic explicit hash query never became ready".into());
+    }
+
+    let response = send_query_request(&socket, &req)?;
+    let semantic = match response.payload {
+        SearchPlaneQueryIpcResponse::Semantic(semantic) => semantic,
+        other => {
+            shutdown.store(true, Ordering::Release);
+            drop(join.join());
+            return Err(format!("expected semantic response, got {other:?}").into());
+        }
+    };
+    if semantic.generation != GenerationPin::new(repo(), revision(), generation()) {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err("semantic explicit hash response did not echo request pin".into());
+    }
+    if semantic.results.len() != 1 || semantic.results[0].candidate_id != "alpha" {
+        shutdown.store(true, Ordering::Release);
+        drop(join.join());
+        return Err(format!(
+            "expected explicit-hash semantic query to rank alpha first, got {semantic:?}"
+        )
+        .into());
     }
 
     stop_runtime(shutdown, join)

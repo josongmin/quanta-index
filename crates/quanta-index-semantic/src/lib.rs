@@ -34,7 +34,14 @@ mod generation_contract;
 mod layout;
 mod manifest;
 mod search;
+mod semantic_ingest_fixtures_v1;
 mod sql;
+
+pub use semantic_ingest_fixtures_v1::{
+    embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
+    sealed_replace_batch_v1, search_scope_v1, tombstone_scope_v1,
+    tombstone_scope_with_semantic_owner_v1,
+};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

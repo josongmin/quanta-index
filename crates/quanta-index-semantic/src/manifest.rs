@@ -9,6 +9,8 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
+use std::collections::BTreeSet;
+
 use quanta_index_contract::{
     EmbeddingDistanceMetric, EmbeddingNormalization, ManifestGeneration, RepoId, RevisionId,
 };
@@ -27,10 +29,12 @@ use crate::generation_contract::GenerationContract;
 
 /// Current manifest format version. Bumped on any durable shape change.
 ///
-/// `3` = lancedb-backed dataset plus `semantic-build-contract.cbor`, which
-/// keeps the pre-seal batch contract authoritative and lets open validate the
-/// sealed manifest against the accepted build contract.
-pub(crate) const FORMAT_VERSION: u32 = 3;
+/// `4` = v4 semantic corpus coverage + storage metadata.
+pub(crate) const FORMAT_VERSION: u32 = 4;
+
+/// Legacy manifest format with build-contract sidecar but without v4 corpus
+/// coverage fields.
+pub(crate) const LEGACY_BUILD_CONTRACT_FORMAT_VERSION: u32 = 3;
 
 /// Legacy lancedb manifest format that predates `semantic-build-contract.cbor`.
 ///
@@ -52,9 +56,49 @@ pub(crate) struct SemanticManifest {
     pub(crate) normalization: String,
     pub(crate) row_count: u64,
     pub(crate) built_at_unix_nanos: u64,
+    pub(crate) present_corpora: Vec<String>,
+    pub(crate) required_corpora: Vec<String>,
+    pub(crate) card_schema_versions: Vec<u32>,
+    pub(crate) render_policy_digests: Vec<String>,
+    pub(crate) corpus_policy_digest: Option<String>,
 }
 
 cbor_serde!(SemanticManifest {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    built_at_unix_nanos: u64,
+    present_corpora: Vec<String>,
+    required_corpora: Vec<String>,
+    card_schema_versions: Vec<u32>,
+    render_policy_digests: Vec<String>,
+    corpus_policy_digest: Option<String>,
+});
+
+struct SemanticManifestV3 {
+    format_version: u32,
+    repo_id: String,
+    revision_id: String,
+    generation: u64,
+    manifest_digest: String,
+    model_id: String,
+    model_version: Option<String>,
+    dimension: u32,
+    distance_metric: String,
+    normalization: String,
+    row_count: u64,
+    built_at_unix_nanos: u64,
+}
+
+cbor_serde!(SemanticManifestV3 {
     format_version: u32,
     repo_id: String,
     revision_id: String,
@@ -95,6 +139,11 @@ impl SemanticManifest {
         manifest_digest: &str,
         row_count: u64,
         built_at_unix_nanos: u64,
+        present_corpora: Vec<String>,
+        required_corpora: Vec<String>,
+        card_schema_versions: Vec<u32>,
+        render_policy_digests: Vec<String>,
+        corpus_policy_digest: Option<String>,
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -109,6 +158,11 @@ impl SemanticManifest {
             normalization: generation_contract.normalization.clone(),
             row_count,
             built_at_unix_nanos,
+            present_corpora,
+            required_corpora,
+            card_schema_versions,
+            render_policy_digests,
+            corpus_policy_digest,
         }
     }
 
@@ -117,7 +171,58 @@ impl SemanticManifest {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CoreError> {
-        codec::decode(bytes, "semantic manifest")
+        match codec::decode(bytes, "semantic manifest") {
+            Ok(current) => Ok(current),
+            Err(current_err) => {
+                if let Ok(legacy_v3) =
+                    codec::decode::<SemanticManifestV3>(bytes, "semantic manifest")
+                {
+                    return Ok(Self {
+                        format_version: legacy_v3.format_version,
+                        repo_id: legacy_v3.repo_id,
+                        revision_id: legacy_v3.revision_id,
+                        generation: legacy_v3.generation,
+                        manifest_digest: legacy_v3.manifest_digest,
+                        model_id: legacy_v3.model_id,
+                        model_version: legacy_v3.model_version,
+                        dimension: legacy_v3.dimension,
+                        distance_metric: legacy_v3.distance_metric,
+                        normalization: legacy_v3.normalization,
+                        row_count: legacy_v3.row_count,
+                        built_at_unix_nanos: legacy_v3.built_at_unix_nanos,
+                        present_corpora: Vec::new(),
+                        required_corpora: Vec::new(),
+                        card_schema_versions: Vec::new(),
+                        render_policy_digests: Vec::new(),
+                        corpus_policy_digest: None,
+                    });
+                }
+                if let Ok(legacy_v2) =
+                    codec::decode::<SemanticManifestV3>(bytes, "semantic manifest")
+                {
+                    return Ok(Self {
+                        format_version: legacy_v2.format_version,
+                        repo_id: legacy_v2.repo_id,
+                        revision_id: legacy_v2.revision_id,
+                        generation: legacy_v2.generation,
+                        manifest_digest: legacy_v2.manifest_digest,
+                        model_id: legacy_v2.model_id,
+                        model_version: legacy_v2.model_version,
+                        dimension: legacy_v2.dimension,
+                        distance_metric: legacy_v2.distance_metric,
+                        normalization: legacy_v2.normalization,
+                        row_count: legacy_v2.row_count,
+                        built_at_unix_nanos: legacy_v2.built_at_unix_nanos,
+                        present_corpora: Vec::new(),
+                        required_corpora: Vec::new(),
+                        card_schema_versions: Vec::new(),
+                        render_policy_digests: Vec::new(),
+                        corpus_policy_digest: None,
+                    });
+                }
+                Err(current_err)
+            }
+        }
     }
 
     /// Fail closed unless the manifest describes exactly the requested scope and
@@ -129,10 +234,11 @@ impl SemanticManifest {
         generation: ManifestGeneration,
     ) -> Result<(), CoreError> {
         if self.format_version != FORMAT_VERSION
+            && self.format_version != LEGACY_BUILD_CONTRACT_FORMAT_VERSION
             && self.format_version != LEGACY_LANCEDB_FORMAT_VERSION
         {
             return Err(CoreError::Storage(format!(
-                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION} or legacy {LEGACY_LANCEDB_FORMAT_VERSION})",
+                "semantic: manifest format version {} unsupported (expected {FORMAT_VERSION}, legacy {LEGACY_BUILD_CONTRACT_FORMAT_VERSION}, or legacy {LEGACY_LANCEDB_FORMAT_VERSION})",
                 self.format_version,
             )));
         }
@@ -162,6 +268,40 @@ impl SemanticManifest {
                 "semantic: manifest distance_metric `{}` is not supported by this adapter (serves `{SUPPORTED_DISTANCE_METRIC}` only)",
                 self.distance_metric
             )));
+        }
+        self.validate_corpus_coverage()?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_corpus_coverage(&self) -> Result<(), CoreError> {
+        let present: BTreeSet<&str> = self.present_corpora.iter().map(String::as_str).collect();
+        if present.len() != self.present_corpora.len() {
+            return Err(CoreError::Storage(
+                "semantic: manifest present_corpora contains duplicates".to_string(),
+            ));
+        }
+        let required: BTreeSet<&str> = self.required_corpora.iter().map(String::as_str).collect();
+        if required.len() != self.required_corpora.len() {
+            return Err(CoreError::Storage(
+                "semantic: manifest required_corpora contains duplicates".to_string(),
+            ));
+        }
+        for corpus in &required {
+            if !present.contains(corpus) {
+                return Err(CoreError::Storage(format!(
+                    "semantic: manifest required corpus `{corpus}` missing from present_corpora"
+                )));
+            }
+        }
+        if self
+            .corpus_policy_digest
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return Err(CoreError::Storage(
+                "semantic: manifest corpus_policy_digest must not be empty when present"
+                    .to_string(),
+            ));
         }
         Ok(())
     }

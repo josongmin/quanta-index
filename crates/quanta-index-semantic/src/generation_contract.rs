@@ -40,6 +40,8 @@ pub(crate) struct GenerationContract {
     pub(crate) dimension: u32,
     pub(crate) distance_metric: String,
     pub(crate) normalization: String,
+    pub(crate) required_corpora: Vec<String>,
+    pub(crate) corpus_policy_digest: Option<String>,
 }
 
 cbor_serde!(GenerationContract {
@@ -51,6 +53,8 @@ cbor_serde!(GenerationContract {
     dimension: u32,
     distance_metric: String,
     normalization: String,
+    required_corpora: Vec<String>,
+    corpus_policy_digest: Option<String>,
 });
 
 impl GenerationContract {
@@ -68,6 +72,12 @@ impl GenerationContract {
             dimension: batch.model_contract.dimension,
             distance_metric: distance_metric_token(batch.model_contract.distance_metric).to_owned(),
             normalization: normalization_token(batch.model_contract.normalization).to_owned(),
+            required_corpora: batch
+                .required_corpora
+                .iter()
+                .map(|kind| kind.as_code_str().to_string())
+                .collect(),
+            corpus_policy_digest: batch.corpus_policy_digest.clone(),
         }
     }
 
@@ -139,6 +149,18 @@ impl GenerationContract {
             observed.normalization,
             "semantic: existing generation normalization `{}` does not match batch normalization `{}`"
         );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.required_corpora,
+            observed.required_corpora,
+            "semantic: existing generation required_corpora {:?} does not match batch required_corpora {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::InvalidContract,
+            self.corpus_policy_digest,
+            observed.corpus_policy_digest,
+            "semantic: existing generation corpus_policy_digest {:?} does not match batch corpus_policy_digest {:?}"
+        );
         Ok(())
     }
 
@@ -173,6 +195,18 @@ impl GenerationContract {
             manifest.normalization,
             self.normalization,
             "semantic: manifest normalization `{}` does not match sealed build contract `{}`"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.required_corpora,
+            self.required_corpora,
+            "semantic: manifest required_corpora {:?} does not match sealed build contract {:?}"
+        );
+        ensure_field_eq!(
+            CoreError::Storage,
+            manifest.corpus_policy_digest,
+            self.corpus_policy_digest,
+            "semantic: manifest corpus_policy_digest {:?} does not match sealed build contract {:?}"
         );
         Ok(())
     }

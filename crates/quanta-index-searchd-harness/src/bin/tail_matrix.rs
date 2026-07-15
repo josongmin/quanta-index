@@ -69,7 +69,9 @@ fn main() -> ExitCode {
     }
 
     if report.passed {
-        println!("tail rail green (route correctness validated; latency budgets advisory on this host)");
+        println!(
+            "tail rail green (route correctness validated; latency budgets advisory on this host)"
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!("tail rail RED: a budgeted route was not measured");

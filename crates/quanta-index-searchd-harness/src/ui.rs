@@ -305,7 +305,10 @@ fn score_probe(rt: &mut E2eRuntime, probe: &UiProbe) -> UiScore {
 /// the explain route must surface the `plan` and `merge` planner stages, touch
 /// exactly the lexical engine, carry the `presence_probe` strategy tag, and emit
 /// a non-empty summary. Anything missing is a fail-closed rail failure.
-fn capture_explanation_sections(rt: &mut E2eRuntime, probe: &UiProbe) -> ExplanationSectionsCapture {
+fn capture_explanation_sections(
+    rt: &mut E2eRuntime,
+    probe: &UiProbe,
+) -> ExplanationSectionsCapture {
     let result = rt.query_text(TextQuerySyntax::Native, probe.query, TOP_K);
     let candidate = result
         .candidates
@@ -578,14 +581,20 @@ mod tests {
                 .unwrap_or_else(|| panic!("{}: no snippet", score.id));
             let at = usize_from_offset(offset);
             assert!(
-                snippet.get(at..).is_some_and(|tail| tail.starts_with(score.needle)),
+                snippet
+                    .get(at..)
+                    .is_some_and(|tail| tail.starts_with(score.needle)),
                 "probe {}: offset {offset} must point at `{}` in snippet {snippet:?}",
                 score.id,
                 score.needle
             );
             // Every highlight span must cover the needle exactly, and the span
             // set must cover every occurrence (multi-hit coverage).
-            assert!(!score.highlights.is_empty(), "{}: no highlight spans", score.id);
+            assert!(
+                !score.highlights.is_empty(),
+                "{}: no highlight spans",
+                score.id
+            );
             for span in &score.highlights {
                 let start = usize_from_offset(span.start);
                 let end = start.saturating_add(usize_from_offset(span.len));

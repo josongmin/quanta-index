@@ -25,6 +25,7 @@ use quanta_index_core::{
     SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
     StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
 };
+use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
 use quanta_index_ipc::IpcDispatcher;
 use quanta_index_lq_structural::{
     StructuralAuthorityCandidate as LqStructuralAuthorityCandidate, StructuralAuthorityMatcher,
@@ -41,7 +42,6 @@ use quanta_index_search_plane::{
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
     SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
-use quanta_index_embed::{CachingEmbeddingProvider, FileEmbeddingCache, OpenAiEmbeddingProvider};
 use regex::Regex;
 
 use crate::app::config::{SearchdConfig, SemanticEmbedderProfile};
@@ -182,8 +182,9 @@ fn build_semantic_embedders(
             ))
         }
         SemanticEmbedderProfile::Unavailable => {
-            let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> =
-                Arc::new(HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION));
+            let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
+                HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION),
+            );
             Ok((Arc::new(ProviderUnavailableQueryTextEmbedder), corpus))
         }
     }
@@ -611,12 +612,13 @@ impl SearchdRuntime {
         );
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
             Arc::new(
-                DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+                DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
                     Arc::clone(&search_corpus_build_port),
                     Arc::clone(&ledger),
                     Arc::clone(&direct_sem_ingest_port),
                     corpus_embedder,
-                ),
+                )
+                .map_err(anyhow::Error::from)?,
             );
         let direct_history_ingest_port: Arc<dyn HistoryIngestPort + Send + Sync> = Arc::new(
             DirectHistoryMaterializer::new(aux_authority_store.clone(), Arc::clone(&ledger)),

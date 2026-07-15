@@ -69,7 +69,9 @@ fn main() -> ExitCode {
     }
 
     if report.passed {
-        println!("ops rail green (read-only diagnosis surfaces preserve route/generation/typed-error provenance)");
+        println!(
+            "ops rail green (read-only diagnosis surfaces preserve route/generation/typed-error provenance)"
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!("ops rail RED: a diagnosis surface swallowed its provenance");

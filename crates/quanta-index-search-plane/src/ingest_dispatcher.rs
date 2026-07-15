@@ -32,7 +32,10 @@ use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::semantic_derive::derive_semantic_batch_from_search_corpus_batch;
+use crate::semantic_derive::{
+    DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
+    derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
+};
 use crate::{AuxiliaryAuthorityStore, Ledger};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
@@ -233,6 +236,7 @@ pub struct DirectSearchCorpusMaterializer {
     ledger: Arc<RwLock<Ledger>>,
     semantic_ingest: Option<Arc<dyn SemanticIngestPort + Send + Sync>>,
     semantic_embedder: Option<Arc<dyn TextEmbeddingProvider + Send + Sync>>,
+    semantic_derivation_mode: SemanticDerivationModeV1,
 }
 
 impl DirectSearchCorpusMaterializer {
@@ -246,6 +250,7 @@ impl DirectSearchCorpusMaterializer {
             ledger,
             semantic_ingest: None,
             semantic_embedder: None,
+            semantic_derivation_mode: DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
         }
     }
 
@@ -256,11 +261,44 @@ impl DirectSearchCorpusMaterializer {
         semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
         semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
     ) -> Self {
+        Self::new_with_search_owned_semantics_with_mode(
+            builder,
+            ledger,
+            semantic_ingest,
+            semantic_embedder,
+            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
+        )
+    }
+
+    pub fn new_with_search_owned_semantics_from_env(
+        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+        semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
+        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+    ) -> Result<Self, CoreError> {
+        let mode = semantic_derivation_mode_from_env_v1()?;
+        Ok(Self::new_with_search_owned_semantics_with_mode(
+            builder,
+            ledger,
+            semantic_ingest,
+            semantic_embedder,
+            mode,
+        ))
+    }
+
+    fn new_with_search_owned_semantics_with_mode(
+        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+        ledger: Arc<RwLock<Ledger>>,
+        semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
+        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+        semantic_derivation_mode: SemanticDerivationModeV1,
+    ) -> Self {
         Self {
             builder,
             ledger,
             semantic_ingest: Some(semantic_ingest),
             semantic_embedder: Some(semantic_embedder),
+            semantic_derivation_mode,
         }
     }
 }
@@ -271,9 +309,10 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
         let derived_semantic_batch = match (&self.semantic_ingest, &self.semantic_embedder) {
-            (Some(_), Some(embedder)) => Some(derive_semantic_batch_from_search_corpus_batch(
+            (Some(_), Some(embedder)) => Some(derive_semantic_batch_with_mode_v1(
                 batch,
                 embedder.as_ref(),
+                self.semantic_derivation_mode,
             )?),
             // Semantics are wired as a pair (ingest + embedder) or not at all.
             _ => None,
@@ -768,11 +807,12 @@ mod tests {
         semantic_embedding_input_digest, semantic_embedding_input_text, semantic_vector_digest,
     };
     use quanta_index_contract::{
-        BatchIngestMode, ChunkId, ChunkRecord, EmbeddingDistanceMetric, EmbeddingId,
-        EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord, ManifestGeneration,
-        OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-        SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-        SemanticIngestBatch, SemanticReplaceScope,
+        BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, EmbeddingDistanceMetric,
+        EmbeddingId, EmbeddingModelContract, EmbeddingNormalization, EmbeddingRecord,
+        ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
+        SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey,
+        SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+        SourceRoleV1,
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
@@ -843,13 +883,28 @@ mod tests {
     fn fixture_embedding_record() -> Result<EmbeddingRecord, Box<dyn std::error::Error>> {
         Ok(EmbeddingRecord {
             embedding_id: EmbeddingId::new("emb-1"),
+            record_id: "emb-1".to_string().into_boxed_str(),
             owner_kind: OwnerDocKind::Chunk,
             owner_id: "main".to_string().into_boxed_str(),
+            corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+            parent_owner_id: None,
             source_doc_id: "chunk-1".to_string().into_boxed_str(),
             repo_relative_path: RepoRelativePath::new("src/main.rs"),
             language: quanta_index_contract::lex::LanguageCode::new("rust")
                 .map_err(str::to_string)?,
+            package: None,
             symbol_kind: None,
+            visibility: None,
+            source_role: SourceRoleV1::RawFallbackText,
+            generated: false,
+            capability_status: CapabilityStatusV1::Degraded,
+            authority_digest: "search-owned:legacy-chunk-text"
+                .to_string()
+                .into_boxed_str(),
+            render_policy_digest: "search-owned:legacy-chunk-text"
+                .to_string()
+                .into_boxed_str(),
+            card_schema_version: 0,
             start_byte: 0,
             end_byte: 12,
             start_line: 1,
@@ -872,6 +927,8 @@ mod tests {
             batch_digest: "batch:sem".to_string(),
             mode: BatchIngestMode::ReplaceGeneration,
             model_contract: fixture_model_contract(),
+            required_corpora: vec![SemanticCorpusKindV1::RawCodeFallback],
+            corpus_policy_digest: None,
             replace_scopes: vec![SemanticReplaceScope {
                 scope: fixture_scope(),
                 scope_digest: "scope:sem".to_string(),
@@ -917,6 +974,8 @@ mod tests {
                 symbols: Vec::new(),
             }],
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         })
     }
@@ -1208,6 +1267,8 @@ mod tests {
                 ),
             ],
             tombstone_scopes: Vec::new(),
+            semantic_replace_scopes: Vec::new(),
+            semantic_tombstone_scopes: Vec::new(),
             seal: true,
         })
     }

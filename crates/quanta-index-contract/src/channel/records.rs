@@ -5,7 +5,10 @@ use serde::{
 };
 
 use crate::lex::{LanguageCode, SymbolKindCode};
-use crate::{ChunkId, EmbeddingId, RepoId, RepoRelativePath};
+use crate::{
+    CapabilityStatusV1, ChunkId, EmbeddingId, RepoId, RepoRelativePath, SemanticCorpusKindV1,
+    SourceRoleV1,
+};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChunkStructuralMetadata {
@@ -468,12 +471,23 @@ impl<'de> Deserialize<'de> for OwnerDocKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingRecord {
     pub embedding_id: EmbeddingId,
+    pub record_id: Box<str>,
     pub owner_kind: OwnerDocKind,
     pub owner_id: Box<str>,
+    pub corpus_kind: SemanticCorpusKindV1,
+    pub parent_owner_id: Option<Box<str>>,
     pub source_doc_id: Box<str>,
     pub repo_relative_path: RepoRelativePath,
     pub language: LanguageCode,
+    pub package: Option<Box<str>>,
     pub symbol_kind: Option<SymbolKindCode>,
+    pub visibility: Option<Box<str>>,
+    pub source_role: SourceRoleV1,
+    pub generated: bool,
+    pub capability_status: CapabilityStatusV1,
+    pub authority_digest: Box<str>,
+    pub render_policy_digest: Box<str>,
+    pub card_schema_version: u32,
     pub start_byte: u32,
     pub end_byte: u32,
     pub start_line: u32,
@@ -487,12 +501,23 @@ pub struct EmbeddingRecord {
 
 const EMBEDDING_RECORD_FIELDS: &[&str] = &[
     "embedding_id",
+    "record_id",
     "owner_kind",
     "owner_id",
+    "corpus_kind",
+    "parent_owner_id",
     "source_doc_id",
     "repo_relative_path",
     "language",
+    "package",
     "symbol_kind",
+    "visibility",
+    "source_role",
+    "generated",
+    "capability_status",
+    "authority_digest",
+    "render_policy_digest",
+    "card_schema_version",
     "start_byte",
     "end_byte",
     "start_line",
@@ -509,14 +534,25 @@ impl Serialize for EmbeddingRecord {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("EmbeddingRecord", 16)?;
+        let mut state = serializer.serialize_struct("EmbeddingRecord", 27)?;
         state.serialize_field("embedding_id", &self.embedding_id)?;
+        state.serialize_field("record_id", self.record_id.as_ref())?;
         state.serialize_field("owner_kind", &self.owner_kind)?;
         state.serialize_field("owner_id", self.owner_id.as_ref())?;
+        state.serialize_field("corpus_kind", &self.corpus_kind)?;
+        state.serialize_field("parent_owner_id", &self.parent_owner_id)?;
         state.serialize_field("source_doc_id", self.source_doc_id.as_ref())?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
         state.serialize_field("language", &self.language)?;
+        state.serialize_field("package", &self.package)?;
         state.serialize_field("symbol_kind", &self.symbol_kind)?;
+        state.serialize_field("visibility", &self.visibility)?;
+        state.serialize_field("source_role", &self.source_role)?;
+        state.serialize_field("generated", &self.generated)?;
+        state.serialize_field("capability_status", &self.capability_status)?;
+        state.serialize_field("authority_digest", self.authority_digest.as_ref())?;
+        state.serialize_field("render_policy_digest", self.render_policy_digest.as_ref())?;
+        state.serialize_field("card_schema_version", &self.card_schema_version)?;
         state.serialize_field("start_byte", &self.start_byte)?;
         state.serialize_field("end_byte", &self.end_byte)?;
         state.serialize_field("start_line", &self.start_line)?;
@@ -547,12 +583,23 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
         A: MapAccess<'de>,
     {
         let mut embedding_id: Option<EmbeddingId> = None;
+        let mut record_id: Option<String> = None;
         let mut owner_kind: Option<OwnerDocKind> = None;
         let mut owner_id: Option<String> = None;
+        let mut corpus_kind: Option<SemanticCorpusKindV1> = None;
+        let mut parent_owner_id: Option<Option<String>> = None;
         let mut source_doc_id: Option<String> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
         let mut language: Option<LanguageCode> = None;
+        let mut package: Option<Option<String>> = None;
         let mut symbol_kind: Option<Option<SymbolKindCode>> = None;
+        let mut visibility: Option<Option<String>> = None;
+        let mut source_role: Option<SourceRoleV1> = None;
+        let mut generated: Option<bool> = None;
+        let mut capability_status: Option<CapabilityStatusV1> = None;
+        let mut authority_digest: Option<String> = None;
+        let mut render_policy_digest: Option<String> = None;
+        let mut card_schema_version: Option<u32> = None;
         let mut start_byte: Option<u32> = None;
         let mut end_byte: Option<u32> = None;
         let mut start_line: Option<u32> = None;
@@ -570,6 +617,12 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                     }
                     embedding_id = Some(map.next_value()?);
                 }
+                "record_id" => {
+                    if record_id.is_some() {
+                        return Err(de::Error::duplicate_field("record_id"));
+                    }
+                    record_id = Some(map.next_value()?);
+                }
                 "owner_kind" => {
                     if owner_kind.is_some() {
                         return Err(de::Error::duplicate_field("owner_kind"));
@@ -581,6 +634,18 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                         return Err(de::Error::duplicate_field("owner_id"));
                     }
                     owner_id = Some(map.next_value()?);
+                }
+                "corpus_kind" => {
+                    if corpus_kind.is_some() {
+                        return Err(de::Error::duplicate_field("corpus_kind"));
+                    }
+                    corpus_kind = Some(map.next_value()?);
+                }
+                "parent_owner_id" => {
+                    if parent_owner_id.is_some() {
+                        return Err(de::Error::duplicate_field("parent_owner_id"));
+                    }
+                    parent_owner_id = Some(map.next_value()?);
                 }
                 "source_doc_id" => {
                     if source_doc_id.is_some() {
@@ -600,11 +665,59 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
                     }
                     language = Some(map.next_value()?);
                 }
+                "package" => {
+                    if package.is_some() {
+                        return Err(de::Error::duplicate_field("package"));
+                    }
+                    package = Some(map.next_value()?);
+                }
                 "symbol_kind" => {
                     if symbol_kind.is_some() {
                         return Err(de::Error::duplicate_field("symbol_kind"));
                     }
                     symbol_kind = Some(map.next_value()?);
+                }
+                "visibility" => {
+                    if visibility.is_some() {
+                        return Err(de::Error::duplicate_field("visibility"));
+                    }
+                    visibility = Some(map.next_value()?);
+                }
+                "source_role" => {
+                    if source_role.is_some() {
+                        return Err(de::Error::duplicate_field("source_role"));
+                    }
+                    source_role = Some(map.next_value()?);
+                }
+                "generated" => {
+                    if generated.is_some() {
+                        return Err(de::Error::duplicate_field("generated"));
+                    }
+                    generated = Some(map.next_value()?);
+                }
+                "capability_status" => {
+                    if capability_status.is_some() {
+                        return Err(de::Error::duplicate_field("capability_status"));
+                    }
+                    capability_status = Some(map.next_value()?);
+                }
+                "authority_digest" => {
+                    if authority_digest.is_some() {
+                        return Err(de::Error::duplicate_field("authority_digest"));
+                    }
+                    authority_digest = Some(map.next_value()?);
+                }
+                "render_policy_digest" => {
+                    if render_policy_digest.is_some() {
+                        return Err(de::Error::duplicate_field("render_policy_digest"));
+                    }
+                    render_policy_digest = Some(map.next_value()?);
+                }
+                "card_schema_version" => {
+                    if card_schema_version.is_some() {
+                        return Err(de::Error::duplicate_field("card_schema_version"));
+                    }
+                    card_schema_version = Some(map.next_value()?);
                 }
                 "start_byte" => {
                     if start_byte.is_some() {
@@ -672,17 +785,36 @@ impl<'de> Visitor<'de> for EmbeddingRecordVisitor {
         }
         Ok(EmbeddingRecord {
             embedding_id: embedding_id.ok_or_else(|| de::Error::missing_field("embedding_id"))?,
+            record_id: record_id
+                .ok_or_else(|| de::Error::missing_field("record_id"))?
+                .into_boxed_str(),
             owner_kind: owner_kind.ok_or_else(|| de::Error::missing_field("owner_kind"))?,
             owner_id: owner_id
                 .ok_or_else(|| de::Error::missing_field("owner_id"))?
                 .into_boxed_str(),
+            corpus_kind: corpus_kind.ok_or_else(|| de::Error::missing_field("corpus_kind"))?,
+            parent_owner_id: parent_owner_id.unwrap_or(None).map(String::into_boxed_str),
             source_doc_id: source_doc_id
                 .ok_or_else(|| de::Error::missing_field("source_doc_id"))?
                 .into_boxed_str(),
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
             language: language.ok_or_else(|| de::Error::missing_field("language"))?,
+            package: package.unwrap_or(None).map(String::into_boxed_str),
             symbol_kind: symbol_kind.ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
+            visibility: visibility.unwrap_or(None).map(String::into_boxed_str),
+            source_role: source_role.ok_or_else(|| de::Error::missing_field("source_role"))?,
+            generated: generated.ok_or_else(|| de::Error::missing_field("generated"))?,
+            capability_status: capability_status
+                .ok_or_else(|| de::Error::missing_field("capability_status"))?,
+            authority_digest: authority_digest
+                .ok_or_else(|| de::Error::missing_field("authority_digest"))?
+                .into_boxed_str(),
+            render_policy_digest: render_policy_digest
+                .ok_or_else(|| de::Error::missing_field("render_policy_digest"))?
+                .into_boxed_str(),
+            card_schema_version: card_schema_version
+                .ok_or_else(|| de::Error::missing_field("card_schema_version"))?,
             start_byte: start_byte.ok_or_else(|| de::Error::missing_field("start_byte"))?,
             end_byte: end_byte.ok_or_else(|| de::Error::missing_field("end_byte"))?,
             start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
@@ -723,7 +855,10 @@ mod tests {
 
     use super::{ChunkRecord, ChunkStructuralMetadata, EmbeddingRecord, OwnerDocKind};
     use crate::lex::LanguageCode;
-    use crate::{ChunkId, EmbeddingId, RepoRelativePath};
+    use crate::{
+        CapabilityStatusV1, ChunkId, EmbeddingId, RepoRelativePath, SemanticCorpusKindV1,
+        SourceRoleV1,
+    };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -849,12 +984,23 @@ mod tests {
     fn embedding_record_round_trip() -> TestRes {
         let record = EmbeddingRecord {
             embedding_id: EmbeddingId::new("emb-1"),
+            record_id: "record-1".into(),
             owner_kind: OwnerDocKind::Chunk,
             owner_id: "chunk-1".into(),
+            corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+            parent_owner_id: Some("parent-1".into()),
             source_doc_id: "doc-1".into(),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             language: rust_language()?,
+            package: Some("crate".into()),
             symbol_kind: None,
+            visibility: Some("pub".into()),
+            source_role: SourceRoleV1::RawFallbackText,
+            generated: true,
+            capability_status: CapabilityStatusV1::Degraded,
+            authority_digest: "auth:abc".into(),
+            render_policy_digest: "render:def".into(),
+            card_schema_version: 0,
             start_byte: 0,
             end_byte: 12,
             start_line: 1,
