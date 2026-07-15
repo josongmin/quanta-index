@@ -41,7 +41,7 @@ Semantic Corpus V2 current state (2026-07-15):
   stable IDs without manufacturing lexical candidates;
 - source-wire (7), IPC query contract (29), SDK (44), core hybrid (2),
   search-plane (136), semantic library (13), and persisted SCV2 scenarios (4)
-  pass; public API/module/hexagonal, three 60-second fuzz targets, and the full
+  pass; public API/module/hexagonal, four 60-second fuzz targets, and the full
   daemon E2E profile are green;
 - default derivation remains `LegacyAllChunkText`; semantic-source-only cutover and live searchd activation are not complete;
 - Semantica remains responsible for graph facts, Stage3 graph expansion, and source hydration.

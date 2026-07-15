@@ -122,6 +122,11 @@ impl<'de> Deserialize<'de> for SemanticCorpusKindV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+// These suffixes are stable serialized vocabulary in the semantic-source IPC.
+#[expect(
+    clippy::enum_variant_names,
+    reason = "wire-compatible semantic-source role names intentionally share the Text suffix"
+)]
 pub enum SourceRoleV1 {
     CardText,
     RawFallbackText,

@@ -509,7 +509,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::GenerationStatus(req) => self.generation_status(&req),
             SearchPlaneControlIpcRequest::CurrentGeneration(req) => self.current_generation(&req),
             other @ (SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
-            | SearchPlaneControlIpcRequest::RollbackGeneration(_)
+            | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivate(_)) => control_error_response(
                 "TEST_UNEXPECTED_CONTROL_REQUEST",
                 format!("doctor mock received unexpected control request: {other:?}"),

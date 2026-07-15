@@ -82,6 +82,10 @@ exceptions = [
   # Permissive license but not in baseline allowlist; scope the exception
   # tightly to the crate.
   { name = "foldhash", allow = ["Zlib"] },
+  # lancedb 0.30 -> reqwest/rustls: webpki-roots distributes CA trust-anchor
+  # data under CDLA-Permissive-2.0. Keep this non-code data license exception
+  # constrained to the exact transitive package rather than widening allow.
+  { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]

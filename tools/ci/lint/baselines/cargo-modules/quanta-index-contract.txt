@@ -69,7 +69,6 @@ crate quanta_index_contract
 │           └── type Value: pub(self)
 ├── mod ipc: pub
 │   ├── mod control: pub(self)
-│   │   ├── type ActivationLikeTuple: pub(self)
 │   │   ├── struct CurrentGenerationRequest: pub
 │   │   ├── struct CurrentGenerationRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -82,23 +81,21 @@ crate quanta_index_contract
 │   │   ├── struct GenerationStatusRequest: pub
 │   │   ├── struct GenerationStatusRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneActivateGenerationCasRequest: pub
-│   │   ├── struct SearchPlaneActivateGenerationCasRequestVisitor: pub(self)
+│   │   ├── struct SearchCorpusGenerationIdentityV1: pub
+│   │   ├── struct SearchCorpusGenerationIdentityV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneActivateGenerationRequest: pub
-│   │   ├── struct SearchPlaneActivateGenerationRequestVisitor: pub(self)
+│   │   ├── enum SearchCorpusGenerationIdentityValidationErrorV1: pub
+│   │   ├── struct SearchPlaneActivateSearchCorpusGenerationCasRequest: pub
+│   │   ├── struct SearchPlaneActivateSearchCorpusGenerationCasRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneActivationAck: pub
-│   │   ├── struct SearchPlaneActivationAckVisitor: pub(self)
+│   │   ├── struct SearchPlaneRollbackSearchCorpusGenerationCasRequest: pub
+│   │   ├── struct SearchPlaneRollbackSearchCorpusGenerationCasRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneActivationCasAck: pub
-│   │   ├── struct SearchPlaneActivationCasAckVisitor: pub(self)
+│   │   ├── struct SearchPlaneSearchCorpusActivationCasAck: pub
+│   │   ├── struct SearchPlaneSearchCorpusActivationCasAckVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneRollbackGenerationAck: pub
-│   │   ├── struct SearchPlaneRollbackGenerationAckVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneRollbackGenerationRequest: pub
-│   │   ├── struct SearchPlaneRollbackGenerationRequestVisitor: pub(self)
+│   │   ├── struct SearchPlaneSearchCorpusRollbackCasAck: pub
+│   │   ├── struct SearchPlaneSearchCorpusRollbackCasAckVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum SearchPlaneTrackKind: pub
 │   │   ├── struct SearchPlaneTrackKindVisitor: pub(self)

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{LexicalCandidate, ManifestGeneration};
@@ -60,8 +60,9 @@ impl HybridOrchestratorPolicy {
     /// Fuse two ranked candidate lists by RRF.
     ///
     /// Tie-break order: higher fused score, then "present in lexical list",
-    /// then `candidate_id` lexicographic. When both lanes contain the same
-    /// identity, the lexical candidate owns the returned payload.
+    /// then `candidate_id` lexicographic. Each identity contributes at most
+    /// once per lane. When both lanes contain the same identity, the lexical
+    /// candidate owns the returned payload.
     #[must_use]
     pub fn fuse_rrf(
         lexical: &[LexicalCandidate],
@@ -101,7 +102,8 @@ impl HybridOrchestratorPolicy {
     ///
     /// The first lane owns the deterministic preferred-lane tie break. This
     /// keeps BM25 behavior stable while allowing each semantic corpus to retain
-    /// an independent rank domain.
+    /// an independent rank domain. Repeated identities within one lane are
+    /// ignored before rank assignment.
     #[must_use]
     pub fn fuse_rrf_id_lanes(lanes: &[&[String]], top_k: u32) -> Vec<String> {
         Self::fuse_rrf_key_lanes(lanes, top_k)
@@ -152,8 +154,15 @@ fn accumulate_keys<T>(accs: &mut BTreeMap<T, KeyFuseAccumulator>, ranked: &[T], 
 where
     T: Clone + Ord,
 {
-    for (rank, key) in ranked.iter().enumerate() {
-        let rank_plus_one = rank.saturating_add(1);
+    // A ranked lane is an ordering of identities, not a multiset. Ignore a
+    // duplicate before assigning rank so malformed adapter output cannot
+    // amplify a candidate or displace later unique identities.
+    let mut seen = BTreeSet::<&T>::new();
+    for key in ranked {
+        if !seen.insert(key) {
+            continue;
+        }
+        let rank_plus_one = seen.len();
         // Saturating: rank index past u32::MAX collapses to the same RRF
         // tail score. `map_or` keeps the clippy + workspace lints happy.
         let rank_u32 = u32::try_from(rank_plus_one).map_or(u32::MAX, |n| n);

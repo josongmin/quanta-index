@@ -1,0 +1,474 @@
+# Test authority SSOT (QIT-00).
+#
+# A target is not considered covered merely because a broad command happens to
+# discover it today. Every Cargo integration binary and cargo-fuzz target must
+# be named here with its owning crate and an executable CI rail. The companion
+# guard fails when the filesystem, a fuzz manifest, or this catalog diverges.
+
+format_version = 1
+
+[rails.pr-workspace-nextest]
+tier = "pr"
+command = "./scripts/cargow nextest run --workspace --all-features --locked"
+target_kind = "integration"
+
+[rails.correctness-fuzz-smoke]
+tier = "correctness"
+command = "just rust-fuzz-smoke"
+target_kind = "fuzz"
+
+[[integration_targets]]
+id = "contract-ipc-query-result-v2"
+path = "crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-lex-property-roundtrip"
+path = "crates/quanta-index-contract/tests/lex_property_roundtrip.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-lex-scaffold"
+path = "crates/quanta-index-contract/tests/lex_scaffold.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-lxe-unified-surface"
+path = "crates/quanta-index-contract/tests/lxe_unified_surface.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-scv2-semantic-source-wire"
+path = "crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "core-hybrid-policy"
+path = "crates/quanta-index-core/tests/hybrid_policy.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "core-lexical-policy"
+path = "crates/quanta-index-core/tests/lexical_policy.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "core-semantic-policy"
+path = "crates/quanta-index-core/tests/semantic_policy.rs"
+owner = "quanta-index-core"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "corpus-smoke-cli"
+path = "crates/quanta-index-corpus-smoke/tests/cli_smoke.rs"
+owner = "quanta-index-corpus-smoke"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-planner-authority"
+path = "crates/quanta-index-lexical/tests/planner_authority.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-tantivy-smoke"
+path = "crates/quanta-index-lexical/tests/tantivy_smoke.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-bridge-directive-packet"
+path = "crates/quanta-index-lq-bridge/tests/bridge_directive_packet.rs"
+owner = "quanta-index-lq-bridge"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-bridge-golden"
+path = "crates/quanta-index-lq-bridge/tests/golden_bridge.rs"
+owner = "quanta-index-lq-bridge"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-bridge-property-translator-total"
+path = "crates/quanta-index-lq-bridge/tests/property_translator_total.rs"
+owner = "quanta-index-lq-bridge"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-norm-property-pipeline"
+path = "crates/quanta-index-lq-norm/tests/property_pipeline.rs"
+owner = "quanta-index-lq-norm"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-obs-golden"
+path = "crates/quanta-index-lq-obs/tests/golden_obs.rs"
+owner = "quanta-index-lq-obs"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-obs-property-cardinality-guard"
+path = "crates/quanta-index-lq-obs/tests/property_cardinality_guard.rs"
+owner = "quanta-index-lq-obs"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-golden-phrase"
+path = "crates/quanta-index-lq-positions/tests/golden_phrase.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-property-cbor-roundtrip"
+path = "crates/quanta-index-lq-positions/tests/property_cbor_roundtrip.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-property-delete-invariant"
+path = "crates/quanta-index-lq-positions/tests/property_delete_invariant.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-property-from-prior-equivalence"
+path = "crates/quanta-index-lq-positions/tests/property_from_prior_equivalence.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-property-plan-limits"
+path = "crates/quanta-index-lq-positions/tests/property_plan_limits.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-positions-property-upsert-idempotent"
+path = "crates/quanta-index-lq-positions/tests/property_upsert_idempotent.rs"
+owner = "quanta-index-lq-positions"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-regex-golden"
+path = "crates/quanta-index-lq-regex/tests/golden_regex.rs"
+owner = "quanta-index-lq-regex"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-regex-property-ast-walk"
+path = "crates/quanta-index-lq-regex/tests/property_ast_walk.rs"
+owner = "quanta-index-lq-regex"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-regex-property-dialect-idempotent"
+path = "crates/quanta-index-lq-regex/tests/property_dialect_idempotent.rs"
+owner = "quanta-index-lq-regex"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-structural-authority-match"
+path = "crates/quanta-index-lq-structural/tests/authority_match.rs"
+owner = "quanta-index-lq-structural"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-structural-golden-match"
+path = "crates/quanta-index-lq-structural/tests/golden_match.rs"
+owner = "quanta-index-lq-structural"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-structural-property-cbor-roundtrip"
+path = "crates/quanta-index-lq-structural/tests/property_cbor_roundtrip.rs"
+owner = "quanta-index-lq-structural"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-trigram-golden-intersect"
+path = "crates/quanta-index-lq-trigram/tests/golden_intersect.rs"
+owner = "quanta-index-lq-trigram"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-trigram-property-cbor-roundtrip"
+path = "crates/quanta-index-lq-trigram/tests/property_cbor_roundtrip.rs"
+owner = "quanta-index-lq-trigram"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-trigram-property-delete-invariant"
+path = "crates/quanta-index-lq-trigram/tests/property_delete_invariant.rs"
+owner = "quanta-index-lq-trigram"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-trigram-property-from-prior-equivalence"
+path = "crates/quanta-index-lq-trigram/tests/property_from_prior_equivalence.rs"
+owner = "quanta-index-lq-trigram"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lq-trigram-property-idempotent-upsert"
+path = "crates/quanta-index-lq-trigram/tests/property_idempotent_upsert.rs"
+owner = "quanta-index-lq-trigram"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "repomap-bootstrap-owner-flow"
+path = "crates/quanta-index-repomap/tests/bootstrap_owner_flow.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "repomap-owner-surface"
+path = "crates/quanta-index-repomap/tests/owner_surface.rs"
+owner = "quanta-index-repomap"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchctl-cli-smoke"
+path = "crates/quanta-index-searchctl/tests/cli_smoke.rs"
+owner = "quanta-index-searchctl"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-harness-dsl-scenario-truth"
+path = "crates/quanta-index-searchd-harness/tests/dsl_scenario_truth.rs"
+owner = "quanta-index-searchd-harness"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-dsl-scenarios"
+path = "crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-dual-syntax-lowering-parity"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_dual_syntax_lowering_parity.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-filter-execution"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_filter_execution.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-full-corpus"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-lexical-full-fidelity"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_lexical_full_fidelity.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-matrix-inventory"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_matrix_inventory.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-perf-chaos"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_perf_chaos.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-restart-replay-determinism"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-composite-generation-authority-restart"
+path = "crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-structural-hellgate"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_structural_hellgate.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-text-route-hellgate"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_text_route_hellgate.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-end-to-end"
+path = "crates/quanta-index-searchd-runtime/tests/end_to_end.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-explain"
+path = "crates/quanta-index-searchd-runtime/tests/explain.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-repo-map-end-to-end"
+path = "crates/quanta-index-searchd-runtime/tests/repo_map_end_to_end.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-sdk-frontdoor"
+path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-semantic-boot-report"
+path = "crates/quanta-index-searchd-runtime/tests/semantic_boot_report.rs"
+owner = "quanta-index-searchd-runtime"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-persisted"
+path = "crates/quanta-index-semantic/tests/persisted_semantic.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-scv2-persisted-scenarios"
+path = "crates/quanta-index-semantic/tests/scv2_persisted_scenarios.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-generation-lifecycle-model"
+path = "crates/quanta-index-semantic/tests/semantic_generation_lifecycle_model.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[fuzz_targets]]
+id = "contract-ipc-request-decode-fuzz"
+path = "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs"
+manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
+target = "ipc_request_decode"
+owner = "quanta-index-contract"
+rail = "correctness-fuzz-smoke"
+
+[[fuzz_targets]]
+id = "contract-ipc-response-decode-fuzz"
+path = "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_response_decode.rs"
+manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
+target = "ipc_response_decode"
+owner = "quanta-index-contract"
+rail = "correctness-fuzz-smoke"
+
+[[fuzz_targets]]
+id = "contract-search-corpus-ingest-decode-fuzz"
+path = "crates/quanta-index-contract/fuzz/fuzz_targets/search_corpus_ingest_decode.rs"
+manifest = "crates/quanta-index-contract/fuzz/Cargo.toml"
+target = "search_corpus_ingest_decode"
+owner = "quanta-index-contract"
+rail = "correctness-fuzz-smoke"
+
+[[fuzz_targets]]
+id = "lq-norm-parse-pipeline-fuzz"
+path = "crates/quanta-index-lq-norm/fuzz/fuzz_targets/lq_parse_pipeline.rs"
+manifest = "crates/quanta-index-lq-norm/fuzz/Cargo.toml"
+target = "lq_parse_pipeline"
+owner = "quanta-index-lq-norm"
+rail = "correctness-fuzz-smoke"
+
+# P0/P1 rows must name independent positive, negative, recovery, and consumer
+# proof targets. The guard verifies those ids and their source files fail closed.
+[[invariants]]
+id = "GEN-ACTIVATE-ATOMIC-01"
+risk = "P0"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+positive_target = "semantic-generation-lifecycle-model"
+negative_target = "semantic-persisted"
+recovery_target = "searchd-runtime-restart-replay-determinism"
+consumer_target = "searchd-runtime-end-to-end"
+
+[[invariants]]
+id = "GEN-ROLLBACK-RECOVERY-01"
+risk = "P0"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+positive_target = "semantic-generation-lifecycle-model"
+negative_target = "semantic-persisted"
+recovery_target = "searchd-runtime-restart-replay-determinism"
+consumer_target = "searchd-runtime-sdk-frontdoor"
+
+[[invariants]]
+id = "SEMANTIC-OWNER-IDENTITY-01"
+risk = "P1"
+owner = "quanta-index-semantic"
+source = "crates/quanta-index-semantic/src/lib.rs"
+positive_target = "semantic-scv2-persisted-scenarios"
+negative_target = "semantic-persisted"
+recovery_target = "semantic-generation-lifecycle-model"
+consumer_target = "searchd-runtime-end-to-end"
+
+[[invariants]]
+id = "CONTRACT-WIRE-FAIL-CLOSED-01"
+risk = "P0"
+owner = "quanta-index-contract"
+source = "crates/quanta-index-contract/src/lib.rs"
+positive_target = "contract-ipc-query-result-v2"
+negative_target = "contract-lxe-unified-surface"
+recovery_target = "contract-scv2-semantic-source-wire"
+consumer_target = "searchd-runtime-sdk-frontdoor"
+
+[[invariants]]
+id = "HYBRID-PAYLOAD-PRECEDENCE-01"
+risk = "P1"
+owner = "quanta-index-core"
+source = "crates/quanta-index-core/src/lib.rs"
+positive_target = "core-hybrid-policy"
+negative_target = "core-hybrid-policy"
+recovery_target = "core-semantic-policy"
+consumer_target = "searchd-runtime-end-to-end"
+
+[[invariants]]
+id = "SDK-FRONTDOOR-ROUNDTRIP-01"
+risk = "P1"
+owner = "quanta-index-searchd-runtime"
+source = "crates/quanta-index-searchd-runtime/src/lib.rs"
+positive_target = "searchd-runtime-sdk-frontdoor"
+negative_target = "searchd-runtime-sdk-frontdoor"
+recovery_target = "searchd-runtime-restart-replay-determinism"
+consumer_target = "searchd-runtime-end-to-end"
+
+[[invariants]]
+id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
+risk = "P1"
+owner = "quanta-index-repomap"
+source = "crates/quanta-index-repomap/src/lib.rs"
+positive_target = "repomap-bootstrap-owner-flow"
+negative_target = "repomap-owner-surface"
+recovery_target = "searchd-runtime-repo-map-end-to-end"
+consumer_target = "searchd-runtime-end-to-end"
+
+[[invariants]]
+id = "DSL-CAPABILITY-TRUTH-01"
+risk = "P1"
+owner = "quanta-index-searchd-runtime"
+source = "crates/quanta-index-searchd-runtime/src/lib.rs"
+positive_target = "searchd-runtime-dsl-scenarios"
+negative_target = "searchd-runtime-filter-execution"
+recovery_target = "searchd-runtime-restart-replay-determinism"
+consumer_target = "searchd-harness-dsl-scenario-truth"

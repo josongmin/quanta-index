@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use quanta_index_contract::{
@@ -174,7 +174,7 @@ impl QuantaIndex {
                 repair: error.repair,
             }),
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RollbackAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => Ok(payload),
@@ -261,7 +261,9 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_) => {
                 "search_corpus_activation_cas_ack"
             }
-            SearchPlaneControlIpcResponse::RollbackAck(_) => "rollback_ack",
+            SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_) => {
+                "search_corpus_rollback_cas_ack"
+            }
             SearchPlaneControlIpcResponse::RepoMapMutationAck(_) => "repomap_mutation_ack",
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_) => {
                 "current_generation_snapshot"
@@ -516,8 +518,8 @@ impl<'a> ControlClient<'a> {
 
     pub fn rollback(
         &self,
-        request: quanta_index_contract::SearchPlaneRollbackGenerationRequest,
-    ) -> Result<quanta_index_contract::SearchPlaneRollbackGenerationAck, SdkError> {
+        request: quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    ) -> Result<quanta_index_contract::SearchPlaneSearchCorpusRollbackCasAck, SdkError> {
         self.client.generations().rollback(request)
     }
 

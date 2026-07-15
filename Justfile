@@ -466,6 +466,9 @@ rust-error-shape:
 rust-digest-fallibility:
     python3 tools/ci/lint/check-digest-fallibility.py
 
+rust-test-authority:
+    python3 tools/ci/lint/check-test-authority.py
+
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
 
@@ -491,7 +494,15 @@ rust-fuzz-build:
 rust-fuzz-smoke seconds="60":
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time={{seconds}}'
+    env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time={{seconds}}'
+
+# Produces a fresh full-workspace LCOV artifact, then fails closed if a Rust
+# source line added since `base` is absent or uncovered. cargo-llvm-cov is a
+# tool-owned wrapper, so it runs only after the repository environment is set.
+rust-coverage-changed base minimum_percent="90":
+    env QUANTA_INDEX_BUILD_LANE=coverage-lane bash -lc 'source scripts/quanta-index-env.sh && cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov'
+    python3 tools/ci/lint/check-changed-line-coverage.py --lcov /tmp/quanta-index-coverage.lcov --base {{base}} --minimum-percent {{minimum_percent}}
 
 rust-policy:
     @just rust-workspace-lints
@@ -502,6 +513,7 @@ rust-policy:
     @just rust-module-discipline
     @just rust-error-shape
     @just rust-digest-fallibility
+    @just rust-test-authority
     @just rust-deny
 
 verify-rust:

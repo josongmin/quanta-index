@@ -31,5 +31,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "search_corpus_ingest_decode"
+path = "fuzz_targets/search_corpus_ingest_decode.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

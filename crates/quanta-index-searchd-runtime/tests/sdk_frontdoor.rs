@@ -12,14 +12,14 @@ mod frontdoor_scenarios;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::{
-    compute_parse_tree_source_hash, LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord,
-    SymbolRelationship, SymbolSpan,
+    LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
+    compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, FileContributorIdentityEntry, GenerationPin, GenerationSelector,
@@ -43,12 +43,12 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::SearchdConfig;
+use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd_runtime::build_runtime;
 
 use crate::frontdoor_scenarios::{
-    SdkFrontdoorExpectation, SdkFrontdoorSurface, SDK_FRONTDOOR_SCENARIOS,
+    SDK_FRONTDOOR_SCENARIOS, SdkFrontdoorExpectation, SdkFrontdoorSurface,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -3786,6 +3786,106 @@ fn sdk_search_corpus_frontdoor_promotes_composite_generation_identity() -> TestR
 }
 
 #[test]
+fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_query_views()
+-> TestResult {
+    let (_dir, client, shutdown, join) =
+        start_sdk_frontdoor_runtime("sdk-frontdoor-tombstone-only")?;
+
+    let first_generation = lexical_batch()?;
+    let _first_active = publish_and_activate_sdk_search_corpus(&client, &first_generation)?;
+
+    let removed_scope = SearchScopeKey {
+        doc_surface: SearchScopeSurface::File,
+        repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
+    };
+    let tombstone_only = SearchCorpusBatch::delta(
+        repo(),
+        revision(),
+        generation_two(),
+        generation(),
+        "manifest:lexical-tombstone-only",
+        "batch:lexical-tombstone-only",
+    )
+    .tombstone_scope(removed_scope);
+
+    let expected_active = current_sdk_search_corpus_or_none(&client, repo(), revision())?
+        .ok_or_else(|| "first composite generation did not become active".to_string())?;
+    let (receipt, activation) = client
+        .search_corpus()
+        .publish_and_activate(&tombstone_only, Some(expected_active))?;
+    if !receipt.sealed
+        || receipt.generation != generation_two()
+        || receipt.manifest_digest != tombstone_only.manifest_digest()
+        || receipt.accepted_replace_scopes != 0
+        || receipt.accepted_tombstone_scopes != 1
+        || activation.active.lexical.manifest_generation != generation_two()
+        || activation.active.semantic.manifest_generation != generation_two()
+        || activation.active.lexical.manifest_digest != tombstone_only.manifest_digest()
+        || activation.active.semantic.manifest_digest != tombstone_only.manifest_digest()
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "unexpected tombstone-only sealed composite promotion: receipt={receipt:?} activation={activation:?}"
+        )
+        .into());
+    }
+
+    let lexical = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .native("sphinx")
+                .active(repo(), revision())
+                .top_k(3)
+                .execute()
+        },
+        |response| response.generation == pin_two(),
+    )?;
+    if lexical.generation != pin_two()
+        || lexical
+            .results
+            .iter()
+            .any(|candidate| candidate.candidate_id == "alpha")
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "tombstone-only lexical generation retained removed alpha scope: {lexical:?}"
+        )
+        .into());
+    }
+
+    let semantic = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .semantic()
+                .query()
+                .text("quartz")
+                .active(repo(), revision())
+                .top_k(3)
+                .execute()
+        },
+        |response| response.generation == pin_two(),
+    )?;
+    if semantic.generation != pin_two()
+        || semantic
+            .results
+            .iter()
+            .any(|candidate| candidate.candidate_id == "alpha")
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "tombstone-only semantic generation retained removed alpha scope: {semantic:?}"
+        )
+        .into());
+    }
+
+    stop_runtime(&shutdown, join)
+}
+
+#[test]
 fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() -> TestResult {
     let (_dir, client, shutdown, join) =
         start_sdk_frontdoor_runtime("sdk-frontdoor-builder-variants")?;
@@ -3905,8 +4005,8 @@ fn sdk_builder_variant_frontdoors_route_native_inline_vector_and_pinned_truth() 
 }
 
 #[test]
-fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_track() -> TestResult
-{
+fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_composite_corpus()
+-> TestResult {
     let complex_timeout = Duration::from_secs(30);
     let dir = tempfile::tempdir()?;
     let state_root = dir.path().to_path_buf();
@@ -4030,23 +4130,23 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
             client
                 .lexical()
                 .query()
-                .native("todo")
+                .native("todo_v2")
                 .active(repo(), revision())
                 .top_k(2)
                 .execute()
         },
-        |response| response.generation == pin() && response.results.len() == 1,
+        |response| response.generation == pin_two() && response.results.len() == 1,
     )?;
     let lexical_active_after_restart_candidate = lexical_active_after_restart
         .results
         .first()
         .ok_or_else(|| "missing restarted active v1 lexical candidate".to_string())?;
-    if lexical_active_after_restart.generation != pin()
-        || lexical_active_after_restart_candidate.candidate_id != "chunk-dirty"
+    if lexical_active_after_restart.generation != pin_two()
+        || lexical_active_after_restart_candidate.candidate_id != "chunk-dirty-v2"
     {
         stop_runtime(&shutdown, join)?;
         return Err(format!(
-            "unexpected restarted active v1 lexical response: {lexical_active_after_restart:?}"
+            "unexpected restarted active v2 lexical response: {lexical_active_after_restart:?}"
         )
         .into());
     }
@@ -4147,6 +4247,21 @@ fn sdk_multi_generation_restart_frontdoor_preserves_pinned_and_flips_active_per_
         stop_runtime(&shutdown, join)?;
         return Err(format!(
             "unexpected post-restart lexical generation snapshot: {lexical_snapshot_v2:?}"
+        )
+        .into());
+    }
+
+    let semantic_snapshot_v2 = wait_for_sdk_ready(complex_timeout, || {
+        client
+            .generations()
+            .current(repo(), revision(), SearchPlaneTrackKind::Semantic)
+    })?;
+    if semantic_snapshot_v2.manifest_generation != lexical_snapshot_v2.manifest_generation
+        || semantic_snapshot_v2.manifest_digest != lexical_snapshot_v2.manifest_digest
+    {
+        stop_runtime(&shutdown, join)?;
+        return Err(format!(
+            "restart split the active composite corpus: lexical={lexical_snapshot_v2:?} semantic={semantic_snapshot_v2:?}"
         )
         .into());
     }

@@ -18,7 +18,8 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcRequestEnvelope,
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1,
     SemanticQueryResponse, SemanticSourceRecordV1, SemanticSourceScopeKeyV1, SourceRoleV1,
     StructuralQueryRequest, SymbolId, TextQueryResponse,
@@ -164,6 +165,25 @@ fn repo_id() -> RepoId {
 
 fn revision_id() -> RevisionId {
     RevisionId::new("rev-1")
+}
+
+fn search_corpus_identity(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
+    SearchCorpusGenerationIdentityV1 {
+        lexical: GenerationSnapshot {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            track: Track::Lexical,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: digest.to_string(),
+        },
+        semantic: GenerationSnapshot {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            track: Track::Semantic,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: digest.to_string(),
+        },
+    }
 }
 
 fn sample_hit() -> quanta_index_contract::LexicalCandidate {
@@ -1223,22 +1243,7 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
         accepted_tombstone_scopes: 0,
         sealed: true,
     };
-    let active = SearchCorpusGenerationIdentityV1 {
-        lexical: GenerationSnapshot {
-            repo_id: repo_id(),
-            revision_id: revision_id(),
-            track: Track::Lexical,
-            manifest_generation: receipt.generation,
-            manifest_digest: receipt.manifest_digest.clone(),
-        },
-        semantic: GenerationSnapshot {
-            repo_id: repo_id(),
-            revision_id: revision_id(),
-            track: Track::Semantic,
-            manifest_generation: receipt.generation,
-            manifest_digest: receipt.manifest_digest.clone(),
-        },
-    };
+    let active = search_corpus_identity(receipt.generation.get(), &receipt.manifest_digest);
     let ack = SearchPlaneSearchCorpusActivationCasAck {
         active: active.clone(),
         previous_sealed_active: None,
@@ -1281,6 +1286,94 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
     };
     assert_eq!(request.candidate, active);
     assert_eq!(request.expected_active, None);
+}
+
+#[test]
+fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
+    let candidate = search_corpus_identity(7, "manifest:activate");
+    let previous = search_corpus_identity(6, "manifest:previous");
+    let mut wrong_repo = candidate.clone();
+    wrong_repo.lexical.repo_id = RepoId::new("other-repo");
+    let mut wrong_revision = candidate.clone();
+    wrong_revision.semantic.revision_id = RevisionId::new("other-revision");
+    let wrong_generation = search_corpus_identity(8, "manifest:activate");
+    let wrong_digest = search_corpus_identity(7, "manifest:other");
+    let cases = [
+        (
+            "active repo",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: wrong_repo,
+                previous_sealed_active: Some(previous.clone()),
+            },
+        ),
+        (
+            "active revision",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: wrong_revision,
+                previous_sealed_active: Some(previous.clone()),
+            },
+        ),
+        (
+            "active generation",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: wrong_generation,
+                previous_sealed_active: Some(previous.clone()),
+            },
+        ),
+        (
+            "active digest",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: wrong_digest,
+                previous_sealed_active: Some(previous.clone()),
+            },
+        ),
+        (
+            "missing previous",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: candidate.clone(),
+                previous_sealed_active: None,
+            },
+        ),
+        (
+            "wrong previous",
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: candidate.clone(),
+                previous_sealed_active: Some(search_corpus_identity(5, "manifest:older")),
+            },
+        ),
+    ];
+
+    for (label, ack) in cases {
+        let control = Arc::new(StubControlTransport::new(
+            quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack),
+        ));
+        let ingest = Arc::new(StubIngestTransport::new(
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
+                generation: ManifestGeneration::new(7),
+                manifest_digest: "manifest:activate".to_string(),
+                accepted_clear_surfaces: 0,
+                accepted_replace_scopes: 0,
+                accepted_tombstone_scopes: 0,
+                sealed: true,
+            }),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control, ingest);
+        let batch = SearchCorpusBatch::replace_generation(
+            repo_id(),
+            revision_id(),
+            ManifestGeneration::new(7),
+            "manifest:activate",
+            "batch:activate",
+        );
+        let error = client
+            .producer()
+            .publish_search_corpus_and_activate(&batch, Some(previous.clone()))
+            .expect_err(label);
+        assert!(
+            matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
+            "{label} mismatch must fail as a protocol error, got {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -2290,6 +2383,127 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
     };
     assert_eq!(code, "INVALID_REQUEST");
     assert!(message.contains("channel rejected"));
+}
+
+#[test]
+fn generations_rollback_emits_and_accepts_only_exact_composite_ack_v1() {
+    let expected_active = search_corpus_identity(11, "manifest:11");
+    let target = search_corpus_identity(10, "manifest:10");
+    let ack = SearchPlaneSearchCorpusRollbackCasAck {
+        active: target.clone(),
+        previous_sealed_active: expected_active.clone(),
+    };
+    let control = Arc::new(StubControlTransport::new(
+        quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+            ack.clone(),
+        ),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+    let observed = ok_or_fail!(client.generations().rollback(
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: expected_active.clone(),
+            target: target.clone(),
+        },
+    ));
+    assert_eq!(observed, ack);
+
+    let captured = ok_or_fail!(only_control_request(control.as_ref()));
+    let quanta_index_contract::SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
+        request,
+    ) = captured.payload
+    else {
+        panic!("expected composite search-corpus rollback CAS request");
+    };
+    assert_eq!(request.expected_active, expected_active);
+    assert_eq!(request.target, target);
+}
+
+#[test]
+fn generations_rollback_rejects_ack_identity_mismatches_v1() {
+    let expected_active = search_corpus_identity(11, "manifest:11");
+    let target = search_corpus_identity(10, "manifest:10");
+    let cases = [
+        (
+            "active",
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: search_corpus_identity(9, "manifest:9"),
+                previous_sealed_active: expected_active.clone(),
+            },
+        ),
+        (
+            "previous",
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: target.clone(),
+                previous_sealed_active: search_corpus_identity(12, "manifest:12"),
+            },
+        ),
+    ];
+    for (label, ack) in cases {
+        let control = Arc::new(StubControlTransport::new(
+            quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+        let error = client
+            .generations()
+            .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active: expected_active.clone(),
+                target: target.clone(),
+            })
+            .expect_err(label);
+        assert!(
+            matches!(error, crate::SdkError::Protocol(ref message) if message.contains("acknowledgement")),
+            "{label} mismatch must fail as a protocol error, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn generations_rollback_rejects_invalid_composite_request_before_transport_v1() {
+    let base_ack = SearchPlaneSearchCorpusRollbackCasAck {
+        active: search_corpus_identity(10, "manifest:10"),
+        previous_sealed_active: search_corpus_identity(11, "manifest:11"),
+    };
+    let mut malformed_target = search_corpus_identity(10, "manifest:10");
+    malformed_target.semantic.track = Track::Lexical;
+    let mut other_repo_target = search_corpus_identity(10, "manifest:10");
+    other_repo_target.lexical.repo_id = RepoId::new("other-repo");
+    other_repo_target.semantic.repo_id = RepoId::new("other-repo");
+    let requests = [
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: search_corpus_identity(11, "manifest:11"),
+            target: malformed_target,
+        },
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: search_corpus_identity(11, "manifest:11"),
+            target: other_repo_target,
+        },
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: search_corpus_identity(11, "manifest:11"),
+            target: search_corpus_identity(11, "manifest:same-generation"),
+        },
+    ];
+
+    for request in requests {
+        let control = Arc::new(StubControlTransport::new(
+            quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+                base_ack.clone(),
+            ),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control.clone(), unused_ingest());
+        let error = client
+            .generations()
+            .rollback(request)
+            .expect_err("invalid composite rollback request must fail before transport");
+        assert!(matches!(error, crate::SdkError::Protocol(_)));
+        assert!(
+            control
+                .requests
+                .lock()
+                .expect("control request mutex")
+                .is_empty(),
+            "invalid composite rollback request reached the control transport"
+        );
+    }
 }
 
 #[test]

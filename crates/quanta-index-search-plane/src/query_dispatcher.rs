@@ -18,8 +18,8 @@ use quanta_index_contract::{
     ChunkId, ChunkRecord, CommitCandidate, DiffCandidate, EarlyStopReason, EngineTouched,
     GenerationPin, GenerationSelector, HistoryQueryRequest, HybridQueryRequest,
     HybridQueryResponse, HybridSeedCandidate, HybridSeedLane, HybridSeedQueryRequest,
-    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqExpr, LqFileScope,
-    LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
+    HybridSeedQueryResponse, LQ_VERSION_TAG, LexicalCandidate, LqCase, LqCountBound, LqExpr,
+    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, LqSpan, LqStructuralBlock,
     LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleRef,
     LqStructuralNode, LqType, LqYesNoOnly, ManifestGeneration, OwnerDocKind, PlannerStage,
     PlannerTraceEntry, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV1, RepairClass,
@@ -119,6 +119,35 @@ fn probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
         )));
     }
     Ok(probed)
+}
+
+fn requests_full_recall_v1(query: &LqQuery) -> bool {
+    matches!(query.options.count, Some(LqCountBound::All))
+}
+
+fn lexical_fetch_limit_v1(query: &LqQuery, requested_top_k: u32) -> Result<u32, CoreError> {
+    if requests_full_recall_v1(query) {
+        return Ok(requested_top_k);
+    }
+    probe_top_k_v1(requested_top_k)
+}
+
+fn full_recall_window_v1(returned: usize) -> Result<QueryResultWindowV1, CoreError> {
+    let returned = u32::try_from(returned).map_err(|err| {
+        CoreError::InvalidContract(format!("full-recall result count exceeds u32: {err}"))
+    })?;
+    Ok(QueryResultWindowV1::exact(returned))
+}
+
+fn lexical_result_window_v1<T>(
+    query: &LqQuery,
+    results: &mut Vec<T>,
+    requested_top_k: u32,
+) -> Result<QueryResultWindowV1, CoreError> {
+    if requests_full_recall_v1(query) {
+        return full_recall_window_v1(results.len());
+    }
+    finalize_probe_window_v1(results, requested_top_k)
 }
 
 fn hybrid_probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
@@ -390,14 +419,14 @@ impl SearchPlaneDispatcher {
         let searcher =
             self.lex_opener
                 .open(&pin.repo_id, &pin.revision_id, pin.manifest_generation)?;
-        let probe_top_k = probe_top_k_v1(request.top_k)?;
+        let fetch_top_k = lexical_fetch_limit_v1(&prepared.query, request.top_k)?;
         let mut results = searcher.search_constrained(
             &prepared.query,
             &prepared_language.constraints,
-            probe_top_k,
+            fetch_top_k,
         )?;
         stabilize_ranked_candidates(&mut results);
-        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
+        let window = lexical_result_window_v1(&prepared.query, &mut results, request.top_k)?;
         let file_owner_rows = if wants_file_owner_projection {
             Some(searcher.project_file_owners(&results)?)
         } else {
@@ -448,9 +477,10 @@ impl SearchPlaneDispatcher {
         let mut results = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
-            probe_top_k_v1(request.top_k)?,
+            lexical_fetch_limit_v1(&prepared_language.query, request.top_k)?,
         )?;
-        let window = finalize_probe_window_v1(&mut results, request.top_k)?;
+        let window =
+            lexical_result_window_v1(&prepared_language.query, &mut results, request.top_k)?;
         Ok(SymbolQueryResponse {
             generation: pin,
             results,
@@ -4597,8 +4627,9 @@ mod tests {
         ERR_NOT_IMPLEMENTED, ERR_NOT_READY, ERR_RUNTIME_DIRTY_ONLY_UNSUPPORTED,
         FailClosedStructuralProducer, MAX_OBS_SAMPLES, QueryObsSink, SearchPlaneDispatcher,
         build_hybrid_seed_candidates_v2, build_probe_query, classify_error_metric_name,
-        finalize_probe_window_v1, fused_window_v1, make_pin, prepare_language_query_v1,
-        probe_top_k_v1, runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
+        finalize_probe_window_v1, fused_window_v1, lexical_fetch_limit_v1,
+        lexical_result_window_v1, make_pin, prepare_language_query_v1, probe_top_k_v1,
+        runtime_generation_is_stale, runtime_seed_ids, validate_history_query,
         validate_runtime_metadata_query,
     };
     use crate::{
@@ -4674,6 +4705,31 @@ mod tests {
         );
         assert!(probe_top_k_v1(10_000).is_err());
         assert!(probe_top_k_v1(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn count_all_bypasses_page_probe_and_preserves_exact_full_recall_window_v1() {
+        use quanta_index_contract::{LqCountBound, QueryResultWindowV1};
+
+        let mut query = build_probe_query("needle");
+        query.options.count = Some(LqCountBound::All);
+        assert_eq!(
+            lexical_fetch_limit_v1(&query, 1).expect("count:all fetch limit"),
+            1,
+            "the lexical adapter expands count:all from the caller's requested page"
+        );
+
+        let mut results = vec!["alpha", "beta", "gamma"];
+        assert_eq!(
+            lexical_result_window_v1(&query, &mut results, 1)
+                .expect("count:all full-recall window"),
+            QueryResultWindowV1::exact(3)
+        );
+        assert_eq!(
+            results,
+            vec!["alpha", "beta", "gamma"],
+            "count:all must not be truncated again by the dispatcher page window"
+        );
     }
 
     // CASE-COVERS: hybrid explanation honesty (semantic lane scoped to lexical).
@@ -6247,7 +6303,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_seed_v2_fuses_corpus_local_ranks_and_collapses_views_by_owner() -> TestResult {
+    fn hybrid_seed_v2_keeps_cross_owner_ids_and_corpus_local_ranks_distinct() -> TestResult {
         fn hit(
             record_id: &str,
             owner_id: &str,
@@ -6298,35 +6354,34 @@ mod tests {
             ],
         ];
         let seeds = build_hybrid_seed_candidates_v2(&[], &semantic_lanes, &[], 3)?;
-        let shared = seeds
-            .first()
-            .ok_or_else(|| "expected fused shared owner".to_string())?;
-        if shared.entity_id != "shared" || shared.seed_rank != 1 {
-            return Err(
-                format!("shared multi-corpus owner must win rank fusion: {seeds:?}").into(),
-            );
-        }
-        let has_module = shared
-            .contributions
+        let module_shared = seeds
             .iter()
-            .any(|contribution| contribution.corpus_kind == Some(SemanticCorpusKindV1::ModuleCard));
-        let has_symbol = shared
-            .contributions
+            .find(|seed| {
+                seed.entity_id == "shared"
+                    && seed.owner_kind == quanta_index_contract::OwnerDocKind::Module
+            })
+            .ok_or_else(|| "expected Module/shared seed".to_string())?;
+        let symbol_shared = seeds
             .iter()
-            .any(|contribution| contribution.corpus_kind == Some(SemanticCorpusKindV1::SymbolCard));
-        if !has_module || !has_symbol {
-            return Err(format!(
-                "shared owner must retain both corpus contributions: {:?}",
-                shared.contributions
-            )
-            .into());
-        }
-        if shared
-            .contributions
-            .iter()
-            .any(|contribution| contribution.rank != 1)
-        {
-            return Err("each corpus lane must retain its own one-based rank domain".into());
+            .find(|seed| {
+                seed.entity_id == "shared"
+                    && seed.owner_kind == quanta_index_contract::OwnerDocKind::Symbol
+            })
+            .ok_or_else(|| "expected Symbol/shared seed".to_string())?;
+
+        for (seed, expected_corpus) in [
+            (module_shared, SemanticCorpusKindV1::ModuleCard),
+            (symbol_shared, SemanticCorpusKindV1::SymbolCard),
+        ] {
+            if seed.contributions.len() != 1
+                || seed.contributions[0].corpus_kind != Some(expected_corpus)
+                || seed.contributions[0].rank != 1
+            {
+                return Err(format!(
+                    "cross-owner seed must retain one rank-1 corpus-local contribution: {seed:?}"
+                )
+                .into());
+            }
         }
         Ok(())
     }

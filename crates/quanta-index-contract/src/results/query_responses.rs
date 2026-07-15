@@ -459,7 +459,12 @@ macro_rules! impl_generation_results_response_serde {
                 }
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-                if usize::try_from(window.returned()).ok() != Some(results.len()) {
+                let returned = usize::try_from(window.returned()).map_err(|error| {
+                    de::Error::custom(format!(
+                        "query result window returned count cannot fit usize: {error}"
+                    ))
+                })?;
+                if returned != results.len() {
                     return Err(de::Error::custom(
                         "query result window returned count does not match results length",
                     ));
@@ -549,7 +554,12 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 }
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-                if usize::try_from(window.returned()).ok() != Some(results.len()) {
+                let returned = usize::try_from(window.returned()).map_err(|error| {
+                    de::Error::custom(format!(
+                        "query result window returned count cannot fit usize: {error}"
+                    ))
+                })?;
+                if returned != results.len() {
                     return Err(de::Error::custom(
                         "query result window returned count does not match results length",
                     ));
@@ -973,7 +983,12 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         }
         let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
-        if usize::try_from(window.returned()).ok() != Some(results.len()) {
+        let returned = usize::try_from(window.returned()).map_err(|error| {
+            de::Error::custom(format!(
+                "query result window returned count cannot fit usize: {error}"
+            ))
+        })?;
+        if returned != results.len() {
             return Err(de::Error::custom(
                 "query result window returned count does not match results length",
             ));
@@ -1577,7 +1592,12 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         let returned_len = seed_candidates_v2
             .as_ref()
             .map_or(seed_candidates.len(), Vec::len);
-        if usize::try_from(window.returned()).ok() != Some(returned_len) {
+        let returned = usize::try_from(window.returned()).map_err(|error| {
+            de::Error::custom(format!(
+                "hybrid seed window returned count cannot fit usize: {error}"
+            ))
+        })?;
+        if returned != returned_len {
             return Err(de::Error::custom(
                 "hybrid seed window returned count does not match active seed result length",
             ));

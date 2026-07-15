@@ -8,8 +8,7 @@ use quanta_index_contract::{
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-    TextQuerySyntax,
+    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
     lex::{CommitSha, LanguageCode},
 };
 use quanta_index_searchd_harness as e2e_harness;
@@ -355,6 +354,7 @@ fn publish_revision_text_generation(
         seal: true,
     })?;
     let pin = GenerationPin::new(rt.repo(), revision_id, generation);
+    rt.activate_last_sealed_generation()?;
     Ok(pin)
 }
 

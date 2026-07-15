@@ -1,10 +1,10 @@
 use quanta_index_contract::{
+    RepoId, RevisionId, SearchPlaneTrackKind,
     ipc::{
         CurrentGenerationRequest, GenerationSnapshot, GenerationStatusReport,
         GenerationStatusRequest, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
-        SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
     },
-    RepoId, RevisionId, SearchPlaneTrackKind,
 };
 
 use crate::{QuantaIndex, SdkError};
@@ -23,17 +23,25 @@ impl<'a> GenerationNamespace<'a> {
         Self { client }
     }
 
-    /// Apply an explicit semantic rollback guarded by the expected active
-    /// generation and digest. This is separate from composite activation.
+    /// Apply an explicit composite rollback guarded by the exact expected
+    /// lexical plus semantic active identity.
     pub fn rollback(
         &self,
-        request: SearchPlaneRollbackGenerationRequest,
-    ) -> Result<SearchPlaneRollbackGenerationAck, SdkError> {
-        let response = self
-            .client
-            .dispatch_control(SearchPlaneControlIpcRequest::RollbackGeneration(request))?;
+        request: SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, SdkError> {
+        validate_composite_rollback_request_v1(&request)?;
+        let expected_ack = SearchPlaneSearchCorpusRollbackCasAck {
+            active: request.target.clone(),
+            previous_sealed_active: request.expected_active.clone(),
+        };
+        let response = self.client.dispatch_control(
+            SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(request),
+        )?;
         match response {
-            SearchPlaneControlIpcResponse::RollbackAck(ack) => Ok(ack),
+            SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(ack) => {
+                validate_composite_rollback_ack_v1(&ack, &expected_ack)?;
+                Ok(ack)
+            }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::Error(_)
@@ -66,7 +74,7 @@ impl<'a> GenerationNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => Ok(snapshot),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RollbackAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
@@ -93,7 +101,7 @@ impl<'a> GenerationNamespace<'a> {
         match response {
             SearchPlaneControlIpcResponse::GenerationStatusReport(report) => Ok(report),
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
-            | SearchPlaneControlIpcResponse::RollbackAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
@@ -102,4 +110,25 @@ impl<'a> GenerationNamespace<'a> {
             ))),
         }
     }
+}
+
+fn validate_composite_rollback_request_v1(
+    request: &SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+) -> Result<(), SdkError> {
+    request.validate_v1().map_err(|error| {
+        SdkError::Protocol(format!("composite rollback request is invalid: {error}"))
+    })
+}
+
+fn validate_composite_rollback_ack_v1(
+    observed: &SearchPlaneSearchCorpusRollbackCasAck,
+    expected: &SearchPlaneSearchCorpusRollbackCasAck,
+) -> Result<(), SdkError> {
+    if observed != expected {
+        return Err(SdkError::Protocol(
+            "composite rollback acknowledgement does not match the requested target and expected active identity"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }

@@ -233,8 +233,7 @@ mod tests {
     fn language_constraints_are_canonical_and_intersect_as_or_sets() {
         let rust = LanguageCode::new("rust").expect("valid language");
         let python = LanguageCode::new("python").expect("valid language");
-        let left =
-            QueryConstraintSetV1::from_languages([rust.clone(), python.clone(), rust.clone()]);
+        let left = QueryConstraintSetV1::from_languages([rust.clone(), python, rust.clone()]);
         assert_eq!(
             left.language_any_of
                 .iter()

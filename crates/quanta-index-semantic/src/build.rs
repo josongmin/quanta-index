@@ -61,6 +61,32 @@ const VECTOR_INDEX_MIN_ROWS: u64 = 256;
 const STAGING_DIR_NAME: &str = "dataset.staging";
 const BACKUP_DIR_NAME: &str = "dataset.backup";
 
+/// Test-only environment variable consumed by the subprocess crash matrix.
+///
+/// The hook is compiled only into this crate's unit-test binary. It exits
+/// without unwinding so the parent test exercises the exact on-disk state a
+/// process loss leaves at each promotion boundary.
+#[cfg(test)]
+const PROMOTION_CRASH_BOUNDARY_ENV: &str = "QUANTA_INDEX_SEMANTIC_PROMOTION_CRASH_BOUNDARY";
+#[cfg(test)]
+const PROMOTION_CRASH_EXIT_CODE: i32 = 86;
+#[cfg(test)]
+const PRE_DATASET_PROMOTION: &str = "pre-dataset-promotion";
+#[cfg(test)]
+const POST_DATASET_PRE_CONTRACT_PROMOTION: &str = "post-dataset-pre-contract-promotion";
+
+#[cfg(test)]
+#[expect(
+    clippy::exit,
+    reason = "the subprocess-only crash matrix must terminate without stack unwinding"
+)]
+fn exit_for_promotion_crash_boundary(boundary: &str) {
+    let configured = std::env::var(PROMOTION_CRASH_BOUNDARY_ENV).ok();
+    if configured.as_deref() == Some(boundary) {
+        std::process::exit(PROMOTION_CRASH_EXIT_CODE);
+    }
+}
+
 #[cfg(any(test, debug_assertions))]
 mod failpoint {
     use std::cell::RefCell;
@@ -1092,6 +1118,8 @@ pub(crate) async fn build_batch(
     // already durable, so a rejected append/tombstone/seal cannot advance policy
     // independently of its rows.
     let staged_contract_path = stage_generation_contract(&generation_dir, &generation_contract)?;
+    #[cfg(test)]
+    exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
     if let Err(promote_err) = promote_staging_dataset(&generation_dir) {
         if let Err(cleanup_err) = fs::remove_file(&staged_contract_path) {
             return Err(CoreError::Storage(format!(
@@ -1101,6 +1129,8 @@ pub(crate) async fn build_batch(
         }
         return Err(promote_err);
     }
+    #[cfg(test)]
+    exit_for_promotion_crash_boundary(POST_DATASET_PRE_CONTRACT_PROMOTION);
     if let Err(contract_err) =
         promote_staged_generation_contract(&generation_dir, &staged_contract_path)
     {
@@ -1143,6 +1173,10 @@ pub(crate) async fn build_batch(
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     use arrow_array::Array;
     use futures::TryStreamExt as _;
     use lancedb::query::ExecutableQuery as _;
@@ -1158,9 +1192,11 @@ mod tests {
     use quanta_index_core::CoreError;
 
     use super::{
-        BACKUP_DIR_NAME, build_batch, column_as, ensure_generation_contract, failpoint,
-        open_connection, persist_generation_contract, recover_dataset_artifacts,
-        stage_generation_contract, validate_batch_scope_authority_v1,
+        BACKUP_DIR_NAME, POST_DATASET_PRE_CONTRACT_PROMOTION, PRE_DATASET_PROMOTION,
+        PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME, build_batch,
+        column_as, ensure_generation_contract, failpoint, open_connection,
+        persist_generation_contract, recover_dataset_artifacts, stage_generation_contract,
+        validate_batch_scope_authority_v1,
     };
     use crate::generation_contract::GenerationContract;
     use crate::layout::{
@@ -1173,6 +1209,8 @@ mod tests {
     use crate::search::open_generation;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    const PROMOTION_CRASH_ROOT_ENV: &str = "QUANTA_INDEX_SEMANTIC_PROMOTION_CRASH_ROOT";
 
     fn repo_id() -> RepoId {
         RepoId::new("repo-build")
@@ -1308,6 +1346,221 @@ mod tests {
             tombstone_scopes: Vec::new(),
             seal,
         })
+    }
+
+    fn promotion_batch(
+        generation: ManifestGeneration,
+        id: &str,
+        owner_kind: OwnerDocKind,
+        owner_id: &str,
+        corpus_kind: SemanticCorpusKindV1,
+        required_corpora: Vec<SemanticCorpusKindV1>,
+        vector: Vec<f32>,
+    ) -> Result<SemanticIngestBatch, String> {
+        let mut batch = batch(generation, "src/promotion.rs", id, vector, false)?;
+        let record = &mut batch.replace_scopes[0].embeddings[0];
+        record.owner_kind = owner_kind;
+        record.owner_id = owner_id.to_string().into_boxed_str();
+        record.corpus_kind = corpus_kind;
+        record.source_role = match corpus_kind {
+            SemanticCorpusKindV1::RawCodeFallback => SourceRoleV1::RawFallbackText,
+            SemanticCorpusKindV1::DocumentSummary => SourceRoleV1::SummaryText,
+            SemanticCorpusKindV1::DocumentLeaf | SemanticCorpusKindV1::DocumentSection => {
+                SourceRoleV1::DocumentText
+            }
+            SemanticCorpusKindV1::SymbolCard
+            | SemanticCorpusKindV1::ModuleCard
+            | SemanticCorpusKindV1::ClusterCard
+            | SemanticCorpusKindV1::TestBehavior
+            | SemanticCorpusKindV1::RepositorySummary => SourceRoleV1::CardText,
+        };
+        record.capability_status = if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
+            CapabilityStatusV1::Degraded
+        } else {
+            CapabilityStatusV1::Full
+        };
+        record.parent_owner_id = None;
+        record.card_schema_version = if corpus_kind == SemanticCorpusKindV1::RawCodeFallback {
+            0
+        } else {
+            1
+        };
+        batch.required_corpora = required_corpora;
+        batch.corpus_policy_digest = Some("semantic-source.v1".to_string());
+        Ok(batch)
+    }
+
+    fn seal_existing_generation_batch(mut batch: SemanticIngestBatch) -> SemanticIngestBatch {
+        batch.batch_digest = format!("{}:seal", batch.batch_digest);
+        batch.required_corpora.clear();
+        batch.replace_scopes.clear();
+        batch.tombstone_scopes.clear();
+        batch.seal = true;
+        batch
+    }
+
+    fn run_promotion_crash_child(root: &Path, boundary: &str) -> TestResult {
+        if boundary != PRE_DATASET_PROMOTION && boundary != POST_DATASET_PRE_CONTRACT_PROMOTION {
+            return Err(format!("unknown promotion crash boundary {boundary}").into());
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = ManifestGeneration::new(90);
+        let module_batch = promotion_batch(
+            generation,
+            "module-after-crash",
+            OwnerDocKind::Module,
+            "module:after-crash",
+            SemanticCorpusKindV1::ModuleCard,
+            vec![SemanticCorpusKindV1::ModuleCard],
+            vec![0.0, 1.0, 0.0],
+        )?;
+        let result = crate::run_blocking(&runtime, build_batch(root, &module_batch));
+        match result {
+            Ok(()) => Err("promotion child returned without abrupt exit".into()),
+            Err(err) => {
+                Err(format!("promotion child returned error instead of abrupt exit: {err}").into())
+            }
+        }
+    }
+
+    fn child_root_from_env() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+        match env::var_os(PROMOTION_CRASH_ROOT_ENV) {
+            Some(root) => Ok(Some(PathBuf::from(root))),
+            None => Ok(None),
+        }
+    }
+
+    fn assert_recovered_promotion_state(
+        root: &Path,
+        boundary: &str,
+        base_batch: SemanticIngestBatch,
+    ) -> TestResult {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let generation = base_batch.generation;
+        let generation_dir = layout::generation_dir(root, &repo_id(), &revision_id(), generation);
+        let contract_path = layout::build_contract_path(&generation_dir);
+        let staged_contract_path = contract_path.with_extension("next");
+
+        let before_recovery = GenerationContract::decode(&std::fs::read(&contract_path)?)?;
+        assert_eq!(before_recovery.required_corpora, vec!["SymbolCard"]);
+        assert!(
+            staged_contract_path.exists(),
+            "crash must leave staged contract"
+        );
+        match boundary {
+            PRE_DATASET_PROMOTION => {
+                assert!(
+                    generation_dir.join(STAGING_DIR_NAME).exists(),
+                    "pre-dataset crash must leave unpromoted staging dataset"
+                );
+                assert!(
+                    !generation_dir.join(BACKUP_DIR_NAME).exists(),
+                    "pre-dataset crash must not create backup dataset"
+                );
+            }
+            POST_DATASET_PRE_CONTRACT_PROMOTION => {
+                assert!(
+                    !generation_dir.join(STAGING_DIR_NAME).exists(),
+                    "post-dataset crash must have consumed staging dataset"
+                );
+                assert!(
+                    generation_dir.join(BACKUP_DIR_NAME).exists(),
+                    "post-dataset crash must preserve prior dataset as backup"
+                );
+            }
+            other => return Err(format!("unknown promotion crash boundary {other}").into()),
+        }
+
+        let seal_batch = seal_existing_generation_batch(base_batch);
+        crate::run_blocking(&runtime, build_batch(root, &seal_batch))?;
+
+        let recovered = GenerationContract::decode(&std::fs::read(&contract_path)?)?;
+        let expected_corpora = match boundary {
+            PRE_DATASET_PROMOTION => vec!["SymbolCard"],
+            POST_DATASET_PRE_CONTRACT_PROMOTION => vec!["ModuleCard", "SymbolCard"],
+            other => return Err(format!("unknown promotion crash boundary {other}").into()),
+        };
+        assert_eq!(recovered.required_corpora, expected_corpora);
+        assert!(!staged_contract_path.exists());
+        assert!(!generation_dir.join(STAGING_DIR_NAME).exists());
+        assert!(!generation_dir.join(BACKUP_DIR_NAME).exists());
+
+        let loaded = crate::run_blocking(
+            &runtime,
+            open_generation(root, &repo_id(), &revision_id(), generation),
+        )?;
+        let symbol_hits = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[1.0, 0.0, 0.0], 10, Some("SymbolCard")),
+        )?;
+        let module_hits = crate::run_blocking(
+            &runtime,
+            loaded.search_hits_filtered_async(&[0.0, 1.0, 0.0], 10, Some("ModuleCard")),
+        )?;
+        assert_eq!(symbol_hits.len(), 1);
+        assert_eq!(
+            module_hits.len(),
+            if boundary == POST_DATASET_PRE_CONTRACT_PROMOTION {
+                1
+            } else {
+                0
+            },
+            "recovered dataset must match the contract selected by recovery"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test asserts subprocess crash recovery invariants"
+    )]
+    fn subprocess_crash_during_generation_promotion_recovers_complete_pair() -> TestResult {
+        if let Some(root) = child_root_from_env()? {
+            let boundary = env::var(PROMOTION_CRASH_BOUNDARY_ENV)
+                .map_err(|err| format!("promotion crash child missing boundary: {err}"))?;
+            return run_promotion_crash_child(&root, &boundary);
+        }
+
+        for boundary in [PRE_DATASET_PROMOTION, POST_DATASET_PRE_CONTRACT_PROMOTION] {
+            let temp = tempdir()?;
+            let root = temp.path().to_path_buf();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let base_batch = promotion_batch(
+                ManifestGeneration::new(90),
+                "symbol-before-crash",
+                OwnerDocKind::Symbol,
+                "symbol:before-crash",
+                SemanticCorpusKindV1::SymbolCard,
+                vec![SemanticCorpusKindV1::SymbolCard],
+                vec![1.0, 0.0, 0.0],
+            )?;
+            crate::run_blocking(&runtime, build_batch(&root, &base_batch))?;
+
+            let test_name =
+                "build::tests::subprocess_crash_during_generation_promotion_recovers_complete_pair";
+            let status = Command::new(env::current_exe()?)
+                .arg("--exact")
+                .arg(test_name)
+                .arg("--nocapture")
+                .env(PROMOTION_CRASH_ROOT_ENV, &root)
+                .env(PROMOTION_CRASH_BOUNDARY_ENV, boundary)
+                .status()?;
+            assert_eq!(
+                status.code(),
+                Some(PROMOTION_CRASH_EXIT_CODE),
+                "child must stop exactly at {boundary}; status={status}"
+            );
+
+            assert_recovered_promotion_state(&root, boundary, base_batch)?;
+        }
+        Ok(())
     }
 
     #[test]

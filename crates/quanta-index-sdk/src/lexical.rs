@@ -333,6 +333,10 @@ impl<'a> SearchCorpusNamespace<'a> {
             ));
         }
         let candidate = search_corpus_identity_from_receipt_v1(batch, &receipt)?;
+        let expected_ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: candidate.clone(),
+            previous_sealed_active: expected_active.clone(),
+        };
         let response = self.client.dispatch_control(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
@@ -343,7 +347,7 @@ impl<'a> SearchCorpusNamespace<'a> {
         )?;
         let activation = match response {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
-            other @ (SearchPlaneControlIpcResponse::RollbackAck(_)
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
             | SearchPlaneControlIpcResponse::RepoMapMutationAck(_)
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)) => {
@@ -358,8 +362,22 @@ impl<'a> SearchCorpusNamespace<'a> {
                 ));
             }
         };
+        validate_composite_activation_ack_v1(&activation, &expected_ack)?;
         Ok((receipt, activation))
     }
+}
+
+fn validate_composite_activation_ack_v1(
+    observed: &SearchPlaneSearchCorpusActivationCasAck,
+    expected: &SearchPlaneSearchCorpusActivationCasAck,
+) -> Result<(), SdkError> {
+    if observed != expected {
+        return Err(SdkError::Protocol(
+            "composite activation acknowledgement does not match the published candidate and expected active identity"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn search_corpus_identity_from_receipt_v1(

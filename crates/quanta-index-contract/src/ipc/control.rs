@@ -387,306 +387,231 @@ impl<'de> Deserialize<'de> for SearchPlaneSearchCorpusActivationCasAck {
     }
 }
 
-/// Explicit compare-and-swap rollback request for one composite search corpus.
+/// Explicit compare-and-swap rollback request for one complete search corpus.
 ///
-/// `track` is retained as the semantic rollback-capability selector and MUST
-/// be `Semantic`; it does not select a single-track state. The control plane
-/// restores lexical and semantic identities together from the exact target
-/// tuple, so a stale operator cannot overwrite a concurrent composite
-/// activation or create a semantic-only active head.
+/// Both the expected head and rollback target carry exact lexical plus
+/// semantic identities. A single-track rollback cannot be represented on the
+/// wire, and a stale operator cannot overwrite a concurrent activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchPlaneRollbackGenerationRequest {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub track: SearchPlaneTrackKind,
-    pub expected_active_generation: ManifestGeneration,
-    pub expected_active_manifest_digest: String,
-    pub target_generation: ManifestGeneration,
-    pub target_manifest_digest: String,
+pub struct SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+    pub expected_active: SearchCorpusGenerationIdentityV1,
+    pub target: SearchCorpusGenerationIdentityV1,
 }
 
-/// Result of a successful explicit composite rollback CAS.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchPlaneRollbackGenerationAck {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub track: SearchPlaneTrackKind,
-    pub previous_generation: ManifestGeneration,
-    pub previous_manifest_digest: String,
-    pub manifest_generation: ManifestGeneration,
-    pub manifest_digest: String,
+/// Validation failure for a composite search-corpus rollback request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchCorpusRollbackValidationErrorV1 {
+    ExpectedActiveIdentity(SearchCorpusGenerationIdentityValidationErrorV1),
+    TargetIdentity(SearchCorpusGenerationIdentityValidationErrorV1),
+    RepoMismatch,
+    RevisionMismatch,
+    TargetGenerationMustPrecedeExpectedActive,
 }
 
-const SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS: &[&str] = &[
-    "repo_id",
-    "revision_id",
-    "track",
-    "expected_active_generation",
-    "expected_active_manifest_digest",
-    "target_generation",
-    "target_manifest_digest",
-];
-
-const SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS: &[&str] = &[
-    "repo_id",
-    "revision_id",
-    "track",
-    "previous_generation",
-    "previous_manifest_digest",
-    "manifest_generation",
-    "manifest_digest",
-];
-
-fn serialize_rollback_request<S>(
-    request: &SearchPlaneRollbackGenerationRequest,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut state = serializer.serialize_struct("SearchPlaneRollbackGenerationRequest", 7)?;
-    state.serialize_field("repo_id", &request.repo_id)?;
-    state.serialize_field("revision_id", &request.revision_id)?;
-    state.serialize_field("track", &request.track)?;
-    state.serialize_field(
-        "expected_active_generation",
-        &request.expected_active_generation,
-    )?;
-    state.serialize_field(
-        "expected_active_manifest_digest",
-        &request.expected_active_manifest_digest,
-    )?;
-    state.serialize_field("target_generation", &request.target_generation)?;
-    state.serialize_field("target_manifest_digest", &request.target_manifest_digest)?;
-    state.end()
-}
-
-impl Serialize for SearchPlaneRollbackGenerationRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_rollback_request(self, serializer)
-    }
-}
-
-struct SearchPlaneRollbackGenerationRequestVisitor;
-
-impl<'de> Visitor<'de> for SearchPlaneRollbackGenerationRequestVisitor {
-    type Value = SearchPlaneRollbackGenerationRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneRollbackGenerationRequest map")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut repo_id = None;
-        let mut revision_id = None;
-        let mut track = None;
-        let mut expected_active_generation = None;
-        let mut expected_active_manifest_digest = None;
-        let mut target_generation = None;
-        let mut target_manifest_digest = None;
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "repo_id" => {
-                    if repo_id.is_some() {
-                        return Err(de::Error::duplicate_field("repo_id"));
-                    }
-                    repo_id = Some(map.next_value()?);
-                }
-                "revision_id" => {
-                    if revision_id.is_some() {
-                        return Err(de::Error::duplicate_field("revision_id"));
-                    }
-                    revision_id = Some(map.next_value()?);
-                }
-                "track" => {
-                    if track.is_some() {
-                        return Err(de::Error::duplicate_field("track"));
-                    }
-                    track = Some(map.next_value()?);
-                }
-                "expected_active_generation" => {
-                    if expected_active_generation.is_some() {
-                        return Err(de::Error::duplicate_field("expected_active_generation"));
-                    }
-                    expected_active_generation = Some(map.next_value()?);
-                }
-                "expected_active_manifest_digest" => {
-                    if expected_active_manifest_digest.is_some() {
-                        return Err(de::Error::duplicate_field(
-                            "expected_active_manifest_digest",
-                        ));
-                    }
-                    expected_active_manifest_digest = Some(map.next_value()?);
-                }
-                "target_generation" => {
-                    if target_generation.is_some() {
-                        return Err(de::Error::duplicate_field("target_generation"));
-                    }
-                    target_generation = Some(map.next_value()?);
-                }
-                "target_manifest_digest" => {
-                    if target_manifest_digest.is_some() {
-                        return Err(de::Error::duplicate_field("target_manifest_digest"));
-                    }
-                    target_manifest_digest = Some(map.next_value()?);
-                }
-                other => {
-                    return Err(de::Error::unknown_field(
-                        other,
-                        SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS,
-                    ));
-                }
+impl SearchCorpusRollbackValidationErrorV1 {
+    #[must_use]
+    pub const fn code_v1(self) -> &'static str {
+        match self {
+            Self::ExpectedActiveIdentity(_) => "EXPECTED_ACTIVE_IDENTITY_INVALID",
+            Self::TargetIdentity(_) => "TARGET_IDENTITY_INVALID",
+            Self::RepoMismatch => "REPO_MISMATCH",
+            Self::RevisionMismatch => "REVISION_MISMATCH",
+            Self::TargetGenerationMustPrecedeExpectedActive => {
+                "TARGET_GENERATION_MUST_PRECEDE_EXPECTED_ACTIVE"
             }
         }
-        Ok(SearchPlaneRollbackGenerationRequest {
-            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
-            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
-            track: track.ok_or_else(|| de::Error::missing_field("track"))?,
-            expected_active_generation: expected_active_generation
-                .ok_or_else(|| de::Error::missing_field("expected_active_generation"))?,
-            expected_active_manifest_digest: expected_active_manifest_digest
-                .ok_or_else(|| de::Error::missing_field("expected_active_manifest_digest"))?,
-            target_generation: target_generation
-                .ok_or_else(|| de::Error::missing_field("target_generation"))?,
-            target_manifest_digest: target_manifest_digest
-                .ok_or_else(|| de::Error::missing_field("target_manifest_digest"))?,
-        })
     }
 }
 
-impl<'de> Deserialize<'de> for SearchPlaneRollbackGenerationRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_struct(
-            "SearchPlaneRollbackGenerationRequest",
-            SEARCH_PLANE_ROLLBACK_GENERATION_REQUEST_FIELDS,
-            SearchPlaneRollbackGenerationRequestVisitor,
-        )
+impl fmt::Display for SearchCorpusRollbackValidationErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExpectedActiveIdentity(error) | Self::TargetIdentity(error) => {
+                write!(formatter, "{}: {error}", self.code_v1())
+            }
+            Self::RepoMismatch
+            | Self::RevisionMismatch
+            | Self::TargetGenerationMustPrecedeExpectedActive => {
+                formatter.write_str(self.code_v1())
+            }
+        }
     }
 }
 
-impl Serialize for SearchPlaneRollbackGenerationAck {
+impl SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+    pub fn validate_v1(&self) -> Result<(), SearchCorpusRollbackValidationErrorV1> {
+        self.expected_active
+            .validate_v1()
+            .map_err(SearchCorpusRollbackValidationErrorV1::ExpectedActiveIdentity)?;
+        self.target
+            .validate_v1()
+            .map_err(SearchCorpusRollbackValidationErrorV1::TargetIdentity)?;
+        if self.expected_active.lexical.repo_id != self.target.lexical.repo_id {
+            return Err(SearchCorpusRollbackValidationErrorV1::RepoMismatch);
+        }
+        if self.expected_active.lexical.revision_id != self.target.lexical.revision_id {
+            return Err(SearchCorpusRollbackValidationErrorV1::RevisionMismatch);
+        }
+        if self.target.lexical.manifest_generation.get()
+            >= self.expected_active.lexical.manifest_generation.get()
+        {
+            return Err(
+                SearchCorpusRollbackValidationErrorV1::TargetGenerationMustPrecedeExpectedActive,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Receipt of one successful composite search-corpus rollback CAS.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchPlaneSearchCorpusRollbackCasAck {
+    pub active: SearchCorpusGenerationIdentityV1,
+    pub previous_sealed_active: SearchCorpusGenerationIdentityV1,
+}
+
+const SEARCH_PLANE_ROLLBACK_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS: &[&str] =
+    &["expected_active", "target"];
+const SEARCH_PLANE_SEARCH_CORPUS_ROLLBACK_CAS_ACK_FIELDS: &[&str] =
+    &["active", "previous_sealed_active"];
+
+impl Serialize for SearchPlaneRollbackSearchCorpusGenerationCasRequest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchPlaneRollbackGenerationAck", 7)?;
-        state.serialize_field("repo_id", &self.repo_id)?;
-        state.serialize_field("revision_id", &self.revision_id)?;
-        state.serialize_field("track", &self.track)?;
-        state.serialize_field("previous_generation", &self.previous_generation)?;
-        state.serialize_field("previous_manifest_digest", &self.previous_manifest_digest)?;
-        state.serialize_field("manifest_generation", &self.manifest_generation)?;
-        state.serialize_field("manifest_digest", &self.manifest_digest)?;
+        let mut state = serializer
+            .serialize_struct("SearchPlaneRollbackSearchCorpusGenerationCasRequest", 2)?;
+        state.serialize_field("expected_active", &self.expected_active)?;
+        state.serialize_field("target", &self.target)?;
         state.end()
     }
 }
 
-struct SearchPlaneRollbackGenerationAckVisitor;
+struct SearchPlaneRollbackSearchCorpusGenerationCasRequestVisitor;
 
-impl<'de> Visitor<'de> for SearchPlaneRollbackGenerationAckVisitor {
-    type Value = SearchPlaneRollbackGenerationAck;
+impl<'de> Visitor<'de> for SearchPlaneRollbackSearchCorpusGenerationCasRequestVisitor {
+    type Value = SearchPlaneRollbackSearchCorpusGenerationCasRequest;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a SearchPlaneRollbackGenerationAck map")
+        formatter.write_str("a SearchPlaneRollbackSearchCorpusGenerationCasRequest map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut repo_id = None;
-        let mut revision_id = None;
-        let mut track = None;
-        let mut previous_generation = None;
-        let mut previous_manifest_digest = None;
-        let mut manifest_generation = None;
-        let mut manifest_digest = None;
+        let mut expected_active = None;
+        let mut target = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "repo_id" => {
-                    if repo_id.is_some() {
-                        return Err(de::Error::duplicate_field("repo_id"));
+                "expected_active" => {
+                    if expected_active.is_some() {
+                        return Err(de::Error::duplicate_field("expected_active"));
                     }
-                    repo_id = Some(map.next_value()?);
+                    expected_active = Some(map.next_value()?);
                 }
-                "revision_id" => {
-                    if revision_id.is_some() {
-                        return Err(de::Error::duplicate_field("revision_id"));
+                "target" => {
+                    if target.is_some() {
+                        return Err(de::Error::duplicate_field("target"));
                     }
-                    revision_id = Some(map.next_value()?);
-                }
-                "track" => {
-                    if track.is_some() {
-                        return Err(de::Error::duplicate_field("track"));
-                    }
-                    track = Some(map.next_value()?);
-                }
-                "previous_generation" => {
-                    if previous_generation.is_some() {
-                        return Err(de::Error::duplicate_field("previous_generation"));
-                    }
-                    previous_generation = Some(map.next_value()?);
-                }
-                "previous_manifest_digest" => {
-                    if previous_manifest_digest.is_some() {
-                        return Err(de::Error::duplicate_field("previous_manifest_digest"));
-                    }
-                    previous_manifest_digest = Some(map.next_value()?);
-                }
-                "manifest_generation" => {
-                    if manifest_generation.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_generation"));
-                    }
-                    manifest_generation = Some(map.next_value()?);
-                }
-                "manifest_digest" => {
-                    if manifest_digest.is_some() {
-                        return Err(de::Error::duplicate_field("manifest_digest"));
-                    }
-                    manifest_digest = Some(map.next_value()?);
+                    target = Some(map.next_value()?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
-                        SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS,
+                        SEARCH_PLANE_ROLLBACK_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS,
                     ));
                 }
             }
         }
-        Ok(SearchPlaneRollbackGenerationAck {
-            repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
-            revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
-            track: track.ok_or_else(|| de::Error::missing_field("track"))?,
-            previous_generation: previous_generation
-                .ok_or_else(|| de::Error::missing_field("previous_generation"))?,
-            previous_manifest_digest: previous_manifest_digest
-                .ok_or_else(|| de::Error::missing_field("previous_manifest_digest"))?,
-            manifest_generation: manifest_generation
-                .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
-            manifest_digest: manifest_digest
-                .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
+        Ok(Self::Value {
+            expected_active: expected_active
+                .ok_or_else(|| de::Error::missing_field("expected_active"))?,
+            target: target.ok_or_else(|| de::Error::missing_field("target"))?,
         })
     }
 }
 
-impl<'de> Deserialize<'de> for SearchPlaneRollbackGenerationAck {
+impl<'de> Deserialize<'de> for SearchPlaneRollbackSearchCorpusGenerationCasRequest {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_struct(
-            "SearchPlaneRollbackGenerationAck",
-            SEARCH_PLANE_ROLLBACK_GENERATION_ACK_FIELDS,
-            SearchPlaneRollbackGenerationAckVisitor,
+            "SearchPlaneRollbackSearchCorpusGenerationCasRequest",
+            SEARCH_PLANE_ROLLBACK_SEARCH_CORPUS_GENERATION_CAS_REQUEST_FIELDS,
+            SearchPlaneRollbackSearchCorpusGenerationCasRequestVisitor,
+        )
+    }
+}
+
+impl Serialize for SearchPlaneSearchCorpusRollbackCasAck {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SearchPlaneSearchCorpusRollbackCasAck", 2)?;
+        state.serialize_field("active", &self.active)?;
+        state.serialize_field("previous_sealed_active", &self.previous_sealed_active)?;
+        state.end()
+    }
+}
+
+struct SearchPlaneSearchCorpusRollbackCasAckVisitor;
+
+impl<'de> Visitor<'de> for SearchPlaneSearchCorpusRollbackCasAckVisitor {
+    type Value = SearchPlaneSearchCorpusRollbackCasAck;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SearchPlaneSearchCorpusRollbackCasAck map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut active = None;
+        let mut previous_sealed_active = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "active" => {
+                    if active.is_some() {
+                        return Err(de::Error::duplicate_field("active"));
+                    }
+                    active = Some(map.next_value()?);
+                }
+                "previous_sealed_active" => {
+                    if previous_sealed_active.is_some() {
+                        return Err(de::Error::duplicate_field("previous_sealed_active"));
+                    }
+                    previous_sealed_active = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(de::Error::unknown_field(
+                        other,
+                        SEARCH_PLANE_SEARCH_CORPUS_ROLLBACK_CAS_ACK_FIELDS,
+                    ));
+                }
+            }
+        }
+        Ok(Self::Value {
+            active: active.ok_or_else(|| de::Error::missing_field("active"))?,
+            previous_sealed_active: previous_sealed_active
+                .ok_or_else(|| de::Error::missing_field("previous_sealed_active"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPlaneSearchCorpusRollbackCasAck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "SearchPlaneSearchCorpusRollbackCasAck",
+            SEARCH_PLANE_SEARCH_CORPUS_ROLLBACK_CAS_ACK_FIELDS,
+            SearchPlaneSearchCorpusRollbackCasAckVisitor,
         )
     }
 }
@@ -1311,82 +1236,124 @@ mod qi_act_01_tests {
     }
 
     #[test]
-    fn rollback_generation_request_and_ack_round_trip() {
-        let request = SearchPlaneRollbackGenerationRequest {
-            repo_id: fixture_repo(),
-            revision_id: fixture_rev(),
-            track: SearchPlaneTrackKind::Semantic,
-            expected_active_generation: ManifestGeneration::new(11),
-            expected_active_manifest_digest: "digest-11".to_string(),
-            target_generation: ManifestGeneration::new(10),
-            target_manifest_digest: "digest-10".to_string(),
+    fn search_corpus_rollback_request_and_ack_round_trip() {
+        let expected_active = corpus_identity(11, "digest-11");
+        let target = corpus_identity(10, "digest-10");
+        let request = SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: expected_active.clone(),
+            target: target.clone(),
         };
+        assert_eq!(request.validate_v1(), Ok(()));
         let Ok(bytes) = encode(&request) else {
             assert!(
                 false,
-                "failed to encode SearchPlaneRollbackGenerationRequest"
+                "failed to encode SearchPlaneRollbackSearchCorpusGenerationCasRequest"
             );
             return;
         };
-        let Ok(decoded) = decode::<SearchPlaneRollbackGenerationRequest>(&bytes) else {
+        let Ok(decoded) = decode::<SearchPlaneRollbackSearchCorpusGenerationCasRequest>(&bytes)
+        else {
             assert!(
                 false,
-                "failed to decode SearchPlaneRollbackGenerationRequest"
+                "failed to decode SearchPlaneRollbackSearchCorpusGenerationCasRequest"
             );
             return;
         };
         assert_eq!(decoded, request);
 
-        let ack = SearchPlaneRollbackGenerationAck {
-            repo_id: fixture_repo(),
-            revision_id: fixture_rev(),
-            track: SearchPlaneTrackKind::Semantic,
-            previous_generation: ManifestGeneration::new(11),
-            previous_manifest_digest: "digest-11".to_string(),
-            manifest_generation: ManifestGeneration::new(10),
-            manifest_digest: "digest-10".to_string(),
+        let ack = SearchPlaneSearchCorpusRollbackCasAck {
+            active: target,
+            previous_sealed_active: expected_active,
         };
         let Ok(bytes) = encode(&ack) else {
-            assert!(false, "failed to encode SearchPlaneRollbackGenerationAck");
+            assert!(
+                false,
+                "failed to encode SearchPlaneSearchCorpusRollbackCasAck"
+            );
             return;
         };
-        let Ok(decoded) = decode::<SearchPlaneRollbackGenerationAck>(&bytes) else {
-            assert!(false, "failed to decode SearchPlaneRollbackGenerationAck");
+        let Ok(decoded) = decode::<SearchPlaneSearchCorpusRollbackCasAck>(&bytes) else {
+            assert!(
+                false,
+                "failed to decode SearchPlaneSearchCorpusRollbackCasAck"
+            );
             return;
         };
         assert_eq!(decoded, ack);
     }
 
     #[test]
-    fn rollback_generation_request_rejects_unknown_and_missing_fields() {
+    fn search_corpus_rollback_validation_rejects_invalid_relation_v1() {
+        let expected_active = corpus_identity(11, "digest-11");
+
+        let mut cross_repo = corpus_identity(10, "digest-10");
+        cross_repo.lexical.repo_id = RepoId::new("other-repo");
+        cross_repo.semantic.repo_id = RepoId::new("other-repo");
+        assert_eq!(
+            SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active: expected_active.clone(),
+                target: cross_repo,
+            }
+            .validate_v1(),
+            Err(SearchCorpusRollbackValidationErrorV1::RepoMismatch)
+        );
+
+        let mut cross_revision = corpus_identity(10, "digest-10");
+        cross_revision.lexical.revision_id = RevisionId::new("other-revision");
+        cross_revision.semantic.revision_id = RevisionId::new("other-revision");
+        assert_eq!(
+            SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active: expected_active.clone(),
+                target: cross_revision,
+            }
+            .validate_v1(),
+            Err(SearchCorpusRollbackValidationErrorV1::RevisionMismatch)
+        );
+
+        assert_eq!(
+            SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active: expected_active.clone(),
+                target: corpus_identity(11, "digest-same-generation"),
+            }
+            .validate_v1(),
+            Err(SearchCorpusRollbackValidationErrorV1::TargetGenerationMustPrecedeExpectedActive)
+        );
+
+        let mut malformed_target = corpus_identity(10, "digest-10");
+        malformed_target.semantic.track = SearchPlaneTrackKind::Lexical;
+        assert_eq!(
+            SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                expected_active,
+                target: malformed_target,
+            }
+            .validate_v1(),
+            Err(SearchCorpusRollbackValidationErrorV1::TargetIdentity(
+                SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired
+            ))
+        );
+    }
+
+    #[test]
+    fn search_corpus_rollback_request_rejects_unknown_and_missing_fields() {
         let unknown = serde_json::json!({
-            "repo_id": "repo",
-            "revision_id": "rev",
-            "track": "Semantic",
-            "expected_active_generation": 11,
-            "expected_active_manifest_digest": "digest-11",
-            "target_generation": 10,
-            "target_manifest_digest": "digest-10",
+            "expected_active": serde_json::to_value(corpus_identity(11, "digest-11"))
+                .expect("encode expected active fixture"),
+            "target": serde_json::to_value(corpus_identity(10, "digest-10"))
+                .expect("encode target fixture"),
             "unexpected": true,
         });
-        assert!(SearchPlaneRollbackGenerationRequest::deserialize(unknown).is_err());
+        assert!(SearchPlaneRollbackSearchCorpusGenerationCasRequest::deserialize(unknown).is_err());
 
         let missing = serde_json::json!({
-            "repo_id": "repo",
-            "revision_id": "rev",
-            "track": "Semantic",
-            "expected_active_generation": 11,
-            "expected_active_manifest_digest": "digest-11",
-            "target_generation": 10,
+            "expected_active": serde_json::to_value(corpus_identity(11, "digest-11"))
+                .expect("encode expected active fixture"),
         });
-        let Err(err) = SearchPlaneRollbackGenerationRequest::deserialize(missing) else {
-            assert!(false, "missing target digest unexpectedly deserialized");
+        let Err(err) = SearchPlaneRollbackSearchCorpusGenerationCasRequest::deserialize(missing)
+        else {
+            assert!(false, "missing target unexpectedly deserialized");
             return;
         };
-        assert!(
-            err.to_string()
-                .contains("missing field `target_manifest_digest`")
-        );
+        assert!(err.to_string().contains("missing field `target`"));
     }
 
     #[test]

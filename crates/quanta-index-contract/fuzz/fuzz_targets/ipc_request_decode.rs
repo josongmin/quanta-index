@@ -19,11 +19,13 @@ use libfuzzer_sys::fuzz_target;
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
     HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest,
-    RepoMapSourceBundle, SearchCorpusIngestBatch, SearchPlaneControlIpcRequest,
+    RepoMapSourceBundle, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SemanticIngestBatch, SemanticQueryRequest,
-    StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SemanticIngestBatch, SemanticQueryRequest, StructuralIngestBatch, StructuralQueryRequest,
+    SymbolQueryRequest, TextQueryRequest,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -40,8 +42,13 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcRequestEnvelope, _>(data);
 
-    // Control DTOs (per-variant + envelope) — includes QI-ACT-01 admin
-    // queries (CurrentGeneration / GenerationStatus).
+    // Control DTOs (per-variant + envelope) — includes exact composite
+    // activation/rollback identities and QI-ACT-01 admin queries.
+    let _ = ciborium::de::from_reader::<SearchCorpusGenerationIdentityV1, _>(data);
+    let _ =
+        ciborium::de::from_reader::<SearchPlaneActivateSearchCorpusGenerationCasRequest, _>(data);
+    let _ =
+        ciborium::de::from_reader::<SearchPlaneRollbackSearchCorpusGenerationCasRequest, _>(data);
     let _ = ciborium::de::from_reader::<CurrentGenerationRequest, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneControlIpcRequest, _>(data);

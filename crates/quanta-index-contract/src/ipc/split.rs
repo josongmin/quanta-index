@@ -13,8 +13,8 @@ use crate::{
     RepoMapQueryRequest, RepoMapQueryResponse, RuntimeMetadataQueryRequest,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
-    SearchPlaneRollbackGenerationAck, SearchPlaneRollbackGenerationRequest,
-    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
     StructuralQueryRequest, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
     TextQueryResponse,
@@ -49,14 +49,14 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
 ];
 const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "ActivateSearchCorpusGenerationCas",
-    "RollbackGeneration",
+    "RollbackSearchCorpusGenerationCas",
     "RepoMapActivate",
     "CurrentGeneration",
     "GenerationStatus",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
-    "RollbackAck",
+    "SearchCorpusRollbackCasAck",
     "RepoMapMutationAck",
     "Error",
     "CurrentGenerationSnapshot",
@@ -114,8 +114,8 @@ pub struct SearchPlaneControlIpcRequestEnvelope {
 pub enum SearchPlaneControlIpcRequest {
     /// Atomic activation of the complete lexical + semantic corpus identity.
     ActivateSearchCorpusGenerationCas(SearchPlaneActivateSearchCorpusGenerationCasRequest),
-    /// Explicit rollback CAS; normal activation remains monotonic.
-    RollbackGeneration(SearchPlaneRollbackGenerationRequest),
+    /// Explicit composite rollback CAS; normal activation remains monotonic.
+    RollbackSearchCorpusGenerationCas(SearchPlaneRollbackSearchCorpusGenerationCasRequest),
     // QI-INT-01: `RepoMapIngest(RepoMapSourceBundle)` was removed from the
     // control surface. All RepoMap bundle publishes now go through the
     // typed ingest IPC (`SearchPlaneIngestIpcRequest::PublishRepoMapBundle`)
@@ -140,7 +140,7 @@ pub struct SearchPlaneControlIpcResponseEnvelope {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneControlIpcResponse {
     SearchCorpusActivationCasAck(SearchPlaneSearchCorpusActivationCasAck),
-    RollbackAck(SearchPlaneRollbackGenerationAck),
+    SearchCorpusRollbackCasAck(SearchPlaneSearchCorpusRollbackCasAck),
     RepoMapMutationAck(RepoMapMutationAck),
     Error(SearchPlaneIpcError),
     /// QI-ACT-01: response to [`SearchPlaneControlIpcRequest::CurrentGeneration`].
@@ -694,9 +694,9 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
-            Self::RollbackGeneration(payload) => serialize_adjacent_tagged(
+            Self::RollbackSearchCorpusGenerationCas(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcRequest",
-                "RollbackGeneration",
+                "RollbackSearchCorpusGenerationCas",
                 payload,
                 serializer,
             ),
@@ -758,8 +758,10 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                                 map.next_value()?,
                             )
                         }
-                        "RollbackGeneration" => {
-                            SearchPlaneControlIpcRequest::RollbackGeneration(map.next_value()?)
+                        "RollbackSearchCorpusGenerationCas" => {
+                            SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
+                                map.next_value()?,
+                            )
                         }
                         "RepoMapActivate" => {
                             SearchPlaneControlIpcRequest::RepoMapActivate(map.next_value()?)
@@ -871,9 +873,9 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
-            Self::RollbackAck(payload) => serialize_adjacent_tagged(
+            Self::SearchCorpusRollbackCasAck(payload) => serialize_adjacent_tagged(
                 "SearchPlaneControlIpcResponse",
-                "RollbackAck",
+                "SearchCorpusRollbackCasAck",
                 payload,
                 serializer,
             ),
@@ -941,8 +943,10 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                                 map.next_value()?,
                             )
                         }
-                        "RollbackAck" => {
-                            SearchPlaneControlIpcResponse::RollbackAck(map.next_value()?)
+                        "SearchCorpusRollbackCasAck" => {
+                            SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+                                map.next_value()?,
+                            )
                         }
                         "RepoMapMutationAck" => {
                             SearchPlaneControlIpcResponse::RepoMapMutationAck(map.next_value()?)
@@ -1239,8 +1243,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_single_track_activation_wire_tags_are_unknown() {
-        for legacy_kind in ["ActivateGeneration", "ActivateGenerationCas"] {
+    fn legacy_activation_and_scalar_rollback_wire_tags_are_unknown() {
+        for legacy_kind in [
+            "ActivateGeneration",
+            "ActivateGenerationCas",
+            "RollbackGeneration",
+        ] {
             let wire = json!({
                 "request_id": 12,
                 "payload": {"kind": legacy_kind, "payload": {}}
@@ -1252,6 +1260,14 @@ mod tests {
                 "legacy tag {legacy_kind} must fail as an unknown control variant: {error}"
             );
         }
+
+        let response = json!({
+            "request_id": 12,
+            "payload": {"kind": "RollbackAck", "payload": {}}
+        });
+        let error = serde_json::from_value::<SearchPlaneControlIpcResponseEnvelope>(response)
+            .expect_err("removed scalar rollback response tag must fail closed");
+        assert!(error.to_string().contains("unknown variant"));
     }
 
     fn corpus_identity_v1(generation: u64, digest: &str) -> SearchCorpusGenerationIdentityV1 {
@@ -1395,25 +1411,22 @@ mod tests {
     }
 
     #[test]
-    fn rollback_control_variants_round_trip_over_json_and_cbor() {
+    fn composite_rollback_control_variants_round_trip_over_json_and_cbor() {
+        let expected_active = corpus_identity_v1(11, "digest-11");
+        let target = corpus_identity_v1(10, "digest-10");
         let request = SearchPlaneControlIpcRequestEnvelope {
             request_id: 11,
-            payload: SearchPlaneControlIpcRequest::RollbackGeneration(
-                SearchPlaneRollbackGenerationRequest {
-                    repo_id: fixture_repo(),
-                    revision_id: fixture_revision(),
-                    track: SearchPlaneTrackKind::Semantic,
-                    expected_active_generation: ManifestGeneration::new(11),
-                    expected_active_manifest_digest: "digest-11".to_string(),
-                    target_generation: ManifestGeneration::new(10),
-                    target_manifest_digest: "digest-10".to_string(),
+            payload: SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(
+                SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+                    expected_active: expected_active.clone(),
+                    target: target.clone(),
                 },
             ),
         };
         let request_value = serde_json::to_value(&request).expect("encode rollback request");
         assert_eq!(
             request_value["payload"]["kind"],
-            json!("RollbackGeneration")
+            json!("RollbackSearchCorpusGenerationCas")
         );
         assert_eq!(
             serde_json::from_value::<SearchPlaneControlIpcRequestEnvelope>(request_value)
@@ -1430,18 +1443,18 @@ mod tests {
 
         let response = SearchPlaneControlIpcResponseEnvelope {
             request_id: 11,
-            payload: SearchPlaneControlIpcResponse::RollbackAck(SearchPlaneRollbackGenerationAck {
-                repo_id: fixture_repo(),
-                revision_id: fixture_revision(),
-                track: SearchPlaneTrackKind::Semantic,
-                previous_generation: ManifestGeneration::new(11),
-                previous_manifest_digest: "digest-11".to_string(),
-                manifest_generation: ManifestGeneration::new(10),
-                manifest_digest: "digest-10".to_string(),
-            }),
+            payload: SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+                SearchPlaneSearchCorpusRollbackCasAck {
+                    active: target,
+                    previous_sealed_active: expected_active,
+                },
+            ),
         };
         let response_value = serde_json::to_value(&response).expect("encode rollback response");
-        assert_eq!(response_value["payload"]["kind"], json!("RollbackAck"));
+        assert_eq!(
+            response_value["payload"]["kind"],
+            json!("SearchCorpusRollbackCasAck")
+        );
         assert_eq!(
             serde_json::from_value::<SearchPlaneControlIpcResponseEnvelope>(response_value)
                 .expect("decode rollback response"),

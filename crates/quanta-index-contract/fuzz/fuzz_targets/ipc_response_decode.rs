@@ -19,6 +19,7 @@ use quanta_index_contract::{
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
+    SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryResponse, SymbolQueryResponse,
     TextQueryResponse,
 };
@@ -38,7 +39,10 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneQueryIpcResponseEnvelope, _>(data);
 
-    // Control responses (QI-ACT-01 snapshots / status report included).
+    // Control responses, including exact composite activation/rollback
+    // acknowledgements (QI-ACT-01 snapshots / status report included).
+    let _ = ciborium::de::from_reader::<SearchPlaneSearchCorpusActivationCasAck, _>(data);
+    let _ = ciborium::de::from_reader::<SearchPlaneSearchCorpusRollbackCasAck, _>(data);
     let _ = ciborium::de::from_reader::<RepoMapMutationAck, _>(data);
     let _ = ciborium::de::from_reader::<GenerationSnapshot, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusReport, _>(data);

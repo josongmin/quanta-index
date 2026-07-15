@@ -30,9 +30,9 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, VariantAccess, Visitor},
     ser::SerializeStruct,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::lex::{
@@ -140,7 +140,14 @@ impl SearchScopeSurface {
             OwnerDocKind::Module => Self::Module,
             OwnerDocKind::Chunk => Self::Chunk,
             OwnerDocKind::Symbol => Self::Symbol,
-            _ => match corpus_kind {
+            OwnerDocKind::Callsite
+            | OwnerDocKind::GraphEdge
+            | OwnerDocKind::Dataflow
+            | OwnerDocKind::Risk
+            | OwnerDocKind::Test
+            | OwnerDocKind::RepoMap
+            | OwnerDocKind::ServiceMap
+            | OwnerDocKind::OwnerMap => match corpus_kind {
                 SemanticCorpusKindV1::SymbolCard | SemanticCorpusKindV1::RawCodeFallback => {
                     Self::Symbol
                 }
@@ -1227,10 +1234,7 @@ impl Serialize for SemanticTombstoneScope {
     where
         S: Serializer,
     {
-        let mut field_count = 1;
-        if self.scope.is_some() {
-            field_count += 1;
-        }
+        let field_count = if self.scope.is_some() { 2 } else { 1 };
         let mut state = serializer.serialize_struct("SemanticTombstoneScope", field_count)?;
         if let Some(scope) = &self.scope {
             state.serialize_field("scope", scope)?;
@@ -4795,8 +4799,8 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
 mod tests {
     use super::*;
     use crate::lex::{
-        compute_parse_tree_source_hash, CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord,
-        LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord,
+        CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode,
+        ParseRoleTag, ParseTreeRecord, compute_parse_tree_source_hash,
     };
     use crate::{
         CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath,

@@ -202,6 +202,9 @@ jobs:
       - name: Digest fallibility (pub fn -> [u8; N] must be Result or doc'd infallible)
         run: python3 tools/ci/lint/check-digest-fallibility.py
 
+      - name: Test authority (every integration and fuzz target has an owner rail)
+        run: python3 tools/ci/lint/check-test-authority.py
+
       - name: Sourcegraph parity coverage (no accepted-but-untested SgFilter)
         run: python3 tools/benchmark/sourcegraph_parity.py --check
 

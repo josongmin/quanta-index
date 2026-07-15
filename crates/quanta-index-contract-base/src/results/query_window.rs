@@ -118,11 +118,12 @@ impl QueryResultWindowV1 {
     /// Construct a window from a `top_k + 1` probe. `observed` is the number
     /// fetched before truncating to `requested`.
     pub fn from_probe(requested: u32, observed: usize) -> Result<Self, &'static str> {
-        let requested_usize = usize::try_from(requested).map_err(|_| "top_k exceeds usize")?;
+        let requested_usize = usize::try_from(requested).map_err(|_error| "top_k exceeds usize")?;
         let returned_usize = observed.min(requested_usize);
-        let returned = u32::try_from(returned_usize).map_err(|_| "returned exceeds u32")?;
+        let returned = u32::try_from(returned_usize).map_err(|_error| "returned exceeds u32")?;
         if observed > requested_usize {
-            let lower_bound = u64::try_from(observed).map_err(|_| "candidate count exceeds u64")?;
+            let lower_bound =
+                u64::try_from(observed).map_err(|_error| "candidate count exceeds u64")?;
             Ok(Self {
                 returned,
                 candidate_count: CandidateCountV1::AtLeast(lower_bound),

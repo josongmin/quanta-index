@@ -1083,7 +1083,7 @@ mod tests {
             SemanticDerivationModeV1::SemanticSourcesOnly,
         ) {
             Err(CoreError::InvalidContract(message))
-                if message.contains("duplicate semantic replace scope") =>
+                if message.contains("duplicate replace scope") =>
             {
                 Ok(())
             }

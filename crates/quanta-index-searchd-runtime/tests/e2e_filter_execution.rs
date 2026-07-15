@@ -22,8 +22,8 @@ use quanta_index_contract::{
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
-    TextQuerySyntax, lex::CommitSha, lex::LanguageCode,
+    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, TextQuerySyntax, lex::CommitSha,
+    lex::LanguageCode,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -518,6 +518,7 @@ fn publish_revision_text_generation(
         seal: true,
     })?;
     let pin = GenerationPin::new(rt.repo(), revision_id, generation);
+    rt.activate_last_sealed_generation()?;
     Ok(pin)
 }
 

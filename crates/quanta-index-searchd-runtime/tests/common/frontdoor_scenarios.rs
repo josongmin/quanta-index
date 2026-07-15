@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![allow(
+#![expect(
     dead_code,
     reason = "shared scenario authority is consumed selectively by test binaries"
 )]

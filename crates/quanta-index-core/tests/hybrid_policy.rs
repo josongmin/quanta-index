@@ -40,6 +40,55 @@ fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
     }
 }
 
+/// Independent, deliberately simple RRF oracle for the public typed-key
+/// fusion primitive. It uses linear lookup instead of the production map and
+/// de-duplicates each lane before assigning ranks, so this test does not
+/// reproduce the implementation's accumulator mechanics.
+fn slow_rrf_oracle(lanes: &[&[String]]) -> Vec<String> {
+    #[derive(Debug)]
+    struct Entry {
+        key: String,
+        score: f64,
+        in_first_lane: bool,
+    }
+
+    let mut entries = Vec::<Entry>::new();
+    for (lane_index, lane) in lanes.iter().enumerate() {
+        let mut seen = Vec::<String>::new();
+        for key in *lane {
+            if seen.iter().any(|seen_key| seen_key == key) {
+                continue;
+            }
+            seen.push(key.clone());
+            let rank = seen.len() as f64;
+            let contribution = 1.0 / (60.0 + rank);
+            if let Some(entry) = entries.iter_mut().find(|entry| entry.key == *key) {
+                entry.score += contribution;
+                entry.in_first_lane |= lane_index == 0;
+            } else {
+                entries.push(Entry {
+                    key: key.clone(),
+                    score: contribution,
+                    in_first_lane: lane_index == 0,
+                });
+            }
+        }
+    }
+
+    entries.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then(right.in_first_lane.cmp(&left.in_first_lane))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    entries.into_iter().map(|entry| entry.key).collect()
+}
+
+fn strings(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| (*id).to_string()).collect()
+}
+
 #[test]
 fn joint_readiness_both_ahead_is_ok() -> TestResult {
     HybridOrchestratorPolicy::validate_joint_readiness(g(5), Some(g(5)), Some(g(5)))?;
@@ -179,4 +228,83 @@ fn rrf_shared_id_preserves_lexical_payload() {
 fn rrf_empty_inputs_returns_empty() {
     let fused = HybridOrchestratorPolicy::fuse_rrf(&[], &[], 10);
     assert!(fused.is_empty());
+}
+
+#[test]
+fn rrf_key_fusion_matches_independent_oracle_across_rank_shapes() {
+    let lexical = strings(&["lex-only", "shared", "lex-tail"]);
+    let semantic_a = strings(&["semantic-a", "shared", "semantic-tail"]);
+    let semantic_b = strings(&["semantic-b", "shared", "semantic-tail"]);
+    let lanes = [&lexical[..], &semantic_a[..], &semantic_b[..]];
+
+    let expected = slow_rrf_oracle(&lanes);
+    let actual = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, u32::MAX);
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn rrf_nonpreferred_lane_permutation_is_invariant() {
+    let lexical = strings(&["lex-only", "shared", "lex-tail"]);
+    let semantic_a = strings(&["semantic-a", "shared", "semantic-tail"]);
+    let semantic_b = strings(&["semantic-b", "shared", "semantic-tail"]);
+    let original = [&lexical[..], &semantic_a[..], &semantic_b[..]];
+    let permuted = [&lexical[..], &semantic_b[..], &semantic_a[..]];
+
+    let original_result = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&original, u32::MAX);
+    let permuted_result = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&permuted, u32::MAX);
+
+    assert_eq!(original_result, slow_rrf_oracle(&original));
+    assert_eq!(permuted_result, slow_rrf_oracle(&permuted));
+    assert_eq!(original_result, permuted_result);
+}
+
+#[test]
+fn rrf_top_k_is_a_prefix_of_the_unbounded_order() {
+    let lexical = strings(&["lex-only", "shared", "lex-tail"]);
+    let semantic_a = strings(&["semantic-a", "shared", "semantic-tail"]);
+    let semantic_b = strings(&["semantic-b", "shared", "semantic-tail"]);
+    let lanes = [&lexical[..], &semantic_a[..], &semantic_b[..]];
+    let full = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, u32::MAX);
+
+    for top_k in 0..=(full.len() + 2) {
+        let bounded = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, top_k as u32);
+        assert_eq!(bounded, full[..top_k.min(full.len())]);
+    }
+}
+
+#[test]
+fn rrf_duplicate_identity_within_a_lane_is_idempotent() {
+    // Duplicating A must neither add a second RRF contribution nor push B/C
+    // down a rank. The duplicated input used to promote A above the two-lane
+    // winner B, making this a semantic rather than cardinality-only check.
+    let lexical = strings(&["B", "A", "A", "A"]);
+    let semantic = strings(&["B", "C"]);
+    let lanes = [&lexical[..], &semantic[..]];
+
+    let expected = slow_rrf_oracle(&lanes);
+    let actual = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, u32::MAX);
+
+    assert_eq!(expected, strings(&["B", "A", "C"]));
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn rrf_ties_prefer_first_lane_then_identity() {
+    let lexical = strings(&["b"]);
+    let semantic = strings(&["a"]);
+    let lexical_tie = [&lexical[..], &semantic[..]];
+    assert_eq!(
+        HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lexical_tie, u32::MAX),
+        strings(&["b", "a"])
+    );
+
+    let empty = Vec::<String>::new();
+    let semantic_b = strings(&["b"]);
+    let semantic_a = strings(&["a"]);
+    let no_first_lane = [&empty[..], &semantic_b[..], &semantic_a[..]];
+    assert_eq!(
+        HybridOrchestratorPolicy::fuse_rrf_key_lanes(&no_first_lane, u32::MAX),
+        strings(&["a", "b"])
+    );
 }

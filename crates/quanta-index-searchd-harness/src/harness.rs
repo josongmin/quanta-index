@@ -26,12 +26,15 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, EngineTouched, FileOwnerProjectionRow, GenerationPin,
-    GenerationSnapshot, HistoryQueryRequest, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchExplanation, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, EngineTouched,
+    FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, HistoryQueryRequest,
+    HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
+    SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryRequest,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticQueryRequest,
@@ -39,10 +42,7 @@ use quanta_index_contract::{
     StructuralTreeRecord, SymbolId, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcError, send_request};
-use quanta_index_search_plane::{
-    ActivationCatalog, BoundedQueryObsStore, MetricSample, ObsError,
-    PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1,
-};
+use quanta_index_search_plane::{BoundedQueryObsStore, MetricSample, ObsError};
 use quanta_index_searchd::app::searchd::drive;
 use quanta_index_searchd::app::{SearchdConfig, SemanticEmbedderProfile};
 use quanta_index_searchd_runtime::build_runtime;
@@ -96,6 +96,7 @@ type DriverJoin = thread::JoinHandle<AnyResult<()>>;
 type DriverHandles = (
     PathBuf,
     PathBuf,
+    PathBuf,
     Arc<AtomicBool>,
     DriverJoin,
     Arc<BoundedQueryObsStore>,
@@ -145,10 +146,13 @@ pub struct E2eRuntime {
     chunk_records_by_path: BTreeMap<String, ChunkRecord>,
     request_id_counter: AtomicU64,
     generation_counter: u64,
+    last_sealed_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
+    active_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
 }
 
 struct DriverState {
     query_socket: PathBuf,
+    control_socket: PathBuf,
     ingest_socket: PathBuf,
     shutdown: Arc<AtomicBool>,
     join: Option<DriverJoin>,
@@ -247,6 +251,8 @@ impl E2eRuntime {
             chunk_records_by_path: BTreeMap::new(),
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
+            last_sealed_search_corpus_identity: None,
+            active_search_corpus_identity: None,
         })
     }
 
@@ -278,11 +284,12 @@ impl E2eRuntime {
 
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
-            let (query_socket, ingest_socket, shutdown, join, query_obs_store) =
+            let (query_socket, control_socket, ingest_socket, shutdown, join, query_obs_store) =
                 start_driver(&self.state_root, &self.embedder_profile)?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
+                control_socket,
                 ingest_socket,
                 shutdown,
                 join: Some(join),
@@ -292,6 +299,16 @@ impl E2eRuntime {
             .as_ref()
             .map(|driver| driver.query_socket.clone())
             .ok_or_else(|| anyhow::anyhow!("e2e-harness: driver missing after ensure_driver"))
+    }
+
+    fn ensure_control_socket(&mut self) -> AnyResult<PathBuf> {
+        drop(self.ensure_driver()?);
+        self.driver
+            .as_ref()
+            .map(|driver| driver.control_socket.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: control socket missing after ensure_driver")
+            })
     }
 
     fn ensure_ingest_socket(&mut self) -> AnyResult<PathBuf> {
@@ -349,49 +366,44 @@ impl E2eRuntime {
         Ok(store.errors())
     }
 
-    pub fn activate_last_sealed_generation(&self) -> AnyResult<()> {
-        let Some(pin) = self.last_sealed_pin() else {
-            return Err(anyhow::anyhow!(
-                "e2e-harness: cannot activate before any generation has been sealed"
-            ));
-        };
-        self.activate_generation(pin, "e2e-harness-activation")
-    }
-
     /// Promote a sealed harness generation as one lexical plus semantic corpus.
     ///
-    /// The harness deliberately does not expose a `tracks` selector: a
-    /// lexical-only bootstrap would make a query-visible generation that the
-    /// production composite activation ingress cannot represent.
-    pub fn activate_generation(&self, pin: GenerationPin, manifest_digest: &str) -> AnyResult<()> {
-        if manifest_digest.trim().is_empty() {
+    /// The candidate is reconstructed only from the validated sealed ingest
+    /// receipt, then sent through the daemon's public control UDS. The
+    /// previous validated ack is the CAS expectation for every later
+    /// activation; the first activation explicitly sends `None`.
+    pub fn activate_last_sealed_generation(&mut self) -> AnyResult<()> {
+        let candidate = self
+            .last_sealed_search_corpus_identity
+            .clone()
+            .ok_or_else(|| {
+                anyhow::anyhow!("e2e-harness: cannot activate before a sealed receipt is validated")
+            })?;
+        let expected_active = self.active_search_corpus_identity.clone();
+        let response = self.dispatch_control(
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: candidate.clone(),
+                    expected_active: expected_active.clone(),
+                },
+            ),
+        )?;
+        let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) = response else {
             return Err(anyhow::anyhow!(
-                "e2e-harness: composite activation requires a non-empty manifest digest"
+                "e2e-harness: composite activation returned an unexpected control response"
+            ));
+        };
+        if ack.active != candidate {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: composite activation ack active identity differs from the sealed candidate"
             ));
         }
-        let lexical = GenerationSnapshot {
-            repo_id: pin.repo_id.clone(),
-            revision_id: pin.revision_id.clone(),
-            track: SearchPlaneTrackKind::Lexical,
-            manifest_generation: pin.manifest_generation,
-            manifest_digest: manifest_digest.to_string(),
-        };
-        let semantic = GenerationSnapshot {
-            repo_id: pin.repo_id,
-            revision_id: pin.revision_id,
-            track: SearchPlaneTrackKind::Semantic,
-            manifest_generation: pin.manifest_generation,
-            manifest_digest: manifest_digest.to_string(),
-        };
-        let candidate = SearchCorpusGenerationV1::new(lexical, semantic)?;
-        let prepared = PreparedSearchCorpusGenerationV1::new(candidate, None)?;
-        let catalog = ActivationCatalog::open(self.state_root.join("activations"))?;
-        let activation = catalog.activate_prepared_search_corpus_generation_v1(&prepared)?;
-        if activation.active != *prepared.candidate() {
+        if ack.previous_sealed_active != expected_active {
             return Err(anyhow::anyhow!(
-                "e2e-harness: composite activation receipt differs from requested generation"
+                "e2e-harness: composite activation ack previous identity differs from the CAS expectation"
             ));
         }
+        self.active_search_corpus_identity = Some(ack.active);
         Ok(())
     }
 
@@ -1194,13 +1206,14 @@ impl E2eRuntime {
         }
         if tracks.contains(&SearchPlaneTrackKind::Lexical) {
             let (mode, base_generation) = self.lexical_batch_contract();
-            self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-                SearchCorpusIngestBatch {
+            let manifest_digest = format!("lex-seal:{}", sealed.get());
+            let response = self.dispatch_ingest_response(
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
                     repo_id: self.repo(),
                     revision_id: self.revision(),
                     generation: sealed,
                     base_generation,
-                    manifest_digest: format!("lex-seal:{}", sealed.get()),
+                    manifest_digest: manifest_digest.clone(),
                     batch_digest: format!("lex-seal-batch:{}", sealed.get()),
                     mode,
                     bundle_payload: None,
@@ -1210,8 +1223,30 @@ impl E2eRuntime {
                     semantic_replace_scopes: Vec::new(),
                     semantic_tombstone_scopes: Vec::new(),
                     seal: true,
-                },
-            ))?;
+                }),
+            )?;
+            let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) = response else {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: seal returned an unexpected ingest response"
+                ));
+            };
+            if !receipt.sealed {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: seal receipt did not confirm a sealed generation"
+                ));
+            }
+            if receipt.generation != sealed {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: seal receipt generation differs from the request"
+                ));
+            }
+            if receipt.manifest_digest != manifest_digest {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: seal receipt manifest digest differs from the request"
+                ));
+            }
+            let identity = self.search_corpus_identity_from_sealed_receipt(sealed, &receipt)?;
+            self.last_sealed_search_corpus_identity = Some(identity);
         }
         self.generation_counter = self.generation_counter.saturating_add(1);
         Ok(sealed)
@@ -1887,7 +1922,42 @@ impl E2eRuntime {
         }
     }
 
+    fn search_corpus_identity_from_sealed_receipt(
+        &self,
+        sealed: ManifestGeneration,
+        receipt: &BatchPublishReceipt,
+    ) -> AnyResult<SearchCorpusGenerationIdentityV1> {
+        let identity = SearchCorpusGenerationIdentityV1 {
+            lexical: GenerationSnapshot {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: sealed,
+                manifest_digest: receipt.manifest_digest.clone(),
+            },
+            semantic: GenerationSnapshot {
+                repo_id: self.repo(),
+                revision_id: self.revision(),
+                track: SearchPlaneTrackKind::Semantic,
+                manifest_generation: sealed,
+                manifest_digest: receipt.manifest_digest.clone(),
+            },
+        };
+        identity.validate_v1().map_err(|err| {
+            anyhow::anyhow!("e2e-harness: sealed composite identity is invalid: {err}")
+        })?;
+        Ok(identity)
+    }
+
     fn dispatch_ingest(&mut self, payload: SearchPlaneIngestIpcRequest) -> AnyResult<()> {
+        drop(self.dispatch_ingest_response(payload)?);
+        Ok(())
+    }
+
+    fn dispatch_ingest_response(
+        &mut self,
+        payload: SearchPlaneIngestIpcRequest,
+    ) -> AnyResult<SearchPlaneIngestIpcResponse> {
         let socket = self.ensure_ingest_socket()?;
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -1895,24 +1965,46 @@ impl E2eRuntime {
             payload,
         };
         let response: SearchPlaneIngestIpcResponseEnvelope = send_request(&socket, &envelope)?;
+        if response.request_id != request_id {
+            return Err(anyhow::anyhow!(
+                "e2e-harness ingest response request_id {} differs from request {request_id}",
+                response.request_id
+            ));
+        }
         match response.payload {
             SearchPlaneIngestIpcResponse::Error(err) => Err(anyhow::anyhow!(
                 "e2e-harness ingest failed code={} message={}",
                 err.code,
                 err.message
             )),
-            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-            | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-            | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-            | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-            | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-            | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMapReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-            | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => Ok(()),
+            payload => Ok(payload),
+        }
+    }
+
+    fn dispatch_control(
+        &mut self,
+        payload: SearchPlaneControlIpcRequest,
+    ) -> AnyResult<SearchPlaneControlIpcResponse> {
+        let socket = self.ensure_control_socket()?;
+        let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+        let envelope = SearchPlaneControlIpcRequestEnvelope {
+            request_id,
+            payload,
+        };
+        let response: SearchPlaneControlIpcResponseEnvelope = send_request(&socket, &envelope)?;
+        if response.request_id != request_id {
+            return Err(anyhow::anyhow!(
+                "e2e-harness control response request_id {} differs from request {request_id}",
+                response.request_id
+            ));
+        }
+        match response.payload {
+            SearchPlaneControlIpcResponse::Error(err) => Err(anyhow::anyhow!(
+                "e2e-harness control failed code={} message={}",
+                err.code,
+                err.message
+            )),
+            payload => Ok(payload),
         }
     }
 }
@@ -2033,6 +2125,7 @@ fn start_driver(
     let config = build_config(state_root, embedder_profile);
     let runtime = build_runtime(config)?;
     let query_socket = runtime.query_server.socket_path().to_path_buf();
+    let control_socket = runtime.control_server.socket_path().to_path_buf();
     let ingest_socket = runtime.ingest_server.socket_path().to_path_buf();
     let query_obs_store = Arc::clone(&runtime.query_obs_store);
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -2041,17 +2134,25 @@ fn start_driver(
         .name("e2e-harness-driver".into())
         .spawn(move || drive(runtime, &shutdown_for_drive))?;
     if !wait_until(SOCKET_APPEAR_TIMEOUT, SOCKET_APPEAR_POLL_INTERVAL, || {
-        query_socket.exists() && ingest_socket.exists()
+        query_socket.exists() && control_socket.exists() && ingest_socket.exists()
     }) {
         shutdown.store(true, Ordering::Release);
         drop(join.join());
         return Err(anyhow::anyhow!(
-            "e2e-harness: sockets never appeared query={} ingest={}",
+            "e2e-harness: sockets never appeared query={} control={} ingest={}",
             query_socket.display(),
+            control_socket.display(),
             ingest_socket.display()
         ));
     }
-    Ok((query_socket, ingest_socket, shutdown, join, query_obs_store))
+    Ok((
+        query_socket,
+        control_socket,
+        ingest_socket,
+        shutdown,
+        join,
+        query_obs_store,
+    ))
 }
 
 fn build_config(state_root: &Path, embedder_profile: &SemanticEmbedderProfile) -> SearchdConfig {

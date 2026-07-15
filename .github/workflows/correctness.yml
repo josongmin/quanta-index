@@ -317,11 +317,58 @@ jobs:
       - name: Smoke-run ipc_response_decode (60s)
         run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60
 
+      - name: Smoke-run search_corpus_ingest_decode (60s)
+        run: cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60
+
       - name: Build fuzz targets (lq-norm)
         run: cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz build
 
       - name: Smoke-run lq_parse_pipeline (60s)
         run: cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60
+
+  rust-changed-line-coverage:
+    name: rust-changed-line-coverage (90 percent production Rust)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install cargo-nextest and cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Check changed-line coverage gate contracts
+        run: python3 -m pytest tools/ci/tests/test_check_changed_line_coverage.py -q
+
+      - name: Produce workspace LCOV with nextest
+        run: |
+          source scripts/quanta-index-env.sh
+          cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path /tmp/quanta-index-coverage.lcov
+
+      - name: Fail closed on uncovered changed production Rust lines
+        run: |
+          python3 tools/ci/lint/check-changed-line-coverage.py \
+            --lcov /tmp/quanta-index-coverage.lcov \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --minimum-percent 90
 
   dsl-bench-latency:
     name: dsl-bench-latency (Layer-3 regression gate, report-only)

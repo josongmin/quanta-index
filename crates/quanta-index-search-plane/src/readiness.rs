@@ -18,9 +18,9 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     ChunkId, DirtyIngestBatch, DirtyMutation, GenerationPin, GenerationSnapshot,
     HistoryIngestBatch, HistoryRefMutation, ManifestGeneration, RepoId, RevisionId,
-    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneRollbackGenerationAck,
-    SearchPlaneRollbackGenerationRequest, SearchPlaneTrackKind, SearchScopeSurface,
-    StructuralIngestBatch,
+    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
+    SearchPlaneTrackKind, SearchScopeSurface, StructuralIngestBatch,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
@@ -2330,70 +2330,57 @@ impl ActivationCatalog {
 
     /// Roll back the complete query-visible lexical plus semantic corpus.
     ///
-    /// The wire contract retains `track=Semantic` as the rollback capability
-    /// selector, but it never creates or persists semantic-only authority.
-    /// Both tracks are reconstructed from the same target identity and the
-    /// composite root is atomically replaced before either in-memory record
-    /// changes.
-    pub fn rollback(
+    /// The request carries both complete identities, so no single-track
+    /// selector can create or persist semantic-only authority.
+    pub(crate) fn rollback(
         &self,
-        request: &SearchPlaneRollbackGenerationRequest,
-    ) -> Result<SearchPlaneRollbackGenerationAck, CoreError> {
-        if request.track != SearchPlaneTrackKind::Semantic {
-            return Err(CoreError::InvalidContract(
-                "rollback-generation: only semantic track supports explicit rollback".to_string(),
-            ));
-        }
-        if request.expected_active_manifest_digest.trim().is_empty()
-            || request.target_manifest_digest.trim().is_empty()
-        {
-            return Err(CoreError::InvalidContract(
-                "rollback-generation: active and target manifest digests must not be empty"
-                    .to_string(),
-            ));
-        }
-        if request.target_generation.get() >= request.expected_active_generation.get() {
-            return Err(CoreError::InvalidContract(
-                "rollback-generation: target generation must be lower than expected active generation"
-                    .to_string(),
-            ));
-        }
+        request: &SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, CoreError> {
+        request.validate_v1().map_err(|error| {
+            CoreError::InvalidContract(format!(
+                "search-corpus rollback: invalid request: {}",
+                error.code_v1()
+            ))
+        })?;
+        let expected_active =
+            search_corpus_generation_from_validated_rollback_identity(&request.expected_active)?;
+        let target = search_corpus_generation_from_validated_rollback_identity(&request.target)?;
 
         let mut entries = self.entries.write().map_err(|err| {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
         })?;
         self.ensure_durability_certain_v1()?;
-        let current =
-            active_search_corpus_generation_v1(&entries, &request.repo_id, &request.revision_id)?
-                .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "rollback-generation: no active composite generation for repo={} revision={}",
-                    request.repo_id.as_str(),
-                    request.revision_id.as_str()
-                ))
-            })?;
-        if current.manifest_generation() != request.expected_active_generation
-            || current.manifest_digest() != request.expected_active_manifest_digest
-        {
+        let current = active_search_corpus_generation_v1(
+            &entries,
+            expected_active.repo_id(),
+            expected_active.revision_id(),
+        )?
+        .ok_or_else(|| {
+            CoreError::NotReady(format!(
+                "search-corpus rollback: no active composite generation for repo={} revision={}",
+                expected_active.repo_id().as_str(),
+                expected_active.revision_id().as_str()
+            ))
+        })?;
+        if current != expected_active {
             return Err(CoreError::Typed {
                 code: ERR_ROLLBACK_CAS_CONFLICT.to_string(),
                 message: format!(
-                    "rollback-generation: active state changed for repo={} revision={}: expected generation={} digest={}, observed generation={} digest={}",
-                    request.repo_id.as_str(),
-                    request.revision_id.as_str(),
-                    request.expected_active_generation.get(),
-                    request.expected_active_manifest_digest,
+                    "search-corpus rollback: active composite root changed for repo={} revision={}: expected generation={} digest={}, observed generation={} digest={}",
+                    expected_active.repo_id().as_str(),
+                    expected_active.revision_id().as_str(),
+                    expected_active.manifest_generation().get(),
+                    expected_active.manifest_digest(),
                     current.manifest_generation().get(),
                     current.manifest_digest(),
                 ),
             });
         }
 
-        let target = search_corpus_generation_from_rollback_request(request)?;
         let persisted = PersistedSearchCorpusGenerationRootV1::from_generation(&target);
         let path = self.activations_dir.join(search_corpus_root_file_name(
-            &request.repo_id,
-            &request.revision_id,
+            target.repo_id(),
+            target.revision_id(),
         ));
         let bytes = serde_json::to_vec_pretty(&persisted).map_err(|err| {
             CoreError::Storage(format!(
@@ -2410,14 +2397,9 @@ impl ActivationCatalog {
         }
         insert_search_corpus_generation_records(&mut entries, &target);
 
-        Ok(SearchPlaneRollbackGenerationAck {
-            repo_id: request.repo_id.clone(),
-            revision_id: request.revision_id.clone(),
-            track: request.track,
-            previous_generation: current.manifest_generation(),
-            previous_manifest_digest: current.manifest_digest().to_string(),
-            manifest_generation: request.target_generation,
-            manifest_digest: request.target_manifest_digest.clone(),
+        Ok(SearchPlaneSearchCorpusRollbackCasAck {
+            active: search_corpus_generation_into_contract(&target),
+            previous_sealed_active: search_corpus_generation_into_contract(&current),
         })
     }
 
@@ -2543,24 +2525,19 @@ fn active_search_corpus_generation_v1(
     }
 }
 
-fn search_corpus_generation_from_rollback_request(
-    request: &SearchPlaneRollbackGenerationRequest,
+fn search_corpus_generation_from_validated_rollback_identity(
+    identity: &quanta_index_contract::SearchCorpusGenerationIdentityV1,
 ) -> Result<SearchCorpusGenerationV1, CoreError> {
-    let lexical = GenerationSnapshot {
-        repo_id: request.repo_id.clone(),
-        revision_id: request.revision_id.clone(),
-        track: SearchPlaneTrackKind::Lexical,
-        manifest_generation: request.target_generation,
-        manifest_digest: request.target_manifest_digest.clone(),
-    };
-    let semantic = GenerationSnapshot {
-        repo_id: request.repo_id.clone(),
-        revision_id: request.revision_id.clone(),
-        track: SearchPlaneTrackKind::Semantic,
-        manifest_generation: request.target_generation,
-        manifest_digest: request.target_manifest_digest.clone(),
-    };
-    SearchCorpusGenerationV1::new(lexical, semantic)
+    SearchCorpusGenerationV1::new(identity.lexical.clone(), identity.semantic.clone())
+}
+
+fn search_corpus_generation_into_contract(
+    identity: &SearchCorpusGenerationV1,
+) -> quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+    quanta_index_contract::SearchCorpusGenerationIdentityV1 {
+        lexical: identity.lexical().clone(),
+        semantic: identity.semantic().clone(),
+    }
 }
 
 fn validate_prepared_search_corpus_expectation(
@@ -2745,6 +2722,9 @@ fn hex_char(nibble: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
     use tempfile::tempdir;
 
     use quanta_index_contract::channel::LexicalChannelOp;
@@ -2756,7 +2736,7 @@ mod tests {
         ReplaceLexicalScope, ReplaceStructuralScope, RepoId, RepoRelativePath, RevisionId,
         RuntimeCatalogIngestBatch, RuntimeChangedRecord, RuntimeDocFacetRecord,
         RuntimeEdgeAuthorityRecord, RuntimeSnapshotRecord, SearchCorpusReplaceScope,
-        SearchPlaneRollbackGenerationRequest, SearchPlaneTrackKind, SearchScopeKey,
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind, SearchScopeKey,
         SearchScopeSurface, StructuralReplaceScope, StructuralTreeRecord, UpsertParseTree,
     };
     use quanta_index_core::CoreError;
@@ -2955,17 +2935,24 @@ mod tests {
             ManifestGeneration::new(17)
         );
 
-        let rollback = catalog.rollback(&SearchPlaneRollbackGenerationRequest {
-            repo_id: RepoId::new("repo-corpus"),
-            revision_id: RevisionId::new("rev-corpus"),
-            track: SearchPlaneTrackKind::Semantic,
-            expected_active_generation: ManifestGeneration::new(17),
-            expected_active_manifest_digest: "digest-17".to_string(),
-            target_generation: ManifestGeneration::new(16),
-            target_manifest_digest: "digest-16".to_string(),
+        let rollback = catalog.rollback(&SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: super::search_corpus_generation_into_contract(&corpus_generation(
+                17,
+                "digest-17",
+            )?),
+            target: super::search_corpus_generation_into_contract(&corpus_generation(
+                16,
+                "digest-16",
+            )?),
         })?;
-        assert_eq!(rollback.previous_generation, ManifestGeneration::new(17));
-        assert_eq!(rollback.manifest_generation, ManifestGeneration::new(16));
+        assert_eq!(
+            rollback.previous_sealed_active.lexical.manifest_generation,
+            ManifestGeneration::new(17)
+        );
+        assert_eq!(
+            rollback.active.lexical.manifest_generation,
+            ManifestGeneration::new(16)
+        );
         let reopened = ActivationCatalog::open(dir.path())?;
         let lexical_after = reopened.resolve_record(
             &RepoId::new("repo-corpus"),
@@ -3119,6 +3106,89 @@ mod tests {
         assert_eq!(lexical.manifest_generation, ManifestGeneration::new(18));
         assert_eq!(lexical.manifest_generation, semantic.manifest_generation);
         assert_eq!(lexical.manifest_digest, semantic.manifest_digest);
+        Ok(())
+    }
+
+    #[test]
+    fn activation_catalog_concurrent_cas_promotions_select_one_composite_winner() -> TestResult {
+        let dir = tempdir()?;
+        let catalog = Arc::new(ActivationCatalog::open(dir.path())?);
+        let active = corpus_generation(17, "digest-17")?;
+        let initial_active = active.clone();
+        let _initial_activation = catalog.activate_prepared_search_corpus_generation_v1(
+            &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
+        )?;
+
+        let first_candidate = corpus_generation(18, "digest-18")?;
+        let second_candidate = corpus_generation(19, "digest-19")?;
+        let first_prepared =
+            PreparedSearchCorpusGenerationV1::new(first_candidate.clone(), Some(active.clone()))?;
+        let second_prepared =
+            PreparedSearchCorpusGenerationV1::new(second_candidate.clone(), Some(active))?;
+
+        // Both contenders are fully prepared before either can enter the
+        // catalog. The barrier releases their CAS calls together; winner
+        // selection is intentionally unspecified, but split composite heads
+        // and multiple successes are not.
+        let start = Arc::new(Barrier::new(3));
+        let first_catalog = Arc::clone(&catalog);
+        let first_start = Arc::clone(&start);
+        let first = thread::spawn(move || {
+            let _barrier_receipt = first_start.wait();
+            first_catalog.activate_prepared_search_corpus_generation_v1(&first_prepared)
+        });
+        let second_catalog = Arc::clone(&catalog);
+        let second_start = Arc::clone(&start);
+        let second = thread::spawn(move || {
+            let _barrier_receipt = second_start.wait();
+            second_catalog.activate_prepared_search_corpus_generation_v1(&second_prepared)
+        });
+        let _barrier_receipt = start.wait();
+
+        let first_result = first
+            .join()
+            .map_err(|_| "first activation contender panicked")?;
+        let second_result = second
+            .join()
+            .map_err(|_| "second activation contender panicked")?;
+
+        let mut winner = None;
+        for result in [first_result, second_result] {
+            match result {
+                Ok(receipt) => {
+                    assert_eq!(receipt.previous_active, Some(initial_active.clone()));
+                    if winner.replace(receipt.active).is_some() {
+                        return Err("concurrent activation CAS admitted multiple winners".into());
+                    }
+                }
+                Err(CoreError::Typed { code, .. }) => {
+                    assert_eq!(code, super::ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT);
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "concurrent activation returned unexpected error: {error}"
+                    )
+                    .into());
+                }
+            }
+        }
+        let winner = winner.ok_or("concurrent activation CAS produced no winner")?;
+        assert!(winner == first_candidate || winner == second_candidate);
+
+        let lexical = catalog.resolve_record(
+            winner.repo_id(),
+            winner.revision_id(),
+            SearchPlaneTrackKind::Lexical,
+        )?;
+        let semantic = catalog.resolve_record(
+            winner.repo_id(),
+            winner.revision_id(),
+            SearchPlaneTrackKind::Semantic,
+        )?;
+        assert_eq!(lexical.manifest_generation, winner.manifest_generation());
+        assert_eq!(semantic.manifest_generation, winner.manifest_generation());
+        assert_eq!(lexical.manifest_digest, winner.manifest_digest());
+        assert_eq!(semantic.manifest_digest, winner.manifest_digest());
         Ok(())
     }
 
