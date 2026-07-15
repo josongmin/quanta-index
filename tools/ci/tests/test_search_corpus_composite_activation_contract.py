@@ -14,6 +14,7 @@ SDK_CORPUS = ROOT / "crates/quanta-index-sdk/src/lexical.rs"
 SDK_GENERATIONS = ROOT / "crates/quanta-index-sdk/src/generations.rs"
 SDK_LIB = ROOT / "crates/quanta-index-sdk/src/lib.rs"
 SDK_REPOMAP = ROOT / "crates/quanta-index-sdk/src/repomap.rs"
+SDK_TESTS = ROOT / "crates/quanta-index-sdk/src/tests.rs"
 ROLLBACK_PRODUCTION_ROOTS = (
     ROOT / "crates/quanta-index-contract/src",
     ROOT / "crates/quanta-index-sdk/src",
@@ -28,6 +29,11 @@ IPC_REQUEST_FUZZ = (
 IPC_RESPONSE_FUZZ = (
     ROOT / "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_response_decode.rs"
 )
+COMPOSITE_CONTROL_FUZZ_DICTIONARY = (
+    ROOT
+    / "crates/quanta-index-contract/fuzz/dictionaries/composite_search_corpus_control.dict"
+)
+JUSTFILE = ROOT / "Justfile"
 
 
 def read_source(path: Path) -> str:
@@ -143,6 +149,49 @@ def test_sdk_binds_composite_success_acks_to_requests_v1() -> None:
     assert "request.validate_v1()" in generations
 
 
+def test_activation_relation_validation_is_contract_owned_v1() -> None:
+    control = read_source(CONTRACT_CONTROL)
+    corpus = read_source(SDK_CORPUS)
+
+    assert "SearchCorpusActivationValidationErrorV1" in control
+    assert "impl SearchPlaneActivateSearchCorpusGenerationCasRequest" in control
+    for invariant in (
+        "CandidateIdentity",
+        "ExpectedActiveIdentity",
+        "RepoMismatch",
+        "RevisionMismatch",
+        "CandidateGenerationMustAdvanceExpectedActive",
+    ):
+        assert invariant in control, invariant
+    assert "request.validate_v1()" in corpus
+    assert "validate_expected_search_corpus_identity_v1" not in corpus
+
+
+def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None:
+    corpus = read_source(SDK_CORPUS)
+    tests = read_source(SDK_TESTS)
+
+    assert "validate_search_corpus_publish_receipt_v1" in corpus
+    for field in (
+        "generation",
+        "manifest_digest",
+        "sealed",
+        "accepted_replace_scopes",
+        "accepted_tombstone_scopes",
+        "accepted_clear_surfaces",
+    ):
+        assert f"receipt.{field}" in corpus, field
+    assert "producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation_v1" in tests
+    assert "control request" in tests
+
+
+def test_sdk_control_request_id_mismatch_is_a_protocol_error_v1() -> None:
+    tests = read_source(SDK_TESTS)
+
+    assert "with_request_id_offset" in tests
+    assert "control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1" in tests
+
+
 def test_existing_ipc_fuzz_targets_decode_composite_control_dtos_directly_v1() -> None:
     request_fuzz = read_source(IPC_REQUEST_FUZZ)
     response_fuzz = read_source(IPC_RESPONSE_FUZZ)
@@ -162,3 +211,26 @@ def test_existing_ipc_fuzz_targets_decode_composite_control_dtos_directly_v1() -
         assert re.search(
             rf"from_reader::<\s*{response_type}\s*,", response_fuzz
         ), response_type
+
+    assert request_fuzz.count(".validate_v1()") >= 3
+    assert response_fuzz.count(".validate_v1()") >= 4
+
+    dictionary = read_source(COMPOSITE_CONTROL_FUZZ_DICTIONARY)
+    for token in (
+        "ActivateSearchCorpusGenerationCas",
+        "RollbackSearchCorpusGenerationCas",
+        "SearchCorpusActivationCasAck",
+        "SearchCorpusRollbackCasAck",
+        "expected_active",
+        "candidate",
+        "target",
+    ):
+        assert token in dictionary, token
+
+    justfile = read_source(JUSTFILE)
+    dictionary_flag = "-dict=dictionaries/composite_search_corpus_control.dict"
+    for target in ("ipc_request_decode", "ipc_response_decode"):
+        assert re.search(
+            rf"cargo \+nightly fuzz run {target} -- {re.escape(dictionary_flag)} ",
+            justfile,
+        ), target

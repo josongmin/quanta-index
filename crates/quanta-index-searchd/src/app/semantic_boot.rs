@@ -186,7 +186,7 @@ mod tests {
         EmbeddingRecord, OwnerDocKind, RepoRelativePath, SearchScopeKey, SearchScopeSurface,
         SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
     };
-    use quanta_index_core::SemanticIndexOpenPort;
+    use quanta_index_core::{GenerationStorageKeyV1, SemanticIndexOpenPort};
     use quanta_index_semantic::{
         SemanticAdapter, embedding_record_v1, ingest_batch_v1, legacy_chunk_embedding_record_v1,
     };
@@ -406,10 +406,8 @@ mod tests {
             &batch(generation, "a", "a.rs", vec![1.0, 0.0, 0.0], true)?,
         )?;
 
-        let manifest_path = semantic_root
-            .join(repo_id().as_str())
-            .join(revision_id().as_str())
-            .join(format!("g{}", generation.get()))
+        let manifest_path = GenerationStorageKeyV1::for_repo_revision(&repo_id(), &revision_id())
+            .generation_dir(&semantic_root, generation)
             .join("semantic-manifest.cbor");
         let manifest_bytes = std::fs::read(&manifest_path)?;
         let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])

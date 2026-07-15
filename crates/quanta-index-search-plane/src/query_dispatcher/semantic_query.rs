@@ -8,11 +8,14 @@
 //! builds on, and the moved items are `pub(super)` so the dispatcher methods
 //! (which stay in `query_dispatcher`) keep calling them unchanged.
 
-#[expect(
-    clippy::wildcard_imports,
-    reason = "child module split out of query_dispatcher for size; it builds directly on the parent's shared resolvers, policies, and types"
-)]
-use super::*;
+use super::{
+    ActivationCatalog, BTreeMap, BTreeSet, CoreError, EarlyStopReason, EngineTouched,
+    GenerationPin, HybridOrchestratorPolicy, HybridQueryRequest, HybridSeedCandidate,
+    HybridSeedLane, HybridSeedQueryRequest, LexicalCandidate, LexicalErrorCode, OwnerDocKind,
+    PlannerStage, PlannerTraceEntry, QueryResultWindowV1, SearchExplanation, SearchPlaneTrackKind,
+    SeedCandidateV2, SeedContributionV2, SeedLaneV2, SemanticPolicy, SemanticQueryRequest,
+    SemanticSearchHitV1, resolve_lexical_request_pin, resolve_semantic_selector_selection,
+};
 use quanta_index_contract::{SeedFusionIdentityV2, SemanticSeedCorpusBudgetV1};
 
 #[derive(Clone, Debug)]
@@ -39,10 +42,15 @@ pub(super) fn canonical_dense_corpus_budgets_v1(
         SemanticPolicy::validate_top_k(budget.top_k)?;
     }
     for pair in canonical.windows(2) {
-        if pair[0].corpus_kind == pair[1].corpus_kind {
+        let (Some(left), Some(right)) = (pair.first(), pair.get(1)) else {
+            return Err(CoreError::Storage(
+                "hybrid seed: canonical budget window was not two entries".to_string(),
+            ));
+        };
+        if left.corpus_kind == right.corpus_kind {
             return Err(CoreError::InvalidContract(format!(
                 "hybrid seed: duplicate dense corpus budget {:?}",
-                pair[0].corpus_kind
+                left.corpus_kind
             )));
         }
     }
@@ -364,12 +372,10 @@ pub(super) fn build_hybrid_seed_candidates_v2(
         let identity = SeedFusionIdentityV2::from(&candidate);
         if let Some(existing) = by_identity.get_mut(&identity) {
             merge_seed_candidate_v2(existing, candidate);
-        } else {
-            if by_identity.insert(identity, candidate).is_some() {
-                return Err(CoreError::Storage(
-                    "hybrid seed v2: duplicate typed identity inserted after collapse".to_string(),
-                ));
-            }
+        } else if by_identity.insert(identity, candidate).is_some() {
+            return Err(CoreError::Storage(
+                "hybrid seed v2: duplicate typed identity inserted after collapse".to_string(),
+            ));
         }
     }
 
@@ -484,6 +490,10 @@ pub(super) fn ensure_query_model_matches_index_v1(
 
 #[cfg(test)]
 mod corpus_budget_tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "test assertions index the canonical budget output after constructing a fixed two-entry fixture"
+    )]
     use quanta_index_contract::SemanticCorpusKindV1;
 
     use super::{SemanticSeedCorpusBudgetV1, canonical_dense_corpus_budgets_v1};
@@ -529,6 +539,10 @@ mod corpus_budget_tests {
 
 #[cfg(test)]
 mod seed_fusion_tests {
+    #![expect(
+        clippy::indexing_slicing,
+        reason = "test assertions index fusion output after asserting its expected cardinality"
+    )]
     use quanta_index_contract::{
         LexicalCandidate, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
         SeedFusionIdentityV2, SemanticCorpusKindV1,
@@ -586,7 +600,7 @@ mod seed_fusion_tests {
         let chunk_a = SeedFusionIdentityV2::new(OwnerDocKind::Chunk, "a".to_string());
         let symbol_a = SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "a".to_string());
 
-        let mut identities = vec![chunk_a, symbol_z, symbol_a];
+        let mut identities = [chunk_a, symbol_z, symbol_a];
         identities.sort();
 
         assert_eq!(identities[0].owner_kind(), OwnerDocKind::Symbol);

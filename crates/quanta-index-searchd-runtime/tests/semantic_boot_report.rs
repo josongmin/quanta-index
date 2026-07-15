@@ -12,7 +12,7 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SourceRoleV1,
     lex::LanguageCode,
 };
-use quanta_index_core::SemanticBatchBuildPort as _;
+use quanta_index_core::{GenerationStorageKeyV1, SemanticBatchBuildPort as _};
 use quanta_index_search_plane::LegacySemanticJournalStore;
 use quanta_index_searchd::app::SearchdConfig;
 use quanta_index_searchd::app::semantic_boot::SemanticMigrationOutcome;
@@ -175,11 +175,12 @@ fn runtime_boot_rejects_corrupted_sealed_semantic_generation() -> TestResult {
     let generation = ManifestGeneration::new(9);
     adapter.build_batch(&fixture_batch(generation)?)?;
 
-    let manifest_path = semantic_root
-        .join("repo-bootrep")
-        .join("rev-bootrep")
-        .join(format!("g{}", generation.get()))
-        .join("semantic-manifest.cbor");
+    let manifest_path = GenerationStorageKeyV1::for_repo_revision(
+        &RepoId::new("repo-bootrep"),
+        &RevisionId::new("rev-bootrep"),
+    )
+    .generation_dir(&semantic_root, generation)
+    .join("semantic-manifest.cbor");
     let manifest_bytes = std::fs::read(&manifest_path)?;
     let mut value: ciborium::value::Value = ciborium::from_reader(&manifest_bytes[..])
         .map_err(|err| format!("decode manifest cbor: {err}"))?;

@@ -34,7 +34,7 @@ const SEMANTIC_SOURCE_FALLBACK_VIEW_POLICY_DIGEST: &str =
 pub enum SemanticDerivationModeV1 {
     /// Legacy: embed every ChunkRecord.text (pre-cutover)
     LegacyAllChunkText,
-    /// Prefer semantic_replace_scopes; if empty and migration allows, fall back to legacy with degraded reason
+    /// Prefer `semantic_replace_scopes`; if empty and migration allows, fall back to legacy with degraded reason
     SemanticSourcesWithLegacyFallback,
     /// Require semantic sources; empty sources fail closed (card-required path later)
     SemanticSourcesOnly,
@@ -516,7 +516,7 @@ fn validated_semantic_source_scopes_v1(
         .into_iter()
         .map(|scope| {
             let scope_key_tuple = semantic_scope_sort_key_v1(&scope.scope);
-            if !replace_scope_keys.insert(scope_key_tuple.clone()) {
+            if !replace_scope_keys.insert(scope_key_tuple) {
                 return Err(CoreError::InvalidContract(format!(
                     "semantic derivation: duplicate semantic replace scope {:?}",
                     scope.scope.owner_id
@@ -947,9 +947,15 @@ mod tests {
             SemanticDerivationModeV1::SemanticSourcesOnly,
         )?;
 
-        assert!(derived.replace_scopes.is_empty());
-        assert_eq!(derived.tombstone_scopes.len(), 1);
-        assert!(derived.required_corpora.is_empty());
+        if !derived.replace_scopes.is_empty() {
+            return Err("tombstone-only derivation must not produce replacement scopes".into());
+        }
+        if derived.tombstone_scopes.len() != 1 {
+            return Err("tombstone-only derivation must preserve exactly one tombstone".into());
+        }
+        if !derived.required_corpora.is_empty() {
+            return Err("tombstone-only derivation must not require semantic corpora".into());
+        }
         Ok(())
     }
 
@@ -967,10 +973,17 @@ mod tests {
             SemanticDerivationModeV1::SemanticSourcesOnly,
         )?;
 
-        assert!(derived.replace_scopes.is_empty());
-        assert!(derived.tombstone_scopes.is_empty());
-        assert!(derived.required_corpora.is_empty());
-        assert!(derived.seal);
+        if !derived.replace_scopes.is_empty() || !derived.tombstone_scopes.is_empty() {
+            return Err(
+                "seal-only derivation must not produce replacement or tombstone scopes".into(),
+            );
+        }
+        if !derived.required_corpora.is_empty() {
+            return Err("seal-only derivation must not require semantic corpora".into());
+        }
+        if !derived.seal {
+            return Err("seal-only derivation must preserve the seal flag".into());
+        }
         Ok(())
     }
 
@@ -992,10 +1005,17 @@ mod tests {
             SemanticDerivationModeV1::SemanticSourcesOnly,
         )?;
 
-        assert!(derived.replace_scopes.is_empty());
-        assert!(derived.tombstone_scopes.is_empty());
-        assert!(derived.required_corpora.is_empty());
-        assert_eq!(derived.clear_surfaces, vec![SearchScopeSurface::Chunk]);
+        if !derived.replace_scopes.is_empty() || !derived.tombstone_scopes.is_empty() {
+            return Err(
+                "clear-only derivation must not produce replacement or tombstone scopes".into(),
+            );
+        }
+        if !derived.required_corpora.is_empty() {
+            return Err("clear-only derivation must not require semantic corpora".into());
+        }
+        if derived.clear_surfaces != [SearchScopeSurface::Chunk] {
+            return Err("clear-only derivation must preserve the requested chunk surface".into());
+        }
         Ok(())
     }
 
@@ -1030,7 +1050,12 @@ mod tests {
     fn semantic_derivation_invalid_source_fails_closed() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
-        batch.semantic_replace_scopes[0].sources[0].source_role = SourceRoleV1::DocumentText;
+        let source = batch
+            .semantic_replace_scopes
+            .first_mut()
+            .and_then(|scope| scope.sources.first_mut())
+            .ok_or_else(|| "semantic fixture must contain one source".to_string())?;
+        source.source_role = SourceRoleV1::DocumentText;
         match derive_semantic_batch_from_semantic_sources_v1(
             &batch,
             &embedder,
@@ -1074,9 +1099,12 @@ mod tests {
     fn semantic_derivation_rejects_duplicate_replace_scope() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
-        batch
+        let duplicate_scope = batch
             .semantic_replace_scopes
-            .push(batch.semantic_replace_scopes[0].clone());
+            .first()
+            .cloned()
+            .ok_or_else(|| "semantic fixture must contain one replace scope".to_string())?;
+        batch.semantic_replace_scopes.push(duplicate_scope);
         match derive_semantic_batch_from_semantic_sources_v1(
             &batch,
             &embedder,
@@ -1095,9 +1123,12 @@ mod tests {
     fn semantic_derivation_rejects_replace_tombstone_conflict() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut batch = fixture_search_batch()?;
-        batch
-            .semantic_tombstone_scopes
-            .push(batch.semantic_replace_scopes[0].scope.clone());
+        let replacement_scope = batch
+            .semantic_replace_scopes
+            .first()
+            .map(|scope| scope.scope.clone())
+            .ok_or_else(|| "semantic fixture must contain one replace scope".to_string())?;
+        batch.semantic_tombstone_scopes.push(replacement_scope);
         match derive_semantic_batch_from_semantic_sources_v1(
             &batch,
             &embedder,
@@ -1118,11 +1149,19 @@ mod tests {
     fn semantic_derivation_canonicalizes_scope_and_record_order() -> TestRes {
         let embedder = HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION);
         let mut forward = fixture_search_batch()?;
-        let mut second_scope = forward.semantic_replace_scopes[0].clone();
+        let mut second_scope = forward
+            .semantic_replace_scopes
+            .first()
+            .cloned()
+            .ok_or_else(|| "semantic fixture must contain one replace scope".to_string())?;
         second_scope.scope.owner_id = "symbol-2".to_string();
         second_scope.scope_digest = "scope:semantic:2".to_string();
-        second_scope.sources[0].owner_id = "symbol-2".to_string();
-        second_scope.sources[0].record_id = "source-record-2".to_string();
+        let second_source = second_scope
+            .sources
+            .first_mut()
+            .ok_or_else(|| "semantic fixture replace scope must contain one source".to_string())?;
+        second_source.owner_id = "symbol-2".to_string();
+        second_source.record_id = "source-record-2".to_string();
         forward.semantic_replace_scopes.push(second_scope);
         let mut reverse = forward.clone();
         reverse.semantic_replace_scopes.reverse();

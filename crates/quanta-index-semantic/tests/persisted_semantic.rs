@@ -12,7 +12,9 @@ use quanta_index_contract::{
     ManifestGeneration, OwnerDocKind, QueryConstraintSetV1, RepoId, RevisionId, SearchScopeKey,
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
 };
-use quanta_index_core::{CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort};
+use quanta_index_core::{
+    CoreError, GenerationStorageKeyV1, SemanticBatchBuildPort, SemanticIndexOpenPort,
+};
 use quanta_index_semantic::{
     SemanticAdapter, embedding_record_v1, legacy_chunk_embedding_record_v1, model_contract_v1,
     scan_persisted_generations, sealed_replace_batch_v1, search_scope_v1, test_support,
@@ -70,9 +72,8 @@ fn embedding_record_same_owner(
 }
 
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
-    root.join(repo_id().as_str())
-        .join(revision_id().as_str())
-        .join(format!("g{}", generation.get()))
+    GenerationStorageKeyV1::for_repo_revision(&repo_id(), &revision_id())
+        .generation_dir(root, generation)
 }
 
 #[test]

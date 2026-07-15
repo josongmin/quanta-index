@@ -10,12 +10,14 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+fs2.workspace = true
 memchr.workspace = true
 regex.workspace = true
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-embed = { version = "0.1.0", path = "../quanta-index-embed" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
 quanta-index-lq-structural = { version = "0.1.0", path = "../quanta-index-lq-structural" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
 quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }

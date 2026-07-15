@@ -17,11 +17,13 @@ use std::error::Error;
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, UpsertChunk,
+    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf,
+    LqOptions, LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
 };
-use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher};
+use quanta_index_core::{
+    CoreError, LexicalIndexOpenPort, LexicalSearcher, SearchCorpusBatchBuildPort,
+};
 use quanta_index_lexical::LexicalAdapter;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -36,6 +38,50 @@ fn revision() -> RevisionId {
 
 fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
+}
+
+/// Direct lexical builds mutate an incomplete generation. The read port only
+/// accepts a generation sealed through the manifest-digest carrying batch
+/// authority, so planner fixtures seal after applying their compact op set.
+trait SealedFixtureBuildPort {
+    fn build(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError>;
+}
+
+impl SealedFixtureBuildPort for LexicalAdapter {
+    fn build(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError> {
+        quanta_index_core::LexicalIndexBuildPort::build(self, repo, revision, generation, ops)?;
+        SearchCorpusBatchBuildPort::build_batch(
+            self,
+            &SearchCorpusIngestBatch {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                generation,
+                base_generation: None,
+                manifest_digest: format!("planner-test-manifest-digest-{}", generation.get()),
+                batch_digest: format!("planner-test-batch-digest-{}", generation.get()),
+                mode: BatchIngestMode::ReplaceGeneration,
+                bundle_payload: None,
+                clear_surfaces: Vec::new(),
+                replace_scopes: Vec::new(),
+                tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
+                seal: true,
+            },
+        )
+    }
 }
 
 fn encode_chunk_payload(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {

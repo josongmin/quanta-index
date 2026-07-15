@@ -325,25 +325,20 @@ impl<'a> SearchCorpusNamespace<'a> {
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusGenerationIdentityV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
-        validate_expected_search_corpus_identity_v1(batch, expected_active.as_ref())?;
+        let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
+            candidate: search_corpus_identity_from_batch_v1(batch)?,
+            expected_active,
+        };
+        request.validate_v1().map_err(|error| {
+            SdkError::Protocol(format!("composite activation request is invalid: {error}"))
+        })?;
         let receipt = self.publish(batch)?;
-        if !receipt.sealed {
-            return Err(SdkError::Protocol(
-                "search corpus publish_and_activate requires a sealed receipt".to_string(),
-            ));
-        }
-        let candidate = search_corpus_identity_from_receipt_v1(batch, &receipt)?;
         let expected_ack = SearchPlaneSearchCorpusActivationCasAck {
-            active: candidate.clone(),
-            previous_sealed_active: expected_active.clone(),
+            active: request.candidate.clone(),
+            previous_sealed_active: request.expected_active.clone(),
         };
         let response = self.client.dispatch_control(
-            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
-                SearchPlaneActivateSearchCorpusGenerationCasRequest {
-                    candidate,
-                    expected_active,
-                },
-            ),
+            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
         )?;
         let activation = match response {
             SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => ack,
@@ -380,66 +375,31 @@ fn validate_composite_activation_ack_v1(
     Ok(())
 }
 
-fn search_corpus_identity_from_receipt_v1(
+fn search_corpus_identity_from_batch_v1(
     batch: &SearchCorpusBatch,
-    receipt: &BatchReceipt,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
-    if receipt.generation != batch.generation() {
-        return Err(SdkError::Protocol(
-            "sealed search corpus receipt generation differs from the published batch".to_string(),
-        ));
-    }
-    if receipt.manifest_digest != batch.manifest_digest() {
-        return Err(SdkError::Protocol(
-            "sealed search corpus receipt manifest digest differs from the published batch"
-                .to_string(),
-        ));
-    }
     let identity = SearchCorpusGenerationIdentityV1 {
         lexical: quanta_index_contract::GenerationSnapshot {
             repo_id: batch.repo_id().clone(),
             revision_id: batch.revision_id().clone(),
             track: SearchPlaneTrackKind::Lexical,
-            manifest_generation: receipt.generation,
-            manifest_digest: receipt.manifest_digest.clone(),
+            manifest_generation: batch.generation(),
+            manifest_digest: batch.manifest_digest().to_string(),
         },
         semantic: quanta_index_contract::GenerationSnapshot {
             repo_id: batch.repo_id().clone(),
             revision_id: batch.revision_id().clone(),
             track: SearchPlaneTrackKind::Semantic,
-            manifest_generation: receipt.generation,
-            manifest_digest: receipt.manifest_digest.clone(),
+            manifest_generation: batch.generation(),
+            manifest_digest: batch.manifest_digest().to_string(),
         },
     };
     identity.validate_v1().map_err(|error| {
         SdkError::Protocol(format!(
-            "sealed search corpus receipt cannot form a composite generation identity: {error}"
+            "search corpus batch cannot form a composite generation identity: {error}"
         ))
     })?;
     Ok(identity)
-}
-
-fn validate_expected_search_corpus_identity_v1(
-    batch: &SearchCorpusBatch,
-    expected_active: Option<&SearchCorpusGenerationIdentityV1>,
-) -> Result<(), SdkError> {
-    let Some(expected_active) = expected_active else {
-        return Ok(());
-    };
-    expected_active.validate_v1().map_err(|error| {
-        SdkError::Protocol(format!(
-            "expected active search corpus identity is invalid: {error}"
-        ))
-    })?;
-    if &expected_active.lexical.repo_id != batch.repo_id()
-        || &expected_active.lexical.revision_id != batch.revision_id()
-    {
-        return Err(SdkError::Protocol(
-            "expected active search corpus identity belongs to a different repository revision"
-                .to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// QI-NS-01 marker type for the built-in lexical query namespace.
@@ -479,16 +439,7 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     )?;
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
-            let expected_clear_surfaces =
-                u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
-                    SdkError::Protocol(format!("search corpus clear surface count overflow: {err}"))
-                })?;
-            if receipt.accepted_clear_surfaces != expected_clear_surfaces {
-                return Err(SdkError::Protocol(format!(
-                    "search corpus clear receipt mismatch: expected {expected_clear_surfaces}, received {}",
-                    receipt.accepted_clear_surfaces
-                )));
-            }
+            validate_search_corpus_publish_receipt_v1(batch, &receipt)?;
             Ok(receipt)
         }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
@@ -507,6 +458,65 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
             QuantaIndex::ingest_response_kind(&other),
         )),
     }
+}
+
+fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
+    batch: &SearchCorpusBatch<SEALED>,
+    receipt: &BatchReceipt,
+) -> Result<(), SdkError> {
+    if receipt.generation != batch.generation() {
+        return Err(SdkError::Protocol(
+            "search corpus receipt generation differs from the published batch".to_string(),
+        ));
+    }
+    if receipt.manifest_digest != batch.manifest_digest() {
+        return Err(SdkError::Protocol(
+            "search corpus receipt manifest digest differs from the published batch".to_string(),
+        ));
+    }
+    if receipt.sealed != SEALED {
+        return Err(SdkError::Protocol(format!(
+            "search corpus receipt seal mismatch: expected {SEALED}, received {}",
+            receipt.sealed
+        )));
+    }
+
+    let expected_replace_scopes = u32::try_from(batch.replace_scopes.len()).map_err(|err| {
+        SdkError::Protocol(format!("search corpus replace scope count overflow: {err}"))
+    })?;
+    let expected_tombstone_scopes = u32::try_from(batch.tombstone_scopes.len()).map_err(|err| {
+        SdkError::Protocol(format!(
+            "search corpus tombstone scope count overflow: {err}"
+        ))
+    })?;
+    let expected_clear_surfaces = u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
+        SdkError::Protocol(format!("search corpus clear surface count overflow: {err}"))
+    })?;
+
+    for (label, expected, observed) in [
+        (
+            "replace scope",
+            expected_replace_scopes,
+            receipt.accepted_replace_scopes,
+        ),
+        (
+            "tombstone scope",
+            expected_tombstone_scopes,
+            receipt.accepted_tombstone_scopes,
+        ),
+        (
+            "clear surface",
+            expected_clear_surfaces,
+            receipt.accepted_clear_surfaces,
+        ),
+    ] {
+        if observed != expected {
+            return Err(SdkError::Protocol(format!(
+                "search corpus {label} receipt mismatch: expected {expected}, received {observed}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl crate::NamespaceQuery for LexicalNs {

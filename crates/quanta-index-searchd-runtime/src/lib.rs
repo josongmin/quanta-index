@@ -14,9 +14,10 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 use quanta_index_core::{
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexOpenPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SemanticBatchBuildPort, SemanticIndexOpenPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -24,12 +25,15 @@ use quanta_index_repomap::RepoMapGenerationStore;
 use quanta_index_search_plane::{
     ActivationCatalog, AuxiliaryAuthorityStore, LegacySemanticJournalStore,
 };
-use quanta_index_searchd::app::runtime::SearchdRuntimeParts;
+use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootLease};
 use quanta_index_searchd::{SearchdCommand, SearchdConfig, SearchdRuntime, drive};
 use quanta_index_semantic::SemanticAdapter;
 
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     let state_root = config.state_root().to_path_buf();
+    // Acquire process ownership before any adapter or authority store opens the
+    // shared root. No loser may observe or mutate partially initialized state.
+    let state_root_lease = StateRootLease::acquire(&state_root)?;
     let lex_adapter: Arc<LexicalAdapter> = Arc::new(LexicalAdapter::with_state_root(
         state_root.join("indexes/lexical"),
     ));
@@ -50,6 +54,12 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
         lex_adapter.clone();
+    let lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
+        lex_adapter.clone();
+    let lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
+        lex_adapter.clone();
+    let lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
+        lex_adapter.clone();
     let lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync> = lex_adapter.clone();
     let repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync> =
         lex_adapter.clone();
@@ -62,6 +72,10 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
         lex_adapter.clone();
     let repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync> = lex_adapter;
     let sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync> = sem_adapter.clone();
+    let semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync> =
+        sem_adapter.clone();
+    let semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync> =
+        sem_adapter.clone();
     let sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync> = sem_adapter;
     let repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync> = repo_map_store.clone();
     let repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync> =
@@ -72,7 +86,11 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     SearchdRuntime::assemble(
         config,
         SearchdRuntimeParts {
+            state_root_lease,
             search_corpus_build_port,
+            lexical_generation_scanner,
+            lexical_generation_validator,
+            lexical_incomplete_discard,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
@@ -81,6 +99,8 @@ pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
             file_contributor_ingest_port,
             repo_meta_ingest_port,
             sem_build_port,
+            semantic_generation_validator,
+            semantic_incomplete_discard,
             sem_open_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,

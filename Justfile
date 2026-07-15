@@ -492,8 +492,8 @@ rust-fuzz-build:
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz build'
 
 rust-fuzz-smoke seconds="60":
-    env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -max_total_time={{seconds}}'
-    env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -max_total_time={{seconds}}'
+    env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_request_decode -- -dict=dictionaries/composite_search_corpus_control.dict -max_total_time={{seconds}}'
+    env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run ipc_response_decode -- -dict=dictionaries/composite_search_corpus_control.dict -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-contract-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-contract/fuzz && cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time={{seconds}}'
     env QUANTA_INDEX_BUILD_LANE=fuzz-lq-norm-lane bash -lc 'source scripts/quanta-index-env.sh && cd crates/quanta-index-lq-norm/fuzz && cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time={{seconds}}'
 

@@ -46,7 +46,7 @@ CRATES_DIR = ROOT / "crates"
 
 DERIVE_RE = re.compile(r"#\[\s*derive\s*\(([^)]+)\)\s*\]")
 PUB_ERROR_DECL_RE = re.compile(
-    r"^\s*pub\s+(?P<kind>enum|struct)\s+(?P<name>[A-Z][A-Za-z0-9_]*Error)\b"
+    r"^\s*pub\s+(?P<kind>enum|struct)\s+(?P<name>[A-Z][A-Za-z0-9_]*Error(?:V[0-9]+)?)\b"
 )
 ERROR_ATTR_RE = re.compile(r"#\[\s*error\s*\(")
 VARIANT_RE = re.compile(r"^\s*(?P<name>[A-Z][A-Za-z0-9_]*)\s*(?:\{|\(|,|$)")

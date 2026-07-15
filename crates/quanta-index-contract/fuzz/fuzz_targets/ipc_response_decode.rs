@@ -41,8 +41,16 @@ fuzz_target!(|data: &[u8]| {
 
     // Control responses, including exact composite activation/rollback
     // acknowledgements (QI-ACT-01 snapshots / status report included).
-    let _ = ciborium::de::from_reader::<SearchPlaneSearchCorpusActivationCasAck, _>(data);
-    let _ = ciborium::de::from_reader::<SearchPlaneSearchCorpusRollbackCasAck, _>(data);
+    if let Ok(ack) = ciborium::de::from_reader::<SearchPlaneSearchCorpusActivationCasAck, _>(data) {
+        let _active_validation = ack.active.validate_v1();
+        if let Some(previous) = ack.previous_sealed_active {
+            let _previous_validation = previous.validate_v1();
+        }
+    }
+    if let Ok(ack) = ciborium::de::from_reader::<SearchPlaneSearchCorpusRollbackCasAck, _>(data) {
+        let _active_validation = ack.active.validate_v1();
+        let _previous_validation = ack.previous_sealed_active.validate_v1();
+    }
     let _ = ciborium::de::from_reader::<RepoMapMutationAck, _>(data);
     let _ = ciborium::de::from_reader::<GenerationSnapshot, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusReport, _>(data);

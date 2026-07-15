@@ -1302,10 +1302,11 @@ mod tests {
                 },
             ),
         };
+        let request_value =
+            serde_json::to_value(&request).expect("encode composite activation request");
         assert_eq!(
-            serde_json::to_value(&request).expect("encode composite activation request")["payload"]
-                ["kind"],
-            json!("ActivateSearchCorpusGenerationCas")
+            request_value.pointer("/payload/kind"),
+            Some(&json!("ActivateSearchCorpusGenerationCas"))
         );
         assert_eq!(
             decode::<SearchPlaneControlIpcRequestEnvelope>(
@@ -1324,9 +1325,11 @@ mod tests {
                 },
             ),
         };
+        let response_value =
+            serde_json::to_value(&response).expect("encode composite activation ack");
         assert_eq!(
-            serde_json::to_value(&response).expect("encode composite activation ack")["payload"]["kind"],
-            json!("SearchCorpusActivationCasAck")
+            response_value.pointer("/payload/kind"),
+            Some(&json!("SearchCorpusActivationCasAck"))
         );
         assert_eq!(
             decode::<SearchPlaneControlIpcResponseEnvelope>(
@@ -1425,8 +1428,8 @@ mod tests {
         };
         let request_value = serde_json::to_value(&request).expect("encode rollback request");
         assert_eq!(
-            request_value["payload"]["kind"],
-            json!("RollbackSearchCorpusGenerationCas")
+            request_value.pointer("/payload/kind"),
+            Some(&json!("RollbackSearchCorpusGenerationCas"))
         );
         assert_eq!(
             serde_json::from_value::<SearchPlaneControlIpcRequestEnvelope>(request_value)
@@ -1452,8 +1455,8 @@ mod tests {
         };
         let response_value = serde_json::to_value(&response).expect("encode rollback response");
         assert_eq!(
-            response_value["payload"]["kind"],
-            json!("SearchCorpusRollbackCasAck")
+            response_value.pointer("/payload/kind"),
+            Some(&json!("SearchCorpusRollbackCasAck"))
         );
         assert_eq!(
             serde_json::from_value::<SearchPlaneControlIpcResponseEnvelope>(response_value)

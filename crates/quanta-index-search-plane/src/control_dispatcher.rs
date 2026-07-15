@@ -14,7 +14,7 @@ use quanta_index_contract::{
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, TrackReadinessRecord,
 };
-use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
+use quanta_index_core::{CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort};
 
 use crate::{
     ActivationCatalog, Ledger, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1,
@@ -25,6 +25,8 @@ const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
+const ERR_ACTIVATION_TARGET_UNOPENABLE: &str = "ACTIVATION_TARGET_UNOPENABLE";
+const ERR_ROLLBACK_TARGET_UNOPENABLE: &str = "ROLLBACK_TARGET_UNOPENABLE";
 #[cfg(test)]
 const ERR_ROLLBACK_CAS_CONFLICT: &str = crate::readiness::ERR_ROLLBACK_CAS_CONFLICT;
 
@@ -37,6 +39,8 @@ pub struct SearchPlaneControlDispatcher {
     repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
     activation_catalog: Arc<ActivationCatalog>,
     ledger: Arc<RwLock<Ledger>>,
+    lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
 }
 
 impl SearchPlaneControlDispatcher {
@@ -45,11 +49,15 @@ impl SearchPlaneControlDispatcher {
         repo_map_activate: Arc<dyn RepoMapGenerationActivatePort + Send + Sync>,
         activation_catalog: Arc<ActivationCatalog>,
         ledger: Arc<RwLock<Ledger>>,
+        lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+        semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
     ) -> Self {
         Self {
             repo_map_activate,
             activation_catalog,
             ledger,
+            lexical_generation_validator,
+            semantic_generation_validator,
         }
     }
 
@@ -67,9 +75,13 @@ impl SearchPlaneControlDispatcher {
 
     /// Promote a prepared lexical plus semantic corpus after proving both
     /// sealed identities against the same readiness snapshot.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the readiness guard must remain held until the catalog CAS has durably committed the composite root"
+    )]
     pub fn activate_prepared_search_corpus_generation_v1(
         &self,
-        prepared: PreparedSearchCorpusGenerationV1,
+        prepared: &PreparedSearchCorpusGenerationV1,
     ) -> Result<SearchCorpusGenerationActivationV1, CoreError> {
         let guard = self
             .ledger
@@ -77,36 +89,55 @@ impl SearchPlaneControlDispatcher {
             .map_err(|err| CoreError::Storage(format!("ledger poisoned: {err}")))?;
         validate_candidate_activation(&guard, prepared.candidate().lexical())?;
         validate_candidate_activation(&guard, prepared.candidate().semantic())?;
+        guard.validate_historically_sealed_track_identity(
+            prepared.candidate().lexical(),
+            "search-corpus activation",
+        )?;
+        guard.validate_historically_sealed_track_identity(
+            prepared.candidate().semantic(),
+            "search-corpus activation",
+        )?;
+        self.validate_generation_pair_v1(
+            prepared.candidate(),
+            ERR_ACTIVATION_TARGET_UNOPENABLE,
+            "activation",
+        )?;
         // Readiness only advances after sealing. Holding this guard through
         // the durable catalog CAS prevents either half of a prepared corpus
         // from becoming unsealed before the composite root is committed.
         self.activation_catalog
-            .activate_prepared_search_corpus_generation_v1(&prepared)
+            .activate_prepared_search_corpus_generation_v1(prepared)
     }
 
     fn activate_search_corpus_generation_cas(
         &self,
-        request: SearchPlaneActivateSearchCorpusGenerationCasRequest,
+        request: &SearchPlaneActivateSearchCorpusGenerationCasRequest,
     ) -> Result<SearchPlaneSearchCorpusActivationCasAck, CoreError> {
-        let candidate = search_corpus_generation_from_contract(&request.candidate)?;
+        request.validate_v1().map_err(|error| {
+            CoreError::InvalidContract(format!(
+                "search-corpus activation: invalid request: {}",
+                error.code_v1()
+            ))
+        })?;
+        let candidate = search_corpus_generation_from_validated_contract(&request.candidate)?;
         let expected_active = request
             .expected_active
             .as_ref()
-            .map(search_corpus_generation_from_contract)
+            .map(search_corpus_generation_from_validated_contract)
             .transpose()?;
         let prepared = PreparedSearchCorpusGenerationV1::new(candidate, expected_active)?;
-        let activation = self.activate_prepared_search_corpus_generation_v1(prepared)?;
+        let activation = self.activate_prepared_search_corpus_generation_v1(&prepared)?;
         Ok(SearchPlaneSearchCorpusActivationCasAck {
-            active: search_corpus_generation_into_contract(activation.active),
+            active: search_corpus_generation_into_contract(&activation.active),
             previous_sealed_active: activation
                 .previous_active
-                .map(search_corpus_generation_into_contract),
+                .map(|identity| search_corpus_generation_into_contract(&identity)),
         })
     }
 
     fn rollback_search_corpus_generation_cas(
         &self,
-        request: SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+        request: &SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     ) -> Result<SearchPlaneSearchCorpusRollbackCasAck, CoreError> {
         request.validate_v1().map_err(|error| {
             CoreError::InvalidContract(format!(
@@ -128,7 +159,26 @@ impl SearchPlaneControlDispatcher {
             "search-corpus rollback",
         )?;
         drop(guard);
-        self.activation_catalog.rollback(&request)
+        self.validate_generation_pair_v1(&target, ERR_ROLLBACK_TARGET_UNOPENABLE, "rollback")?;
+        self.activation_catalog.rollback(request)
+    }
+
+    fn validate_generation_pair_v1(
+        &self,
+        candidate: &crate::SearchCorpusGenerationV1,
+        error_code: &str,
+        operation: &str,
+    ) -> Result<(), CoreError> {
+        self.lexical_generation_validator
+            .validate_generation_identity(candidate.lexical())
+            .map_err(|source| {
+                generation_target_unopenable(candidate.lexical(), operation, error_code, &source)
+            })?;
+        self.semantic_generation_validator
+            .validate_generation_identity(candidate.semantic())
+            .map_err(|source| {
+                generation_target_unopenable(candidate.semantic(), operation, error_code, &source)
+            })
     }
 
     /// QI-ACT-01: resolve one `(repo, revision, track)` triple to its active
@@ -181,13 +231,13 @@ impl SearchPlaneControlDispatcher {
     pub fn dispatch(&self, request: SearchPlaneControlIpcRequest) -> SearchPlaneControlIpcResponse {
         match request {
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request) => {
-                match self.activate_search_corpus_generation_cas(request) {
+                match self.activate_search_corpus_generation_cas(&request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
             SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(request) => {
-                match self.rollback_search_corpus_generation_cas(request) {
+                match self.rollback_search_corpus_generation_cas(&request) {
                     Ok(resp) => SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(resp),
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
@@ -213,6 +263,24 @@ impl SearchPlaneControlDispatcher {
                 }
             }
         }
+    }
+}
+
+fn generation_target_unopenable(
+    candidate: &GenerationSnapshot,
+    operation: &str,
+    error_code: &str,
+    source: &CoreError,
+) -> CoreError {
+    CoreError::Typed {
+        code: error_code.to_string(),
+        message: format!(
+            "search-corpus {operation}: target is not physically valid for repo={} revision={} track={:?} generation={}: {source:?}",
+            candidate.repo_id.as_str(),
+            candidate.revision_id.as_str(),
+            candidate.track,
+            candidate.manifest_generation.get(),
+        ),
     }
 }
 
@@ -259,18 +327,6 @@ fn validate_candidate_activation(
     Ok(())
 }
 
-fn search_corpus_generation_from_contract(
-    identity: &SearchCorpusGenerationIdentityV1,
-) -> Result<crate::SearchCorpusGenerationV1, CoreError> {
-    identity.validate_v1().map_err(|error| {
-        CoreError::InvalidContract(format!(
-            "search-corpus activation: invalid composite identity: {}",
-            error.code_v1()
-        ))
-    })?;
-    crate::SearchCorpusGenerationV1::new(identity.lexical.clone(), identity.semantic.clone())
-}
-
 fn search_corpus_generation_from_validated_contract(
     identity: &SearchCorpusGenerationIdentityV1,
 ) -> Result<crate::SearchCorpusGenerationV1, CoreError> {
@@ -278,7 +334,7 @@ fn search_corpus_generation_from_validated_contract(
 }
 
 fn search_corpus_generation_into_contract(
-    identity: crate::SearchCorpusGenerationV1,
+    identity: &crate::SearchCorpusGenerationV1,
 ) -> SearchCorpusGenerationIdentityV1 {
     SearchCorpusGenerationIdentityV1 {
         lexical: identity.lexical().clone(),
@@ -288,6 +344,10 @@ fn search_corpus_generation_into_contract(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "Result-returning control tests use assertions as test-failure reporting"
+    )]
     use std::sync::{Arc, RwLock};
 
     use super::SearchPlaneControlDispatcher;
@@ -298,7 +358,9 @@ mod tests {
         SearchPlaneControlIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
         SearchPlaneTrackKind,
     };
-    use quanta_index_core::{CoreError, RepoMapGenerationActivatePort};
+    use quanta_index_core::{
+        CoreError, GenerationIdentityValidatePort, RepoMapGenerationActivatePort,
+    };
     use tempfile::tempdir;
 
     use crate::{
@@ -345,6 +407,21 @@ mod tests {
     }
 
     struct StubRepoMapActivatePort;
+
+    struct AlwaysValidGeneration;
+
+    impl GenerationIdentityValidatePort for AlwaysValidGeneration {
+        fn validate_generation_identity(
+            &self,
+            _candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn always_valid_generation() -> Arc<dyn GenerationIdentityValidatePort + Send + Sync> {
+        Arc::new(AlwaysValidGeneration)
+    }
 
     impl RepoMapGenerationActivatePort for StubRepoMapActivatePort {
         fn activate_generation(
@@ -426,11 +503,19 @@ mod tests {
                 ManifestGeneration::new(11),
                 "manifest-digest-11",
             );
+            guard.record_historically_sealed_search_corpus(
+                &repo_id,
+                &revision_id,
+                ManifestGeneration::new(11),
+                "manifest-digest-11",
+            );
         }
         let dispatcher = SearchPlaneControlDispatcher::new(
             Arc::new(StubRepoMapActivatePort),
             activation_catalog.clone(),
             ledger,
+            always_valid_generation(),
+            always_valid_generation(),
         );
 
         let activate = into_repo_map_mutation_ack(dispatcher.dispatch(
@@ -515,6 +600,8 @@ mod tests {
             Arc::new(StubRepoMapActivatePort),
             Arc::clone(&activation_catalog),
             Arc::new(RwLock::new(Ledger::new())),
+            always_valid_generation(),
+            always_valid_generation(),
         );
         let code = into_error_code(dispatcher.dispatch(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
@@ -584,6 +671,12 @@ mod tests {
                         digest,
                     );
                 }
+                guard.record_historically_sealed_search_corpus(
+                    &repo_id,
+                    &revision_id,
+                    ManifestGeneration::new(generation),
+                    digest,
+                );
             }
         }
         let active =
@@ -598,6 +691,8 @@ mod tests {
             Arc::new(StubRepoMapActivatePort),
             Arc::clone(&activation_catalog),
             ledger,
+            always_valid_generation(),
+            always_valid_generation(),
         );
 
         let response = dispatcher.dispatch(

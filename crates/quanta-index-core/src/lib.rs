@@ -14,6 +14,10 @@ pub mod timeref;
 
 pub use error::CoreError;
 
+pub use domains::generation::{
+    GenerationIdentityValidatePort, GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
+    IncompleteGenerationDiscardPort, SealedGenerationScanPort,
+};
 pub use domains::hybrid::{ExplainQueryPort, HybridOrchestratorPolicy, HybridQueryPort};
 pub use domains::lexical::{
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexBuildPort,

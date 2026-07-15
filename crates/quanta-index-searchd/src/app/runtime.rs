@@ -1,26 +1,32 @@
 //! Composed runtime artefacts. Built once per daemon process.
 
 use std::collections::BTreeSet;
+use std::fs::{File, OpenOptions};
 use std::sync::{Arc, RwLock};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
+use fs2::FileExt;
 use memchr::memchr_iter;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, GenerationSelector, LqFileScope, LqStructuralBlock,
-    ManifestGeneration, RepoId, RevisionId, SearchPlaneControlIpcRequest,
-    SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
+    ManifestGeneration, SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::structural::{
     StructuralExecutableFilter, StructuralProducerPort,
     StructuralQueryRequest as DomainStructuralQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexOpenPort,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
-    RepoMapGenerationActivatePort, RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    IncompleteGenerationDiscardPort, LexicalIndexOpenPort, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMapGenerationActivatePort,
+    RepoMapQueryPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
     SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort,
     SemanticIndexOpenPort, SemanticIngestPort, StructuralError, StructuralMatchBinding,
     StructuralMatchCandidate, StructuralReadiness, TextEmbeddingProvider,
@@ -39,8 +45,8 @@ use quanta_index_search_plane::{
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort, Ledger,
     LegacySemanticJournalStore, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
-    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchPlaneControlDispatcher, SearchPlaneDispatcher,
-    SearchPlaneIngestDispatcher, StructuralIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
+    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -56,7 +62,11 @@ use crate::app::server::{
 const BENCH_DISABLE_QUERY_OBS_ENV: &str = "QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS";
 
 pub struct SearchdRuntimeParts {
+    pub state_root_lease: StateRootLease,
     pub search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    pub lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync>,
+    pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub lex_open_port: Arc<dyn LexicalIndexOpenPort + Send + Sync>,
     pub repo_commit_recency_ingest_port: Arc<dyn RepoCommitRecencyIngestPort + Send + Sync>,
     pub repo_topic_ingest_port: Arc<dyn RepoTopicIngestPort + Send + Sync>,
@@ -65,6 +75,8 @@ pub struct SearchdRuntimeParts {
     pub file_contributor_ingest_port: Arc<dyn FileContributorIngestPort + Send + Sync>,
     pub repo_meta_ingest_port: Arc<dyn RepoMetaIngestPort + Send + Sync>,
     pub sem_build_port: Arc<dyn SemanticBatchBuildPort + Send + Sync>,
+    pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
     pub sem_open_port: Arc<dyn SemanticIndexOpenPort + Send + Sync>,
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub repo_map_bundle_ingest_port: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
@@ -72,6 +84,110 @@ pub struct SearchdRuntimeParts {
     pub activation_catalog: Arc<ActivationCatalog>,
     pub aux_authority_store: Arc<AuxiliaryAuthorityStore>,
     pub legacy_semantic_journal_store: Arc<LegacySemanticJournalStore>,
+}
+
+/// Exclusive process-lifetime ownership of one daemon state root.
+///
+/// The lock file is intentionally persistent; the OS lock, not file presence,
+/// owns liveness. Dropping the file handle releases the lease after crashes and
+/// normal shutdown without stale-file recovery heuristics.
+#[derive(Debug)]
+pub struct StateRootLease {
+    _file: File,
+}
+
+impl StateRootLease {
+    pub fn acquire(state_root: &Path) -> Result<Self, CoreError> {
+        ensure_durable_state_root_v1(state_root)?;
+        let path = state_root.join(".searchd-state-root.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "searchd state-root lease: open {}: {error}",
+                    path.display()
+                ))
+            })?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(CoreError::Typed {
+                code: "STATE_ROOT_IN_USE".to_string(),
+                message: format!(
+                    "searchd state root already has a live owner: {}",
+                    state_root.display()
+                ),
+            }),
+            Err(error) => Err(CoreError::Storage(format!(
+                "searchd state-root lease: lock {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+fn ensure_durable_state_root_v1(state_root: &Path) -> Result<(), CoreError> {
+    ensure_durable_state_root_with_v1(state_root, &|parent| {
+        File::open(parent).and_then(|directory| directory.sync_all())
+    })
+}
+
+fn ensure_durable_state_root_with_v1(
+    state_root: &Path,
+    sync_parent: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Result<(), CoreError> {
+    if state_root.is_dir() {
+        return Ok(());
+    }
+
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor = state_root;
+    while !cursor.exists() {
+        missing.push(cursor.to_path_buf());
+        cursor = cursor.parent().ok_or_else(|| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: no existing ancestor for {}",
+                state_root.display()
+            ))
+        })?;
+    }
+    if !cursor.is_dir() {
+        return Err(CoreError::Storage(format!(
+            "searchd state-root lease: ancestor is not a directory: {}",
+            cursor.display()
+        )));
+    }
+
+    for directory in missing.iter().rev() {
+        match fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists && directory.is_dir() => {}
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "searchd state-root lease: create {}: {error}",
+                    directory.display()
+                )));
+            }
+        }
+        let parent = directory.parent().ok_or_else(|| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: created directory has no parent: {}",
+                directory.display()
+            ))
+        })?;
+        sync_parent(parent).map_err(|error| {
+            CoreError::Storage(format!(
+                "searchd state-root lease: fsync parent {} after creating {}: {error}",
+                parent.display(),
+                directory.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 struct ProviderUnavailableQueryTextEmbedder;
@@ -553,13 +669,21 @@ pub struct SearchdRuntime {
     pub repo_map_query_port: Arc<dyn RepoMapQueryPort + Send + Sync>,
     pub query_obs_store: Arc<BoundedQueryObsStore>,
     pub semantic_boot: semantic_boot::SemanticBootReport,
+    // Rust drops fields in declaration order. Keep the state-root lease last
+    // so every adapter, server, and authority handle is gone before ownership
+    // of the shared root is released.
+    _state_root_lease: StateRootLease,
 }
 
 impl SearchdRuntime {
     /// Assemble the runtime from externally-supplied ports.
     pub fn assemble(config: SearchdConfig, parts: SearchdRuntimeParts) -> Result<Self> {
         let SearchdRuntimeParts {
+            state_root_lease,
             search_corpus_build_port,
+            lexical_generation_scanner,
+            lexical_generation_validator,
+            lexical_incomplete_discard,
             lex_open_port,
             repo_commit_recency_ingest_port,
             repo_topic_ingest_port,
@@ -568,6 +692,8 @@ impl SearchdRuntime {
             file_contributor_ingest_port,
             repo_meta_ingest_port,
             sem_build_port,
+            semantic_generation_validator,
+            semantic_incomplete_discard,
             sem_open_port,
             repo_map_query_port,
             repo_map_bundle_ingest_port,
@@ -577,7 +703,11 @@ impl SearchdRuntime {
             legacy_semantic_journal_store,
         } = parts;
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        bootstrap_persisted_lexical_state(&ledger, config.state_root())?;
+        bootstrap_persisted_lexical_state(
+            &ledger,
+            lexical_generation_scanner.as_ref(),
+            lexical_generation_validator.as_ref(),
+        )?;
         let semantic_root = quanta_index_semantic::semantic_state_root(config.state_root());
         let migration_start = std::time::Instant::now();
         let migration = semantic_boot::migrate_legacy_semantic_journal(
@@ -613,10 +743,17 @@ impl SearchdRuntime {
         let direct_search_corpus_ingest_port: Arc<dyn SearchCorpusIngestPort + Send + Sync> =
             Arc::new(
                 DirectSearchCorpusMaterializer::new_with_search_owned_semantics_from_env(
-                    Arc::clone(&search_corpus_build_port),
-                    Arc::clone(&ledger),
-                    Arc::clone(&direct_sem_ingest_port),
-                    corpus_embedder,
+                    SearchCorpusMaterializerParts {
+                        builder: Arc::clone(&search_corpus_build_port),
+                        ledger: Arc::clone(&ledger),
+                        semantic_ingest: Arc::clone(&direct_sem_ingest_port),
+                        semantic_embedder: corpus_embedder,
+                        authority: aux_authority_store.clone(),
+                        lexical_generation_validator: Arc::clone(&lexical_generation_validator),
+                        semantic_generation_validator: Arc::clone(&semantic_generation_validator),
+                        lexical_incomplete_discard: Arc::clone(&lexical_incomplete_discard),
+                        semantic_incomplete_discard: Arc::clone(&semantic_incomplete_discard),
+                    },
                 )
                 .map_err(anyhow::Error::from)?,
             );
@@ -640,8 +777,8 @@ impl SearchdRuntime {
                 query_obs_store.clone()
             };
         let query_dispatcher = Arc::new(SearchPlaneDispatcher::new_with_obs(
-            lex_open_port,
-            sem_open_port,
+            Arc::clone(&lex_open_port),
+            Arc::clone(&sem_open_port),
             Arc::clone(&repo_map_query_port),
             Arc::new(LedgerStructuralProducer::new(Arc::clone(&ledger))),
             Arc::clone(&ledger),
@@ -653,6 +790,8 @@ impl SearchdRuntime {
             repo_map_generation_activate_port,
             activation_catalog,
             Arc::clone(&ledger),
+            lexical_generation_validator,
+            semantic_generation_validator,
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
             direct_search_corpus_ingest_port,
@@ -703,72 +842,60 @@ impl SearchdRuntime {
             repo_map_query_port,
             query_obs_store,
             semantic_boot: boot_report,
+            _state_root_lease: state_root_lease,
         })
     }
 }
 
 fn bootstrap_persisted_lexical_state(
     ledger: &Arc<RwLock<Ledger>>,
-    state_root: &Path,
+    scanner: &dyn SealedGenerationScanPort,
+    validator: &dyn GenerationIdentityValidatePort,
 ) -> Result<()> {
-    seed_persisted_lexical_readiness(ledger, state_root)?;
+    seed_persisted_lexical_readiness(ledger, scanner, validator)?;
     Ok(())
 }
 
-fn seed_persisted_lexical_readiness(ledger: &Arc<RwLock<Ledger>>, state_root: &Path) -> Result<()> {
-    let lexical_root = state_root.join("indexes").join("lexical");
-    if !lexical_root.exists() {
-        return Ok(());
-    }
+fn seed_persisted_lexical_readiness(
+    ledger: &Arc<RwLock<Ledger>>,
+    scanner: &dyn SealedGenerationScanPort,
+    validator: &dyn GenerationIdentityValidatePort,
+) -> Result<()> {
+    let persisted = scanner
+        .scan_sealed_generations()
+        .map_err(anyhow::Error::from)?;
     let mut guard = ledger
         .write()
         .map_err(|err| anyhow::anyhow!("ledger poisoned during lexical bootstrap: {err}"))?;
     let mut max_generation: Option<ManifestGeneration> = None;
-    for repo_entry in fs::read_dir(&lexical_root)? {
-        let repo_entry = repo_entry?;
-        if !repo_entry.file_type()?.is_dir() {
-            continue;
+    for candidate in persisted {
+        if candidate.track != SearchPlaneTrackKind::Lexical {
+            return Err(anyhow::anyhow!(
+                "lexical bootstrap scanner returned non-lexical track {:?}",
+                candidate.track
+            ));
         }
-        let repo_id = RepoId::new(repo_entry.file_name().to_string_lossy().into_owned());
-        for revision_entry in fs::read_dir(repo_entry.path())? {
-            let revision_entry = revision_entry?;
-            if !revision_entry.file_type()?.is_dir() {
-                continue;
-            }
-            let revision_id =
-                RevisionId::new(revision_entry.file_name().to_string_lossy().into_owned());
-            for generation_entry in fs::read_dir(revision_entry.path())? {
-                let generation_entry = generation_entry?;
-                if !generation_entry.file_type()?.is_dir() {
-                    continue;
-                }
-                let name = generation_entry.file_name().to_string_lossy().into_owned();
-                let Some(suffix) = name.strip_prefix('g') else {
-                    continue;
-                };
-                let Ok(raw_generation) = suffix.parse::<u64>() else {
-                    continue;
-                };
-                let generation = ManifestGeneration::new(raw_generation);
-                guard.record_track_materialized(
-                    &repo_id,
-                    &revision_id,
-                    SearchPlaneTrackKind::Lexical,
-                    generation,
-                    None,
-                );
-                guard.record_track_seal(
-                    &repo_id,
-                    &revision_id,
-                    SearchPlaneTrackKind::Lexical,
-                    generation,
-                );
-                max_generation = match max_generation {
-                    Some(current) if current.get() >= generation.get() => Some(current),
-                    _ => Some(generation),
-                };
-            }
-        }
+        validator
+            .validate_generation_identity(&candidate)
+            .map_err(anyhow::Error::from)?;
+        guard.record_track_materialized(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            SearchPlaneTrackKind::Lexical,
+            candidate.manifest_generation,
+            Some(candidate.manifest_digest.as_str()),
+        );
+        guard.record_track_seal_with_digest(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            SearchPlaneTrackKind::Lexical,
+            candidate.manifest_generation,
+            candidate.manifest_digest.as_str(),
+        );
+        max_generation = match max_generation {
+            Some(current) if current.get() >= candidate.manifest_generation.get() => Some(current),
+            _ => Some(candidate.manifest_generation),
+        };
     }
     if let Some(max_generation) = max_generation {
         guard.lexical_materialize(max_generation, None);
@@ -782,12 +909,12 @@ fn seed_persisted_lexical_readiness(ledger: &Arc<RwLock<Ledger>>, state_root: &P
 mod tests {
     use super::{
         DomainStructuralQueryRequest, GenerationPin, GenerationSelector, Ledger,
-        LedgerStructuralProducer, LqStructuralBlock, RepoId, RevisionId, StructuralProducerPort,
-        StructuralReadiness,
+        LedgerStructuralProducer, LqStructuralBlock, StructuralProducerPort, StructuralReadiness,
+        ensure_durable_state_root_with_v1,
     };
-    use quanta_index_contract::LqOptions;
+    use quanta_index_contract::{LqOptions, RepoId, RevisionId};
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
     fn request_with_generation(generation: GenerationSelector) -> DomainStructuralQueryRequest {
@@ -1129,5 +1256,45 @@ mod tests {
             !dir.path().join("embed-cache").exists(),
             "cache_enabled=false must NOT create the embed-cache dir (bare provider)"
         );
+    }
+
+    #[test]
+    fn fresh_nested_state_root_syncs_every_created_parent_in_order() -> TestRes {
+        let parent = tempfile::tempdir()?;
+        let state_root = parent.path().join("one").join("two").join("state");
+        let synced = Mutex::new(Vec::new());
+
+        ensure_durable_state_root_with_v1(&state_root, &|path| {
+            synced
+                .lock()
+                .map_err(|_| std::io::Error::other("sync log poisoned"))?
+                .push(path.to_path_buf());
+            Ok(())
+        })?;
+
+        assert!(state_root.is_dir());
+        assert_eq!(
+            synced.into_inner().map_err(|_| "sync log poisoned")?,
+            vec![
+                parent.path().to_path_buf(),
+                parent.path().join("one"),
+                parent.path().join("one").join("two"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_state_root_parent_sync_failure_is_not_acknowledged() -> TestRes {
+        let parent = tempfile::tempdir()?;
+        let state_root = parent.path().join("state");
+        let error = ensure_durable_state_root_with_v1(&state_root, &|_path| {
+            Err(std::io::Error::other("injected parent sync failure"))
+        })
+        .expect_err("parent sync failure must fail state-root bootstrap");
+
+        assert!(format!("{error:?}").contains("injected parent sync failure"));
+        assert!(!state_root.join(".searchd-state-root.lock").exists());
+        Ok(())
     }
 }

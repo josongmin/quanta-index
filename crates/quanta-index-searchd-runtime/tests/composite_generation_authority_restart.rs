@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest;
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, GenerationStorageKeyV1};
 use quanta_index_sdk::{
     ChunkId, ChunkRecord, ConnectOptions, LanguageCode, ManifestGeneration, QuantaIndex, RepoId,
     RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch, SearchCorpusGenerationIdentityV1,
@@ -285,17 +285,15 @@ fn assert_missing_target_rejected(track: MissingTargetTrack) -> TestResult {
     first_process.stop()?;
 
     let target_root = match track {
-        MissingTargetTrack::Lexical => directory
-            .path()
-            .join("indexes/lexical")
-            .join(REPO)
-            .join(REVISION)
-            .join(format!("g{G1}")),
+        MissingTargetTrack::Lexical => {
+            GenerationStorageKeyV1::for_repo_revision(&repo(), &revision())
+                .generation_dir(&directory.path().join("indexes/lexical"), generation(G1))
+        }
         MissingTargetTrack::Semantic => {
-            quanta_index_semantic::semantic_state_root(directory.path())
-                .join(REPO)
-                .join(REVISION)
-                .join(format!("g{G1}"))
+            GenerationStorageKeyV1::for_repo_revision(&repo(), &revision()).generation_dir(
+                &quanta_index_semantic::semantic_state_root(directory.path()),
+                generation(G1),
+            )
         }
     };
     std::fs::remove_dir_all(&target_root)?;

@@ -81,6 +81,7 @@ impl QueryTransport for StubQueryTransport {
 struct StubControlTransport {
     requests: Mutex<Vec<SearchPlaneControlIpcRequestEnvelope>>,
     response: Mutex<Option<quanta_index_contract::SearchPlaneControlIpcResponse>>,
+    request_id_offset: u64,
 }
 
 impl StubControlTransport {
@@ -88,6 +89,18 @@ impl StubControlTransport {
         Self {
             requests: Mutex::new(Vec::new()),
             response: Mutex::new(Some(response)),
+            request_id_offset: 0,
+        }
+    }
+
+    fn with_request_id_offset(
+        response: quanta_index_contract::SearchPlaneControlIpcResponse,
+        request_id_offset: u64,
+    ) -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            response: Mutex::new(Some(response)),
+            request_id_offset,
         }
     }
 }
@@ -110,7 +123,7 @@ impl ControlTransport for StubControlTransport {
                 crate::SdkError::Protocol("missing stub control response".to_string())
             })?;
         Ok(SearchPlaneControlIpcResponseEnvelope {
-            request_id: request.request_id,
+            request_id: request.request_id.wrapping_add(self.request_id_offset),
             payload,
         })
     }
@@ -934,9 +947,9 @@ fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
 fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_records() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
-        manifest_digest: "sha256:feed".to_string(),
+        manifest_digest: "manifest:feed".to_string(),
         accepted_clear_surfaces: 0,
-        accepted_replace_scopes: 2,
+        accepted_replace_scopes: 1,
         accepted_tombstone_scopes: 0,
         sealed: true,
     };
@@ -996,10 +1009,10 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
 fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() {
     let receipt = BatchPublishReceipt {
         generation: ManifestGeneration::new(1),
-        manifest_digest: "sha256:semantic".to_string(),
+        manifest_digest: "manifest:semantic".to_string(),
         accepted_clear_surfaces: 0,
-        accepted_replace_scopes: 2,
-        accepted_tombstone_scopes: 2,
+        accepted_replace_scopes: 0,
+        accepted_tombstone_scopes: 0,
         sealed: true,
     };
     let ingest = Arc::new(StubIngestTransport::new(
@@ -1203,7 +1216,14 @@ fn reader_client_routes_lexical_query_surface() {
 #[test]
 fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
+            generation: ManifestGeneration::new(2),
+            manifest_digest: "manifest:unsealed".to_string(),
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            sealed: false,
+        }),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = SearchCorpusBatch::replace_generation(
@@ -1337,7 +1357,7 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
         (
             "wrong previous",
             SearchPlaneSearchCorpusActivationCasAck {
-                active: candidate.clone(),
+                active: candidate,
                 previous_sealed_active: Some(search_corpus_identity(5, "manifest:older")),
             },
         ),
@@ -1417,6 +1437,84 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
 }
 
 #[test]
+fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation_v1() {
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:receipt-exact",
+        "batch:receipt-exact",
+    )
+    .replace_scope(
+        sample_search_scope(),
+        "scope:replace",
+        vec![sample_chunk()],
+        vec![sample_symbol()],
+    )
+    .tombstone_scope(SearchScopeKey {
+        doc_surface: SearchScopeSurface::Symbol,
+        repo_relative_path: RepoRelativePath::new("src/tombstone.rs"),
+    });
+    let valid = BatchPublishReceipt {
+        generation: ManifestGeneration::new(7),
+        manifest_digest: "manifest:receipt-exact".to_string(),
+        accepted_clear_surfaces: 0,
+        accepted_replace_scopes: 1,
+        accepted_tombstone_scopes: 1,
+        sealed: true,
+    };
+    let mut cases = Vec::new();
+
+    let mut wrong_generation = valid.clone();
+    wrong_generation.generation = ManifestGeneration::new(8);
+    cases.push(("generation", wrong_generation));
+
+    let mut wrong_digest = valid.clone();
+    wrong_digest.manifest_digest = "manifest:other".to_string();
+    cases.push(("manifest digest", wrong_digest));
+
+    let mut wrong_seal = valid.clone();
+    wrong_seal.sealed = false;
+    cases.push(("seal", wrong_seal));
+
+    let mut wrong_replace_count = valid.clone();
+    wrong_replace_count.accepted_replace_scopes = 0;
+    cases.push(("replace scope", wrong_replace_count));
+
+    let mut wrong_tombstone_count = valid.clone();
+    wrong_tombstone_count.accepted_tombstone_scopes = 0;
+    cases.push(("tombstone scope", wrong_tombstone_count));
+
+    let mut wrong_clear_count = valid;
+    wrong_clear_count.accepted_clear_surfaces = 1;
+    cases.push(("clear surface", wrong_clear_count));
+
+    for (label, receipt) in cases {
+        let control = unused_control();
+        let ingest = Arc::new(StubIngestTransport::new(
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
+        ));
+        let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
+        let error = client
+            .producer()
+            .publish_search_corpus_and_activate(&batch, None)
+            .expect_err(label);
+        assert!(
+            matches!(error, crate::SdkError::Protocol(ref message) if message.contains(label)),
+            "{label} mismatch must be a protocol error, got {error:?}"
+        );
+        assert!(
+            control
+                .requests
+                .lock()
+                .expect("control request mutex")
+                .is_empty(),
+            "{label} mismatch emitted a control request"
+        );
+    }
+}
+
+#[test]
 fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
     let invalid_expected = SearchCorpusGenerationIdentityV1 {
         lexical: GenerationSnapshot {
@@ -1458,6 +1556,38 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
             .expect("ingest request mutex")
             .is_empty(),
         "invalid expected identity must not seal or publish a batch"
+    );
+}
+
+#[test]
+fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1() {
+    let ingest = unused_ingest();
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:7-new",
+        "batch:activate",
+    );
+    let error = client
+        .producer()
+        .publish_search_corpus_and_activate(
+            &batch,
+            Some(search_corpus_identity(7, "manifest:7-current")),
+        )
+        .expect_err("activation candidate must strictly advance the expected active generation");
+    assert!(
+        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("CANDIDATE_GENERATION_MUST_ADVANCE_EXPECTED_ACTIVE")),
+        "expected contract-owned generation relation error, got {error:?}"
+    );
+    assert!(
+        ingest
+            .requests
+            .lock()
+            .expect("ingest request mutex")
+            .is_empty(),
+        "non-advancing activation reached ingest"
     );
 }
 
@@ -2504,6 +2634,87 @@ fn generations_rollback_rejects_invalid_composite_request_before_transport_v1() 
             "invalid composite rollback request reached the control transport"
         );
     }
+}
+
+#[test]
+fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
+    let candidate = search_corpus_identity(7, "manifest:request-id");
+    let activation_control = Arc::new(StubControlTransport::with_request_id_offset(
+        quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+            SearchPlaneSearchCorpusActivationCasAck {
+                active: candidate,
+                previous_sealed_active: None,
+            },
+        ),
+        1,
+    ));
+    let ingest = Arc::new(StubIngestTransport::new(
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
+            generation: ManifestGeneration::new(7),
+            manifest_digest: "manifest:request-id".to_string(),
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            sealed: true,
+        }),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), activation_control.clone(), ingest);
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:request-id",
+        "batch:request-id",
+    );
+    let activation_error = client
+        .producer()
+        .publish_search_corpus_and_activate(&batch, None)
+        .expect_err("activation response with a different request id must fail");
+    assert!(
+        matches!(activation_error, crate::SdkError::Protocol(ref message) if message.contains("control response request_id")),
+        "activation request-id mismatch must be a protocol error, got {activation_error:?}"
+    );
+    assert_eq!(
+        activation_control
+            .requests
+            .lock()
+            .expect("activation control request mutex")
+            .len(),
+        1
+    );
+
+    let expected_active = search_corpus_identity(11, "manifest:11");
+    let target = search_corpus_identity(10, "manifest:10");
+    let rollback_control = Arc::new(StubControlTransport::with_request_id_offset(
+        quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(
+            SearchPlaneSearchCorpusRollbackCasAck {
+                active: target.clone(),
+                previous_sealed_active: expected_active.clone(),
+            },
+        ),
+        1,
+    ));
+    let client =
+        QuantaIndex::from_transports(unused_query(), rollback_control.clone(), unused_ingest());
+    let rollback_error = client
+        .generations()
+        .rollback(SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active,
+            target,
+        })
+        .expect_err("rollback response with a different request id must fail");
+    assert!(
+        matches!(rollback_error, crate::SdkError::Protocol(ref message) if message.contains("control response request_id")),
+        "rollback request-id mismatch must be a protocol error, got {rollback_error:?}"
+    );
+    assert_eq!(
+        rollback_control
+            .requests
+            .lock()
+            .expect("rollback control request mutex")
+            .len(),
+        1
+    );
 }
 
 #[test]

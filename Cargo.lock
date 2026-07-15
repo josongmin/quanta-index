@@ -1934,6 +1934,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs4"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4175,6 +4185,7 @@ name = "quanta-index-core"
 version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -4341,6 +4352,7 @@ dependencies = [
  "quanta-index-lq-norm",
  "quanta-index-lq-obs",
  "quanta-index-lq-regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
@@ -4364,11 +4376,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ciborium",
+ "fs2",
  "memchr",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-embed",
  "quanta-index-ipc",
+ "quanta-index-lexical",
  "quanta-index-lq-structural",
  "quanta-index-search-plane",
  "quanta-index-semantic",

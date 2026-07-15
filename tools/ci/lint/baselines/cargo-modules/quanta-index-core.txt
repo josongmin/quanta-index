@@ -1,6 +1,12 @@
 
 crate quanta_index_core
 ├── mod domains: pub
+│   ├── mod generation: pub
+│   │   ├── trait GenerationIdentityValidatePort: pub
+│   │   ├── struct GenerationStorageKeyV1: pub
+│   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
+│   │   ├── trait IncompleteGenerationDiscardPort: pub
+│   │   └── trait SealedGenerationScanPort: pub
 │   ├── mod hybrid: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait ExplainQueryPort: pub

@@ -74,6 +74,21 @@ def test_missing_derive_is_flagged(tmp_path: Path):
     assert any("does not implement `std::error::Error`" in m for m in messages)
 
 
+def test_versioned_error_name_is_not_a_gate_escape(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum VersionedValidationErrorV1 {
+            Invalid,
+        }
+        """,
+    )
+    findings = MODULE.audit_file(p)
+    assert len(findings) == 1
+    assert "VersionedValidationErrorV1" in findings[0].message
+
+
 def test_variant_missing_error_attr_is_flagged(tmp_path: Path):
     p = write(
         tmp_path,

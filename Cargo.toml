@@ -117,6 +117,7 @@ ciborium = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 fs2 = "0.4.3"
+rustix = { version = "1.1.4", features = ["fs"] }
 futures = "0.3"
 # lancedb is the semantic-adapter backend (LDB-00 §3.2). Inline pin lives here,
 # in lockstep with deny.toml's `lancedb@0.30` skip-tree entry.

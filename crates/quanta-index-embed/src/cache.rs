@@ -64,7 +64,11 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
                 }
             } else {
                 let next_index = distinct_texts.len();
-                let _ = distinct_index_by_key.insert(key.clone(), next_index);
+                let previous = distinct_index_by_key.insert(key.clone(), next_index);
+                debug_assert!(
+                    previous.is_none(),
+                    "distinct embedding miss key must not already be indexed"
+                );
                 distinct_texts.push(text);
                 distinct_keys.push(key);
                 waiters.push(vec![position]);
@@ -163,15 +167,18 @@ impl EmbeddingCache for InMemoryEmbeddingCache {
 }
 
 /// Number of leading hex characters of the (SHA-256) key used as a shard
-/// subdirectory. Two hex chars = 256 buckets, keeping any single directory's
-/// fan-out ~1/256th of the corpus so directory operations stay fast.
+/// subdirectory.
+///
+/// Two hex chars = 256 buckets, keeping any single directory's fan-out
+/// ~1/256th of the corpus so directory operations stay fast.
 const SHARD_PREFIX_LEN: usize = 2;
 
 /// Durable file cache: one `<key>.vec` file per entry, sharded as
-/// `root/<key[..2]>/<key>.vec` and holding the vector as little-endian `f32`
-/// bytes. Sharding avoids piling tens of thousands of files into one directory
-/// (a filesystem scaling cliff); a legacy flat `root/<key>.vec` is still read so
-/// upgrading an existing cache never triggers a paid re-embed storm.
+/// `root/<key[..2]>/<key>.vec` and holding the vector as little-endian `f32` bytes.
+///
+/// Sharding avoids piling tens of thousands of files into one directory. A
+/// legacy flat `root/<key>.vec` is still read so upgrades never trigger a paid
+/// re-embed storm.
 pub struct FileEmbeddingCache {
     root: PathBuf,
 }

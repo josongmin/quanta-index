@@ -19,6 +19,7 @@ quanta-index-lq-regex = { version = "0.1.0", path = "../quanta-index-lq-regex" }
 serde = { workspace = true }
 serde_json.workspace = true
 sha2.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

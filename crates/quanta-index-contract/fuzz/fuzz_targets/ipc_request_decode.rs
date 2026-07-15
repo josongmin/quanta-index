@@ -44,11 +44,19 @@ fuzz_target!(|data: &[u8]| {
 
     // Control DTOs (per-variant + envelope) — includes exact composite
     // activation/rollback identities and QI-ACT-01 admin queries.
-    let _ = ciborium::de::from_reader::<SearchCorpusGenerationIdentityV1, _>(data);
-    let _ =
-        ciborium::de::from_reader::<SearchPlaneActivateSearchCorpusGenerationCasRequest, _>(data);
-    let _ =
-        ciborium::de::from_reader::<SearchPlaneRollbackSearchCorpusGenerationCasRequest, _>(data);
+    if let Ok(identity) = ciborium::de::from_reader::<SearchCorpusGenerationIdentityV1, _>(data) {
+        let _validation = identity.validate_v1();
+    }
+    if let Ok(request) =
+        ciborium::de::from_reader::<SearchPlaneActivateSearchCorpusGenerationCasRequest, _>(data)
+    {
+        let _validation = request.validate_v1();
+    }
+    if let Ok(request) =
+        ciborium::de::from_reader::<SearchPlaneRollbackSearchCorpusGenerationCasRequest, _>(data)
+    {
+        let _validation = request.validate_v1();
+    }
     let _ = ciborium::de::from_reader::<CurrentGenerationRequest, _>(data);
     let _ = ciborium::de::from_reader::<GenerationStatusRequest, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneControlIpcRequest, _>(data);

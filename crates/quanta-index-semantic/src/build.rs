@@ -16,9 +16,12 @@
 )]
 
 use std::collections::BTreeSet;
-use std::fs;
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::{
@@ -93,6 +96,9 @@ mod failpoint {
     use std::collections::BTreeSet;
     use std::sync::{Mutex, OnceLock};
 
+    #[cfg(test)]
+    static ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION: OnceLock<Mutex<Option<String>>> =
+        OnceLock::new();
     static CONTRACT_PROMOTION_FAIL_DIR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
     thread_local! {
@@ -141,6 +147,26 @@ mod failpoint {
     pub(super) fn should_fail_contract_promotion(path: &str) -> bool {
         lock_contract_promotion_slot().as_deref() == Some(path)
     }
+
+    #[cfg(test)]
+    pub(super) fn set_atomic_write_fail_before_rename_action(action: Option<&str>) {
+        let slot = ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION.get_or_init(|| Mutex::new(None));
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        *guard = action.map(str::to_owned);
+    }
+
+    #[cfg(test)]
+    pub(super) fn should_fail_atomic_write_before_rename(action: &str) -> bool {
+        let slot = ATOMIC_WRITE_FAIL_BEFORE_RENAME_ACTION.get_or_init(|| Mutex::new(None));
+        let guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        guard.as_deref() == Some(action)
+    }
 }
 
 #[cfg(not(any(test, debug_assertions)))]
@@ -162,11 +188,81 @@ pub(crate) fn set_append_fail_path_for_debug(path: Option<&str>) {
 #[cfg(any(test, debug_assertions))]
 const _: fn(Option<&str>) = set_append_fail_path_for_debug;
 
-/// Crash-atomic file write for our scope-metadata markers/manifest.
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Crash-atomic and crash-durable file replacement for generation sidecars.
+///
+/// The file payload is synced before rename and the parent directory is synced
+/// after rename. Pre-rename failures remove the unique temporary file so a
+/// failed build cannot accumulate or later promote stale staging artifacts.
 fn write_atomic(path: &Path, bytes: &[u8], action: &str) -> Result<(), CoreError> {
-    let staging = path.with_extension("tmp");
-    fs::write(&staging, bytes).map_err(|err| fs_err(action, &staging, &err))?;
-    fs::rename(&staging, path).map_err(|err| fs_err(action, path, &err))
+    let parent = path.parent().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: {action} target has no parent: {}",
+            path.display()
+        ))
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "semantic: {action} target has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut staging_name = OsString::from(".");
+    staging_name.push(file_name);
+    staging_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+    let staging = parent.join(staging_name);
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .map_err(|err| fs_err(action, &staging, &err))?;
+    if let Err(err) = file.write_all(bytes) {
+        drop(file);
+        return Err(cleanup_atomic_temporary(
+            &staging,
+            fs_err(action, &staging, &err),
+        ));
+    }
+    if let Err(err) = file.sync_all() {
+        drop(file);
+        return Err(cleanup_atomic_temporary(
+            &staging,
+            fs_err(action, &staging, &err),
+        ));
+    }
+    drop(file);
+
+    #[cfg(test)]
+    if failpoint::should_fail_atomic_write_before_rename(action) {
+        return Err(cleanup_atomic_temporary(
+            &staging,
+            CoreError::Storage(format!("semantic: injected {action} failure before rename")),
+        ));
+    }
+
+    if let Err(err) = fs::rename(&staging, path) {
+        return Err(cleanup_atomic_temporary(
+            &staging,
+            fs_err(action, path, &err),
+        ));
+    }
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|err| fs_err(action, parent, &err))
+}
+
+fn cleanup_atomic_temporary(staging: &Path, primary: CoreError) -> CoreError {
+    match fs::remove_file(staging) {
+        Ok(()) => primary,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => primary,
+        Err(cleanup) => CoreError::Storage(format!(
+            "semantic: {primary}; additionally failed to remove atomic temporary {}: {cleanup}",
+            staging.display()
+        )),
+    }
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> Result<(), CoreError> {
@@ -1196,7 +1292,7 @@ mod tests {
         PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME, build_batch,
         column_as, ensure_generation_contract, failpoint, open_connection,
         persist_generation_contract, recover_dataset_artifacts, stage_generation_contract,
-        validate_batch_scope_authority_v1,
+        validate_batch_scope_authority_v1, write_atomic,
     };
     use crate::generation_contract::GenerationContract;
     use crate::layout::{
@@ -1511,6 +1607,53 @@ mod tests {
             },
             "recovered dataset must match the contract selected by recovery"
         );
+        Ok(())
+    }
+
+    fn atomic_temporary_paths(
+        parent: &Path,
+        target: &Path,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let file_name = target
+            .file_name()
+            .ok_or("atomic-write test target has no file name")?
+            .to_string_lossy();
+        let prefix = format!(".{file_name}.tmp-");
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(parent)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                paths.push(entry.path());
+            }
+        }
+        Ok(paths)
+    }
+
+    #[test]
+    fn atomic_sidecar_write_persists_payload_without_staging_residue() -> TestResult {
+        let temp = tempdir()?;
+        let target = temp.path().join("manifest.cbor");
+
+        write_atomic(&target, b"durable-manifest", "test durable manifest")?;
+
+        assert_eq!(std::fs::read(&target)?, b"durable-manifest");
+        assert!(atomic_temporary_paths(temp.path(), &target)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_sidecar_write_cleans_staging_on_pre_rename_failure() -> TestResult {
+        const ACTION: &str = "test injected durable manifest";
+
+        let temp = tempdir()?;
+        let target = temp.path().join("manifest.cbor");
+        failpoint::set_atomic_write_fail_before_rename_action(Some(ACTION));
+        let result = write_atomic(&target, b"must-not-promote", ACTION);
+        failpoint::set_atomic_write_fail_before_rename_action(None);
+
+        assert!(result.is_err());
+        assert!(!target.exists());
+        assert!(atomic_temporary_paths(temp.path(), &target)?.is_empty());
         Ok(())
     }
 
@@ -2204,6 +2347,55 @@ mod tests {
         assert!(fallback_symbol.is_empty());
         assert_eq!(module.len(), 1);
         assert_eq!(module[0].record_id, "record-module-kept");
+        Ok(())
+    }
+
+    #[test]
+    fn delta_empty_seal_preserves_required_raw_corpus_coverage() -> TestResult {
+        let temp = tempdir()?;
+        let root = temp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let base_generation = ManifestGeneration::new(51);
+        let delta_generation = ManifestGeneration::new(52);
+
+        let mut base = batch(
+            base_generation,
+            "src/base.rs",
+            "base-raw",
+            vec![1.0, 0.0, 0.0],
+            false,
+        )?;
+        base.required_corpora = vec![SemanticCorpusKindV1::RawCodeFallback];
+        crate::run_blocking(&runtime, build_batch(&root, &base))?;
+        crate::run_blocking(
+            &runtime,
+            build_batch(&root, &seal_existing_generation_batch(base)),
+        )?;
+
+        let mut delta = batch(
+            delta_generation,
+            "src/base.rs",
+            "delta-raw",
+            vec![0.0, 1.0, 0.0],
+            false,
+        )?;
+        delta.mode = BatchIngestMode::Delta;
+        delta.base_generation = Some(base_generation);
+        delta.required_corpora = vec![SemanticCorpusKindV1::RawCodeFallback];
+        crate::run_blocking(&runtime, build_batch(&root, &delta))?;
+        crate::run_blocking(
+            &runtime,
+            build_batch(&root, &seal_existing_generation_batch(delta)),
+        )?;
+
+        let generation_dir =
+            layout::generation_dir(&root, &repo_id(), &revision_id(), delta_generation);
+        let manifest =
+            SemanticManifest::decode(&std::fs::read(layout::manifest_path(&generation_dir))?)?;
+        assert_eq!(manifest.required_corpora, vec!["RawCodeFallback"]);
+        assert_eq!(manifest.present_corpora, vec!["RawCodeFallback"]);
         Ok(())
     }
 

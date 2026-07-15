@@ -115,6 +115,8 @@ impl fmt::Display for SearchCorpusGenerationIdentityValidationErrorV1 {
     }
 }
 
+impl std::error::Error for SearchCorpusGenerationIdentityValidationErrorV1 {}
+
 /// Complete reader-visible generation identity for a search corpus.
 ///
 /// The two records deliberately stay separate so each plane keeps its typed
@@ -161,6 +163,80 @@ impl SearchCorpusGenerationIdentityV1 {
 pub struct SearchPlaneActivateSearchCorpusGenerationCasRequest {
     pub candidate: SearchCorpusGenerationIdentityV1,
     pub expected_active: Option<SearchCorpusGenerationIdentityV1>,
+}
+
+/// Validation failure for a composite search-corpus activation request.
+///
+/// This is the wire-contract authority for the candidate/expectation
+/// relationship. SDK and runtime consumers must delegate here instead of
+/// independently re-encoding the CAS invariants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchCorpusActivationValidationErrorV1 {
+    CandidateIdentity(SearchCorpusGenerationIdentityValidationErrorV1),
+    ExpectedActiveIdentity(SearchCorpusGenerationIdentityValidationErrorV1),
+    RepoMismatch,
+    RevisionMismatch,
+    CandidateGenerationMustAdvanceExpectedActive,
+}
+
+impl SearchCorpusActivationValidationErrorV1 {
+    #[must_use]
+    pub const fn code_v1(self) -> &'static str {
+        match self {
+            Self::CandidateIdentity(_) => "CANDIDATE_IDENTITY_INVALID",
+            Self::ExpectedActiveIdentity(_) => "EXPECTED_ACTIVE_IDENTITY_INVALID",
+            Self::RepoMismatch => "REPO_MISMATCH",
+            Self::RevisionMismatch => "REVISION_MISMATCH",
+            Self::CandidateGenerationMustAdvanceExpectedActive => {
+                "CANDIDATE_GENERATION_MUST_ADVANCE_EXPECTED_ACTIVE"
+            }
+        }
+    }
+}
+
+impl fmt::Display for SearchCorpusActivationValidationErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CandidateIdentity(error) | Self::ExpectedActiveIdentity(error) => {
+                write!(formatter, "{}: {error}", self.code_v1())
+            }
+            Self::RepoMismatch
+            | Self::RevisionMismatch
+            | Self::CandidateGenerationMustAdvanceExpectedActive => {
+                formatter.write_str(self.code_v1())
+            }
+        }
+    }
+}
+
+impl std::error::Error for SearchCorpusActivationValidationErrorV1 {}
+
+impl SearchPlaneActivateSearchCorpusGenerationCasRequest {
+    pub fn validate_v1(&self) -> Result<(), SearchCorpusActivationValidationErrorV1> {
+        self.candidate
+            .validate_v1()
+            .map_err(SearchCorpusActivationValidationErrorV1::CandidateIdentity)?;
+        let Some(expected_active) = self.expected_active.as_ref() else {
+            return Ok(());
+        };
+        expected_active
+            .validate_v1()
+            .map_err(SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity)?;
+        if self.candidate.lexical.repo_id != expected_active.lexical.repo_id {
+            return Err(SearchCorpusActivationValidationErrorV1::RepoMismatch);
+        }
+        if self.candidate.lexical.revision_id != expected_active.lexical.revision_id {
+            return Err(SearchCorpusActivationValidationErrorV1::RevisionMismatch);
+        }
+        if self.candidate.lexical.manifest_generation.get()
+            <= expected_active.lexical.manifest_generation.get()
+        {
+            return Err(
+                SearchCorpusActivationValidationErrorV1::CandidateGenerationMustAdvanceExpectedActive,
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Receipt of one successful composite search-corpus activation.
@@ -437,6 +513,8 @@ impl fmt::Display for SearchCorpusRollbackValidationErrorV1 {
         }
     }
 }
+
+impl std::error::Error for SearchCorpusRollbackValidationErrorV1 {}
 
 impl SearchPlaneRollbackSearchCorpusGenerationCasRequest {
     pub fn validate_v1(&self) -> Result<(), SearchCorpusRollbackValidationErrorV1> {
@@ -1193,6 +1271,7 @@ mod qi_act_01_tests {
             candidate: candidate.clone(),
             expected_active: Some(previous.clone()),
         };
+        assert_eq!(request.validate_v1(), Ok(()));
         let bytes = encode(&request).expect("encode composite activation request");
         assert_eq!(
             decode::<SearchPlaneActivateSearchCorpusGenerationCasRequest>(&bytes)
@@ -1233,6 +1312,85 @@ mod qi_act_01_tests {
         let error = SearchCorpusGenerationIdentityV1::deserialize(missing_semantic)
             .expect_err("lexical-only identity must not deserialize");
         assert!(error.to_string().contains("missing field `semantic`"));
+    }
+
+    #[test]
+    fn search_corpus_activation_validation_rejects_invalid_relation_v1() {
+        let expected_active = corpus_identity(10, "digest-10");
+
+        let mut malformed_candidate = corpus_identity(11, "digest-11");
+        malformed_candidate.semantic.track = SearchPlaneTrackKind::Lexical;
+        assert_eq!(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: malformed_candidate,
+                expected_active: Some(expected_active.clone()),
+            }
+            .validate_v1(),
+            Err(SearchCorpusActivationValidationErrorV1::CandidateIdentity(
+                SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired,
+            ))
+        );
+
+        let mut malformed_expected = expected_active.clone();
+        malformed_expected.semantic.track = SearchPlaneTrackKind::Lexical;
+        assert_eq!(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: corpus_identity(11, "digest-11"),
+                expected_active: Some(malformed_expected),
+            }
+            .validate_v1(),
+            Err(
+                SearchCorpusActivationValidationErrorV1::ExpectedActiveIdentity(
+                    SearchCorpusGenerationIdentityValidationErrorV1::SemanticTrackRequired,
+                ),
+            )
+        );
+
+        let mut cross_repo = corpus_identity(11, "digest-11");
+        cross_repo.lexical.repo_id = RepoId::new("other-repo");
+        cross_repo.semantic.repo_id = RepoId::new("other-repo");
+        assert_eq!(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: cross_repo,
+                expected_active: Some(expected_active.clone()),
+            }
+            .validate_v1(),
+            Err(SearchCorpusActivationValidationErrorV1::RepoMismatch)
+        );
+
+        let mut cross_revision = corpus_identity(11, "digest-11");
+        cross_revision.lexical.revision_id = RevisionId::new("other-revision");
+        cross_revision.semantic.revision_id = RevisionId::new("other-revision");
+        assert_eq!(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: cross_revision,
+                expected_active: Some(expected_active.clone()),
+            }
+            .validate_v1(),
+            Err(SearchCorpusActivationValidationErrorV1::RevisionMismatch)
+        );
+
+        for generation in [9, 10] {
+            assert_eq!(
+                SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                    candidate: corpus_identity(generation, "non-advancing-digest"),
+                    expected_active: Some(expected_active.clone()),
+                }
+                .validate_v1(),
+                Err(
+                    SearchCorpusActivationValidationErrorV1::CandidateGenerationMustAdvanceExpectedActive,
+                )
+            );
+        }
+
+        assert_eq!(
+            SearchPlaneActivateSearchCorpusGenerationCasRequest {
+                candidate: corpus_identity(1, "first-activation"),
+                expected_active: None,
+            }
+            .validate_v1(),
+            Ok(())
+        );
     }
 
     #[test]

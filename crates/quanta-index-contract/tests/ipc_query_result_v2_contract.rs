@@ -627,7 +627,11 @@ fn query_constraint_wire_is_order_invariant_and_deduplicated() -> TestRes {
         QueryConstraintSetV1::from_languages([rust.clone(), python.clone(), rust.clone()]);
     let mut right = sourcegraph_text_request();
     right.constraints = QueryConstraintSetV1::from_languages([python, rust]);
-    assert_eq!(encode(&left)?, encode(&right)?);
+    if encode(&left)? != encode(&right)? {
+        return Err(
+            "query constraint wire encoding must be order-invariant and deduplicated".into(),
+        );
+    }
     Ok(())
 }
 

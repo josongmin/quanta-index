@@ -13,36 +13,40 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
-    RepoMapMutationAck, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SearchPlaneIpcError,
-    SearchPlaneTrackKind, SemanticIngestBatch, StructuralIngestBatch,
+    BatchPublishReceipt, DirtyIngestBatch, DirtyMutation, GenerationSnapshot, HistoryIngestBatch,
+    HistoryRefMutation, ManifestGeneration, RepoId, RepoMapMutationAck, RevisionId,
+    RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneIngestIpcRequest,
+    SearchPlaneIngestIpcResponse, SearchPlaneIpcError, SearchPlaneTrackKind, SemanticIngestBatch,
+    StructuralIngestBatch,
 };
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort,
-    SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SemanticBatchBuildPort, SemanticIngestPort,
-    TextEmbeddingProvider,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMapBundleIngestPort,
+    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    SemanticBatchBuildPort, SemanticIngestPort, TextEmbeddingProvider,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::readiness::{SEARCH_CORPUS_LOCK_STRIPES_V1, search_corpus_lock_stripe_v1};
 use crate::semantic_derive::{
     DEFAULT_SEMANTIC_DERIVATION_MODE_V1, SemanticDerivationModeV1,
     derive_semantic_batch_with_mode_v1, semantic_derivation_mode_from_env_v1,
 };
-use crate::{AuxiliaryAuthorityStore, Ledger};
+use crate::{AuxiliaryAuthorityStore, Ledger, SealedSearchCorpusAuthorityStateV1};
 
 const ERR_INVALID: &str = "INVALID_REQUEST";
 const ERR_NOT_READY: &str = "NOT_READY";
 const ERR_NOT_FOUND: &str = "NOT_FOUND";
 const ERR_NOT_IMPLEMENTED: &str = "NOT_IMPLEMENTED";
 const ERR_INTERNAL: &str = "INTERNAL";
+const ERR_SEARCH_CORPUS_GENERATION_CONFLICT: &str = "SEARCH_CORPUS_GENERATION_CONFLICT";
 
 macro_rules! impl_struct_serde {
     ($ty:ident { $($field:ident : $field_ty:ty),+ $(,)? }) => {
@@ -228,76 +232,119 @@ impl LegacySemanticJournalStore {
     }
 }
 
-/// Direct search-corpus batch materializer that updates the builder + readiness
-/// ledger immediately and keeps the supplied ingest port only as a durability
-/// mirror.
+/// Direct search-corpus batch materializer that commits lexical and derived
+/// semantic generations, then durably admits the complete sealed identity into
+/// rollback history.
 pub struct DirectSearchCorpusMaterializer {
     builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     ledger: Arc<RwLock<Ledger>>,
-    semantic_ingest: Option<Arc<dyn SemanticIngestPort + Send + Sync>>,
-    semantic_embedder: Option<Arc<dyn TextEmbeddingProvider + Send + Sync>>,
+    semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
+    semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+    authority: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>,
+    lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    operation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     semantic_derivation_mode: SemanticDerivationModeV1,
+}
+
+/// Composition-owned ports required to materialize one search-corpus generation.
+pub struct SearchCorpusMaterializerParts {
+    pub builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    pub ledger: Arc<RwLock<Ledger>>,
+    pub semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
+    pub semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+    pub authority: Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>,
+    pub lexical_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub semantic_generation_validator: Arc<dyn GenerationIdentityValidatePort + Send + Sync>,
+    pub lexical_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+    pub semantic_incomplete_discard: Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>,
+}
+
+/// Durable owner for complete lexical+semantic rollback history.
+///
+/// The port is intentionally composite. Per-track materializers cannot mint a
+/// rollback target independently.
+pub trait SearchCorpusAuthorityWritePort: Send + Sync {
+    fn inspect_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError>;
+
+    fn record_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<(), CoreError>;
+}
+
+impl SearchCorpusAuthorityWritePort for AuxiliaryAuthorityStore {
+    fn inspect_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
+        Self::inspect_sealed_search_corpus(self, repo_id, revision_id, generation, manifest_digest)
+    }
+
+    fn record_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<(), CoreError> {
+        Self::record_sealed_search_corpus(self, repo_id, revision_id, generation, manifest_digest)
+    }
 }
 
 impl DirectSearchCorpusMaterializer {
     #[must_use]
-    pub fn new(
-        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
-        ledger: Arc<RwLock<Ledger>>,
-    ) -> Self {
-        Self {
-            builder,
-            ledger,
-            semantic_ingest: None,
-            semantic_embedder: None,
-            semantic_derivation_mode: DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
-        }
-    }
-
-    #[must_use]
-    pub fn new_with_search_owned_semantics(
-        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
-        ledger: Arc<RwLock<Ledger>>,
-        semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
-        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
-    ) -> Self {
-        Self::new_with_search_owned_semantics_with_mode(
-            builder,
-            ledger,
-            semantic_ingest,
-            semantic_embedder,
-            DEFAULT_SEMANTIC_DERIVATION_MODE_V1,
-        )
+    pub fn new_with_search_owned_semantics(parts: SearchCorpusMaterializerParts) -> Self {
+        Self::new_with_search_owned_semantics_with_mode(parts, DEFAULT_SEMANTIC_DERIVATION_MODE_V1)
     }
 
     pub fn new_with_search_owned_semantics_from_env(
-        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
-        ledger: Arc<RwLock<Ledger>>,
-        semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
-        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
+        parts: SearchCorpusMaterializerParts,
     ) -> Result<Self, CoreError> {
         let mode = semantic_derivation_mode_from_env_v1()?;
-        Ok(Self::new_with_search_owned_semantics_with_mode(
+        Ok(Self::new_with_search_owned_semantics_with_mode(parts, mode))
+    }
+
+    fn new_with_search_owned_semantics_with_mode(
+        parts: SearchCorpusMaterializerParts,
+        semantic_derivation_mode: SemanticDerivationModeV1,
+    ) -> Self {
+        let SearchCorpusMaterializerParts {
             builder,
             ledger,
             semantic_ingest,
             semantic_embedder,
-            mode,
-        ))
-    }
-
-    fn new_with_search_owned_semantics_with_mode(
-        builder: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
-        ledger: Arc<RwLock<Ledger>>,
-        semantic_ingest: Arc<dyn SemanticIngestPort + Send + Sync>,
-        semantic_embedder: Arc<dyn TextEmbeddingProvider + Send + Sync>,
-        semantic_derivation_mode: SemanticDerivationModeV1,
-    ) -> Self {
+            authority,
+            lexical_generation_validator,
+            semantic_generation_validator,
+            lexical_incomplete_discard,
+            semantic_incomplete_discard,
+        } = parts;
         Self {
             builder,
             ledger,
-            semantic_ingest: Some(semantic_ingest),
-            semantic_embedder: Some(semantic_embedder),
+            semantic_ingest,
+            semantic_embedder,
+            authority,
+            lexical_generation_validator,
+            semantic_generation_validator,
+            lexical_incomplete_discard,
+            semantic_incomplete_discard,
+            operation_locks: std::array::from_fn(|_index| Mutex::new(())),
             semantic_derivation_mode,
         }
     }
@@ -311,75 +358,401 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         batch.validate_surface_mutations_v1().map_err(|err| {
             CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
         })?;
-        let derived_semantic_batch = match (&self.semantic_ingest, &self.semantic_embedder) {
-            (Some(_), Some(embedder)) => Some(derive_semantic_batch_with_mode_v1(
-                batch,
-                embedder.as_ref(),
-                self.semantic_derivation_mode,
-            )?),
-            // Semantics are wired as a pair (ingest + embedder) or not at all.
-            _ => None,
-        };
-        self.builder.build_batch(batch)?;
-        let mut guard = self.ledger.write().map_err(|err| {
+        let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
+        let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
-                "direct search-corpus materialize: ledger poisoned: {err}"
+                "direct search-corpus materialize: computed operation-lock stripe {stripe} outside configured range"
             ))
         })?;
-        guard.apply_search_corpus_batch(batch);
-        guard.materialize_track(
+        let _operation_guard = operation_lock.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "direct search-corpus materialize: operation-lock stripe {stripe} poisoned: {err}"
+            ))
+        })?;
+
+        if !batch.seal {
+            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+            ensure_generation_is_mutable_v1(
+                self.lexical_generation_validator.as_ref(),
+                &lexical,
+                "lexical",
+            )?;
+            ensure_generation_is_mutable_v1(
+                self.semantic_generation_validator.as_ref(),
+                &semantic,
+                "semantic",
+            )?;
+        }
+
+        let sealed_plan = if batch.seal {
+            Some(self.preflight_sealed_generation_v1(batch)?)
+        } else {
+            None
+        };
+        if sealed_plan
+            .as_ref()
+            .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
+        {
+            self.finalize_sealed_generation_v1(batch)?;
+            return Ok(batch_publish_receipt_v1(batch));
+        }
+        if let Some(plan) = sealed_plan.as_ref() {
+            plan.discard_incomplete_v1(
+                self.lexical_incomplete_discard.as_ref(),
+                self.semantic_incomplete_discard.as_ref(),
+            )?;
+        }
+
+        let build_lexical = sealed_plan
+            .as_ref()
+            .is_none_or(SealedGenerationBuildPlanV1::build_lexical);
+        let build_semantic = sealed_plan
+            .as_ref()
+            .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
+        let derived_semantic_batch = if build_semantic {
+            Some(derive_semantic_batch_with_mode_v1(
+                batch,
+                self.semantic_embedder.as_ref(),
+                self.semantic_derivation_mode,
+            )?)
+        } else {
+            None
+        };
+        if build_lexical {
+            self.builder.build_batch(batch)?;
+        }
+        // Search-owned semantic derivation is mandatory follow-on work from
+        // every accepted search-corpus batch. Failure is surfaced to the caller;
+        // there is no lexical-only downgrade path.
+        if let Some(derived_semantic_batch) = derived_semantic_batch {
+            let semantic_receipt = self
+                .semantic_ingest
+                .publish_batch(&derived_semantic_batch)?;
+            validate_semantic_publish_receipt_v1(&derived_semantic_batch, &semantic_receipt)?;
+        }
+        if batch.seal {
+            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+            validate_physical_generation_v1(
+                self.lexical_generation_validator.as_ref(),
+                &lexical,
+                "lexical post-build",
+            )?;
+            validate_physical_generation_v1(
+                self.semantic_generation_validator.as_ref(),
+                &semantic,
+                "semantic post-build",
+            )?;
+            self.finalize_sealed_generation_v1(batch)?;
+        } else {
+            self.finalize_generation_v1(batch)?;
+        }
+        Ok(batch_publish_receipt_v1(batch))
+    }
+}
+
+impl DirectSearchCorpusMaterializer {
+    /// Computes the convergent per-track recovery plan before any mutation.
+    fn preflight_sealed_generation_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<SealedGenerationBuildPlanV1, CoreError> {
+        let authority = self.authority.inspect_sealed_search_corpus(
             &batch.repo_id,
             &batch.revision_id,
-            SearchPlaneTrackKind::Lexical,
             batch.generation,
-            Some(batch.manifest_digest.as_str()),
-        );
-        if batch.seal {
-            guard.seal_track_with_digest(
+            batch.manifest_digest.as_str(),
+        )?;
+        let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+        let lexical_state = inspect_physical_generation_v1(
+            self.lexical_generation_validator.as_ref(),
+            &lexical,
+            "lexical preflight",
+        )?;
+        let semantic_state = inspect_physical_generation_v1(
+            self.semantic_generation_validator.as_ref(),
+            &semantic,
+            "semantic preflight",
+        )?;
+
+        match (authority, lexical_state, semantic_state) {
+            (
+                SealedSearchCorpusAuthorityStateV1::Exact,
+                PhysicalGenerationStateV1::Exact,
+                PhysicalGenerationStateV1::Exact,
+            ) => Ok(SealedGenerationBuildPlanV1::finalize_only(
+                lexical, semantic,
+            )),
+            (SealedSearchCorpusAuthorityStateV1::Absent, lexical_state, semantic_state) => {
+                Ok(SealedGenerationBuildPlanV1 {
+                    lexical,
+                    semantic,
+                    lexical_state,
+                    semantic_state,
+                })
+            }
+            (authority, lexical_state, semantic_state) => Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+                message: format!(
+                    "direct search-corpus materialize: non-atomic sealed-generation state for repo={} revision={} generation={}: authority={authority:?} lexical={lexical_state:?} semantic={semantic_state:?}",
+                    batch.repo_id.as_str(),
+                    batch.revision_id.as_str(),
+                    batch.generation.get(),
+                ),
+            }),
+        }
+    }
+
+    fn finalize_sealed_generation_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), CoreError> {
+        self.authority.record_sealed_search_corpus(
+            &batch.repo_id,
+            &batch.revision_id,
+            batch.generation,
+            batch.manifest_digest.as_str(),
+        )?;
+        self.finalize_generation_v1(batch)
+    }
+
+    fn finalize_generation_v1(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        {
+            let mut guard = self.ledger.write().map_err(|err| {
+                CoreError::Storage(format!(
+                    "direct search-corpus materialize: ledger poisoned while finalizing generation: {err}"
+                ))
+            })?;
+            guard.apply_search_corpus_batch(batch);
+            guard.materialize_track(
                 &batch.repo_id,
                 &batch.revision_id,
                 SearchPlaneTrackKind::Lexical,
                 batch.generation,
-                batch.manifest_digest.as_str(),
+                Some(batch.manifest_digest.as_str()),
             );
-        }
-        drop(guard);
-        let mut receipt =
-            BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
-        for _scope in &batch.replace_scopes {
-            receipt.accept_replace_scope();
-        }
-        for _scope in &batch.tombstone_scopes {
-            receipt.accept_tombstone_scope();
-        }
-        for _surface in &batch.clear_surfaces {
-            receipt.accept_clear_surface();
-        }
-        if batch.seal {
-            receipt.mark_sealed();
-        }
-        if let (Some(semantic_ingest), Some(semantic_batch)) =
-            (&self.semantic_ingest, derived_semantic_batch.as_ref())
-        {
-            // Search-owned semantic derivation is explicit follow-on work from
-            // the accepted search-corpus batch. Failure is surfaced to the
-            // caller; no silent downgrade to search-corpus-only indexing occurs.
-            let semantic_receipt = semantic_ingest.publish_batch(semantic_batch)?;
-            let expected_clear_surfaces =
-                u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
-                    CoreError::InvalidContract(format!(
-                        "direct search-corpus materialize: clear surface count overflow: {err}"
-                    ))
-                })?;
-            if semantic_receipt.accepted_clear_surfaces != expected_clear_surfaces {
-                return Err(CoreError::InvalidContract(format!(
-                    "direct search-corpus materialize: semantic clear receipt mismatch: expected {expected_clear_surfaces}, received {}",
-                    semantic_receipt.accepted_clear_surfaces
-                )));
+            if batch.seal {
+                guard.seal_track_with_digest(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    SearchPlaneTrackKind::Lexical,
+                    batch.generation,
+                    batch.manifest_digest.as_str(),
+                );
+                guard.record_historically_sealed_search_corpus(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    batch.manifest_digest.as_str(),
+                );
             }
         }
-        Ok(receipt)
+        Ok(())
     }
+}
+
+fn generation_pair_from_batch_v1(
+    batch: &SearchCorpusIngestBatch,
+) -> (GenerationSnapshot, GenerationSnapshot) {
+    let snapshot = |track| GenerationSnapshot {
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        track,
+        manifest_generation: batch.generation,
+        manifest_digest: batch.manifest_digest.clone(),
+    };
+    (
+        snapshot(SearchPlaneTrackKind::Lexical),
+        snapshot(SearchPlaneTrackKind::Semantic),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalGenerationStateV1 {
+    Absent,
+    InProgress,
+    Exact,
+}
+
+#[derive(Clone, Debug)]
+struct SealedGenerationBuildPlanV1 {
+    lexical: GenerationSnapshot,
+    semantic: GenerationSnapshot,
+    lexical_state: PhysicalGenerationStateV1,
+    semantic_state: PhysicalGenerationStateV1,
+}
+
+impl SealedGenerationBuildPlanV1 {
+    fn finalize_only(lexical: GenerationSnapshot, semantic: GenerationSnapshot) -> Self {
+        Self {
+            lexical,
+            semantic,
+            lexical_state: PhysicalGenerationStateV1::Exact,
+            semantic_state: PhysicalGenerationStateV1::Exact,
+        }
+    }
+
+    const fn is_finalize_only(&self) -> bool {
+        matches!(self.lexical_state, PhysicalGenerationStateV1::Exact)
+            && matches!(self.semantic_state, PhysicalGenerationStateV1::Exact)
+    }
+
+    const fn build_lexical(&self) -> bool {
+        !matches!(self.lexical_state, PhysicalGenerationStateV1::Exact)
+    }
+
+    const fn build_semantic(&self) -> bool {
+        !matches!(self.semantic_state, PhysicalGenerationStateV1::Exact)
+    }
+
+    fn discard_incomplete_v1(
+        &self,
+        lexical_discard: &dyn IncompleteGenerationDiscardPort,
+        semantic_discard: &dyn IncompleteGenerationDiscardPort,
+    ) -> Result<(), CoreError> {
+        // Both tracks being in progress is the ordinary path after accepted
+        // non-seal ingests. Discarding either side here would turn a normal
+        // seal into an empty rebuild. A discard is only safe for the
+        // asymmetric recovery case: the peer track is already sealed and the
+        // incomplete track can only be stale crash residue.
+        if matches!(self.lexical_state, PhysicalGenerationStateV1::InProgress)
+            && matches!(self.semantic_state, PhysicalGenerationStateV1::Exact)
+        {
+            match lexical_discard.discard_incomplete_generation(&self.lexical)? {
+                IncompleteGenerationDiscardOutcomeV1::Absent
+                | IncompleteGenerationDiscardOutcomeV1::Discarded => {}
+            }
+        }
+        if matches!(self.semantic_state, PhysicalGenerationStateV1::InProgress)
+            && matches!(self.lexical_state, PhysicalGenerationStateV1::Exact)
+        {
+            match semantic_discard.discard_incomplete_generation(&self.semantic)? {
+                IncompleteGenerationDiscardOutcomeV1::Absent
+                | IncompleteGenerationDiscardOutcomeV1::Discarded => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn inspect_physical_generation_v1(
+    validator: &dyn GenerationIdentityValidatePort,
+    candidate: &GenerationSnapshot,
+    label: &str,
+) -> Result<PhysicalGenerationStateV1, CoreError> {
+    match validator.validate_generation_identity(candidate) {
+        Ok(()) => Ok(PhysicalGenerationStateV1::Exact),
+        Err(CoreError::NotFound(_)) => Ok(PhysicalGenerationStateV1::Absent),
+        Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_INCOMPLETE" => {
+            Ok(PhysicalGenerationStateV1::InProgress)
+        }
+        Err(source) => Err(CoreError::Typed {
+            code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+            message: format!(
+                "direct search-corpus materialize: {label} generation is present but invalid for repo={} revision={} generation={}: {source:?}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+                candidate.manifest_generation.get(),
+            ),
+        }),
+    }
+}
+
+fn ensure_generation_is_mutable_v1(
+    validator: &dyn GenerationIdentityValidatePort,
+    candidate: &GenerationSnapshot,
+    label: &str,
+) -> Result<(), CoreError> {
+    match validator.validate_generation_identity(candidate) {
+        Err(CoreError::NotFound(_)) => Ok(()),
+        Err(CoreError::Typed { code, .. }) if code == "GENERATION_IDENTITY_INCOMPLETE" => Ok(()),
+        Ok(()) => Err(CoreError::Typed {
+            code: "GENERATION_IMMUTABLE".to_string(),
+            message: format!(
+                "direct search-corpus materialize: {label} generation is already sealed; refusing non-seal mutation for repo={} revision={} generation={}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+                candidate.manifest_generation.get(),
+            ),
+        }),
+        Err(source) => Err(CoreError::Typed {
+            code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+            message: format!(
+                "direct search-corpus materialize: {label} generation mutability is ambiguous for repo={} revision={} generation={}: {source:?}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+                candidate.manifest_generation.get(),
+            ),
+        }),
+    }
+}
+
+fn validate_physical_generation_v1(
+    validator: &dyn GenerationIdentityValidatePort,
+    candidate: &GenerationSnapshot,
+    label: &str,
+) -> Result<(), CoreError> {
+    validator
+        .validate_generation_identity(candidate)
+        .map_err(|source| CoreError::Typed {
+            code: ERR_SEARCH_CORPUS_GENERATION_CONFLICT.to_string(),
+            message: format!(
+                "direct search-corpus materialize: {label} generation failed exact validation for repo={} revision={} generation={}: {source:?}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+                candidate.manifest_generation.get(),
+            ),
+        })
+}
+
+fn batch_publish_receipt_v1(batch: &SearchCorpusIngestBatch) -> BatchPublishReceipt {
+    let mut receipt =
+        BatchPublishReceipt::empty_for(batch.generation, batch.manifest_digest.clone());
+    for _scope in &batch.replace_scopes {
+        receipt.accept_replace_scope();
+    }
+    for _scope in &batch.tombstone_scopes {
+        receipt.accept_tombstone_scope();
+    }
+    for _surface in &batch.clear_surfaces {
+        receipt.accept_clear_surface();
+    }
+    if batch.seal {
+        receipt.mark_sealed();
+    }
+    receipt
+}
+
+fn validate_semantic_publish_receipt_v1(
+    batch: &SemanticIngestBatch,
+    receipt: &BatchPublishReceipt,
+) -> Result<(), CoreError> {
+    let expected_replace = u32::try_from(batch.replace_scopes.len()).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "direct search-corpus materialize: semantic replace scope count overflow: {err}"
+        ))
+    })?;
+    let expected_tombstone = u32::try_from(batch.tombstone_scopes.len()).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "direct search-corpus materialize: semantic tombstone scope count overflow: {err}"
+        ))
+    })?;
+    let expected_clear = u32::try_from(batch.clear_surfaces.len()).map_err(|err| {
+        CoreError::InvalidContract(format!(
+            "direct search-corpus materialize: semantic clear surface count overflow: {err}"
+        ))
+    })?;
+    if receipt.generation != batch.generation
+        || receipt.manifest_digest != batch.manifest_digest
+        || receipt.accepted_replace_scopes != expected_replace
+        || receipt.accepted_tombstone_scopes != expected_tombstone
+        || receipt.accepted_clear_surfaces != expected_clear
+        || receipt.sealed != batch.seal
+    {
+        return Err(CoreError::InvalidContract(format!(
+            "direct search-corpus materialize: semantic receipt does not exactly acknowledge the derived batch: receipt={receipt:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// Direct semantic batch materializer.
@@ -820,6 +1193,11 @@ fn core_error_to_ipc(err: CoreError) -> SearchPlaneIpcError {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "Result-returning ingest tests use assertions as test-failure reporting"
+    )]
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::*;
@@ -837,6 +1215,194 @@ mod tests {
     };
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
+
+    macro_rules! search_corpus_materializer {
+        (
+            $builder:expr,
+            $ledger:expr,
+            $semantic_ingest:expr,
+            $semantic_embedder:expr,
+            $authority:expr,
+            $lexical_generation_validator:expr,
+            $semantic_generation_validator:expr,
+            $lexical_incomplete_discard:expr,
+            $semantic_incomplete_discard:expr $(,)?
+        ) => {
+            DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+                SearchCorpusMaterializerParts {
+                    builder: $builder,
+                    ledger: $ledger,
+                    semantic_ingest: $semantic_ingest,
+                    semantic_embedder: $semantic_embedder,
+                    authority: $authority,
+                    lexical_generation_validator: $lexical_generation_validator,
+                    semantic_generation_validator: $semantic_generation_validator,
+                    lexical_incomplete_discard: $lexical_incomplete_discard,
+                    semantic_incomplete_discard: $semantic_incomplete_discard,
+                },
+            )
+        };
+    }
+
+    #[derive(Default)]
+    struct RecordingSearchCorpusAuthority {
+        identities: Mutex<Vec<(RepoId, RevisionId, ManifestGeneration, String)>>,
+        exact: bool,
+    }
+
+    impl SearchCorpusAuthorityWritePort for RecordingSearchCorpusAuthority {
+        fn inspect_sealed_search_corpus(
+            &self,
+            _repo_id: &RepoId,
+            _revision_id: &RevisionId,
+            _generation: ManifestGeneration,
+            _manifest_digest: &str,
+        ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
+            Ok(if self.exact {
+                SealedSearchCorpusAuthorityStateV1::Exact
+            } else {
+                SealedSearchCorpusAuthorityStateV1::Absent
+            })
+        }
+
+        fn record_sealed_search_corpus(
+            &self,
+            repo_id: &RepoId,
+            revision_id: &RevisionId,
+            generation: ManifestGeneration,
+            manifest_digest: &str,
+        ) -> Result<(), CoreError> {
+            self.identities
+                .lock()
+                .map_err(|err| {
+                    CoreError::Storage(format!("recording search-corpus authority poisoned: {err}"))
+                })?
+                .push((
+                    repo_id.clone(),
+                    revision_id.clone(),
+                    generation,
+                    manifest_digest.to_string(),
+                ));
+            Ok(())
+        }
+    }
+
+    fn recording_search_corpus_authority() -> Arc<dyn SearchCorpusAuthorityWritePort + Send + Sync>
+    {
+        Arc::new(RecordingSearchCorpusAuthority::default())
+    }
+
+    #[derive(Default)]
+    struct BuildThenValidGeneration {
+        validations: AtomicUsize,
+    }
+
+    impl GenerationIdentityValidatePort for BuildThenValidGeneration {
+        fn validate_generation_identity(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            if self.validations.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(CoreError::NotFound(format!(
+                    "test generation not built yet: {:?}",
+                    candidate.track
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    fn build_then_valid_generation() -> Arc<dyn GenerationIdentityValidatePort + Send + Sync> {
+        Arc::new(BuildThenValidGeneration::default())
+    }
+
+    #[derive(Default)]
+    struct IncompleteThenValidGeneration {
+        validations: AtomicUsize,
+    }
+
+    impl GenerationIdentityValidatePort for IncompleteThenValidGeneration {
+        fn validate_generation_identity(
+            &self,
+            _candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            if self.validations.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                    message: "injected incomplete generation".to_string(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    fn incomplete_then_valid_generation() -> Arc<dyn GenerationIdentityValidatePort + Send + Sync> {
+        Arc::new(IncompleteThenValidGeneration::default())
+    }
+
+    struct AlwaysValidGeneration;
+
+    impl GenerationIdentityValidatePort for AlwaysValidGeneration {
+        fn validate_generation_identity(
+            &self,
+            _candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn always_valid_generation() -> Arc<dyn GenerationIdentityValidatePort + Send + Sync> {
+        Arc::new(AlwaysValidGeneration)
+    }
+
+    struct TestIncompleteGenerationDiscard;
+
+    impl IncompleteGenerationDiscardPort for TestIncompleteGenerationDiscard {
+        fn discard_incomplete_generation(
+            &self,
+            _candidate: &GenerationSnapshot,
+        ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+            Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+        }
+    }
+
+    fn test_incomplete_generation_discard() -> Arc<dyn IncompleteGenerationDiscardPort + Send + Sync>
+    {
+        Arc::new(TestIncompleteGenerationDiscard)
+    }
+
+    #[derive(Default)]
+    struct RecordingIncompleteGenerationDiscard {
+        calls: AtomicUsize,
+    }
+
+    impl IncompleteGenerationDiscardPort for RecordingIncompleteGenerationDiscard {
+        fn discard_incomplete_generation(
+            &self,
+            _candidate: &GenerationSnapshot,
+        ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+            let _previous = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+        }
+    }
+
+    struct MismatchedSemanticIngest;
+
+    impl SemanticIngestPort for MismatchedSemanticIngest {
+        fn publish_batch(
+            &self,
+            batch: &SemanticIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError> {
+            let mut receipt = BatchPublishReceipt::empty_for(
+                batch.generation,
+                "mismatched-semantic-digest".to_string(),
+            );
+            if batch.seal {
+                receipt.mark_sealed();
+            }
+            Ok(receipt)
+        }
+    }
 
     #[derive(Default)]
     struct FakeSemanticBuilder {
@@ -1073,13 +1639,19 @@ mod tests {
         );
         let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
         let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        let authority = Arc::new(RecordingSearchCorpusAuthority::default());
+        let materializer = search_corpus_materializer!(
             search_corpus_builder,
             Arc::clone(&lexical_ledger),
             semantic_materializer,
             Arc::new(crate::HashingQueryTextEmbedder::new(
                 SEARCH_OWNED_SEMANTIC_DIMENSION,
             )),
+            authority.clone(),
+            build_then_valid_generation(),
+            build_then_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
         );
         let mut batch = fixture_search_corpus_batch()?;
         batch.clear_surfaces = vec![SearchScopeSurface::Symbol];
@@ -1136,6 +1708,281 @@ mod tests {
             )
             .into());
         }
+        let recorded = authority
+            .identities
+            .lock()
+            .map_err(|err| format!("recording authority poisoned: {err}"))?;
+        if recorded.as_slice()
+            != [(
+                batch.repo_id.clone(),
+                batch.revision_id.clone(),
+                batch.generation,
+                batch.manifest_digest,
+            )]
+        {
+            return Err(
+                format!("sealed composite authority was not recorded: {recorded:?}").into(),
+            );
+        }
+        drop(recorded);
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_exact_retry_repairs_authority_without_rebuilding_tracks() -> TestRes {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let authority = Arc::new(RecordingSearchCorpusAuthority {
+            identities: Mutex::new(Vec::new()),
+            exact: true,
+        });
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let materializer = search_corpus_materializer!(
+            lexical_builder.clone(),
+            Arc::clone(&ledger),
+            semantic_materializer,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority.clone(),
+            always_valid_generation(),
+            always_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
+        );
+        let batch = fixture_search_corpus_batch()?;
+        let receipt = materializer.publish_batch(&batch)?;
+        assert!(receipt.sealed);
+        assert!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .is_empty()
+        );
+        assert!(semantic_builder.take()?.is_empty());
+        assert_eq!(
+            authority
+                .identities
+                .lock()
+                .map_err(|err| format!("recording authority poisoned: {err}"))?
+                .len(),
+            1
+        );
+        let guard = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?;
+        guard.validate_historically_sealed_track_identity(
+            &generation_pair_from_batch_v1(&batch).0,
+            "test exact retry",
+        )?;
+        drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let materializer = search_corpus_materializer!(
+            lexical_builder.clone(),
+            Arc::new(RwLock::new(Ledger::new())),
+            semantic_materializer,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            recording_search_corpus_authority(),
+            always_valid_generation(),
+            always_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
+        );
+        let mut batch = fixture_search_corpus_batch()?;
+        batch.seal = false;
+        let result = materializer.publish_batch(&batch);
+        let Err(CoreError::Typed { code, .. }) = result else {
+            return Err("non-seal mutation of sealed generation unexpectedly succeeded".into());
+        };
+        assert_eq!(code, "GENERATION_IMMUTABLE");
+        assert!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .is_empty()
+        );
+        assert!(semantic_builder.take()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_lexical_missing_semantic_retry_builds_only_missing_track() -> TestRes {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let materializer = search_corpus_materializer!(
+            lexical_builder.clone(),
+            Arc::new(RwLock::new(Ledger::new())),
+            semantic_materializer,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            recording_search_corpus_authority(),
+            always_valid_generation(),
+            build_then_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
+        );
+        let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+        assert!(receipt.sealed);
+        assert!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .is_empty()
+        );
+        assert_eq!(semantic_builder.take()?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical() -> TestRes {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let lexical_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
+        let materializer = search_corpus_materializer!(
+            lexical_builder.clone(),
+            Arc::new(RwLock::new(Ledger::new())),
+            semantic_materializer,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            recording_search_corpus_authority(),
+            incomplete_then_valid_generation(),
+            always_valid_generation(),
+            lexical_discard.clone(),
+            test_incomplete_generation_discard(),
+        );
+
+        let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+        assert!(receipt.sealed);
+        assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .len(),
+            1
+        );
+        assert!(semantic_builder.take()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn jointly_incomplete_tracks_keep_staged_data_for_normal_seal() -> TestRes {
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
+            Arc::new(DirectSemanticMaterializer::new(
+                semantic_builder.clone(),
+                Arc::new(RwLock::new(Ledger::new())),
+            ));
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let lexical_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
+        let semantic_discard = Arc::new(RecordingIncompleteGenerationDiscard::default());
+        let materializer = search_corpus_materializer!(
+            lexical_builder.clone(),
+            Arc::new(RwLock::new(Ledger::new())),
+            semantic_materializer,
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            recording_search_corpus_authority(),
+            incomplete_then_valid_generation(),
+            incomplete_then_valid_generation(),
+            lexical_discard.clone(),
+            semantic_discard.clone(),
+        );
+
+        let receipt = materializer.publish_batch(&fixture_search_corpus_batch()?)?;
+
+        assert!(receipt.sealed);
+        assert_eq!(lexical_discard.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(semantic_discard.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            lexical_builder
+                .batches
+                .lock()
+                .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
+                .len(),
+            1
+        );
+        assert_eq!(semantic_builder.take()?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn search_corpus_materializer_rejects_mismatched_semantic_receipt_before_authority_admission()
+    -> TestRes {
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let authority = Arc::new(RecordingSearchCorpusAuthority::default());
+        let materializer = search_corpus_materializer!(
+            Arc::new(FakeSearchCorpusBuilder::default()),
+            Arc::clone(&ledger),
+            Arc::new(MismatchedSemanticIngest),
+            Arc::new(crate::HashingQueryTextEmbedder::new(
+                SEARCH_OWNED_SEMANTIC_DIMENSION,
+            )),
+            authority.clone(),
+            build_then_valid_generation(),
+            build_then_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
+        );
+        let batch = fixture_search_corpus_batch()?;
+        let result = materializer.publish_batch(&batch);
+        assert!(matches!(result, Err(CoreError::InvalidContract(_))));
+        assert!(
+            authority
+                .identities
+                .lock()
+                .map_err(|err| format!("recording authority poisoned: {err}"))?
+                .is_empty()
+        );
+        let historical = ledger
+            .read()
+            .map_err(|err| format!("ledger poisoned: {err}"))?
+            .validate_historically_sealed_track_identity(
+                &quanta_index_contract::GenerationSnapshot {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: batch.generation,
+                    manifest_digest: batch.manifest_digest,
+                },
+                "test",
+            );
+        assert!(matches!(historical, Err(CoreError::Typed { .. })));
         Ok(())
     }
 
@@ -1151,7 +1998,7 @@ mod tests {
                 .map(|_| vec![0.0_f32; self.vector_len])
                 .collect())
         }
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "fake-embedder"
         }
         fn model_version(&self) -> Option<&str> {
@@ -1172,11 +2019,16 @@ mod tests {
         );
         let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
         let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-        DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        search_corpus_materializer!(
             search_corpus_builder,
             lexical_ledger,
             semantic_materializer,
             embedder,
+            recording_search_corpus_authority(),
+            build_then_valid_generation(),
+            build_then_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
         )
     }
 
@@ -1314,14 +2166,18 @@ mod tests {
                 let mut calls = self.calls.lock().map_err(|err| {
                     CoreError::InvalidContract(format!("counting embedder lock poisoned: {err}"))
                 })?;
-                *calls += 1;
+                *calls = calls.checked_add(1).ok_or_else(|| {
+                    CoreError::InvalidContract(
+                        "counting embedder call counter overflow".to_string(),
+                    )
+                })?;
             }
             Ok(texts
                 .iter()
                 .map(|_| vec![0.0_f32; self.dimension])
                 .collect())
         }
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "counting-embedder"
         }
         fn model_version(&self) -> Option<&str> {
@@ -1350,11 +2206,16 @@ mod tests {
         );
         let search_corpus_builder = Arc::new(FakeSearchCorpusBuilder::default());
         let lexical_ledger = Arc::new(RwLock::new(Ledger::new()));
-        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+        let materializer = search_corpus_materializer!(
             search_corpus_builder,
             lexical_ledger,
             semantic_materializer,
             embedder.clone(),
+            recording_search_corpus_authority(),
+            build_then_valid_generation(),
+            build_then_valid_generation(),
+            test_incomplete_generation_discard(),
+            test_incomplete_generation_discard(),
         );
 
         let batch = multi_scope_corpus_batch()?;

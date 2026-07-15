@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 use quanta_index_contract::ChunkRecord;
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -37,6 +38,7 @@ pub(crate) const ERR_SEARCH_TRACK_GENERATION_NOT_SEALED: &str =
 pub(crate) const ERR_SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH: &str =
     "SEARCH_TRACK_MANIFEST_DIGEST_MISMATCH";
 pub(crate) const ERR_ROLLBACK_CAS_CONFLICT: &str = "ROLLBACK_CAS_CONFLICT";
+pub(crate) const ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT: &str = "SEARCH_CORPUS_AUTHORITY_CONFLICT";
 pub(crate) const ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT: &str = "COMPOSITE_ACTIVATION_CAS_CONFLICT";
 pub(crate) const ERR_RUNTIME_CATALOG_STALE_BATCH: &str = "RUNTIME_CATALOG_STALE_BATCH";
 pub(crate) const ERR_RUNTIME_CATALOG_CONFLICTING_BATCH: &str = "RUNTIME_CATALOG_CONFLICTING_BATCH";
@@ -376,16 +378,33 @@ impl Ledger {
             .entry(key)
             .or_default()
             .record_seal(generation, manifest_digest);
-        if let Some(digest) = manifest_digest {
-            let _previous = self.sealed_search_track_identities.insert(
-                Self::track_generation_key(repo_id, revision_id, track, generation),
-                digest.to_string(),
-            );
-        }
         if track == SearchPlaneTrackKind::Semantic
             && let Some(digest) = manifest_digest
         {
             self.record_semantic_generation_sealed(repo_id, revision_id, generation, digest);
+        }
+    }
+
+    /// Admit one complete lexical+semantic generation into rollback history.
+    ///
+    /// Callers must durably persist the composite identity before invoking this
+    /// method. Per-track seal mutations intentionally do not populate rollback
+    /// history: a half-persisted corpus must never become a rollback target.
+    pub(crate) fn record_historically_sealed_search_corpus(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) {
+        for track in [
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ] {
+            let _previous = self.sealed_search_track_identities.insert(
+                Self::track_generation_key(repo_id, revision_id, track, generation),
+                manifest_digest.to_string(),
+            );
         }
     }
 
@@ -1735,11 +1754,75 @@ struct StructuralAuthoritySnapshot {
     tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
 }
 
+const SEARCH_CORPUS_AUTHORITY_SCHEMA_V1: u32 = 1;
+pub(crate) const SEARCH_CORPUS_LOCK_STRIPES_V1: usize = 64;
+
+#[derive(Clone, Debug)]
+struct SearchCorpusAuthorityRecordV1 {
+    schema_version: u32,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    manifest_digest: String,
+}
+
+impl SearchCorpusAuthorityRecordV1 {
+    fn new(
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Self {
+        Self {
+            schema_version: SEARCH_CORPUS_AUTHORITY_SCHEMA_V1,
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            generation,
+            manifest_digest: manifest_digest.to_string(),
+        }
+    }
+
+    fn validate_identity(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        path: &Path,
+    ) -> Result<(), CoreError> {
+        if self.schema_version != SEARCH_CORPUS_AUTHORITY_SCHEMA_V1 {
+            return Err(CoreError::Storage(format!(
+                "search-corpus authority: unsupported schema version {} in {}",
+                self.schema_version,
+                path.display()
+            )));
+        }
+        if &self.repo_id != repo_id
+            || &self.revision_id != revision_id
+            || self.generation != generation
+        {
+            return Err(CoreError::Storage(format!(
+                "search-corpus authority: filename/payload identity mismatch in {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct AuxiliaryAuthorityStore {
     history: PathBuf,
     runtime: PathBuf,
     structural: PathBuf,
+    search_corpus_dir: PathBuf,
+    search_corpus_write_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
+    parent_sync: Arc<dyn ParentDirectorySyncPort>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SealedSearchCorpusAuthorityStateV1 {
+    Absent,
+    Exact,
 }
 
 impl_struct_serde!(TrackAuthorityState {
@@ -1832,25 +1915,142 @@ impl_struct_serde!(StructuralAuthoritySnapshot {
     tracks: BTreeMap<TrackAuthorityKey, TrackAuthorityState>,
 });
 
+impl_struct_serde!(SearchCorpusAuthorityRecordV1 {
+    schema_version: u32,
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    manifest_digest: String,
+});
+
 impl AuxiliaryAuthorityStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync(root, Arc::new(FsParentDirectorySyncPort))
+    }
+
+    fn open_with_parent_sync(
+        root: impl AsRef<Path>,
+        parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    ) -> Result<Self, CoreError> {
         let root = root.as_ref();
         let history_dir = root.join("history");
         let runtime_dir = root.join("runtime");
         let structural_dir = root.join("structural");
-        for dir in [&history_dir, &runtime_dir, &structural_dir] {
-            fs::create_dir_all(dir).map_err(|err| {
-                CoreError::Storage(format!(
-                    "search-plane authority store: create {}: {err}",
-                    dir.display()
-                ))
-            })?;
+        let search_corpus_dir = root.join("search-corpus");
+        for dir in [
+            &history_dir,
+            &runtime_dir,
+            &structural_dir,
+            &search_corpus_dir,
+        ] {
+            ensure_durable_directory_v1(dir, "search-plane authority store", parent_sync.as_ref())?;
         }
         Ok(Self {
             history: history_dir.join("state.cbor"),
             runtime: runtime_dir.join("state.cbor"),
             structural: structural_dir.join("state.cbor"),
+            search_corpus_dir,
+            search_corpus_write_locks: std::array::from_fn(|_index| Mutex::new(())),
+            parent_sync,
         })
+    }
+
+    /// Persist one complete sealed corpus as one immutable generation record.
+    ///
+    /// A seal performs O(1) authority I/O and never rewrites prior generations.
+    pub fn record_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<(), CoreError> {
+        let stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
+        let pair_lock = self.search_corpus_write_locks.get(stripe).ok_or_else(|| {
+            CoreError::Storage(format!(
+                "search-corpus authority: computed lock stripe {stripe} outside configured range"
+            ))
+        })?;
+        let _pair_guard = pair_lock.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: write lock stripe {stripe} poisoned: {err}"
+            ))
+        })?;
+        let pair_dir = self.search_corpus_pair_dir(repo_id, revision_id);
+        ensure_durable_directory_v1(
+            &pair_dir,
+            "search-corpus authority",
+            self.parent_sync.as_ref(),
+        )?;
+        let path = self.search_corpus_authority_path(repo_id, revision_id, generation);
+        if let Some(record) =
+            self.read_cbor::<SearchCorpusAuthorityRecordV1>(&path, "search corpus")?
+        {
+            record.validate_identity(repo_id, revision_id, generation, &path)?;
+            if record.manifest_digest == manifest_digest {
+                return sync_existing_file_parent_v1(
+                    &path,
+                    "search-corpus authority",
+                    self.parent_sync.as_ref(),
+                );
+            }
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT.to_string(),
+                message: format!(
+                    "search-corpus authority: conflicting digest for repo={} revision={} generation={}: expected={}, observed={}",
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                    generation.get(),
+                    manifest_digest,
+                    record.manifest_digest,
+                ),
+            });
+        }
+        let record =
+            SearchCorpusAuthorityRecordV1::new(repo_id, revision_id, generation, manifest_digest);
+        let bytes = encode_cbor_payload(&record).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: encode {}: {err}",
+                path.display()
+            ))
+        })?;
+        match atomic_replace_file_v1(
+            &path,
+            &bytes,
+            "search-corpus authority",
+            self.parent_sync.as_ref(),
+        )? {
+            AtomicFileWriteOutcomeV1::Durable => Ok(()),
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
+        }
+    }
+
+    pub fn inspect_sealed_search_corpus(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+        manifest_digest: &str,
+    ) -> Result<SealedSearchCorpusAuthorityStateV1, CoreError> {
+        let path = self.search_corpus_authority_path(repo_id, revision_id, generation);
+        let Some(record) =
+            self.read_cbor::<SearchCorpusAuthorityRecordV1>(&path, "search corpus")?
+        else {
+            return Ok(SealedSearchCorpusAuthorityStateV1::Absent);
+        };
+        record.validate_identity(repo_id, revision_id, generation, &path)?;
+        if record.manifest_digest != manifest_digest {
+            return Err(CoreError::Typed {
+                code: ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT.to_string(),
+                message: format!(
+                    "search-corpus authority: conflicting digest for repo={} revision={} generation={}",
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                    generation.get(),
+                ),
+            });
+        }
+        Ok(SealedSearchCorpusAuthorityStateV1::Exact)
     }
 
     pub fn persist_from_ledger(&self, ledger: &Ledger) -> Result<(), CoreError> {
@@ -1897,7 +2097,105 @@ impl AuxiliaryAuthorityStore {
                 .retain(|key, _state| key.track != SearchPlaneTrackKind::Structural);
             ledger.search_tracks.extend(structural.tracks);
         }
+        self.restore_search_corpus_history_into(ledger)?;
         Ok(())
+    }
+
+    fn restore_search_corpus_history_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
+        for pair_entry in fs::read_dir(&self.search_corpus_dir).map_err(|err| {
+            CoreError::Storage(format!(
+                "search-corpus authority: list {}: {err}",
+                self.search_corpus_dir.display()
+            ))
+        })? {
+            let pair_entry = pair_entry.map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: read directory entry in {}: {err}",
+                    self.search_corpus_dir.display()
+                ))
+            })?;
+            if !pair_entry
+                .file_type()
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus authority: inspect {}: {err}",
+                        pair_entry.path().display()
+                    ))
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            for record_entry in fs::read_dir(pair_entry.path()).map_err(|err| {
+                CoreError::Storage(format!(
+                    "search-corpus authority: list {}: {err}",
+                    pair_entry.path().display()
+                ))
+            })? {
+                let record_entry = record_entry.map_err(|err| {
+                    CoreError::Storage(format!(
+                        "search-corpus authority: read record in {}: {err}",
+                        pair_entry.path().display()
+                    ))
+                })?;
+                if !record_entry.path().is_file()
+                    || record_entry
+                        .path()
+                        .extension()
+                        .is_none_or(|extension| extension != "cbor")
+                {
+                    continue;
+                }
+                let path = record_entry.path();
+                let record = self
+                    .read_cbor::<SearchCorpusAuthorityRecordV1>(&path, "search corpus")?
+                    .ok_or_else(|| {
+                        CoreError::Storage(format!(
+                            "search-corpus authority: listed file disappeared: {}",
+                            path.display()
+                        ))
+                    })?;
+                let expected_path = self.search_corpus_authority_path(
+                    &record.repo_id,
+                    &record.revision_id,
+                    record.generation,
+                );
+                if expected_path != path {
+                    return Err(CoreError::Storage(format!(
+                        "search-corpus authority: filename/payload identity mismatch in {}",
+                        path.display()
+                    )));
+                }
+                record.validate_identity(
+                    &record.repo_id,
+                    &record.revision_id,
+                    record.generation,
+                    &path,
+                )?;
+                ledger.record_historically_sealed_search_corpus(
+                    &record.repo_id,
+                    &record.revision_id,
+                    record.generation,
+                    &record.manifest_digest,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn search_corpus_pair_dir(&self, repo_id: &RepoId, revision_id: &RevisionId) -> PathBuf {
+        self.search_corpus_dir
+            .join(search_corpus_pair_digest(repo_id, revision_id))
+    }
+
+    fn search_corpus_authority_path(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        generation: ManifestGeneration,
+    ) -> PathBuf {
+        self.search_corpus_pair_dir(repo_id, revision_id)
+            .join(format!("g{}.cbor", generation.get()))
     }
 
     fn write_cbor<T: Serialize>(
@@ -1912,12 +2210,15 @@ impl AuxiliaryAuthorityStore {
                 path.display()
             ))
         })?;
-        fs::write(path, bytes).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane authority store: write {label} {}: {err}",
-                path.display()
-            ))
-        })
+        match atomic_replace_file_v1(
+            path,
+            &bytes,
+            &format!("search-plane authority store {label}"),
+            self.parent_sync.as_ref(),
+        )? {
+            AtomicFileWriteOutcomeV1::Durable => Ok(()),
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => Err(error),
+        }
     }
 
     fn read_cbor<T: for<'de> Deserialize<'de>>(
@@ -1925,7 +2226,7 @@ impl AuxiliaryAuthorityStore {
         path: &Path,
         label: &str,
     ) -> Result<Option<T>, CoreError> {
-        let bytes = match fs::read(path) {
+        let bytes = match read_regular_file_nofollow_v1(path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => {
@@ -1944,6 +2245,40 @@ impl AuxiliaryAuthorityStore {
                 ))
             })
     }
+}
+
+#[cfg(unix)]
+fn read_regular_file_nofollow_v1(path: &Path) -> std::io::Result<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+    let mut file = File::from(descriptor);
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!(
+            "authority path is not a regular file: {}",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    let _bytes_read = file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_regular_file_nofollow_v1(path: &Path) -> std::io::Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::other(format!(
+            "authority path is not a regular non-symlink file: {}",
+            path.display()
+        )));
+    }
+    fs::read(path)
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2186,21 +2521,29 @@ pub struct ActiveGenerationRecord {
 pub struct ActivationCatalog {
     activations_dir: PathBuf,
     entries: RwLock<BTreeMap<ActivationKey, ActiveGenerationRecord>>,
+    mutation_locks: [Mutex<()>; SEARCH_CORPUS_LOCK_STRIPES_V1],
     // A rename may succeed while the parent-directory fsync fails.  At that
     // point the durable head is ambiguous until a fresh process reopens the
     // canonical root, so this process must not serve its old in-memory head.
     durability_uncertain_v1: AtomicBool,
+    parent_sync: Arc<dyn ParentDirectorySyncPort>,
 }
 
 impl ActivationCatalog {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        Self::open_with_parent_sync(root, Arc::new(FsParentDirectorySyncPort))
+    }
+
+    fn open_with_parent_sync(
+        root: impl AsRef<Path>,
+        parent_sync: Arc<dyn ParentDirectorySyncPort>,
+    ) -> Result<Self, CoreError> {
         let root = root.as_ref();
-        fs::create_dir_all(root).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane activation catalog: create root {}: {err}",
-                root.display()
-            ))
-        })?;
+        ensure_durable_directory_v1(
+            root,
+            "search-plane activation catalog",
+            parent_sync.as_ref(),
+        )?;
         let mut entries = BTreeMap::new();
         let mut composite_roots = Vec::new();
         let dir_entries = fs::read_dir(root).map_err(|err| {
@@ -2249,6 +2592,7 @@ impl ActivationCatalog {
                     ))
                 })?;
             let composite = persisted.into_generation()?;
+            validate_loaded_search_corpus_root_v1(&path, &composite)?;
             composite_roots.push(composite);
         }
         // Every persisted root is one canonical lexical+semantic authority.
@@ -2258,7 +2602,9 @@ impl ActivationCatalog {
         Ok(Self {
             activations_dir: root.to_path_buf(),
             entries: RwLock::new(entries),
+            mutation_locks: std::array::from_fn(|_index| Mutex::new(())),
             durability_uncertain_v1: AtomicBool::new(false),
+            parent_sync,
         })
     }
 
@@ -2276,18 +2622,19 @@ impl ActivationCatalog {
         prepared: &PreparedSearchCorpusGenerationV1,
     ) -> Result<SearchCorpusGenerationActivationV1, CoreError> {
         let candidate = prepared.candidate();
-        let mut entries = self.entries.write().map_err(|err| {
-            CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-        })?;
-        // Hold the same lock that serializes root replacement while checking
-        // the fence. A waiter released after a failed parent fsync must see
-        // the fence before it can read or mutate the previous in-memory head.
+        let _mutation_guard =
+            self.lock_mutation_v1(candidate.repo_id(), candidate.revision_id())?;
         self.ensure_durability_certain_v1()?;
-        let current = active_search_corpus_generation_v1(
-            &entries,
-            candidate.repo_id(),
-            candidate.revision_id(),
-        )?;
+        let current = {
+            let entries = self.entries.read().map_err(|err| {
+                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+            })?;
+            active_search_corpus_generation_v1(
+                &entries,
+                candidate.repo_id(),
+                candidate.revision_id(),
+            )?
+        };
         validate_prepared_search_corpus_expectation(prepared, current.as_ref())?;
 
         if let Some(current) = &current
@@ -2313,14 +2660,42 @@ impl ActivationCatalog {
                 path.display()
             ))
         })?;
-        match atomic_write_activation_file_v1(&path, &bytes)? {
-            AtomicActivationWriteOutcomeV1::Durable => {}
-            AtomicActivationWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
+        match atomic_replace_file_v1(
+            &path,
+            &bytes,
+            "search-plane activation catalog",
+            self.parent_sync.as_ref(),
+        )? {
+            AtomicFileWriteOutcomeV1::Durable => {}
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
                 self.mark_durability_uncertain_v1();
                 return Err(error);
             }
         }
-        insert_search_corpus_generation_records(&mut entries, candidate);
+        let memory_commit = (|| {
+            self.ensure_durability_certain_v1()?;
+            let mut entries = self.entries.write().map_err(|err| {
+                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+            })?;
+            let observed = active_search_corpus_generation_v1(
+                &entries,
+                candidate.repo_id(),
+                candidate.revision_id(),
+            )?;
+            if observed != current {
+                return Err(CoreError::Storage(
+                    "search-corpus activation: mutation lock failed to preserve the checked head"
+                        .to_string(),
+                ));
+            }
+            insert_search_corpus_generation_records(&mut entries, candidate);
+            drop(entries);
+            Ok(())
+        })();
+        if let Err(error) = memory_commit {
+            self.mark_durability_uncertain_v1();
+            return Err(error);
+        }
 
         Ok(SearchCorpusGenerationActivationV1 {
             active: candidate.clone(),
@@ -2346,22 +2721,26 @@ impl ActivationCatalog {
             search_corpus_generation_from_validated_rollback_identity(&request.expected_active)?;
         let target = search_corpus_generation_from_validated_rollback_identity(&request.target)?;
 
-        let mut entries = self.entries.write().map_err(|err| {
-            CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-        })?;
+        let _mutation_guard =
+            self.lock_mutation_v1(expected_active.repo_id(), expected_active.revision_id())?;
         self.ensure_durability_certain_v1()?;
-        let current = active_search_corpus_generation_v1(
-            &entries,
-            expected_active.repo_id(),
-            expected_active.revision_id(),
-        )?
-        .ok_or_else(|| {
-            CoreError::NotReady(format!(
-                "search-corpus rollback: no active composite generation for repo={} revision={}",
-                expected_active.repo_id().as_str(),
-                expected_active.revision_id().as_str()
-            ))
-        })?;
+        let current = {
+            let entries = self.entries.read().map_err(|err| {
+                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+            })?;
+            active_search_corpus_generation_v1(
+                &entries,
+                expected_active.repo_id(),
+                expected_active.revision_id(),
+            )?
+            .ok_or_else(|| {
+                CoreError::NotReady(format!(
+                    "search-corpus rollback: no active composite generation for repo={} revision={}",
+                    expected_active.repo_id().as_str(),
+                    expected_active.revision_id().as_str()
+                ))
+            })?
+        };
         if current != expected_active {
             return Err(CoreError::Typed {
                 code: ERR_ROLLBACK_CAS_CONFLICT.to_string(),
@@ -2388,14 +2767,42 @@ impl ActivationCatalog {
                 path.display()
             ))
         })?;
-        match atomic_write_activation_file_v1(&path, &bytes)? {
-            AtomicActivationWriteOutcomeV1::Durable => {}
-            AtomicActivationWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
+        match atomic_replace_file_v1(
+            &path,
+            &bytes,
+            "search-plane activation catalog",
+            self.parent_sync.as_ref(),
+        )? {
+            AtomicFileWriteOutcomeV1::Durable => {}
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
                 self.mark_durability_uncertain_v1();
                 return Err(error);
             }
         }
-        insert_search_corpus_generation_records(&mut entries, &target);
+        let memory_commit = (|| {
+            self.ensure_durability_certain_v1()?;
+            let mut entries = self.entries.write().map_err(|err| {
+                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
+            })?;
+            let observed = active_search_corpus_generation_v1(
+                &entries,
+                expected_active.repo_id(),
+                expected_active.revision_id(),
+            )?;
+            if observed.as_ref() != Some(&current) {
+                return Err(CoreError::Storage(
+                    "search-corpus rollback: mutation lock failed to preserve the checked head"
+                        .to_string(),
+                ));
+            }
+            insert_search_corpus_generation_records(&mut entries, &target);
+            drop(entries);
+            Ok(())
+        })();
+        if let Err(error) = memory_commit {
+            self.mark_durability_uncertain_v1();
+            return Err(error);
+        }
 
         Ok(SearchPlaneSearchCorpusRollbackCasAck {
             active: search_corpus_generation_into_contract(&target),
@@ -2481,6 +2888,24 @@ impl ActivationCatalog {
         Ok(())
     }
 
+    fn lock_mutation_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
+        let stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
+        let mutation_lock = self.mutation_locks.get(stripe).ok_or_else(|| {
+            CoreError::Storage(format!(
+                "search-plane activation catalog: computed lock stripe {stripe} outside configured range"
+            ))
+        })?;
+        mutation_lock.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "search-plane activation catalog: mutation lock stripe {stripe} poisoned: {err}"
+            ))
+        })
+    }
+
     fn mark_durability_uncertain_v1(&self) {
         self.durability_uncertain_v1.store(true, Ordering::Release);
     }
@@ -2547,13 +2972,17 @@ fn validate_prepared_search_corpus_expectation(
     if prepared.expected_active() == current {
         return Ok(());
     }
-    let describe = |identity: Option<&SearchCorpusGenerationV1>| match identity {
-        Some(identity) => format!(
-            "generation={} digest={}",
-            identity.manifest_generation().get(),
-            identity.manifest_digest(),
-        ),
-        None => "absent".to_string(),
+    let describe = |identity: Option<&SearchCorpusGenerationV1>| {
+        identity.map_or_else(
+            || "absent".to_string(),
+            |identity| {
+                format!(
+                    "generation={} digest={}",
+                    identity.manifest_generation().get(),
+                    identity.manifest_digest(),
+                )
+            },
+        )
     };
     Err(CoreError::Typed {
         code: ERR_COMPOSITE_ACTIVATION_CAS_CONFLICT.to_string(),
@@ -2592,9 +3021,8 @@ fn insert_search_corpus_generation_records(
 
 fn search_corpus_root_file_name(repo_id: &RepoId, revision_id: &RevisionId) -> String {
     format!(
-        "{}--{}--corpus.json",
-        encode_component(repo_id.as_str()),
-        encode_component(revision_id.as_str()),
+        "{}--corpus.json",
+        search_corpus_pair_digest(repo_id, revision_id)
     )
 }
 
@@ -2604,20 +3032,146 @@ fn is_search_corpus_root_path(path: &Path) -> bool {
         .is_some_and(|name| name.ends_with("--corpus.json"))
 }
 
-enum AtomicActivationWriteOutcomeV1 {
+fn validate_loaded_search_corpus_root_v1(
+    path: &Path,
+    generation: &SearchCorpusGenerationV1,
+) -> Result<(), CoreError> {
+    let expected_name =
+        search_corpus_root_file_name(generation.repo_id(), generation.revision_id());
+    if path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+        return Err(CoreError::Storage(format!(
+            "search-plane activation catalog: filename/payload identity mismatch: expected {expected_name}, observed {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+trait ParentDirectorySyncPort: fmt::Debug + Send + Sync {
+    fn sync_parent(&self, parent: &Path) -> std::io::Result<()>;
+}
+
+fn ensure_durable_directory_v1(
+    path: &Path,
+    owner: &str,
+    parent_sync: &dyn ParentDirectorySyncPort,
+) -> Result<(), CoreError> {
+    let mut boundary = path.parent().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "{owner}: durable directory has no parent: {}",
+            path.display()
+        ))
+    })?;
+    while !boundary.is_dir() {
+        boundary = boundary.parent().ok_or_else(|| {
+            CoreError::Storage(format!(
+                "{owner}: durable directory has no existing ancestor: {}",
+                path.display()
+            ))
+        })?;
+    }
+    ensure_durable_directory_from_boundary_v1(path, boundary, owner, parent_sync)
+}
+
+fn ensure_durable_directory_from_boundary_v1(
+    path: &Path,
+    boundary: &Path,
+    owner: &str,
+    parent_sync: &dyn ParentDirectorySyncPort,
+) -> Result<(), CoreError> {
+    if path == boundary {
+        return Ok(());
+    }
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(CoreError::Storage(format!(
+                "{owner}: durable directory path is not a directory: {}",
+                path.display()
+            )));
+        }
+        let parent = path.parent().ok_or_else(|| {
+            CoreError::Storage(format!(
+                "{owner}: durable directory has no parent: {}",
+                path.display()
+            ))
+        })?;
+        ensure_durable_directory_from_boundary_v1(parent, boundary, owner, parent_sync)?;
+        return parent_sync.sync_parent(parent).map_err(|err| {
+            CoreError::Storage(format!(
+                "{owner}: revalidate durable-directory parent {}: {err}",
+                parent.display()
+            ))
+        });
+    }
+    let parent = path.parent().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "{owner}: durable directory has no parent: {}",
+            path.display()
+        ))
+    })?;
+    ensure_durable_directory_from_boundary_v1(parent, boundary, owner, parent_sync)?;
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        Err(err) => {
+            return Err(CoreError::Storage(format!(
+                "{owner}: create durable directory {}: {err}",
+                path.display()
+            )));
+        }
+    }
+    parent_sync.sync_parent(parent).map_err(|err| {
+        CoreError::Storage(format!(
+            "{owner}: fsync durable-directory parent {}: {err}",
+            parent.display()
+        ))
+    })
+}
+
+fn sync_existing_file_parent_v1(
+    path: &Path,
+    owner: &str,
+    parent_sync: &dyn ParentDirectorySyncPort,
+) -> Result<(), CoreError> {
+    let parent = path.parent().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "{owner}: durable file has no parent: {}",
+            path.display()
+        ))
+    })?;
+    parent_sync.sync_parent(parent).map_err(|err| {
+        CoreError::Storage(format!(
+            "{owner}: revalidate parent durability {}: {err}",
+            parent.display()
+        ))
+    })
+}
+
+#[derive(Debug)]
+struct FsParentDirectorySyncPort;
+
+impl ParentDirectorySyncPort for FsParentDirectorySyncPort {
+    fn sync_parent(&self, parent: &Path) -> std::io::Result<()> {
+        File::open(parent)?.sync_all()
+    }
+}
+
+enum AtomicFileWriteOutcomeV1 {
     Durable,
     RenamedButParentSyncFailed(CoreError),
 }
 
-fn atomic_write_activation_file_v1(
+fn atomic_replace_file_v1(
     path: &Path,
     bytes: &[u8],
-) -> Result<AtomicActivationWriteOutcomeV1, CoreError> {
+    owner: &str,
+    parent_sync: &dyn ParentDirectorySyncPort,
+) -> Result<AtomicFileWriteOutcomeV1, CoreError> {
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
-            "search-plane activation catalog: activation file has no parent: {}",
+            "{owner}: durable file has no parent: {}",
             path.display()
         ))
     })?;
@@ -2626,7 +3180,7 @@ fn atomic_write_activation_file_v1(
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
             CoreError::Storage(format!(
-                "search-plane activation catalog: activation file has no UTF-8 file name: {}",
+                "{owner}: durable file has no UTF-8 file name: {}",
                 path.display()
             ))
         })?;
@@ -2641,7 +3195,7 @@ fn atomic_write_activation_file_v1(
         .open(&temporary)
         .map_err(|err| {
             CoreError::Storage(format!(
-                "search-plane activation catalog: create activation temporary {}: {err}",
+                "{owner}: create temporary {}: {err}",
                 temporary.display()
             ))
         })?;
@@ -2649,7 +3203,7 @@ fn atomic_write_activation_file_v1(
         return Err(cleanup_activation_temporary_v1(
             &temporary,
             CoreError::Storage(format!(
-                "search-plane activation catalog: write activation temporary {}: {err}",
+                "{owner}: write temporary {}: {err}",
                 temporary.display()
             )),
         ));
@@ -2658,7 +3212,7 @@ fn atomic_write_activation_file_v1(
         return Err(cleanup_activation_temporary_v1(
             &temporary,
             CoreError::Storage(format!(
-                "search-plane activation catalog: fsync activation temporary {}: {err}",
+                "{owner}: fsync temporary {}: {err}",
                 temporary.display()
             )),
         ));
@@ -2668,19 +3222,16 @@ fn atomic_write_activation_file_v1(
         return Err(cleanup_activation_temporary_v1(
             &temporary,
             CoreError::Storage(format!(
-                "search-plane activation catalog: rename activation temporary {} to {}: {err}",
+                "{owner}: rename temporary {} to {}: {err}",
                 temporary.display(),
                 path.display()
             )),
         ));
     }
-    match File::open(parent).and_then(|directory| directory.sync_all()) {
-        Ok(()) => Ok(AtomicActivationWriteOutcomeV1::Durable),
-        Err(err) => Ok(AtomicActivationWriteOutcomeV1::RenamedButParentSyncFailed(
-            CoreError::Storage(format!(
-                "search-plane activation catalog: fsync activation parent {}: {err}",
-                parent.display()
-            )),
+    match parent_sync.sync_parent(parent) {
+        Ok(()) => Ok(AtomicFileWriteOutcomeV1::Durable),
+        Err(err) => Ok(AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(
+            CoreError::Storage(format!("{owner}: fsync parent {}: {err}", parent.display())),
         )),
     }
 }
@@ -2696,32 +3247,43 @@ fn cleanup_activation_temporary_v1(temporary: &Path, primary: CoreError) -> Core
     }
 }
 
-fn encode_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'.' {
-            encoded.push(char::from(byte));
-            continue;
-        }
-        encoded.push('%');
-        encoded.push(hex_char(byte >> 4));
-        encoded.push(hex_char(byte & 0x0F));
+fn search_corpus_pair_digest(repo_id: &RepoId, revision_id: &RevisionId) -> String {
+    let mut hasher = Sha256::new();
+    for value in [repo_id.as_str(), revision_id.as_str()] {
+        hasher.update(value.len().to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
     }
-    encoded
+    let digest = hasher.finalize();
+    format!("{digest:X}")
 }
 
-fn hex_char(nibble: u8) -> char {
-    const HEX_DIGITS: [char; 16] = [
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
-    ];
-    HEX_DIGITS
-        .get(usize::from(nibble))
-        .copied()
-        .map_or('0', std::convert::identity)
+pub(crate) fn search_corpus_lock_stripe_v1(repo_id: &RepoId, revision_id: &RevisionId) -> usize {
+    // Stable FNV-1a is used only to distribute lock contention. Collisions are
+    // conservative serialization, never an authority or identity decision.
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in repo_id
+        .as_str()
+        .bytes()
+        .chain(std::iter::once(0xff))
+        .chain(revision_id.as_str().bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    usize::from(hash.to_le_bytes()[0] & 0x3f)
 }
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "Result-returning durability and CAS tests use assertions as test-failure reporting"
+    )]
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -2745,6 +3307,33 @@ mod tests {
         ActivationCatalog, AuxiliaryAuthorityStore, Ledger, PreparedSearchCorpusGenerationV1,
         SearchCorpusGenerationV1,
     };
+
+    #[derive(Debug)]
+    struct AlwaysFailParentSync;
+
+    impl super::ParentDirectorySyncPort for AlwaysFailParentSync {
+        fn sync_parent(&self, _parent: &Path) -> std::io::Result<()> {
+            Err(std::io::Error::other("injected parent sync failure"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailAtParentSync {
+        calls: AtomicUsize,
+        fail_at: usize,
+    }
+
+    impl super::ParentDirectorySyncPort for FailAtParentSync {
+        fn sync_parent(&self, parent: &Path) -> std::io::Result<()> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == self.fail_at {
+                return Err(std::io::Error::other(format!(
+                    "injected parent sync failure at call {call}"
+                )));
+            }
+            std::fs::File::open(parent)?.sync_all()
+        }
+    }
 
     #[test]
     fn seals_are_monotonic_per_track() {
@@ -3068,9 +3657,10 @@ mod tests {
             root.is_file(),
             "composite root must exist before memory receipt"
         );
+        let directory_entries = std::fs::read_dir(dir.path())?.collect::<Result<Vec<_>, _>>()?;
         assert!(
-            std::fs::read_dir(dir.path())?
-                .filter_map(Result::ok)
+            directory_entries
+                .iter()
                 .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-")),
             "durable activation must not leave temporary roots behind"
         );
@@ -3147,10 +3737,10 @@ mod tests {
 
         let first_result = first
             .join()
-            .map_err(|_| "first activation contender panicked")?;
+            .map_err(|_join_error| "first activation contender panicked")?;
         let second_result = second
             .join()
-            .map_err(|_| "second activation contender panicked")?;
+            .map_err(|_join_error| "second activation contender panicked")?;
 
         let mut winner = None;
         for result in [first_result, second_result] {
@@ -3229,6 +3819,75 @@ mod tests {
     }
 
     #[test]
+    fn activation_catalog_fences_real_post_rename_parent_sync_failure() -> TestResult {
+        let dir = tempdir()?;
+        let catalog = ActivationCatalog::open_with_parent_sync(
+            dir.path(),
+            Arc::new(FailAtParentSync {
+                calls: AtomicUsize::new(0),
+                // Existing-root durability revalidation is call zero; the
+                // activation-file parent sync after rename is call one.
+                fail_at: 1,
+            }),
+        )?;
+        let candidate = corpus_generation(17, "digest-17")?;
+        let result = catalog.activate_prepared_search_corpus_generation_v1(
+            &PreparedSearchCorpusGenerationV1::new(candidate.clone(), None)?,
+        );
+        let Err(CoreError::Storage(message)) = result else {
+            return Err("injected parent sync failure unexpectedly activated".into());
+        };
+        assert!(message.contains("injected parent sync failure"));
+
+        let persisted = dir.path().join(super::search_corpus_root_file_name(
+            candidate.repo_id(),
+            candidate.revision_id(),
+        ));
+        assert!(
+            persisted.is_file(),
+            "rename must precede injected sync failure"
+        );
+        let resolve = catalog.resolve_record(
+            candidate.repo_id(),
+            candidate.revision_id(),
+            SearchPlaneTrackKind::Lexical,
+        );
+        assert!(matches!(resolve, Err(CoreError::NotReady(_))));
+
+        let reopened = ActivationCatalog::open(dir.path())?;
+        let active = reopened.resolve_record(
+            candidate.repo_id(),
+            candidate.revision_id(),
+            SearchPlaneTrackKind::Lexical,
+        )?;
+        assert_eq!(active.manifest_generation, candidate.manifest_generation());
+        Ok(())
+    }
+
+    #[test]
+    fn injected_parent_sync_covers_fresh_catalog_and_authority_directories() -> TestResult {
+        let dir = tempdir()?;
+        let catalog_root = dir.path().join("fresh-catalog");
+        let catalog =
+            ActivationCatalog::open_with_parent_sync(&catalog_root, Arc::new(AlwaysFailParentSync));
+        let Err(CoreError::Storage(catalog_error)) = catalog else {
+            return Err("fresh catalog bootstrap bypassed injected parent sync".into());
+        };
+        assert!(catalog_error.contains("injected parent sync failure"));
+
+        let authority_root = dir.path().join("fresh-authority");
+        let authority = AuxiliaryAuthorityStore::open_with_parent_sync(
+            &authority_root,
+            Arc::new(AlwaysFailParentSync),
+        );
+        let Err(CoreError::Storage(authority_error)) = authority else {
+            return Err("fresh authority bootstrap bypassed injected parent sync".into());
+        };
+        assert!(authority_error.contains("injected parent sync failure"));
+        Ok(())
+    }
+
+    #[test]
     fn activation_catalog_rejects_legacy_per_track_root_before_decode() -> TestResult {
         let dir = tempdir()?;
         let legacy = dir.path().join("repo-corpus--rev-corpus--Lexical.json");
@@ -3239,6 +3898,202 @@ mod tests {
         };
         assert!(message.contains("legacy per-track root is unsupported"));
         assert!(message.contains("Lexical.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn activation_catalog_rejects_filename_payload_identity_mismatch() -> TestResult {
+        let dir = tempdir()?;
+        let generation = corpus_generation(17, "digest-17")?;
+        let persisted = super::PersistedSearchCorpusGenerationRootV1::from_generation(&generation);
+        let alias = dir.path().join("alias--alias--corpus.json");
+        std::fs::write(&alias, serde_json::to_vec_pretty(&persisted)?)?;
+        let result = ActivationCatalog::open(dir.path());
+        let Err(CoreError::Storage(message)) = result else {
+            return Err("filename/payload mismatch unexpectedly opened".into());
+        };
+        assert!(message.contains("filename/payload identity mismatch"));
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_search_corpus_history_is_bounded_durable_and_conflict_safe() -> TestResult {
+        let dir = tempdir()?;
+        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let repo = RepoId::new("repo-corpus");
+        let revision = RevisionId::new("rev-corpus");
+        store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "digest-17",
+        )?;
+        store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(18),
+            "digest-18",
+        )?;
+        let conflict = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "conflicting-digest",
+        );
+        let Err(CoreError::Typed { code, .. }) = conflict else {
+            return Err("conflicting historical digest unexpectedly overwrote authority".into());
+        };
+        assert_eq!(code, super::ERR_SEARCH_CORPUS_AUTHORITY_CONFLICT);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("search-corpus"))?.count(),
+            1,
+            "one repo/revision history must occupy one bounded pair directory"
+        );
+        let pair_dir = store.search_corpus_pair_dir(&repo, &revision);
+        assert_eq!(
+            std::fs::read_dir(pair_dir)?.count(),
+            2,
+            "each sealed generation must remain one immutable record"
+        );
+
+        let reopened = AuxiliaryAuthorityStore::open(dir.path())?;
+        let mut ledger = Ledger::new();
+        reopened.restore_into(&mut ledger)?;
+        for track in [
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ] {
+            ledger.validate_historically_sealed_track_identity(
+                &GenerationSnapshot {
+                    repo_id: repo.clone(),
+                    revision_id: revision.clone(),
+                    track,
+                    manifest_generation: ManifestGeneration::new(17),
+                    manifest_digest: "digest-17".to_string(),
+                },
+                "test",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_corpus_authority_refuses_symlink_records() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir()?;
+        let store = AuxiliaryAuthorityStore::open(dir.path())?;
+        let repo = RepoId::new("repo-symlink");
+        let revision = RevisionId::new("rev-symlink");
+        let generation = ManifestGeneration::new(17);
+        let record_path = store.search_corpus_authority_path(&repo, &revision, generation);
+        let parent = record_path.parent().ok_or("authority path has no parent")?;
+        std::fs::create_dir_all(parent)?;
+        let attacker_target = dir.path().join("attacker-controlled.cbor");
+        std::fs::write(&attacker_target, b"not-authority")?;
+        symlink(&attacker_target, &record_path)?;
+
+        let observed =
+            store.inspect_sealed_search_corpus(&repo, &revision, generation, "digest-17");
+        let Err(CoreError::Storage(message)) = observed else {
+            return Err("authority store followed a symlink record".into());
+        };
+        assert!(message.contains("read search corpus"));
+        Ok(())
+    }
+
+    #[test]
+    fn durable_pair_names_are_bounded_and_length_delimited() {
+        let first = super::search_corpus_pair_digest(
+            &RepoId::new("repo--with--delimiter"),
+            &RevisionId::new("rev"),
+        );
+        let second = super::search_corpus_pair_digest(
+            &RepoId::new("repo"),
+            &RevisionId::new("with--delimiter--rev"),
+        );
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 64);
+
+        let long = super::search_corpus_root_file_name(
+            &RepoId::new("r".repeat(8_192)),
+            &RevisionId::new("v".repeat(8_192)),
+        );
+        assert_eq!(long.len(), 64 + "--corpus.json".len());
+    }
+
+    #[test]
+    fn sealed_search_corpus_retry_revalidates_parent_durability() -> TestResult {
+        let dir = tempdir()?;
+        drop(AuxiliaryAuthorityStore::open(dir.path())?);
+        let sync = Arc::new(FailAtParentSync {
+            calls: AtomicUsize::new(0),
+            // Reopening the four existing authority subdirectories consumes
+            // calls 0..=3, pair-directory durability is call four, and the
+            // immutable record parent sync after rename is call five.
+            fail_at: 5,
+        });
+        let store = AuxiliaryAuthorityStore::open_with_parent_sync(dir.path(), sync.clone())?;
+        let repo = RepoId::new("repo-retry");
+        let revision = RevisionId::new("rev-retry");
+        let first = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "digest-17",
+        );
+        assert!(matches!(first, Err(CoreError::Storage(_))));
+
+        store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(17),
+            "digest-17",
+        )?;
+        assert!(
+            sync.calls.load(Ordering::SeqCst) >= 8,
+            "retry must re-fsync the pair-directory parent and immutable record parent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure() -> TestResult {
+        let dir = tempdir()?;
+        drop(AuxiliaryAuthorityStore::open(dir.path())?);
+        let sync = Arc::new(FailAtParentSync {
+            calls: AtomicUsize::new(0),
+            // Reopening four existing authority subdirectories consumes calls
+            // 0..=3, pair-directory durability is call four, and the
+            // immutable-record parent sync after rename is call five.
+            fail_at: 5,
+        });
+        let store = AuxiliaryAuthorityStore::open_with_parent_sync(dir.path(), sync.clone())?;
+        let repo = RepoId::new("repo-post-rename");
+        let revision = RevisionId::new("rev-post-rename");
+        let generation = ManifestGeneration::new(17);
+        let first =
+            store.record_sealed_search_corpus(&repo, &revision, generation, "digest-post-rename");
+        assert!(matches!(first, Err(CoreError::Storage(_))));
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, generation)
+                .is_file(),
+            "rename must precede the injected parent sync failure"
+        );
+
+        store.record_sealed_search_corpus(&repo, &revision, generation, "digest-post-rename")?;
+        assert!(sync.calls.load(Ordering::SeqCst) >= 4);
+        assert_eq!(
+            store.inspect_sealed_search_corpus(
+                &repo,
+                &revision,
+                generation,
+                "digest-post-rename",
+            )?,
+            super::SealedSearchCorpusAuthorityStateV1::Exact
+        );
         Ok(())
     }
 

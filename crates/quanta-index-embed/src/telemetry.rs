@@ -43,7 +43,10 @@ fn stats() -> &'static OpenAiEmbedStats {
 }
 
 fn usize_to_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
+    let Ok(value) = u64::try_from(value) else {
+        return u64::MAX;
+    };
+    value
 }
 
 pub(crate) fn record_cache_observation(
@@ -52,20 +55,20 @@ pub(crate) fn record_cache_observation(
     distinct_miss_texts: usize,
 ) {
     let stats = stats();
-    let _ = stats
+    let _previous: u64 = stats
         .total_texts_observed
         .fetch_add(usize_to_u64(total_texts_observed), Ordering::Relaxed);
-    let _ = stats
+    let _previous: u64 = stats
         .cache_hits
         .fetch_add(usize_to_u64(cache_hits), Ordering::Relaxed);
-    let _ = stats
+    let _previous: u64 = stats
         .distinct_miss_texts
         .fetch_add(usize_to_u64(distinct_miss_texts), Ordering::Relaxed);
 }
 
 pub(crate) fn record_http_request(texts_submitted: usize, estimated_tokens: usize) {
     let stats = stats();
-    let _ = stats.http_request_count.fetch_add(1, Ordering::Relaxed);
+    let _previous: u64 = stats.http_request_count.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut guard) = stats.request_samples.lock() {
         guard.push(OpenAiRequestSample {
             texts_submitted: usize_to_u64(texts_submitted),
@@ -75,17 +78,17 @@ pub(crate) fn record_http_request(texts_submitted: usize, estimated_tokens: usiz
 }
 
 pub(crate) fn record_retry() {
-    let _ = stats().retry_count.fetch_add(1, Ordering::Relaxed);
+    let _previous: u64 = stats().retry_count.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn record_retryable_status() {
-    let _ = stats()
+    let _previous: u64 = stats()
         .retryable_status_count
         .fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn record_transport_error() {
-    let _ = stats()
+    let _previous: u64 = stats()
         .transport_error_count
         .fetch_add(1, Ordering::Relaxed);
 }
@@ -93,11 +96,12 @@ pub(crate) fn record_transport_error() {
 #[must_use]
 pub fn snapshot_openai_embed_stats() -> OpenAiEmbedStatsSnapshot {
     let stats = stats();
-    let request_samples = stats
-        .request_samples
-        .lock()
-        .map(|guard| guard.clone())
-        .unwrap_or_default();
+    let request_samples = match stats.request_samples.lock() {
+        Ok(guard) => guard.clone(),
+        // A poisoned diagnostics lock cannot invalidate the atomic counters.
+        // Return an explicitly empty sample list instead of propagating stale data.
+        Err(_poisoned) => Vec::new(),
+    };
     OpenAiEmbedStatsSnapshot {
         total_texts_observed: stats.total_texts_observed.load(Ordering::Relaxed),
         cache_hits: stats.cache_hits.load(Ordering::Relaxed),

@@ -15,13 +15,13 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, ClearLexicalSurface, LQ_VERSION_TAG, LexicalFullBundle, LqCase,
-    LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg,
-    LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly, ManifestGeneration,
-    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchScopeSurface, SymbolId,
-    UpsertChunk, UpsertSymbol,
+    BatchIngestMode, ChunkId, ChunkRecord, ClearLexicalSurface, LQ_VERSION_TAG, LexicalFullBundle,
+    LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
+    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
-use quanta_index_core::{CoreError, LexicalIndexBuildPort, LexicalIndexOpenPort};
+use quanta_index_core::{CoreError, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::{LEXICAL_WRITER_CACHE_MAX, LexicalAdapter};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -44,6 +44,51 @@ fn revision() -> RevisionId {
 
 fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
+}
+
+/// The legacy build port is deliberately mutation-only: it has no manifest
+/// digest, so it cannot prove a generation is safe to serve. Keep the compact
+/// per-test operation fixtures, but seal each finished fixture through the
+/// digest-carrying ingest port before opening it.
+trait SealedFixtureBuildPort {
+    fn build(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError>;
+}
+
+impl SealedFixtureBuildPort for LexicalAdapter {
+    fn build(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
+    ) -> Result<(), CoreError> {
+        quanta_index_core::LexicalIndexBuildPort::build(self, repo, revision, generation, ops)?;
+        SearchCorpusBatchBuildPort::build_batch(
+            self,
+            &SearchCorpusIngestBatch {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                generation,
+                base_generation: None,
+                manifest_digest: format!("test-manifest-digest-{}", generation.get()),
+                batch_digest: format!("test-batch-digest-{}", generation.get()),
+                mode: BatchIngestMode::ReplaceGeneration,
+                bundle_payload: None,
+                clear_surfaces: Vec::new(),
+                replace_scopes: Vec::new(),
+                tombstone_scopes: Vec::new(),
+                semantic_replace_scopes: Vec::new(),
+                semantic_tombstone_scopes: Vec::new(),
+                seal: true,
+            },
+        )
+    }
 }
 
 fn language_code(code: &str) -> Result<LanguageCode, Box<dyn Error>> {

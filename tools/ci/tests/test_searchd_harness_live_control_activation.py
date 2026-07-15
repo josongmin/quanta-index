@@ -76,7 +76,14 @@ def test_sealed_ingest_receipt_identity_reaches_composite_cas_v1() -> None:
 
     assert "Option<SearchCorpusGenerationIdentityV1>" in runtime
     assert "SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt)" in seal
-    for receipt_field in ("receipt.sealed", "receipt.generation", "receipt.manifest_digest"):
+    for receipt_field in (
+        "receipt.sealed",
+        "receipt.generation",
+        "receipt.manifest_digest",
+        "receipt.accepted_clear_surfaces",
+        "receipt.accepted_replace_scopes",
+        "receipt.accepted_tombstone_scopes",
+    ):
         assert receipt_field in seal, receipt_field
 
     stored_identity = re.search(
@@ -97,9 +104,12 @@ def test_sealed_ingest_receipt_identity_reaches_composite_cas_v1() -> None:
 def test_control_response_and_composite_activation_ack_are_request_bound_v1() -> None:
     source = read_harness()
     dispatch_control = rust_item_body(source, "fn dispatch_control(")
+    dispatch_control_response = rust_item_body(
+        source, "fn dispatch_control_response_v1("
+    )
     activate = rust_item_body(source, "activate_last_sealed_generation(")
 
-    assert "response.request_id != request_id" in dispatch_control
+    assert "response.request_id != request_id" in dispatch_control_response
     assert "SearchPlaneControlIpcResponse::Error" in dispatch_control
     assert "SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack)" in activate
     assert re.search(r"ack\.active\s*!=\s*candidate", activate)
@@ -107,3 +117,33 @@ def test_control_response_and_composite_activation_ack_are_request_bound_v1() ->
         r"ack\.previous_sealed_active\s*!=\s*expected_active",
         activate,
     )
+
+
+def test_reopen_surfaces_driver_join_failure_without_discard_v1() -> None:
+    source = read_harness()
+    reopen = rust_item_body(source, "pub fn reopen(")
+    stop_driver = rust_item_body(source, "fn stop_driver(")
+
+    assert "drop(join.join())" not in source
+    stop_start = source.find("fn stop_driver(")
+    assert "AnyResult<()>" in source[stop_start : stop_start + 120]
+    for outcome in ("Ok(Ok(()))", "Ok(Err(error))", "Err(panic)"):
+        assert outcome in stop_driver, outcome
+    assert "self.stop_driver()" in reopen
+    assert "panic!" in reopen
+
+
+def test_activation_expectation_is_reloaded_from_daemon_control_authority_v1() -> None:
+    source = read_harness()
+    runtime = rust_item_body(source, "pub struct E2eRuntime {")
+    activate = rust_item_body(source, "activate_last_sealed_generation(")
+    current = rust_item_body(source, "fn current_search_corpus_identity_from_control_v1(")
+
+    assert "active_search_corpus_identity" not in runtime
+    assert "current_search_corpus_identity_from_control_v1" in activate
+    assert "SearchPlaneControlIpcRequest::CurrentGeneration" in current
+    assert "SearchPlaneTrackKind::Lexical" in current
+    assert "SearchPlaneTrackKind::Semantic" in current
+    assert "SearchCorpusGenerationIdentityV1" in current
+    assert ".validate_v1()" in current
+    assert "active_search_corpus_identity" not in activate

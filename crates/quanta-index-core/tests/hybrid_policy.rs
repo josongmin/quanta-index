@@ -40,10 +40,10 @@ fn typed_code_or_debug(result: Result<(), CoreError>) -> String {
     }
 }
 
-/// Independent, deliberately simple RRF oracle for the public typed-key
-/// fusion primitive. It uses linear lookup instead of the production map and
-/// de-duplicates each lane before assigning ranks, so this test does not
-/// reproduce the implementation's accumulator mechanics.
+// Independent, deliberately simple RRF oracle for the public typed-key fusion
+// primitive. It uses linear lookup instead of the production map and
+// de-duplicates each lane before assigning ranks, so this test does not
+// reproduce the implementation's accumulator mechanics.
 fn slow_rrf_oracle(lanes: &[&[String]]) -> Vec<String> {
     #[derive(Debug)]
     struct Entry {
@@ -60,7 +60,7 @@ fn slow_rrf_oracle(lanes: &[&[String]]) -> Vec<String> {
                 continue;
             }
             seen.push(key.clone());
-            let rank = seen.len() as f64;
+            let rank = u32::try_from(seen.len()).map_or(f64::INFINITY, f64::from);
             let contribution = 1.0 / (60.0 + rank);
             if let Some(entry) = entries.iter_mut().find(|entry| entry.key == *key) {
                 entry.score += contribution;
@@ -268,8 +268,14 @@ fn rrf_top_k_is_a_prefix_of_the_unbounded_order() {
     let full = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, u32::MAX);
 
     for top_k in 0..=(full.len() + 2) {
-        let bounded = HybridOrchestratorPolicy::fuse_rrf_key_lanes(&lanes, top_k as u32);
-        assert_eq!(bounded, full[..top_k.min(full.len())]);
+        let bounded = HybridOrchestratorPolicy::fuse_rrf_key_lanes(
+            &lanes,
+            u32::try_from(top_k).expect("test top_k fits into u32"),
+        );
+        let expected = full
+            .get(..top_k.min(full.len()))
+            .expect("bounded test prefix is in range");
+        assert_eq!(bounded, expected);
     }
 }
 

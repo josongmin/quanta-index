@@ -8,7 +8,7 @@
 //!
 //! Implements the batch-native semantic build/open ports from
 //! `quanta-index-core::domains::semantic` against a real lancedb dataset under
-//! `{state_root}/indexes/semantic/{repo}/{revision}/g{generation}/`. The
+//! `{state_root}/indexes/semantic/generation-v1-{sha256(repo, revision)}/g{generation}/`. The
 //! adapter owns a `tokio::runtime::Runtime` and bridges async lancedb calls to
 //! the sync port surface via `Runtime::block_on` — this adapter *is* the
 //! deliberate async↔sync seam (the `disallowed_methods` rule against
@@ -44,12 +44,20 @@ pub use semantic_ingest_fixtures_v1::{
 };
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{
+    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+};
 use quanta_index_core::{
-    CoreError, SemanticBatchBuildPort, SemanticIndexOpenPort, domains::semantic::SemanticSearcher,
+    CoreError, GenerationIdentityValidatePort, SemanticBatchBuildPort, SemanticIndexOpenPort,
+    domains::generation::{
+        GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1,
+        IncompleteGenerationDiscardPort,
+    },
+    domains::semantic::SemanticSearcher,
 };
 
 use crate::manifest::SemanticManifest;
@@ -106,6 +114,11 @@ impl OpenCache {
         }
         self.order.push(key.clone());
         let _prior = self.entries.insert(key, value);
+    }
+
+    fn remove(&mut self, key: &GenKey) {
+        self.order.retain(|candidate| candidate != key);
+        let _removed = self.entries.remove(key);
     }
 }
 
@@ -177,6 +190,14 @@ impl SemanticAdapter {
             .insert(key, value);
         Ok(())
     }
+
+    fn cache_remove(&self, key: &GenKey) -> Result<(), CoreError> {
+        self.cache
+            .write()
+            .map_err(|err| CoreError::Storage(format!("semantic open cache poisoned: {err}")))?
+            .remove(key);
+        Ok(())
+    }
 }
 
 impl SemanticBatchBuildPort for SemanticAdapter {
@@ -215,6 +236,208 @@ impl SemanticIndexOpenPort for SemanticAdapter {
             loaded,
             Arc::clone(&self.runtime),
         )))
+    }
+}
+
+impl GenerationIdentityValidatePort for SemanticAdapter {
+    fn validate_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        if candidate.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic identity validator received {:?} track",
+                candidate.track
+            )));
+        }
+        let generation_dir = layout::generation_dir(
+            &self.state_root,
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        );
+        if !generation_dir.is_dir() {
+            return Err(CoreError::NotFound(format!(
+                "semantic: generation directory is absent: {}",
+                generation_dir.display()
+            )));
+        }
+        let sealed_digest = std::fs::read_to_string(layout::sealed_marker_path(&generation_dir))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    CoreError::Typed {
+                        code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                        message: format!(
+                            "semantic: incomplete generation has no sealed marker for generation {}",
+                            candidate.manifest_generation.get()
+                        ),
+                    }
+                } else {
+                    CoreError::Storage(format!(
+                        "semantic: read sealed marker for generation {}: {error}",
+                        candidate.manifest_generation.get()
+                    ))
+                }
+            })?;
+        let manifest_bytes =
+            std::fs::read(layout::manifest_path(&generation_dir)).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    CoreError::Typed {
+                        code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                        message: format!(
+                            "semantic: incomplete generation has no manifest for generation {}",
+                            candidate.manifest_generation.get()
+                        ),
+                    }
+                } else {
+                    CoreError::Storage(format!(
+                        "semantic: read manifest for generation {}: {error}",
+                        candidate.manifest_generation.get()
+                    ))
+                }
+            })?;
+        let manifest = SemanticManifest::decode(&manifest_bytes)?;
+        manifest.validate_scope(
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        )?;
+        if sealed_digest != candidate.manifest_digest
+            || manifest.manifest_digest != candidate.manifest_digest
+        {
+            return Err(CoreError::Typed {
+                code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                message: format!(
+                    "semantic: durable generation digest mismatch for repo={} revision={} generation={}",
+                    candidate.repo_id.as_str(),
+                    candidate.revision_id.as_str(),
+                    candidate.manifest_generation.get(),
+                ),
+            });
+        }
+        // Bypass the query cache so deleted/corrupt physical state cannot be
+        // admitted from a stale in-memory searcher.
+        let _loaded = run_blocking(
+            &self.runtime,
+            open_generation(
+                &self.state_root,
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            ),
+        )?;
+        File::open(&generation_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: revalidate generation-directory durability {}: {error}",
+                    generation_dir.display()
+                ))
+            })?;
+        Ok(())
+    }
+}
+
+impl IncompleteGenerationDiscardPort for SemanticAdapter {
+    fn discard_incomplete_generation(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        if candidate.track != SearchPlaneTrackKind::Semantic {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic incomplete-generation discard received {:?} track",
+                candidate.track
+            )));
+        }
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = layout::generation_dir(
+            &self.state_root,
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        );
+        if !generation_dir.exists() {
+            return Ok(IncompleteGenerationDiscardOutcomeV1::Absent);
+        }
+
+        let marker_path = layout::sealed_marker_path(&generation_dir);
+        if marker_path.exists() {
+            let observed_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker {}: {error}",
+                    marker_path.display()
+                ))
+            })?;
+            if observed_digest != candidate.manifest_digest {
+                return Err(generation_digest_mismatch(candidate, "sealed marker"));
+            }
+            let manifest_path = layout::manifest_path(&generation_dir);
+            let manifest =
+                SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
+                    CoreError::Storage(format!(
+                        "semantic: read manifest {}: {error}",
+                        manifest_path.display()
+                    ))
+                })?)?;
+            manifest.validate_scope(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )?;
+            if manifest.manifest_digest != candidate.manifest_digest {
+                return Err(generation_digest_mismatch(candidate, "manifest"));
+            }
+            return Err(CoreError::Typed {
+                code: "GENERATION_IMMUTABLE".to_string(),
+                message: format!(
+                    "semantic: refusing to discard sealed generation {}",
+                    candidate.manifest_generation.get()
+                ),
+            });
+        }
+
+        let manifest_path = layout::manifest_path(&generation_dir);
+        if manifest_path.exists() {
+            let manifest =
+                SemanticManifest::decode(&std::fs::read(&manifest_path).map_err(|error| {
+                    CoreError::Storage(format!(
+                        "semantic: read incomplete manifest {}: {error}",
+                        manifest_path.display()
+                    ))
+                })?)?;
+            manifest.validate_scope(
+                &candidate.repo_id,
+                &candidate.revision_id,
+                candidate.manifest_generation,
+            )?;
+            if manifest.manifest_digest != candidate.manifest_digest {
+                return Err(generation_digest_mismatch(candidate, "incomplete manifest"));
+            }
+        }
+        self.cache_remove(&key)?;
+        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: discard incomplete generation {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+    }
+}
+
+fn generation_digest_mismatch(candidate: &GenerationSnapshot, source: &str) -> CoreError {
+    CoreError::Typed {
+        code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+        message: format!(
+            "semantic: {source} digest conflicts with candidate for repo={} revision={} generation={}",
+            candidate.repo_id.as_str(),
+            candidate.revision_id.as_str(),
+            candidate.manifest_generation.get()
+        ),
     }
 }
 
@@ -267,59 +490,113 @@ pub fn scan_persisted_generations(
                 "semantic: tokio runtime init for persisted-generation scan: {err}"
             ))
         })?;
-    for repo_entry in read_dir(semantic_root)? {
-        let repo_entry = dir_entry(repo_entry)?;
-        if !is_dir(&repo_entry)? {
+    for family_entry in read_dir(semantic_root)? {
+        let family_entry = dir_entry(family_entry)?;
+        if !is_dir(&family_entry)? {
             continue;
         }
-        let repo_id = RepoId::new(repo_entry.file_name().to_string_lossy().into_owned());
-        for revision_entry in read_dir(&repo_entry.path())? {
-            let revision_entry = dir_entry(revision_entry)?;
-            if !is_dir(&revision_entry)? {
+        let family_name = family_entry.file_name();
+        if !family_name
+            .to_str()
+            .is_some_and(GenerationStorageKeyV1::is_canonical_name)
+        {
+            return Err(unsupported_legacy_generation_layout(&family_entry.path()));
+        }
+        for generation_entry in read_dir(&family_entry.path())? {
+            let generation_entry = dir_entry(generation_entry)?;
+            if !is_dir(&generation_entry)? {
                 continue;
             }
-            let revision_id =
-                RevisionId::new(revision_entry.file_name().to_string_lossy().into_owned());
-            for generation_entry in read_dir(&revision_entry.path())? {
-                let generation_entry = dir_entry(generation_entry)?;
-                if !is_dir(&generation_entry)? {
-                    continue;
-                }
-                let name = generation_entry.file_name().to_string_lossy().into_owned();
-                let Some(suffix) = name.strip_prefix('g') else {
-                    continue;
-                };
-                let Ok(raw_generation) = suffix.parse::<u64>() else {
-                    continue;
-                };
-                let generation = ManifestGeneration::new(raw_generation);
-                let generation_dir = generation_entry.path();
-                if !layout::sealed_marker_path(&generation_dir).exists() {
-                    continue;
-                }
-                let manifest_path = layout::manifest_path(&generation_dir);
-                let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
-                    CoreError::Storage(format!(
-                        "semantic: read manifest {}: {err}",
-                        manifest_path.display()
-                    ))
-                })?;
-                let manifest = SemanticManifest::decode(&manifest_bytes)?;
-                manifest.validate_scope(&repo_id, &revision_id, generation)?;
-                let _loaded = run_blocking(
-                    &runtime,
-                    open_generation(semantic_root, &repo_id, &revision_id, generation),
-                )?;
-                out.push(PersistedSemanticGeneration {
-                    repo_id: repo_id.clone(),
-                    revision_id: revision_id.clone(),
-                    generation,
-                    manifest_digest: manifest.manifest_digest,
+            let generation_name = generation_entry.file_name();
+            let generation_name = generation_name
+                .to_str()
+                .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
+            let canonical_generation_name = generation_name
+                .strip_prefix('g')
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .is_some_and(|generation| format!("g{generation}") == generation_name);
+            if !canonical_generation_name {
+                return Err(unsupported_legacy_generation_layout(
+                    &generation_entry.path(),
+                ));
+            }
+            let generation_dir = generation_entry.path();
+            if !layout::sealed_marker_path(&generation_dir).exists() {
+                continue;
+            }
+            let manifest_path = layout::manifest_path(&generation_dir);
+            let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: read manifest {}: {err}",
+                    manifest_path.display()
+                ))
+            })?;
+            let manifest = SemanticManifest::decode(&manifest_bytes)?;
+            let repo_id = RepoId::new(manifest.repo_id.clone());
+            let revision_id = RevisionId::new(manifest.revision_id.clone());
+            let generation = ManifestGeneration::new(manifest.generation);
+            manifest.validate_scope(&repo_id, &revision_id, generation)?;
+            if GenerationStorageKeyV1::for_repo_revision(&repo_id, &revision_id)
+                .generation_dir(semantic_root, generation)
+                != generation_dir
+            {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    message: format!(
+                        "semantic: persisted manifest does not own physical path {}",
+                        generation_dir.display()
+                    ),
                 });
             }
+            let sealed_digest = std::fs::read_to_string(layout::sealed_marker_path(
+                &generation_dir,
+            ))
+            .map_err(|err| {
+                CoreError::Storage(format!(
+                    "semantic: read sealed marker {}: {err}",
+                    generation_dir.display()
+                ))
+            })?;
+            if sealed_digest != manifest.manifest_digest {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+                    message: format!(
+                        "semantic: persisted marker/manifest digest mismatch at {}",
+                        generation_dir.display()
+                    ),
+                });
+            }
+            let _loaded = run_blocking(
+                &runtime,
+                open_generation(semantic_root, &repo_id, &revision_id, generation),
+            )?;
+            File::open(&generation_dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| {
+                    CoreError::Storage(format!(
+                        "semantic: revalidate scanned generation-directory durability {}: {error}",
+                        generation_dir.display()
+                    ))
+                })?;
+            out.push(PersistedSemanticGeneration {
+                repo_id,
+                revision_id,
+                generation,
+                manifest_digest: manifest.manifest_digest,
+            });
         }
     }
     Ok(out)
+}
+
+fn unsupported_legacy_generation_layout(path: &Path) -> CoreError {
+    CoreError::Typed {
+        code: "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED".to_string(),
+        message: format!(
+            "semantic: non-canonical generation storage directory requires explicit migration: {}",
+            path.display()
+        ),
+    }
 }
 
 fn read_dir(path: &Path) -> Result<std::fs::ReadDir, CoreError> {
@@ -339,4 +616,158 @@ fn is_dir(entry: &std::fs::DirEntry) -> Result<bool, CoreError> {
         ))
     })?;
     Ok(file_type.is_dir())
+}
+
+#[cfg(test)]
+mod incomplete_generation_discard_tests {
+    use super::*;
+    use crate::manifest::FORMAT_VERSION;
+
+    fn candidate(generation: u64, digest: &str) -> GenerationSnapshot {
+        GenerationSnapshot {
+            repo_id: RepoId::new("../../repo-alpha"),
+            revision_id: RevisionId::new("/rev-alpha"),
+            track: SearchPlaneTrackKind::Semantic,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: digest.to_string(),
+        }
+    }
+
+    fn manifest_for(identity: &GenerationSnapshot) -> SemanticManifest {
+        SemanticManifest {
+            format_version: FORMAT_VERSION,
+            repo_id: identity.repo_id.as_str().to_string(),
+            revision_id: identity.revision_id.as_str().to_string(),
+            generation: identity.manifest_generation.get(),
+            manifest_digest: identity.manifest_digest.clone(),
+            model_id: "test-model".to_string(),
+            model_version: None,
+            dimension: 3,
+            distance_metric: "cosine".to_string(),
+            normalization: "l2_unit".to_string(),
+            row_count: 0,
+            built_at_unix_nanos: 0,
+            present_corpora: Vec::new(),
+            required_corpora: Vec::new(),
+            card_schema_versions: Vec::new(),
+            render_policy_digests: Vec::new(),
+            corpus_policy_digest: None,
+        }
+    }
+
+    #[test]
+    fn discard_is_contained_and_idempotent_for_incomplete_generation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");
+        let candidate = candidate(7, "digest-a");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("create incomplete generation");
+        std::fs::write(generation_dir.join("partial"), b"partial").expect("write partial");
+
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate)
+                .expect("discard incomplete"),
+            IncompleteGenerationDiscardOutcomeV1::Discarded
+        );
+        assert!(!generation_dir.exists());
+        assert!(generation_dir.starts_with(temp.path()));
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate)
+                .expect("idempotent absent"),
+            IncompleteGenerationDiscardOutcomeV1::Absent
+        );
+    }
+
+    #[test]
+    fn discard_refuses_sealed_exact_and_digest_conflict() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");
+        let sealed = candidate(8, "digest-a");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &sealed.repo_id,
+            &sealed.revision_id,
+            sealed.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("create generation");
+        std::fs::write(
+            layout::manifest_path(&generation_dir),
+            manifest_for(&sealed).encode().expect("encode manifest"),
+        )
+        .expect("write manifest");
+        std::fs::write(layout::sealed_marker_path(&generation_dir), b"digest-a")
+            .expect("write marker");
+
+        let exact_error = adapter
+            .discard_incomplete_generation(&sealed)
+            .expect_err("sealed exact must be immutable");
+        assert!(matches!(
+            exact_error,
+            CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
+        ));
+        let mut conflict = sealed.clone();
+        conflict.manifest_digest = "digest-b".to_string();
+        let conflict_error = adapter
+            .discard_incomplete_generation(&conflict)
+            .expect_err("sealed digest conflict must fail closed");
+        assert!(matches!(
+            conflict_error,
+            CoreError::Typed { ref code, .. }
+                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+        ));
+        assert!(generation_dir.exists());
+    }
+
+    #[test]
+    fn discard_refuses_incomplete_manifest_digest_conflict() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");
+        let observed = candidate(9, "digest-a");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &observed.repo_id,
+            &observed.revision_id,
+            observed.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("create generation");
+        std::fs::write(
+            layout::manifest_path(&generation_dir),
+            manifest_for(&observed).encode().expect("encode manifest"),
+        )
+        .expect("write manifest");
+        let mut candidate = observed;
+        candidate.manifest_digest = "digest-b".to_string();
+
+        let error = adapter
+            .discard_incomplete_generation(&candidate)
+            .expect_err("manifest conflict must fail closed");
+        assert!(matches!(
+            error,
+            CoreError::Typed { ref code, .. }
+                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+        ));
+        assert!(generation_dir.exists());
+    }
+
+    #[test]
+    fn persisted_scan_fails_closed_on_legacy_raw_identity_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("repo-alpha/rev-alpha/g1"))
+            .expect("create legacy layout");
+
+        let error = scan_persisted_generations(temp.path())
+            .expect_err("legacy raw layout must require explicit migration");
+        assert!(matches!(
+            error,
+            CoreError::Typed { ref code, .. }
+                if code == "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED"
+        ));
+    }
 }

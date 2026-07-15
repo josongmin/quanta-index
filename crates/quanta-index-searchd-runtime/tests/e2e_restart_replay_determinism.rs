@@ -887,12 +887,19 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     let path = "src/structural.rs";
     let content = "fn restart_structural_tombstone() {}";
-    rt.ingest_text("repo-e2e", path, content)?;
-    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
-    _ = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
+    rt.ingest_text("repo-e2e", path, content).map_err(|error| {
+        anyhow::anyhow!("structural tombstone generation 1 lexical ingest: {error}")
+    })?;
+    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")
+        .map_err(|error| {
+            anyhow::anyhow!("structural tombstone generation 1 structural ingest: {error}")
+        })?;
+    _ = rt
+        .seal_lexical_generation_for_tracks(&[
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Structural,
+        ])
+        .map_err(|error| anyhow::anyhow!("structural tombstone generation 1 seal: {error}"))?;
 
     let before = query_structural_ids(
         &mut rt,
@@ -905,13 +912,22 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
         ));
     }
 
-    rt.ingest_text("repo-e2e", path, content)?;
-    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")?;
-    rt.tombstone_structural_for_path(path)?;
-    _ = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Structural,
-    ])?;
+    rt.ingest_text("repo-e2e", path, content).map_err(|error| {
+        anyhow::anyhow!("structural tombstone generation 2 lexical ingest: {error}")
+    })?;
+    rt.ingest_structural_function_tree(path, content, "restart_structural_tombstone")
+        .map_err(|error| {
+            anyhow::anyhow!("structural tombstone generation 2 structural ingest: {error}")
+        })?;
+    rt.tombstone_structural_for_path(path).map_err(|error| {
+        anyhow::anyhow!("structural tombstone generation 2 structural tombstone: {error}")
+    })?;
+    _ = rt
+        .seal_lexical_generation_for_tracks(&[
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Structural,
+        ])
+        .map_err(|error| anyhow::anyhow!("structural tombstone generation 2 seal: {error}"))?;
 
     require_structural_typed_error_code(
         &mut rt,

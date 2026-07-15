@@ -26,8 +26,8 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, EngineTouched,
-    FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, HistoryQueryRequest,
+    BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, CurrentGenerationRequest,
+    EngineTouched, FileOwnerProjectionRow, GenerationPin, GenerationSnapshot, HistoryQueryRequest,
     HybridQueryRequest, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     RuntimeMetadataQueryRequest, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
@@ -147,7 +147,6 @@ pub struct E2eRuntime {
     request_id_counter: AtomicU64,
     generation_counter: u64,
     last_sealed_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
-    active_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
 }
 
 struct DriverState {
@@ -252,7 +251,6 @@ impl E2eRuntime {
             request_id_counter: AtomicU64::new(1),
             generation_counter: 1,
             last_sealed_search_corpus_identity: None,
-            active_search_corpus_identity: None,
         })
     }
 
@@ -268,18 +266,33 @@ impl E2eRuntime {
     /// Mirrors a process restart against persistent storage.
     #[must_use]
     pub fn reopen(mut self) -> Self {
-        self.stop_driver();
+        if let Err(error) = self.stop_driver() {
+            panic!("e2e-harness: daemon process restart failed: {error:#}");
+        }
         self
     }
 
-    fn stop_driver(&mut self) {
-        if let Some(mut driver) = self.driver.take() {
+    fn stop_driver(&mut self) -> AnyResult<()> {
+        let outcome = if let Some(mut driver) = self.driver.take() {
             driver.shutdown.store(true, Ordering::Release);
             if let Some(join) = driver.join.take() {
-                drop(join.join());
+                match join.join() {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(anyhow::anyhow!(
+                        "e2e-harness: daemon driver returned an error: {error:#}"
+                    )),
+                    Err(panic) => Err(anyhow::anyhow!(
+                        "e2e-harness: daemon driver panicked: {panic:?}"
+                    )),
+                }
+            } else {
+                Ok(())
             }
-        }
+        } else {
+            Ok(())
+        };
         self.query_obs_store = None;
+        outcome
     }
 
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
@@ -370,8 +383,9 @@ impl E2eRuntime {
     ///
     /// The candidate is reconstructed only from the validated sealed ingest
     /// receipt, then sent through the daemon's public control UDS. The
-    /// previous validated ack is the CAS expectation for every later
-    /// activation; the first activation explicitly sends `None`.
+    /// daemon's current lexical plus semantic authority is reloaded before
+    /// every CAS. The first activation observes no current authority and sends
+    /// `None`; later activations never trust producer-cached active state.
     pub fn activate_last_sealed_generation(&mut self) -> AnyResult<()> {
         let candidate = self
             .last_sealed_search_corpus_identity
@@ -379,7 +393,10 @@ impl E2eRuntime {
             .ok_or_else(|| {
                 anyhow::anyhow!("e2e-harness: cannot activate before a sealed receipt is validated")
             })?;
-        let expected_active = self.active_search_corpus_identity.clone();
+        let expected_active = self.current_search_corpus_identity_from_control_v1(
+            &candidate.lexical.repo_id,
+            &candidate.lexical.revision_id,
+        )?;
         let response = self.dispatch_control(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
                 SearchPlaneActivateSearchCorpusGenerationCasRequest {
@@ -403,8 +420,68 @@ impl E2eRuntime {
                 "e2e-harness: composite activation ack previous identity differs from the CAS expectation"
             ));
         }
-        self.active_search_corpus_identity = Some(ack.active);
         Ok(())
+    }
+
+    fn current_search_corpus_identity_from_control_v1(
+        &mut self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> AnyResult<Option<SearchCorpusGenerationIdentityV1>> {
+        let mut read_track =
+            |track: SearchPlaneTrackKind| -> AnyResult<Option<GenerationSnapshot>> {
+                let response = self.dispatch_control_response_v1(
+                    SearchPlaneControlIpcRequest::CurrentGeneration(CurrentGenerationRequest {
+                        repo_id: repo_id.clone(),
+                        revision_id: revision_id.clone(),
+                        track,
+                    }),
+                )?;
+                match response {
+                    SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(snapshot) => {
+                        if snapshot.repo_id != *repo_id
+                            || snapshot.revision_id != *revision_id
+                            || snapshot.track != track
+                        {
+                            return Err(anyhow::anyhow!(
+                                "e2e-harness: current generation response does not match requested authority"
+                            ));
+                        }
+                        Ok(Some(snapshot))
+                    }
+                    SearchPlaneControlIpcResponse::Error(error) if error.code == "NOT_READY" => {
+                        Ok(None)
+                    }
+                    SearchPlaneControlIpcResponse::Error(error) => Err(anyhow::anyhow!(
+                        "e2e-harness current generation failed code={} message={}",
+                        error.code,
+                        error.message
+                    )),
+                    other => Err(anyhow::anyhow!(
+                        "e2e-harness: current generation returned an unexpected control response: {other:?}"
+                    )),
+                }
+            };
+
+        let lexical = read_track(SearchPlaneTrackKind::Lexical)?;
+        let semantic = read_track(SearchPlaneTrackKind::Semantic)?;
+        match (lexical, semantic) {
+            (None, None) => Ok(None),
+            (Some(lexical), Some(semantic)) => {
+                let identity = SearchCorpusGenerationIdentityV1 { lexical, semantic };
+                identity.validate_v1().map_err(|error| {
+                    anyhow::anyhow!(
+                        "e2e-harness: daemon current search corpus identity is invalid: {error}"
+                    )
+                })?;
+                Ok(Some(identity))
+            }
+            (lexical, semantic) => Err(anyhow::anyhow!(
+                "e2e-harness: daemon current search corpus authority is split: lexical_present={} semantic_present={}",
+                lexical.is_some(),
+                semantic.is_some()
+            )),
+        }
     }
 
     /// Ingest one chunk through the typed ingest front door.
@@ -648,7 +725,47 @@ impl E2eRuntime {
     }
 
     pub fn publish_search_corpus_batch(&mut self, batch: SearchCorpusIngestBatch) -> AnyResult<()> {
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))
+        let sealed_authority = batch.seal.then(|| {
+            (
+                batch.repo_id.clone(),
+                batch.revision_id.clone(),
+                batch.generation,
+                batch.manifest_digest.clone(),
+            )
+        });
+        let response = self.dispatch_ingest_response(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+        )?;
+        if let Some((repo_id, revision_id, generation, manifest_digest)) = sealed_authority {
+            let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) = response else {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: sealed search-corpus publish returned an unexpected ingest response"
+                ));
+            };
+            if !receipt.sealed {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: sealed search-corpus publish receipt did not confirm a sealed generation"
+                ));
+            }
+            if receipt.generation != generation {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: sealed search-corpus publish receipt generation differs from the request"
+                ));
+            }
+            if receipt.manifest_digest != manifest_digest {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: sealed search-corpus publish receipt manifest digest differs from the request"
+                ));
+            }
+            self.last_sealed_search_corpus_identity =
+                Some(self.search_corpus_identity_from_sealed_receipt(
+                    repo_id,
+                    revision_id,
+                    generation,
+                    &receipt,
+                )?);
+        }
+        Ok(())
     }
 
     pub fn ingest_structural_function_tree(
@@ -1245,7 +1362,20 @@ impl E2eRuntime {
                     "e2e-harness: seal receipt manifest digest differs from the request"
                 ));
             }
-            let identity = self.search_corpus_identity_from_sealed_receipt(sealed, &receipt)?;
+            if receipt.accepted_clear_surfaces != 0
+                || receipt.accepted_replace_scopes != 0
+                || receipt.accepted_tombstone_scopes != 0
+            {
+                return Err(anyhow::anyhow!(
+                    "e2e-harness: empty seal receipt reported accepted mutations"
+                ));
+            }
+            let identity = self.search_corpus_identity_from_sealed_receipt(
+                self.repo(),
+                self.revision(),
+                sealed,
+                &receipt,
+            )?;
             self.last_sealed_search_corpus_identity = Some(identity);
         }
         self.generation_counter = self.generation_counter.saturating_add(1);
@@ -1924,20 +2054,22 @@ impl E2eRuntime {
 
     fn search_corpus_identity_from_sealed_receipt(
         &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
         sealed: ManifestGeneration,
         receipt: &BatchPublishReceipt,
     ) -> AnyResult<SearchCorpusGenerationIdentityV1> {
         let identity = SearchCorpusGenerationIdentityV1 {
             lexical: GenerationSnapshot {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
                 track: SearchPlaneTrackKind::Lexical,
                 manifest_generation: sealed,
                 manifest_digest: receipt.manifest_digest.clone(),
             },
             semantic: GenerationSnapshot {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
+                repo_id,
+                revision_id,
                 track: SearchPlaneTrackKind::Semantic,
                 manifest_generation: sealed,
                 manifest_digest: receipt.manifest_digest.clone(),
@@ -1985,6 +2117,20 @@ impl E2eRuntime {
         &mut self,
         payload: SearchPlaneControlIpcRequest,
     ) -> AnyResult<SearchPlaneControlIpcResponse> {
+        match self.dispatch_control_response_v1(payload)? {
+            SearchPlaneControlIpcResponse::Error(err) => Err(anyhow::anyhow!(
+                "e2e-harness control failed code={} message={}",
+                err.code,
+                err.message
+            )),
+            payload => Ok(payload),
+        }
+    }
+
+    fn dispatch_control_response_v1(
+        &mut self,
+        payload: SearchPlaneControlIpcRequest,
+    ) -> AnyResult<SearchPlaneControlIpcResponse> {
         let socket = self.ensure_control_socket()?;
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneControlIpcRequestEnvelope {
@@ -1998,14 +2144,7 @@ impl E2eRuntime {
                 response.request_id
             ));
         }
-        match response.payload {
-            SearchPlaneControlIpcResponse::Error(err) => Err(anyhow::anyhow!(
-                "e2e-harness control failed code={} message={}",
-                err.code,
-                err.message
-            )),
-            payload => Ok(payload),
-        }
+        Ok(response.payload)
     }
 }
 
@@ -2032,7 +2171,15 @@ fn unexpected_history_response(kind: &str) -> E2eHistoryResult {
 
 impl Drop for E2eRuntime {
     fn drop(&mut self) {
-        self.stop_driver();
+        if let Err(error) = self.stop_driver() {
+            if thread::panicking() {
+                eprintln!(
+                    "e2e-harness: daemon driver failed while another panic was unwinding: {error:#}"
+                );
+            } else {
+                panic!("e2e-harness: daemon driver failed during drop: {error:#}");
+            }
+        }
         drop(self.tempdir.take());
     }
 }
@@ -2137,13 +2284,21 @@ fn start_driver(
         query_socket.exists() && control_socket.exists() && ingest_socket.exists()
     }) {
         shutdown.store(true, Ordering::Release);
-        drop(join.join());
-        return Err(anyhow::anyhow!(
+        let socket_failure = format!(
             "e2e-harness: sockets never appeared query={} control={} ingest={}",
             query_socket.display(),
             control_socket.display(),
             ingest_socket.display()
-        ));
+        );
+        return match join.join() {
+            Ok(Ok(())) => Err(anyhow::anyhow!("{socket_failure}")),
+            Ok(Err(error)) => Err(anyhow::anyhow!(
+                "{socket_failure}; daemon driver returned an error: {error:#}"
+            )),
+            Err(panic) => Err(anyhow::anyhow!(
+                "{socket_failure}; daemon driver panicked: {panic:?}"
+            )),
+        };
     }
     Ok((
         query_socket,

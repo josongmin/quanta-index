@@ -22,10 +22,10 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Default per-request HTTP timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default number of `/v1/embeddings` requests dispatched concurrently from one
-/// `embed_batch` call. A small pool overlaps network round-trips (the dominant
-/// corpus-embedding cost) while staying well under typical provider rate limits;
-/// the full-jitter backoff de-correlates the workers' 429 retries. Set to 1 to
-/// force fully sequential dispatch.
+/// `embed_batch` call.
+///
+/// A small pool overlaps network round-trips while staying under typical provider
+/// rate limits. Set to 1 to force fully sequential dispatch.
 pub const DEFAULT_CONCURRENCY: usize = 4;
 const ERROR_BODY_PREVIEW_CHARS: usize = 200;
 
@@ -341,10 +341,10 @@ impl OpenAiEmbeddingProvider {
                                 let Some(batch) = batches.get(index) else {
                                     break;
                                 };
-                                let result = self.embed_one_batch(
-                                    &texts[batch.start..batch.end],
-                                    batch.estimated_tokens,
-                                );
+                                let result =
+                                    request_batch_texts(texts, *batch).and_then(|batch_texts| {
+                                        self.embed_one_batch(batch_texts, batch.estimated_tokens)
+                                    });
                                 let is_err = result.is_err();
                                 local.push((index, result));
                                 if is_err {
@@ -394,6 +394,20 @@ fn flatten_batch_results(
     Ok(out)
 }
 
+fn request_batch_texts<'a>(
+    texts: &'a [&'a str],
+    batch: RequestBatch,
+) -> Result<&'a [&'a str], CoreError> {
+    texts.get(batch.start..batch.end).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "openai: invalid request batch range {}..{} for {} texts",
+            batch.start,
+            batch.end,
+            texts.len()
+        ))
+    })
+}
+
 impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, CoreError> {
         if texts.is_empty() {
@@ -406,7 +420,9 @@ impl TextEmbeddingProvider for OpenAiEmbeddingProvider {
         if batches.len() <= 1 || self.concurrency <= 1 {
             return flatten_batch_results(
                 batches.iter().map(|batch| {
-                    self.embed_one_batch(&texts[batch.start..batch.end], batch.estimated_tokens)
+                    request_batch_texts(texts, *batch).and_then(|batch_texts| {
+                        self.embed_one_batch(batch_texts, batch.estimated_tokens)
+                    })
                 }),
                 texts.len(),
             );
@@ -768,11 +784,9 @@ mod tests {
         assert_eq!(provider.dimension(), 2);
     }
 
-    /// Records peak concurrency and answers each request from its OWN body, so a
-    /// correct response is produced regardless of which worker handles which batch
-    /// (a fixed response queue would be order-dependent under concurrency). Each
-    /// input text `"t<N>"` embeds to `[N as f32]` so the reassembled output is
-    /// deterministic and order-checkable.
+    /// Records peak concurrency and answers each request from its OWN body.
+    ///
+    /// Each input text `"t<N>"` produces a deterministic, order-checkable vector.
     struct ConcurrencyProbeTransport {
         in_flight: Arc<AtomicUsize>,
         peak_in_flight: Arc<AtomicUsize>,
@@ -855,7 +869,7 @@ mod tests {
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let out = provider.embed_batch(&refs).expect("concurrent embed ok");
         // Output order MUST match input order despite concurrent completion.
-        let expected: Vec<Vec<f32>> = (0..10).map(|n| vec![n as f32]).collect();
+        let expected: Vec<Vec<f32>> = (0_u8..10).map(|n| vec![f32::from(n)]).collect();
         assert_eq!(
             out, expected,
             "concurrent dispatch must preserve input order"
@@ -913,17 +927,17 @@ mod tests {
             let mut items: Vec<(usize, Vec<f32>)> = Vec::new();
             for (position, value) in inputs.iter().enumerate() {
                 let text = value.as_str().expect("partial: input is a string");
-                let n: usize = text
+                let n: u8 = text
                     .trim_start_matches('t')
                     .parse()
                     .expect("partial: input is t<N>");
-                if n == self.fail_at {
+                if usize::from(n) == self.fail_at {
                     return Ok(HttpResponse {
                         status: 400,
                         body: "{\"error\":\"forced\"}".to_string(),
                     });
                 }
-                items.push((position, vec![n as f32]));
+                items.push((position, vec![f32::from(n)]));
             }
             Ok(ok_body(&items))
         }

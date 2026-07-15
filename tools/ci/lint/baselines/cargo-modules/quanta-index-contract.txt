@@ -81,10 +81,12 @@ crate quanta_index_contract
 │   │   ├── struct GenerationStatusRequest: pub
 │   │   ├── struct GenerationStatusRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
+│   │   ├── enum SearchCorpusActivationValidationErrorV1: pub
 │   │   ├── struct SearchCorpusGenerationIdentityV1: pub
 │   │   ├── struct SearchCorpusGenerationIdentityV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── enum SearchCorpusGenerationIdentityValidationErrorV1: pub
+│   │   ├── enum SearchCorpusRollbackValidationErrorV1: pub
 │   │   ├── struct SearchPlaneActivateSearchCorpusGenerationCasRequest: pub
 │   │   ├── struct SearchPlaneActivateSearchCorpusGenerationCasRequestVisitor: pub(self)
 │   │   │   └── type Value: pub(self)

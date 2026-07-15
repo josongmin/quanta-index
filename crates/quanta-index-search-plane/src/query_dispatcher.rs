@@ -71,10 +71,11 @@ struct PreparedLanguageQueryV1 {
     force_empty: bool,
 }
 
-/// Compose DSL `lang:` filters with the typed OR-set once, then remove the DSL
-/// language leaves so every sparse and dense lane consumes the same canonical
-/// constraint. The two surfaces intersect; a disjoint intersection is an
-/// explicit empty result, never an unconstrained fallback.
+/// Compose DSL `lang:` filters with the typed OR-set once.
+///
+/// Remove the DSL language leaves so every sparse and dense lane consumes the
+/// same canonical constraint. The two surfaces intersect; a disjoint
+/// intersection is an explicit empty result, never an unconstrained fallback.
 fn prepare_language_query_v1(
     mut query: LqQuery,
     typed: &QueryConstraintSetV1,
@@ -82,6 +83,10 @@ fn prepare_language_query_v1(
     let mut dsl_languages = BTreeSet::new();
     let mut retained = Vec::with_capacity(query.filters.len());
     for filter in std::mem::take(&mut query.filters) {
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "new non-language filters must remain executable; only lang filters are consumed into the typed constraint set"
+        )]
         match filter {
             LqFilter::Lang { id } => {
                 let canonical = id.trim().to_ascii_lowercase();
@@ -4794,13 +4799,19 @@ mod tests {
         use quanta_index_contract::lex::LexicalErrorCode;
         use quanta_index_core::CoreError;
 
-        let expect_model_mismatch = |err: CoreError| match err {
-            CoreError::Typed { code, .. } => assert_eq!(
-                code,
-                LexicalErrorCode::SemModelMismatch.as_code_str(),
-                "model drift must surface SEM_MODEL_MISMATCH"
-            ),
-            other => panic!("expected SemModelMismatch typed error, got {other:?}"),
+        let expect_model_mismatch = |err: CoreError| {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "the test intentionally rejects every non-typed model-mismatch error"
+            )]
+            match err {
+                CoreError::Typed { code, .. } => assert_eq!(
+                    code,
+                    LexicalErrorCode::SemModelMismatch.as_code_str(),
+                    "model drift must surface SEM_MODEL_MISMATCH"
+                ),
+                other => panic!("expected SemModelMismatch typed error, got {other:?}"),
+            }
         };
 
         // POSITIVE: identical model id + version => Ok (matching path proceeds).
@@ -5368,6 +5379,7 @@ mod tests {
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
             state.search_hit_vectors.push(query_vector.to_vec());
             state.corpus_searches.push((corpus_kind, top_k));
+            drop(state);
             if corpus_kind == SemanticCorpusKindV1::RepositorySummary {
                 return Ok(Vec::new());
             }
@@ -5952,7 +5964,7 @@ mod tests {
         fn embed_query(&self, query_text: &str) -> Result<Vec<f32>, quanta_index_core::CoreError> {
             HashingQueryTextEmbedder::new(self.dimension).embed_query(query_text)
         }
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             self.model_id
         }
         fn model_version(&self) -> Option<&str> {
@@ -5973,7 +5985,7 @@ mod tests {
                 message: "test embedder unavailable".to_string(),
             })
         }
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "provider-unavailable"
         }
         fn model_version(&self) -> Option<&str> {
@@ -6044,6 +6056,7 @@ mod tests {
             )
             .into());
         }
+        drop(guard);
         Ok(())
     }
 
@@ -6317,7 +6330,15 @@ mod tests {
                 owner_kind: match corpus_kind {
                     SemanticCorpusKindV1::SymbolCard => quanta_index_contract::OwnerDocKind::Symbol,
                     SemanticCorpusKindV1::ModuleCard => quanta_index_contract::OwnerDocKind::Module,
-                    _ => quanta_index_contract::OwnerDocKind::Chunk,
+                    SemanticCorpusKindV1::ClusterCard
+                    | SemanticCorpusKindV1::RawCodeFallback
+                    | SemanticCorpusKindV1::DocumentLeaf
+                    | SemanticCorpusKindV1::DocumentSection
+                    | SemanticCorpusKindV1::DocumentSummary
+                    | SemanticCorpusKindV1::TestBehavior
+                    | SemanticCorpusKindV1::RepositorySummary => {
+                        quanta_index_contract::OwnerDocKind::Chunk
+                    }
                 },
                 corpus_kind: Some(corpus_kind),
             }
@@ -6373,9 +6394,12 @@ mod tests {
             (module_shared, SemanticCorpusKindV1::ModuleCard),
             (symbol_shared, SemanticCorpusKindV1::SymbolCard),
         ] {
+            let contribution = seed.contributions.first().ok_or_else(|| {
+                format!("cross-owner seed must retain one contribution: {seed:?}")
+            })?;
             if seed.contributions.len() != 1
-                || seed.contributions[0].corpus_kind != Some(expected_corpus)
-                || seed.contributions[0].rank != 1
+                || contribution.corpus_kind != Some(expected_corpus)
+                || contribution.rank != 1
             {
                 return Err(format!(
                     "cross-owner seed must retain one rank-1 corpus-local contribution: {seed:?}"

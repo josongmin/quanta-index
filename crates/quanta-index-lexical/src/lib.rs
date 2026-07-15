@@ -9,7 +9,7 @@
 //! `chunk_text` field.
 //!
 //! Layout:
-//!   `{state_root}/{repo_id}/{revision_id}/g{generation}/`
+//!   `{state_root}/generation-v1-{sha256(repo, revision)}/g{generation}/`
 //!
 //! The adapter caches one `IndexWriter` per generation to amortize the
 //! per-commit cost across many ops, and one `IndexReader` per opened
@@ -34,7 +34,10 @@ pub mod symbol;
 pub mod trigram_plan;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ciborium::Value as CborValue;
@@ -44,21 +47,28 @@ use quanta_index_contract::lex::{
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkRecord, ClearLexicalSurface, FileContributorIdentityEntry,
-    FileContributorIngestBatch, FileOwnerProjectionRow, FileOwnershipIngestBatch, HighlightSpan,
-    LexicalCandidate, LexicalFullBundle, LexicalSeal, LqExpr, LqFileScope, LqFilter, LqLeaf,
-    LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
-    ManifestGeneration, QueryConstraintSetV1, ReplaceLexicalScope, RepoCommitRecencyIngestBatch,
-    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SearchScopeSurface, SymbolCandidate,
+    FileContributorIngestBatch, FileOwnerProjectionRow, FileOwnershipIngestBatch,
+    GenerationSnapshot, HighlightSpan, LexicalCandidate, LexicalFullBundle, LexicalSeal, LqExpr,
+    LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    LqType, LqVisibility, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1,
+    ReplaceLexicalScope, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
+    RepoMetaIngestBatch, RepoRelativePath, RepoTopicIngestBatch, RevisionId,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind, SearchScopeSurface, SymbolCandidate,
     TombstoneLexicalScope,
 };
+use quanta_index_core::domains::generation::{
+    GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
+};
 use quanta_index_core::{
-    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, LexicalIndexBuildPort,
-    LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
+    CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalSearcher, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SealedGenerationScanPort,
+    SearchCorpusBatchBuildPort,
     domains::lexical::LexicalPolicy,
     timeref::{is_rev_at_time_spec, parse_search_timeref_ms},
 };
+
+const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identity.cbor";
 use quanta_index_lq_positions::{
     DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsError,
     PositionsErrorCode, PositionsIndex, query_phrase,
@@ -283,6 +293,11 @@ impl WriterCache {
         }
     }
 
+    fn remove(&mut self, key: &GenKey) -> Option<Arc<Mutex<GenerationWriter>>> {
+        self.order.retain(|candidate| candidate != key);
+        self.entries.remove(key)
+    }
+
     /// Evict least-recently-used entries until `entries.len()` is strictly less
     /// than [`LEXICAL_WRITER_CACHE_MAX`]. Called from the insert path before
     /// pushing a new entry, so on return there is room for one more.
@@ -346,22 +361,6 @@ impl WriterCache {
     /// for the LRU eviction integration test.
     fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    /// Returns a clone of the cached writer's `Index` handle for `key`, or
-    /// `None` if no entry is cached. Does NOT update LRU recency: opening a
-    /// searcher is observational and should not contend with the build-side
-    /// LRU ordering. Locks the entry's inner `Mutex<GenerationWriter>` to read
-    /// the `Index`; callers must not be holding the cache lock when this
-    /// blocks for long.
-    fn peek_index(&self, key: &GenKey) -> Result<Option<Index>, CoreError> {
-        let Some(handle) = self.entries.get(key) else {
-            return Ok(None);
-        };
-        let guarded = handle
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
-        Ok(Some(guarded.index.clone()))
     }
 }
 
@@ -2314,6 +2313,151 @@ fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result<Index, Cor
     Ok(index)
 }
 
+fn lexical_sealed_identity_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(LEXICAL_SEALED_IDENTITY_FILE_NAME)
+}
+
+/// A delta generation inherits searchable data from its base, never the
+/// base's immutable sealed identity. The target remains mutable until its own
+/// seal batch durably writes a generation-scoped identity.
+fn remove_inherited_lexical_sealed_identity(generation_dir: &Path) -> Result<(), CoreError> {
+    let path = lexical_sealed_identity_path(generation_dir);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CoreError::Storage(format!(
+            "lexical: remove inherited sealed generation identity {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn write_atomic_durable(path: &Path, bytes: &[u8], label: &str) -> Result<(), CoreError> {
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().ok_or_else(|| {
+        CoreError::Storage(format!(
+            "lexical: {label} path has no parent: {}",
+            path.display()
+        ))
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CoreError::Storage(format!(
+                "lexical: {label} has no UTF-8 file name: {}",
+                path.display()
+            ))
+        })?;
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: create {label} temporary {}: {error}",
+                temporary.display()
+            ))
+        })?;
+    file.write_all(bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: write {label} temporary {}: {error}",
+            temporary.display()
+        ))
+    })?;
+    file.sync_all().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: fsync {label} temporary {}: {error}",
+            temporary.display()
+        ))
+    })?;
+    drop(file);
+    std::fs::rename(&temporary, path).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: rename {label} temporary {} to {}: {error}",
+            temporary.display(),
+            path.display()
+        ))
+    })?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: fsync {label} parent {}: {error}",
+                parent.display()
+            ))
+        })
+}
+
+fn persist_lexical_sealed_identity(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+) -> Result<(), CoreError> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(identity, &mut bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: encode sealed generation identity for repo={} revision={} generation={}: {error}",
+            identity.repo_id.as_str(),
+            identity.revision_id.as_str(),
+            identity.manifest_generation.get(),
+        ))
+    })?;
+    write_atomic_durable(
+        &lexical_sealed_identity_path(generation_dir),
+        &bytes,
+        "sealed generation identity",
+    )
+}
+
+fn read_lexical_sealed_identity(generation_dir: &Path) -> Result<GenerationSnapshot, CoreError> {
+    let path = lexical_sealed_identity_path(generation_dir);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CoreError::Typed {
+                code: "GENERATION_IDENTITY_INCOMPLETE".to_string(),
+                message: format!(
+                    "lexical: incomplete generation has no sealed identity at {}",
+                    path.display()
+                ),
+            }
+        } else {
+            CoreError::Storage(format!(
+                "lexical: read sealed generation identity {}: {error}",
+                path.display()
+            ))
+        }
+    })?;
+    ciborium::from_reader(bytes.as_slice()).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: decode sealed generation identity {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn validate_lexical_sealed_identity(
+    observed: &GenerationSnapshot,
+    candidate: &GenerationSnapshot,
+) -> Result<(), CoreError> {
+    if observed != candidate {
+        return Err(CoreError::Typed {
+            code: "GENERATION_IDENTITY_DIGEST_MISMATCH".to_string(),
+            message: format!(
+                "lexical: durable generation identity mismatch for repo={} revision={} generation={}",
+                candidate.repo_id.as_str(),
+                candidate.revision_id.as_str(),
+                candidate.manifest_generation.get(),
+            ),
+        });
+    }
+    Ok(())
+}
+
 type TextAuthorityDocTableRow = (u64, String, String, String);
 
 #[derive(Clone)]
@@ -2820,10 +2964,8 @@ impl LexicalAdapter {
     }
 
     fn index_path(&self, key: &GenKey) -> PathBuf {
-        self.state_root
-            .join(key.repo_id.as_str())
-            .join(key.revision_id.as_str())
-            .join(format!("g{}", key.generation.get()))
+        GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
+            .generation_dir(&self.state_root, key.generation)
     }
 
     fn writer_handle(&self, key: &GenKey) -> Result<Arc<Mutex<GenerationWriter>>, CoreError> {
@@ -2946,6 +3088,7 @@ impl LexicalAdapter {
                     generation: base_generation,
                 };
                 copy_generation_directory(&self.index_path(&base_key), &target_path)?;
+                remove_inherited_lexical_sealed_identity(&target_path)?;
             }
             break;
         }
@@ -3252,8 +3395,37 @@ fn legacy_ops_for_batch(
 
 impl SearchCorpusBatchBuildPort for LexicalAdapter {
     fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        let candidate = GenerationSnapshot {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+        };
+        let generation_dir = self.index_path(&GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        });
+        if lexical_sealed_identity_path(&generation_dir).exists() {
+            if !batch.seal {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IMMUTABLE".to_string(),
+                    message: format!(
+                        "lexical: generation {} is already sealed; refusing non-seal mutation",
+                        batch.generation.get()
+                    ),
+                });
+            }
+            self.validate_generation_identity(&candidate)?;
+            return Ok(());
+        }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
-        self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)
+        self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
+        if batch.seal {
+            persist_lexical_sealed_identity(&generation_dir, &candidate)?;
+        }
+        Ok(())
     }
 }
 
@@ -3520,27 +3692,36 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             generation,
         };
         let path = self.index_path(&key);
-        if !path.exists() {
+        if !path.is_dir() {
             return Err(CoreError::NotFound(format!(
                 "lexical: no index at {}",
                 path.display()
             )));
         }
-        // Prefer the cached writer's index handle when present (it reflects
-        // commits that may not yet be visible to a freshly-opened reader
-        // before its first reload). The peek does NOT touch LRU recency:
-        // opening a searcher is observational, not a build-side access.
-        let cached_index: Option<Index> = {
-            let guard = self
-                .writers
-                .lock()
-                .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
-            guard.peek_index(&key)?
-        };
-        let index = match cached_index {
-            Some(idx) => idx,
-            None => open_or_create_index(&self.fields, &path)?,
-        };
+        let identity = read_lexical_sealed_identity(&path)?;
+        if identity.repo_id != *repo
+            || identity.revision_id != *revision
+            || identity.track != SearchPlaneTrackKind::Lexical
+            || identity.manifest_generation != generation
+        {
+            return Err(CoreError::Typed {
+                code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                message: format!(
+                    "lexical: active generation identity scope disagrees with path {}",
+                    path.display()
+                ),
+            });
+        }
+        // Serving must never create or repair a generation. A cached writer
+        // handle could survive deletion or corruption of the backing files,
+        // so every open bypasses that cache and proves the durable directory.
+        let index = Index::open_in_dir(&path).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: strict open existing generation {}: {error}",
+                path.display()
+            ))
+        })?;
+        register_index_tokenizers(&index);
         let repo_metadata = self.repo_metadata_for_key(&key)?;
         let regex_match_cache = Arc::clone(&self.regex_match_cache);
         let reader: IndexReader = index
@@ -3577,6 +3758,251 @@ impl LexicalIndexOpenPort for LexicalAdapter {
             file_ownership,
             file_contributor,
         }))
+    }
+}
+
+impl GenerationIdentityValidatePort for LexicalAdapter {
+    fn validate_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<(), CoreError> {
+        if candidate.track != SearchPlaneTrackKind::Lexical {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical identity validator received {:?} track",
+                candidate.track
+            )));
+        }
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = self.index_path(&key);
+        if !generation_dir.is_dir() {
+            return Err(CoreError::NotFound(format!(
+                "lexical: generation directory is absent: {}",
+                generation_dir.display()
+            )));
+        }
+        let observed = read_lexical_sealed_identity(&generation_dir)?;
+        validate_lexical_sealed_identity(&observed, candidate)?;
+        let index = Index::open_in_dir(&generation_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: strict open existing generation {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        register_index_tokenizers(&index);
+        File::open(&generation_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: revalidate generation-directory durability {}: {error}",
+                    generation_dir.display()
+                ))
+            })?;
+        Ok(())
+    }
+}
+
+impl SealedGenerationScanPort for LexicalAdapter {
+    fn scan_sealed_generations(&self) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        scan_persisted_generations(&self.state_root).map(|generations| {
+            generations
+                .into_iter()
+                .map(|generation| GenerationSnapshot {
+                    repo_id: generation.repo_id,
+                    revision_id: generation.revision_id,
+                    track: SearchPlaneTrackKind::Lexical,
+                    manifest_generation: generation.generation,
+                    manifest_digest: generation.manifest_digest,
+                })
+                .collect()
+        })
+    }
+}
+
+impl IncompleteGenerationDiscardPort for LexicalAdapter {
+    fn discard_incomplete_generation(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        if candidate.track != SearchPlaneTrackKind::Lexical {
+            return Err(CoreError::InvalidContract(format!(
+                "lexical incomplete-generation discard received {:?} track",
+                candidate.track
+            )));
+        }
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = self.index_path(&key);
+        let mut writers = self
+            .writers
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
+        if !generation_dir.exists() {
+            let _stale_writer = writers.remove(&key);
+            return Ok(IncompleteGenerationDiscardOutcomeV1::Absent);
+        }
+        if lexical_sealed_identity_path(&generation_dir).exists() {
+            let observed = read_lexical_sealed_identity(&generation_dir)?;
+            validate_lexical_sealed_identity(&observed, candidate)?;
+            return Err(CoreError::Typed {
+                code: "GENERATION_IMMUTABLE".to_string(),
+                message: format!(
+                    "lexical: refusing to discard sealed generation {}",
+                    candidate.manifest_generation.get()
+                ),
+            });
+        }
+        let writer = writers.remove(&key);
+        let writer_guard = writer
+            .as_ref()
+            .map(|handle| {
+                handle.lock().map_err(|err| {
+                    CoreError::Storage(format!("lexical writer poisoned during discard: {err}"))
+                })
+            })
+            .transpose()?;
+        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: discard incomplete generation {}: {error}",
+                generation_dir.display()
+            ))
+        })?;
+        drop(writer_guard);
+        drop(writer);
+        drop(writers);
+        let _removed_metadata = self
+            .repo_metadata
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical repo metadata poisoned: {err}")))?
+            .remove(&key);
+        self.invalidate_regex_match_cache_generation(&key)?;
+        Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
+    }
+}
+
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct PersistedLexicalGeneration {
+    pub repo_id: RepoId,
+    pub revision_id: RevisionId,
+    pub generation: ManifestGeneration,
+    pub manifest_digest: String,
+}
+
+/// Scan adapter-owned storage and return only physically valid sealed generations.
+pub fn scan_persisted_generations(
+    lexical_root: &Path,
+) -> Result<Vec<PersistedLexicalGeneration>, CoreError> {
+    let mut out = Vec::new();
+    if !lexical_root.exists() {
+        return Ok(out);
+    }
+    let adapter = LexicalAdapter::with_state_root(lexical_root.to_path_buf());
+    for family_entry in std::fs::read_dir(lexical_root).map_err(|error| {
+        CoreError::Storage(format!("lexical: list {}: {error}", lexical_root.display()))
+    })? {
+        let family_entry = family_entry.map_err(|error| {
+            CoreError::Storage(format!("lexical: read generation-family entry: {error}"))
+        })?;
+        if !family_entry
+            .file_type()
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: inspect {}: {error}",
+                    family_entry.path().display()
+                ))
+            })?
+            .is_dir()
+        {
+            continue;
+        }
+        let family_name = family_entry.file_name();
+        if !family_name
+            .to_str()
+            .is_some_and(GenerationStorageKeyV1::is_canonical_name)
+        {
+            return Err(unsupported_legacy_generation_layout(&family_entry.path()));
+        }
+        for generation_entry in std::fs::read_dir(family_entry.path()).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: list {}: {error}",
+                family_entry.path().display()
+            ))
+        })? {
+            let generation_entry = generation_entry.map_err(|error| {
+                CoreError::Storage(format!("lexical: read generation entry: {error}"))
+            })?;
+            if !generation_entry
+                .file_type()
+                .map_err(|error| {
+                    CoreError::Storage(format!(
+                        "lexical: inspect {}: {error}",
+                        generation_entry.path().display()
+                    ))
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let generation_name = generation_entry.file_name();
+            let generation_name = generation_name
+                .to_str()
+                .ok_or_else(|| unsupported_legacy_generation_layout(&generation_entry.path()))?;
+            let canonical_generation_name = generation_name
+                .strip_prefix('g')
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .is_some_and(|generation| format!("g{generation}") == generation_name);
+            if !canonical_generation_name {
+                return Err(unsupported_legacy_generation_layout(
+                    &generation_entry.path(),
+                ));
+            }
+            let generation_dir = generation_entry.path();
+            if !lexical_sealed_identity_path(&generation_dir).exists() {
+                continue;
+            }
+            let identity = read_lexical_sealed_identity(&generation_dir)?;
+            if identity.track != SearchPlaneTrackKind::Lexical
+                || GenerationStorageKeyV1::for_repo_revision(
+                    &identity.repo_id,
+                    &identity.revision_id,
+                )
+                .generation_dir(lexical_root, identity.manifest_generation)
+                    != generation_dir
+            {
+                return Err(CoreError::Typed {
+                    code: "GENERATION_IDENTITY_SCOPE_MISMATCH".to_string(),
+                    message: format!(
+                        "lexical: persisted identity does not own physical path {}",
+                        generation_dir.display()
+                    ),
+                });
+            }
+            adapter.validate_generation_identity(&identity)?;
+            out.push(PersistedLexicalGeneration {
+                repo_id: identity.repo_id,
+                revision_id: identity.revision_id,
+                generation: identity.manifest_generation,
+                manifest_digest: identity.manifest_digest,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn unsupported_legacy_generation_layout(path: &Path) -> CoreError {
+    CoreError::Typed {
+        code: "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED".to_string(),
+        message: format!(
+            "lexical: non-canonical generation storage directory requires explicit migration: {}",
+            path.display()
+        ),
     }
 }
 
@@ -7703,6 +8129,16 @@ mod regex_match_cache_tests {
         std::iter::once(candidate_id.to_string()).collect()
     }
 
+    fn sample_identity(generation: u64, digest: &str) -> GenerationSnapshot {
+        GenerationSnapshot {
+            repo_id: RepoId::new("../../repo-alpha"),
+            revision_id: RevisionId::new("/rev-alpha"),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: digest.to_string(),
+        }
+    }
+
     #[test]
     fn regex_match_cache_invalidates_only_target_generation() {
         let generation_one = sample_generation(7);
@@ -7731,5 +8167,84 @@ mod regex_match_cache_tests {
         assert!(cache.get(&key_one).is_none());
         assert!(cache.get(&key_two).is_none());
         assert_eq!(cache.get(&key_three), Some(sample_matches("cand-3")));
+    }
+
+    #[test]
+    fn incomplete_generation_discard_is_contained_and_idempotent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+        let candidate = sample_identity(7, "digest-a");
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = adapter.index_path(&key);
+        std::fs::create_dir_all(&generation_dir).expect("create incomplete generation");
+        std::fs::write(generation_dir.join("partial"), b"partial").expect("write partial");
+
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate)
+                .expect("discard incomplete"),
+            IncompleteGenerationDiscardOutcomeV1::Discarded
+        );
+        assert!(!generation_dir.exists());
+        assert!(generation_dir.starts_with(temp.path()));
+        assert_eq!(
+            adapter
+                .discard_incomplete_generation(&candidate)
+                .expect("idempotent absent"),
+            IncompleteGenerationDiscardOutcomeV1::Absent
+        );
+    }
+
+    #[test]
+    fn incomplete_generation_discard_refuses_sealed_exact_and_conflict() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+        let sealed = sample_identity(8, "digest-a");
+        let key = GenKey {
+            repo_id: sealed.repo_id.clone(),
+            revision_id: sealed.revision_id.clone(),
+            generation: sealed.manifest_generation,
+        };
+        let generation_dir = adapter.index_path(&key);
+        std::fs::create_dir_all(&generation_dir).expect("create generation");
+        persist_lexical_sealed_identity(&generation_dir, &sealed).expect("persist identity");
+
+        let exact_error = adapter
+            .discard_incomplete_generation(&sealed)
+            .expect_err("sealed exact must be immutable");
+        assert!(matches!(
+            exact_error,
+            CoreError::Typed { ref code, .. } if code == "GENERATION_IMMUTABLE"
+        ));
+        let mut conflict = sealed.clone();
+        conflict.manifest_digest = "digest-b".to_string();
+        let conflict_error = adapter
+            .discard_incomplete_generation(&conflict)
+            .expect_err("sealed conflict must fail closed");
+        assert!(matches!(
+            conflict_error,
+            CoreError::Typed { ref code, .. }
+                if code == "GENERATION_IDENTITY_DIGEST_MISMATCH"
+        ));
+        assert!(generation_dir.exists());
+    }
+
+    #[test]
+    fn persisted_scan_fails_closed_on_legacy_raw_identity_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("repo-alpha/rev-alpha/g1"))
+            .expect("create legacy layout");
+
+        let error = scan_persisted_generations(temp.path())
+            .expect_err("legacy raw layout must require explicit migration");
+        assert!(matches!(
+            error,
+            CoreError::Typed { ref code, .. }
+                if code == "GENERATION_STORAGE_LEGACY_LAYOUT_UNSUPPORTED"
+        ));
     }
 }
