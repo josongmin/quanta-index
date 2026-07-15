@@ -522,6 +522,7 @@ crate quanta_index_contract
         ├── struct SeedContributionV2: pub
         ├── struct SeedContributionV2Visitor: pub(self)
         │   └── type Value: pub(self)
+        ├── struct SeedFusionIdentityV2: pub
         ├── enum SeedLaneV2: pub
         ├── struct SemanticQueryResponse: pub
         ├── struct SemanticQueryResponseVisitor: pub(self)

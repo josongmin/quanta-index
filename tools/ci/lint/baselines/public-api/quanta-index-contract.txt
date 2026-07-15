@@ -5641,6 +5641,8 @@ impl core::clone::Clone for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::clone(&self) -> quanta_index_contract::SeedCandidateV2
 impl core::cmp::PartialEq for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::eq(&self, other: &quanta_index_contract::SeedCandidateV2) -> bool
+impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
 impl core::fmt::Debug for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidateV2
@@ -5678,6 +5680,33 @@ impl core::marker::Unpin for quanta_index_contract::SeedContributionV2
 impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContributionV2
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContributionV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContributionV2
+pub struct quanta_index_contract::results::SeedFusionIdentityV2
+impl quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
+pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
+impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
+impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
+impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Send for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Sync for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentityV2
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentityV2
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentityV2
 pub struct quanta_index_contract::results::SemanticQueryResponse
 pub quanta_index_contract::results::SemanticQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
@@ -9320,6 +9349,8 @@ impl core::clone::Clone for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::clone(&self) -> quanta_index_contract::SeedCandidateV2
 impl core::cmp::PartialEq for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::eq(&self, other: &quanta_index_contract::SeedCandidateV2) -> bool
+impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
 impl core::fmt::Debug for quanta_index_contract::SeedCandidateV2
 pub fn quanta_index_contract::SeedCandidateV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::SeedCandidateV2
@@ -9357,6 +9388,33 @@ impl core::marker::Unpin for quanta_index_contract::SeedContributionV2
 impl core::marker::UnsafeUnpin for quanta_index_contract::SeedContributionV2
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedContributionV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedContributionV2
+pub struct quanta_index_contract::SeedFusionIdentityV2
+impl quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp_parts(left_owner_kind: quanta_index_contract::OwnerDocKind, left_entity_id: &str, right_owner_kind: quanta_index_contract::OwnerDocKind, right_entity_id: &str) -> core::cmp::Ordering
+pub fn quanta_index_contract::SeedFusionIdentityV2::entity_id(&self) -> &str
+pub const fn quanta_index_contract::SeedFusionIdentityV2::new(owner_kind: quanta_index_contract::OwnerDocKind, entity_id: alloc::string::String) -> Self
+pub const fn quanta_index_contract::SeedFusionIdentityV2::owner_kind(&self) -> quanta_index_contract::OwnerDocKind
+impl core::clone::Clone for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::clone(&self) -> quanta_index_contract::SeedFusionIdentityV2
+impl core::cmp::Eq for quanta_index_contract::SeedFusionIdentityV2
+impl core::cmp::Ord for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::eq(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> bool
+impl core::cmp::PartialOrd for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::partial_cmp(&self, other: &quanta_index_contract::SeedFusionIdentityV2) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<&quanta_index_contract::SeedCandidateV2> for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::from(candidate: &quanta_index_contract::SeedCandidateV2) -> Self
+impl core::fmt::Debug for quanta_index_contract::SeedFusionIdentityV2
+pub fn quanta_index_contract::SeedFusionIdentityV2::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Freeze for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Send for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Sync for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::Unpin for quanta_index_contract::SeedFusionIdentityV2
+impl core::marker::UnsafeUnpin for quanta_index_contract::SeedFusionIdentityV2
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SeedFusionIdentityV2
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SeedFusionIdentityV2
 pub struct quanta_index_contract::SemanticIngestBatch
 pub quanta_index_contract::SemanticIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::SemanticIngestBatch::batch_digest: alloc::string::String

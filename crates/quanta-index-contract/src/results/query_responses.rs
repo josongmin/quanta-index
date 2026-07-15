@@ -288,6 +288,59 @@ pub struct SeedCandidateV2 {
     pub degraded_reasons: Vec<String>,
 }
 
+/// Canonical identity for ranking and deduplicating [`SeedCandidateV2`] values.
+///
+/// `entity_id` is opaque outside its owner domain. Including `owner_kind` in
+/// the ordered key prevents unrelated records with equal display text from
+/// collapsing during RRF fusion.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SeedFusionIdentityV2 {
+    owner_kind: OwnerDocKind,
+    entity_id: String,
+}
+
+impl SeedFusionIdentityV2 {
+    #[must_use]
+    pub const fn new(owner_kind: OwnerDocKind, entity_id: String) -> Self {
+        Self {
+            owner_kind,
+            entity_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn owner_kind(&self) -> OwnerDocKind {
+        self.owner_kind
+    }
+
+    #[must_use]
+    pub fn entity_id(&self) -> &str {
+        &self.entity_id
+    }
+
+    /// Compare borrowed identity parts without allocating temporary keys.
+    ///
+    /// The order is exactly the derived [`Ord`] order of this type:
+    /// `owner_kind` first, followed by the opaque `entity_id`.
+    #[must_use]
+    pub fn cmp_parts(
+        left_owner_kind: OwnerDocKind,
+        left_entity_id: &str,
+        right_owner_kind: OwnerDocKind,
+        right_entity_id: &str,
+    ) -> core::cmp::Ordering {
+        left_owner_kind
+            .cmp(&right_owner_kind)
+            .then_with(|| left_entity_id.cmp(right_entity_id))
+    }
+}
+
+impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
+    fn from(candidate: &SeedCandidateV2) -> Self {
+        Self::new(candidate.owner_kind, candidate.entity_id.clone())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridSeedCandidate {
     pub candidate: LexicalCandidate,
@@ -1657,6 +1710,30 @@ mod tests {
                 corpus_kind: Some(SemanticCorpusKindV1::SymbolCard),
             }],
             degraded_reasons: vec!["lexical_only_owner_kind_fallback".to_string()],
+        }
+    }
+
+    #[test]
+    fn seed_fusion_identity_borrowed_comparator_matches_owned_order_v2() {
+        let identities = [
+            SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "z".to_string()),
+            SeedFusionIdentityV2::new(OwnerDocKind::Chunk, "a".to_string()),
+            SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "a".to_string()),
+            SeedFusionIdentityV2::new(OwnerDocKind::Module, "z".to_string()),
+        ];
+
+        for left in &identities {
+            for right in &identities {
+                assert_eq!(
+                    left.cmp(right),
+                    SeedFusionIdentityV2::cmp_parts(
+                        left.owner_kind(),
+                        left.entity_id(),
+                        right.owner_kind(),
+                        right.entity_id(),
+                    )
+                );
+            }
         }
     }
 

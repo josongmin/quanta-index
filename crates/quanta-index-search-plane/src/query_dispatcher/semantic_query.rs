@@ -13,7 +13,7 @@
     reason = "child module split out of query_dispatcher for size; it builds directly on the parent's shared resolvers, policies, and types"
 )]
 use super::*;
-use quanta_index_contract::SemanticSeedCorpusBudgetV1;
+use quanta_index_contract::{SeedFusionIdentityV2, SemanticSeedCorpusBudgetV1};
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
@@ -245,32 +245,15 @@ fn lane_order_key_v2(lane: SeedLaneV2) -> u8 {
     }
 }
 
-/// Private fusion identity. `entity_id` remains the opaque response carrier,
-/// but ranking/deduplication must also retain the owner domain so a lexical
-/// chunk cannot collapse a symbol merely because their display strings match.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct SeedFusionIdentityV2 {
-    owner_kind: OwnerDocKind,
-    entity_id: String,
-}
-
-impl From<&SeedCandidateV2> for SeedFusionIdentityV2 {
-    fn from(candidate: &SeedCandidateV2) -> Self {
-        Self {
-            owner_kind: candidate.owner_kind,
-            entity_id: candidate.entity_id.clone(),
-        }
-    }
-}
-
 fn lexical_lane_seed_candidates_v2(
     lexical: &[LexicalCandidate],
 ) -> Result<Vec<SeedCandidateV2>, CoreError> {
-    let mut seen_entities = BTreeSet::new();
+    let mut seen_identities = BTreeSet::new();
     let mut collapsed = Vec::new();
     for (index, candidate) in lexical.iter().enumerate() {
         let entity_id = candidate.candidate_id.clone();
-        if !seen_entities.insert(entity_id.clone()) {
+        let identity = SeedFusionIdentityV2::new(OwnerDocKind::Chunk, entity_id.clone());
+        if !seen_identities.insert(identity) {
             continue;
         }
         collapsed.push(SeedCandidateV2 {
@@ -296,11 +279,12 @@ fn lexical_lane_seed_candidates_v2(
 fn one_semantic_lane_seed_candidates_v2(
     semantic_hits: &[SemanticSearchHitV1],
 ) -> Result<Vec<SeedCandidateV2>, CoreError> {
-    let mut seen_entities = BTreeSet::new();
+    let mut seen_identities = BTreeSet::new();
     let mut collapsed = Vec::new();
     for (index, hit) in semantic_hits.iter().enumerate() {
         let entity_id = hit.owner_id.clone();
-        if !seen_entities.insert(entity_id.clone()) {
+        let identity = SeedFusionIdentityV2::new(hit.owner_kind, entity_id.clone());
+        if !seen_identities.insert(identity) {
             continue;
         }
         let mut degraded_reasons = Vec::new();
@@ -396,7 +380,8 @@ pub(super) fn build_hybrid_seed_candidates_v2(
             let mut candidate = by_identity.remove(&identity).ok_or_else(|| {
                 CoreError::Storage(format!(
                     "hybrid seed v2: fused typed identity {:?}/{} missing merged candidate payload",
-                    identity.owner_kind, identity.entity_id
+                    identity.owner_kind(),
+                    identity.entity_id()
                 ))
             })?;
             candidate.seed_rank = checked_rank_u32_v1(index, "hybrid seed v2 fused")?;
@@ -546,7 +531,7 @@ mod corpus_budget_tests {
 mod seed_fusion_tests {
     use quanta_index_contract::{
         LexicalCandidate, ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId,
-        SemanticCorpusKindV1,
+        SeedFusionIdentityV2, SemanticCorpusKindV1,
     };
     use quanta_index_core::domains::semantic::SemanticSearchHitV1;
 
@@ -571,14 +556,45 @@ mod seed_fusion_tests {
         }
     }
 
-    fn symbol_hit(record_id: &str) -> SemanticSearchHitV1 {
+    fn semantic_hit(
+        record_id: &str,
+        owner_id: &str,
+        owner_kind: OwnerDocKind,
+        corpus_kind: SemanticCorpusKindV1,
+    ) -> SemanticSearchHitV1 {
         SemanticSearchHitV1 {
             candidate: lexical_candidate(record_id),
             record_id: record_id.to_string(),
-            owner_id: EXACT_SYMBOL_ID.to_string(),
-            owner_kind: OwnerDocKind::Symbol,
-            corpus_kind: Some(SemanticCorpusKindV1::SymbolCard),
+            owner_id: owner_id.to_string(),
+            owner_kind,
+            corpus_kind: Some(corpus_kind),
         }
+    }
+
+    fn symbol_hit(record_id: &str) -> SemanticSearchHitV1 {
+        semantic_hit(
+            record_id,
+            EXACT_SYMBOL_ID,
+            OwnerDocKind::Symbol,
+            SemanticCorpusKindV1::SymbolCard,
+        )
+    }
+
+    #[test]
+    fn seed_fusion_identity_contract_orders_owner_before_entity_v2() {
+        let symbol_z = SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "z".to_string());
+        let chunk_a = SeedFusionIdentityV2::new(OwnerDocKind::Chunk, "a".to_string());
+        let symbol_a = SeedFusionIdentityV2::new(OwnerDocKind::Symbol, "a".to_string());
+
+        let mut identities = vec![chunk_a, symbol_z, symbol_a];
+        identities.sort();
+
+        assert_eq!(identities[0].owner_kind(), OwnerDocKind::Symbol);
+        assert_eq!(identities[0].entity_id(), "a");
+        assert_eq!(identities[1].owner_kind(), OwnerDocKind::Symbol);
+        assert_eq!(identities[1].entity_id(), "z");
+        assert_eq!(identities[2].owner_kind(), OwnerDocKind::Chunk);
+        assert_eq!(identities[2].entity_id(), "a");
     }
 
     #[test]
@@ -617,6 +633,55 @@ mod seed_fusion_tests {
         assert_eq!(seeds[1].owner_kind, OwnerDocKind::Symbol);
         assert_eq!(seeds[1].entity_id, EXACT_SYMBOL_ID);
         assert_eq!(seeds[1].record_id, "symbol-card");
+    }
+
+    #[test]
+    fn seed_fusion_keeps_cross_owner_identity_distinct_within_one_dense_lane() {
+        let seeds = build_hybrid_seed_candidates_v2(
+            &[],
+            &[vec![
+                semantic_hit(
+                    "module-card",
+                    EXACT_SYMBOL_ID,
+                    OwnerDocKind::Module,
+                    SemanticCorpusKindV1::ModuleCard,
+                ),
+                symbol_hit("symbol-card"),
+            ]],
+            &[],
+            2,
+        )
+        .expect("one dense lane must retain cross-owner identities");
+
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].owner_kind, OwnerDocKind::Module);
+        assert_eq!(seeds[0].entity_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[1].owner_kind, OwnerDocKind::Symbol);
+        assert_eq!(seeds[1].entity_id, EXACT_SYMBOL_ID);
+    }
+
+    #[test]
+    fn seed_fusion_semantic_tie_uses_canonical_typed_identity_order() {
+        let seeds = build_hybrid_seed_candidates_v2(
+            &[],
+            &[
+                vec![symbol_hit("symbol-card")],
+                vec![semantic_hit(
+                    "module-card",
+                    EXACT_SYMBOL_ID,
+                    OwnerDocKind::Module,
+                    SemanticCorpusKindV1::ModuleCard,
+                )],
+            ],
+            &[],
+            1,
+        )
+        .expect("semantic-only rank ties must use the contract identity order");
+
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].owner_kind, OwnerDocKind::Module);
+        assert_eq!(seeds[0].entity_id, EXACT_SYMBOL_ID);
+        assert_eq!(seeds[0].record_id, "module-card");
     }
 }
 
