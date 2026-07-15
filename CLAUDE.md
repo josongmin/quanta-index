@@ -56,7 +56,8 @@
 - `generation_activation_state` is the only query-time serve-head authority; `generation_catalog` may contain future generations and does not become serve-head by itself
 - generation resolution order is fixed: explicit request generation -> query-time pin -> active generation; if no ready generation exists, return typed `NOT_READY` / `UNKNOWN_GENERATION` and never fall back to empty hits or a different generation
 - `apply_bundle_delta(...)` mutates the target generation staging surface only; never patch the active query indexes in place
-- producer is the sole authority for source bytes, git history, parse trees, and embeddings; search-plane code must not read repo source, shell out to `git`, run `tree-sitter`, or compute embeddings as fallback
+- producer is the sole authority for source bytes, git history, parse trees, semantic-source records, and provenance; search-plane code must not read repo source, shell out to `git`, run `tree-sitter`, or fabricate semantic source as fallback
+- search-plane is the sole authority for embedding execution, model-contract validation, and embedding cache/storage over validated producer semantic-source records; producers must not emit authoritative vectors or duplicate search-plane embedding policy
 - `BundleChannelPublisher::publish` is the only producer -> search ingress path; do not add side-band apply/legacy socket ingress
 
 ### Code shape discipline (write-time SOLID, no god code)
